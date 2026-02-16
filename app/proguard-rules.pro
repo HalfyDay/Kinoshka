@@ -1,0 +1,1 @@
+﻿# Rules for release builds.

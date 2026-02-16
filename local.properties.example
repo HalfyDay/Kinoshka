@@ -1,0 +1,6 @@
+# Add your Kinopoisk API key here for local builds.
+# Example:
+# KP_API_KEY=your_api_key
+# Optional: GitHub releases page used in "Ещё -> Обновления".
+# Example:
+# GITHUB_RELEASES_URL=https://github.com/owner/repo/releases
