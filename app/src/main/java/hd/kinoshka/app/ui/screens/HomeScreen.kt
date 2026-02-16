@@ -697,7 +697,7 @@ private fun MoreContent(
         ),
         MoreMenuItem(
             title = "Обновления",
-            subtitle = "Открыть GitHub Releases",
+            subtitle = "Проверить новую версию и скачать APK",
             onClick = onOpenUpdates
         )
     )
