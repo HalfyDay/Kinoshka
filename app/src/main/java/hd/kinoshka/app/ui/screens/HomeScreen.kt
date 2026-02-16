@@ -876,12 +876,10 @@ private fun LibraryGridCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            val statusLine = buildString {
-                item.status?.let { append(it.toUiLabel()) }
-                if (item.type == "TV_SERIES") {
-                    if (isNotEmpty()) append(" • ")
-                    append("S${item.watchedSeasons ?: 0} E${item.watchedEpisodes ?: 0}")
-                }
+            val statusLine = if (item.type == "TV_SERIES") {
+                "S${item.watchedSeasons ?: 0} E${item.watchedEpisodes ?: 0}"
+            } else {
+                ""
             }
             if (statusLine.isNotBlank()) {
                 Spacer(modifier = Modifier.height(4.dp))
@@ -939,7 +937,7 @@ private fun UserFilmStatus.toBadgeIconAndDescription(): Pair<Int, String> {
     return when (this) {
         UserFilmStatus.WATCHING -> android.R.drawable.ic_menu_view to "Смотрю"
         UserFilmStatus.PLANNED -> android.R.drawable.ic_menu_my_calendar to "В планах"
-        UserFilmStatus.COMPLETED -> android.R.drawable.presence_online to "Просмотрено"
+        UserFilmStatus.COMPLETED -> android.R.drawable.checkbox_on_background to "Просмотрено"
         UserFilmStatus.REWATCHING -> android.R.drawable.ic_popup_sync to "Пересматриваю"
         UserFilmStatus.ON_HOLD -> android.R.drawable.ic_media_pause to "Отложено"
         UserFilmStatus.DROPPED -> android.R.drawable.ic_menu_close_clear_cancel to "Брошено"
@@ -1200,6 +1198,7 @@ private fun FilmTileSize.toGridMetrics(): GridMetrics {
         FilmTileSize.COMPACT -> GridMetrics(columns = 4)
         FilmTileSize.MEDIUM -> GridMetrics(columns = 3)
         FilmTileSize.LARGE -> GridMetrics(columns = 2)
+        FilmTileSize.VERTICAL -> GridMetrics(columns = 1)
     }
 }
 

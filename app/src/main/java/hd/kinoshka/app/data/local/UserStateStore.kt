@@ -21,7 +21,8 @@ enum class AppThemeMode {
 enum class FilmTileSize {
     COMPACT,
     MEDIUM,
-    LARGE
+    LARGE,
+    VERTICAL
 }
 
 enum class UserFilmStatus {

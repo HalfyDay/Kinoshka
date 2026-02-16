@@ -1,12 +1,15 @@
 ﻿package hd.kinoshka.app.ui.screens
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.provider.Settings
 import android.widget.Toast
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -45,10 +49,11 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -63,18 +68,22 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.activity.compose.BackHandler
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -119,8 +128,14 @@ fun DetailsScreen(
     }
 
     BackHandler {
-        isInteractive = false
-        onBack()
+        when {
+            previewPosterUrl != null -> previewPosterUrl = null
+            imageViewerStartIndex >= 0 -> imageViewerStartIndex = -1
+            else -> {
+                isInteractive = false
+                onBack()
+            }
+        }
     }
 
     androidx.compose.runtime.DisposableEffect(lifecycleOwner, context) {
@@ -461,39 +476,35 @@ private fun PosterPreviewDialog(
     title: String,
     onDismiss: () -> Unit
 ) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    HideStatusBarEffect()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
+            .clickable(onClick = onDismiss)
     ) {
+        AsyncImage(
+            model = imageUrl,
+            contentDescription = title,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxSize()
+                .blur(24.dp)
+        )
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
-                .clickable(onClick = onDismiss)
-        ) {
-            AsyncImage(
-                model = imageUrl,
-                contentDescription = title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .blur(24.dp)
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.42f))
-            )
-            AsyncImage(
-                model = imageUrl,
-                contentDescription = title,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxWidth(0.82f)
-                    .align(Alignment.Center)
-                    .clip(RoundedCornerShape(24.dp))
-            )
-        }
+                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.42f))
+        )
+        AsyncImage(
+            model = imageUrl,
+            contentDescription = title,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxWidth(0.82f)
+                .align(Alignment.Center)
+                .clip(RoundedCornerShape(24.dp))
+        )
     }
 }
 
@@ -826,18 +837,12 @@ private fun ExpandableDescriptionInfoCard(item: FilmDetails) {
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f)
                 )
-                IconButton(
-                    onClick = { expanded = !expanded },
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Свернуть" else "Развернуть",
                     modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        painter = painterResource(id = android.R.drawable.arrow_down_float),
-                        contentDescription = if (expanded) "Свернуть" else "Развернуть",
-                        modifier = Modifier
-                            .size(20.dp)
-                            .graphicsLayer { rotationZ = arrowRotation }
-                    )
-                }
+                        .graphicsLayer { rotationZ = arrowRotation }
+                )
             }
 
             if (expanded) {
@@ -1079,6 +1084,7 @@ private fun HorizontalFilmsCard(
                             text = linked.nameRu ?: linked.nameOriginal ?: linked.nameEn ?: "Без названия",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
+                            minLines = 2,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1153,44 +1159,129 @@ private fun ImagesViewerDialog(
         pageCount = { fullUrls.size }
     )
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    HideStatusBarEffect()
+    val horizontalPaddingPx = with(LocalDensity.current) { 16.dp.toPx() }
+    val verticalPaddingPx = with(LocalDensity.current) { 24.dp.toPx() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.96f))
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.96f))
-        ) {
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier.fillMaxSize()
-            ) { page ->
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            var imageSize by remember(page) { mutableStateOf(IntSize.Zero) }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(imageSize, horizontalPaddingPx, verticalPaddingPx) {
+                        detectTapGestures { tapOffset ->
+                            val containerWidth = size.width.toFloat()
+                            val containerHeight = size.height.toFloat()
+                            val viewportWidth =
+                                (containerWidth - horizontalPaddingPx * 2f).coerceAtLeast(1f)
+                            val viewportHeight =
+                                (containerHeight - verticalPaddingPx * 2f).coerceAtLeast(1f)
+                            val imageWidth = imageSize.width.toFloat()
+                            val imageHeight = imageSize.height.toFloat()
+                            val imageAspect = if (imageWidth > 0f && imageHeight > 0f) {
+                                imageWidth / imageHeight
+                            } else {
+                                null
+                            }
+
+                            if (imageAspect == null) {
+                                onDismiss()
+                                return@detectTapGestures
+                            }
+
+                            val viewportAspect = viewportWidth / viewportHeight
+                            val drawWidth: Float
+                            val drawHeight: Float
+                            val drawLeft: Float
+                            val drawTop: Float
+
+                            if (imageAspect >= viewportAspect) {
+                                drawWidth = viewportWidth
+                                drawHeight = viewportWidth / imageAspect
+                                drawLeft = horizontalPaddingPx
+                                drawTop = verticalPaddingPx + (viewportHeight - drawHeight) / 2f
+                            } else {
+                                drawWidth = viewportHeight * imageAspect
+                                drawHeight = viewportHeight
+                                drawLeft = horizontalPaddingPx + (viewportWidth - drawWidth) / 2f
+                                drawTop = verticalPaddingPx
+                            }
+
+                            val isOutsideImage =
+                                tapOffset.x < drawLeft ||
+                                    tapOffset.x > drawLeft + drawWidth ||
+                                    tapOffset.y < drawTop ||
+                                    tapOffset.y > drawTop + drawHeight
+                            if (isOutsideImage) onDismiss()
+                        }
+                    }
+            ) {
                 AsyncImage(
                     model = fullUrls[page],
                     contentDescription = "Кадр ${page + 1}",
                     contentScale = ContentScale.Fit,
+                    onSuccess = { state ->
+                        val drawable = state.result.drawable
+                        val width = drawable.intrinsicWidth
+                        val height = drawable.intrinsicHeight
+                        if (width > 0 && height > 0) {
+                            imageSize = IntSize(width, height)
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 16.dp, vertical = 24.dp)
                 )
             }
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 18.dp)
-                    .clickable(onClick = onDismiss),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
-            ) {
-                Text(
-                    text = "${pagerState.currentPage + 1}/${fullUrls.size}",
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
         }
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 8.dp)
+                .clickable(onClick = onDismiss),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
+        ) {
+            Text(
+                text = "${pagerState.currentPage + 1}/${fullUrls.size}",
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@Composable
+private fun HideStatusBarEffect() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val activityWindow = view.context.findActivity()?.window
+        val controller =
+            activityWindow?.let { WindowCompat.getInsetsController(it, it.decorView) }
+        controller?.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller?.hide(WindowInsetsCompat.Type.statusBars())
+        onDispose {
+            controller?.show(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }
 

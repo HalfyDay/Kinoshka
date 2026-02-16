@@ -34,6 +34,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -287,7 +289,12 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text("Тема", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         FilterChip(
                             selected = selectedThemeMode == AppThemeMode.CURRENT,
                             onClick = { onThemeModeSelected(AppThemeMode.CURRENT) },
@@ -316,6 +323,11 @@ fun SettingsScreen(
                             selected = selectedTileSize == FilmTileSize.LARGE,
                             onClick = { onTileSizeSelected(FilmTileSize.LARGE) },
                             label = { Text("2 в ряд") }
+                        )
+                        FilterChip(
+                            selected = selectedTileSize == FilmTileSize.VERTICAL,
+                            onClick = { onTileSizeSelected(FilmTileSize.VERTICAL) },
+                            label = { Text("Вертикальные") }
                         )
                     }
 
