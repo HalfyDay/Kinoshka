@@ -33,8 +33,7 @@ enum class HomeTab {
 enum class DiscoverCategory(val title: String, val apiType: String) {
     POPULAR("Популярное", "TOP_POPULAR_ALL"),
     TOP_250("Топ 250", "TOP_250_MOVIES"),
-    SERIES("Сериалы", "TOP_250_TV_SHOWS"),
-    AWAIT("Ожидаемые", "CLOSES_RELEASES")
+    SERIES("Сериалы", "TOP_250_TV_SHOWS")
 }
 
 data class LibraryUiItem(
@@ -52,6 +51,9 @@ data class LibraryUiItem(
     val note: String?,
     val watchedSeasons: Int?,
     val watchedEpisodes: Int?,
+    val totalEpisodesInSeason: Int?,
+    val totalSeasons: Int?,
+    val totalEpisodes: Int?,
     val updatedAt: Long
 )
 
@@ -70,7 +72,9 @@ data class HomeUiState(
     val loadingMore: Boolean = false,
     val themeMode: AppThemeMode = AppThemeMode.CURRENT,
     val hideRussianContent: Boolean = false,
-    val tileSize: FilmTileSize = FilmTileSize.MEDIUM
+    val discoverTileSize: FilmTileSize = FilmTileSize.MEDIUM,
+    val libraryTileSize: FilmTileSize = FilmTileSize.MEDIUM,
+    val showFpsCounter: Boolean = false
 )
 
 data class DetailsUiState(
@@ -164,11 +168,17 @@ class FilmsViewModel(
         userRating: Int?,
         note: String,
         watchedSeasons: Int?,
-        watchedEpisodes: Int?
+        watchedEpisodes: Int?,
+        totalEpisodesInSeason: Int?,
+        totalSeasons: Int?,
+        totalEpisodes: Int?
     ) {
         val safeRating = userRating?.coerceIn(1, 10)
         val safeSeasons = watchedSeasons?.coerceAtLeast(0)
         val safeEpisodes = watchedEpisodes?.coerceAtLeast(0)
+        val safeTotalEpisodesInSeason = totalEpisodesInSeason?.coerceAtLeast(0)
+        val safeTotalSeasons = totalSeasons?.coerceAtLeast(0)
+        val safeTotalEpisodes = totalEpisodes?.coerceAtLeast(0)
 
         detailsState = detailsState.copy(savingProfile = true)
         val updated = userStateStore.updateProfileFromDetails(
@@ -177,7 +187,10 @@ class FilmsViewModel(
             userRating = safeRating,
             note = note,
             watchedSeasons = safeSeasons,
-            watchedEpisodes = safeEpisodes
+            watchedEpisodes = safeEpisodes,
+            totalEpisodesInSeason = safeTotalEpisodesInSeason,
+            totalSeasons = safeTotalSeasons,
+            totalEpisodes = safeTotalEpisodes
         )
         detailsState = detailsState.copy(
             userProfile = updated,
@@ -201,9 +214,19 @@ class FilmsViewModel(
         uiState = uiState.copy(hideRussianContent = enabled)
     }
 
-    fun setTileSize(size: FilmTileSize) {
-        userStateStore.setTileSize(size)
-        uiState = uiState.copy(tileSize = size)
+    fun setDiscoverTileSize(size: FilmTileSize) {
+        userStateStore.setDiscoverTileSize(size)
+        uiState = uiState.copy(discoverTileSize = size)
+    }
+
+    fun setLibraryTileSize(size: FilmTileSize) {
+        userStateStore.setLibraryTileSize(size)
+        uiState = uiState.copy(libraryTileSize = size)
+    }
+
+    fun setShowFpsCounter(enabled: Boolean) {
+        userStateStore.setFpsCounterEnabled(enabled)
+        uiState = uiState.copy(showFpsCounter = enabled)
     }
 
     fun exportLibraryJson(): String = userStateStore.exportLibraryJson()
@@ -381,13 +404,16 @@ class FilmsViewModel(
 
     private fun buildInitialState(): HomeUiState {
         val preferences = userStateStore.getUserPreferences()
+        val fallbackTileSize = preferences.tileSize
         return HomeUiState(
             loading = true,
             library = buildLibraryItems(),
             profileAvatar = userStateStore.getProfileAvatar(),
             themeMode = preferences.themeMode,
             hideRussianContent = preferences.hideRussianContent,
-            tileSize = preferences.tileSize
+            discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
+            libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
+            showFpsCounter = preferences.showFpsCounter
         )
     }
 
@@ -400,12 +426,15 @@ class FilmsViewModel(
 
     private fun refreshFromStore() {
         val preferences = userStateStore.getUserPreferences()
+        val fallbackTileSize = preferences.tileSize
         uiState = uiState.copy(
             library = buildLibraryItems(),
             profileAvatar = userStateStore.getProfileAvatar(),
             themeMode = preferences.themeMode,
             hideRussianContent = preferences.hideRussianContent,
-            tileSize = preferences.tileSize
+            discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
+            libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
+            showFpsCounter = preferences.showFpsCounter
         )
     }
 
@@ -468,6 +497,9 @@ private fun HistoryRecord.toLibraryUiItem(
         note = profile?.note,
         watchedSeasons = profile?.watchedSeasons,
         watchedEpisodes = profile?.watchedEpisodes,
+        totalEpisodesInSeason = profile?.totalEpisodesInSeason,
+        totalSeasons = profile?.totalSeasons,
+        totalEpisodes = profile?.totalEpisodes,
         updatedAt = profile?.updatedAt ?: viewedAt
     )
 }
@@ -488,6 +520,9 @@ private fun UserFilmProfile.toLibraryUiItem(): LibraryUiItem {
         note = note,
         watchedSeasons = watchedSeasons,
         watchedEpisodes = watchedEpisodes,
+        totalEpisodesInSeason = totalEpisodesInSeason,
+        totalSeasons = totalSeasons,
+        totalEpisodes = totalEpisodes,
         updatedAt = updatedAt
     )
 }

@@ -31,30 +31,25 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -67,13 +62,13 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -85,17 +80,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -105,7 +98,10 @@ import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
 import hd.kinoshka.app.data.local.UserFilmStatus
 import hd.kinoshka.app.data.model.FilmItem
+import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
 import java.util.Locale
+import kotlin.math.absoluteValue
+import kotlin.math.ceil
 
 private enum class MainSection {
     LIBRARY,
@@ -144,14 +140,19 @@ fun HomeScreen(
     onRemoveFromHistory: (Int) -> Unit,
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenAbout: () -> Unit,
-    onOpenUpdates: () -> Unit
+    onOpenAbout: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
-    val metrics = state.tileSize.toGridMetrics()
+    val libraryMetrics = state.libraryTileSize.toGridMetrics()
+    val discoverMetrics = state.discoverTileSize.toGridMetrics()
     val statusByFilmId = remember(state.library) {
         state.library
             .mapNotNull { item -> item.status?.let { item.kinopoiskId to it } }
+            .toMap()
+    }
+    val progressByFilmId = remember(state.library) {
+        state.library
+            .mapNotNull { item -> item.toWatchProgressUi()?.let { progress -> item.kinopoiskId to progress } }
             .toMap()
     }
 
@@ -169,53 +170,24 @@ fun HomeScreen(
         MainSection.MORE -> moreQuery
     }
     var libraryTab by rememberSaveable { mutableStateOf(LibraryTab.WATCHING) }
-    var isChromeCollapsed by rememberSaveable { mutableStateOf(false) }
-    var chromeScrollAccumulator by remember { mutableFloatStateOf(0f) }
-    val canCollapseChrome = section == MainSection.LIBRARY || section == MainSection.DISCOVER
-    val smoothCollapseProgress by animateFloatAsState(
-        targetValue = if (canCollapseChrome && isChromeCollapsed) 1f else 0f,
-        animationSpec = tween(260),
-        label = "home_chrome_collapse_smooth"
-    )
-    LaunchedEffect(canCollapseChrome) {
-        if (!canCollapseChrome) {
-            isChromeCollapsed = false
-            chromeScrollAccumulator = 0f
+    val searchRowHeight = SearchChromeHeight
+    val searchRowAlpha = 1f
+    val normalizedQuery = state.query.trim()
+    val libraryItemsByTab = remember(state.library, state.hideRussianContent, normalizedQuery) {
+        LibraryTab.entries.associateWith { tab ->
+            state.library
+                .filterByTab(tab)
+                .filterByRussian(state.hideRussianContent)
+                .filterByQuery(normalizedQuery)
         }
     }
-    val nestedScrollConnection = remember(canCollapseChrome) {
-        object : NestedScrollConnection {
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource
-            ): Offset {
-                if (!canCollapseChrome || source == NestedScrollSource.SideEffect) return Offset.Zero
-                val scrollY = consumed.y + available.y
-                if (scrollY == 0f) return Offset.Zero
-                val threshold = 28f
-                if ((chromeScrollAccumulator > 0f && scrollY < 0f) ||
-                    (chromeScrollAccumulator < 0f && scrollY > 0f)
-                ) {
-                    chromeScrollAccumulator = 0f
-                }
-                chromeScrollAccumulator += scrollY
-                when {
-                    chromeScrollAccumulator <= -threshold -> {
-                        isChromeCollapsed = true
-                        chromeScrollAccumulator = 0f
-                    }
-                    chromeScrollAccumulator >= threshold -> {
-                        isChromeCollapsed = false
-                        chromeScrollAccumulator = 0f
-                    }
-                }
-                return Offset.Zero
-            }
+    val discoverItems = remember(state.items, state.hideRussianContent) {
+        if (state.hideRussianContent) {
+            state.items.filterNot { it.isRussianContent() }
+        } else {
+            state.items
         }
     }
-    val searchRowAlpha = 1f - smoothCollapseProgress
-    val searchLiftPx = with(LocalDensity.current) { SearchChromeHeight.toPx() }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -252,10 +224,9 @@ fun HomeScreen(
             )
         }
     ) { innerPadding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .nestedScroll(nestedScrollConnection)
                 .background(
                     Brush.verticalGradient(
                         listOf(
@@ -269,142 +240,120 @@ fun HomeScreen(
                 .imePadding()
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(SearchChromeHeight)
-                    .graphicsLayer { clip = true }
-            ) {
-                SearchRow(
-                    query = activeQuery,
-                    avatar = state.profileAvatar,
-                    placeholder = when (section) {
-                        MainSection.LIBRARY -> "Поиск в библиотеке"
-                        MainSection.DISCOVER -> "Поиск фильмов и сериалов"
-                        MainSection.MORE -> "Поиск по разделу Ещё"
-                    },
-                    onQueryChange = { value ->
-                        when (section) {
-                            MainSection.LIBRARY -> libraryQuery = value
-                            MainSection.DISCOVER -> discoverQuery = value
-                            MainSection.MORE -> moreQuery = value
-                        }
-                        onQueryChange(value)
-                    },
-                    onSearch = {
-                        focusManager.clearFocus()
-                        if (section == MainSection.DISCOVER) {
-                            onSubmitSearch()
-                        }
-                    },
-                    onAvatarClick = onOpenProfile,
+            Column(modifier = Modifier.fillMaxSize()) {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .graphicsLayer {
-                            translationY = -searchLiftPx * smoothCollapseProgress
-                        }
-                        .alpha(searchRowAlpha)
-                )
-            }
+                        .height(searchRowHeight)
+                        .clipToBounds()
+                ) {
+                    SearchRow(
+                        query = activeQuery,
+                        avatar = state.profileAvatar,
+                        placeholder = when (section) {
+                            MainSection.LIBRARY -> "Поиск в библиотеке"
+                            MainSection.DISCOVER -> "Поиск фильмов и сериалов"
+                            MainSection.MORE -> "Поиск по разделу Ещё"
+                        },
+                        onQueryChange = { value ->
+                            when (section) {
+                                MainSection.LIBRARY -> libraryQuery = value
+                                MainSection.DISCOVER -> discoverQuery = value
+                                MainSection.MORE -> moreQuery = value
+                            }
+                            onQueryChange(value)
+                        },
+                        onSearch = {
+                            focusManager.clearFocus()
+                            if (section == MainSection.DISCOVER) {
+                                onSubmitSearch()
+                            }
+                        },
+                        onAvatarClick = onOpenProfile,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .alpha(searchRowAlpha)
+                    )
+                }
 
-            AnimatedContent(
-                targetState = section,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        translationY = -searchLiftPx * smoothCollapseProgress
-                    },
-                transitionSpec = {
-                    (fadeIn(animationSpec = tween(220)) +
-                        scaleIn(initialScale = 0.98f, animationSpec = tween(220)) +
-                        slideInVertically(initialOffsetY = { it / 24 }, animationSpec = tween(220))) togetherWith
-                        (fadeOut(animationSpec = tween(160)) +
-                            scaleOut(targetScale = 0.995f, animationSpec = tween(160)) +
-                            slideOutVertically(targetOffsetY = { -it / 40 }, animationSpec = tween(160)))
-                },
-                label = "home_sections"
-            ) { targetSection ->
-                when (targetSection) {
-                    MainSection.LIBRARY -> {
-                        val pagerState = rememberPagerState(
-                            initialPage = libraryTab.ordinal,
-                            pageCount = { LibraryTab.entries.size }
-                        )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (section) {
+                        MainSection.LIBRARY -> {
+                            val pagerState = rememberPagerState(
+                                initialPage = libraryTab.ordinal,
+                                pageCount = { LibraryTab.entries.size }
+                            )
 
-                        LaunchedEffect(pagerState) {
-                            snapshotFlow {
-                                if (pagerState.isScrollInProgress) {
-                                    pagerState.targetPage
-                                } else {
+                            LaunchedEffect(pagerState) {
+                                snapshotFlow {
                                     pagerState.currentPage
+                                }.collect { page ->
+                                    libraryTab = LibraryTab.entries[page]
                                 }
-                            }.collect { page ->
-                                libraryTab = LibraryTab.entries[page]
                             }
-                        }
-                        LaunchedEffect(libraryTab) {
-                            if (!pagerState.isScrollInProgress && pagerState.currentPage != libraryTab.ordinal) {
-                                pagerState.animateScrollToPage(libraryTab.ordinal)
+                            LaunchedEffect(libraryTab) {
+                                if (!pagerState.isScrollInProgress && pagerState.currentPage != libraryTab.ordinal) {
+                                    pagerState.animateScrollToPage(libraryTab.ordinal)
+                                }
                             }
-                        }
 
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            LibraryTabs(
-                                selected = libraryTab,
-                                onSelect = { target -> libraryTab = target }
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            HorizontalPager(
-                                state = pagerState,
-                                modifier = Modifier.fillMaxSize()
-                            ) { page ->
-                                val pageTab = LibraryTab.entries[page]
-                                val items = state.library
-                                    .filterByTab(pageTab)
-                                    .filterByRussian(state.hideRussianContent)
-                                    .filterByQuery(state.query.trim())
-                                LibraryPageGrid(
-                                    items = items,
-                                    historyMode = pageTab == LibraryTab.HISTORY,
-                                    onOpenHistoryFilm = onOpenHistoryFilm,
-                                    onRemoveFromHistory = onRemoveFromHistory,
-                                    metrics = metrics
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                LibraryTabs(
+                                    pagerState = pagerState,
+                                    onSelect = { target -> libraryTab = target }
                                 )
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                HorizontalPager(
+                                    state = pagerState,
+                                    flingBehavior = PagerDefaults.flingBehavior(
+                                        state = pagerState,
+                                        snapAnimationSpec = tween(
+                                            durationMillis = 330,
+                                            easing = FastOutSlowInEasing
+                                        )
+                                    ),
+                                    modifier = Modifier.fillMaxSize()
+                                ) { page ->
+                                    val pageTab = LibraryTab.entries[page]
+                                    val items = libraryItemsByTab[pageTab].orEmpty()
+                                    LibraryPageGrid(
+                                        items = items,
+                                        historyMode = pageTab == LibraryTab.HISTORY,
+                                        onOpenHistoryFilm = onOpenHistoryFilm,
+                                        onRemoveFromHistory = onRemoveFromHistory,
+                                        metrics = libraryMetrics
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    MainSection.DISCOVER -> {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            DiscoverTabs(
-                                selected = state.discoverCategory,
-                                isSearchResult = state.isSearchResult,
-                                onSelect = onDiscoverCategorySelected
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
+                        MainSection.DISCOVER -> {
                             DiscoverContent(
                                 state = state,
-                                metrics = metrics,
+                                sourceItems = discoverItems,
+                                metrics = discoverMetrics,
                                 statusByFilmId = statusByFilmId,
+                                progressByFilmId = progressByFilmId,
                                 onRetry = onRetry,
                                 onOpenFilm = onOpenFilm,
-                                onLoadMore = onLoadMore
+                                onLoadMore = onLoadMore,
+                                onCategorySelected = onDiscoverCategorySelected
                             )
                         }
-                    }
 
-                    MainSection.MORE -> {
-                        MoreContent(
-                            query = state.query.trim(),
-                            onOpenProfile = onOpenProfile,
-                            onOpenSettings = onOpenSettings,
-                            onOpenAbout = onOpenAbout,
-                            onOpenUpdates = onOpenUpdates
-                        )
+                        MainSection.MORE -> {
+                            MoreContent(
+                                query = state.query.trim(),
+                                onOpenProfile = onOpenProfile,
+                                onOpenSettings = onOpenSettings,
+                                onOpenAbout = onOpenAbout
+                            )
+                        }
                     }
                 }
             }
+
         }
     }
 }
@@ -488,29 +437,35 @@ private fun AvatarBadge(avatar: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LibraryTabs(
-    selected: LibraryTab,
+    pagerState: PagerState,
     onSelect: (LibraryTab) -> Unit
 ) {
+    val selectedColor = MaterialTheme.colorScheme.onSurface
+    val unselectedColor = MaterialTheme.colorScheme.onSurfaceVariant
     PrimaryScrollableTabRow(
-        selectedTabIndex = selected.ordinal,
+        selectedTabIndex = pagerState.currentPage,
         edgePadding = 12.dp,
         containerColor = Color.Transparent,
         divider = {},
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth()
     ) {
-        LibraryTab.entries.forEach { tab ->
+        LibraryTab.entries.forEachIndexed { index, tab ->
+            val pageOffset = ((pagerState.currentPage - index) + pagerState.currentPageOffsetFraction)
+                .absoluteValue
+            val selectedFraction = (1f - pageOffset).coerceIn(0f, 1f)
             Tab(
-                selected = selected == tab,
+                selected = pagerState.currentPage == index,
                 onClick = { onSelect(tab) },
                 text = {
                     Text(
                         text = tab.title,
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = if (selected == tab) FontWeight.SemiBold else FontWeight.Normal
+                        fontWeight = if (selectedFraction > 0.66f) FontWeight.SemiBold else FontWeight.Normal,
+                        color = lerp(unselectedColor, selectedColor, selectedFraction)
                     )
                 },
-                selectedContentColor = MaterialTheme.colorScheme.onSurface,
-                unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                selectedContentColor = selectedColor,
+                unselectedContentColor = unselectedColor
             )
         }
     }
@@ -526,7 +481,10 @@ private fun DiscoverTabs(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        items(DiscoverCategory.entries.toList()) { category ->
+        items(
+            items = DiscoverCategory.entries,
+            key = { it.name }
+        ) { category ->
             FilterChip(
                 selected = selected == category && !isSearchResult,
                 onClick = { onSelect(category) },
@@ -555,16 +513,40 @@ private fun LibraryPageGrid(
         return
     }
 
+    if (metrics.columns == 1) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            items(items, key = { it.kinopoiskId }, contentType = { "library_vertical_item" }) { item ->
+                LibraryVerticalRow(
+                    item = item,
+                    onOpen = { onOpenHistoryFilm(item.kinopoiskId) },
+                    onLongPress = {
+                        if (historyMode && item.viewedAtMillis != null) {
+                            pendingDeleteId = item.kinopoiskId
+                        }
+                    }
+                )
+            }
+        }
+    } else {
     LazyVerticalGrid(
         columns = GridCells.Fixed(metrics.columns),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        items(items, key = { it.kinopoiskId }) { item ->
+        items(
+            items = items,
+            key = { it.kinopoiskId },
+            contentType = { "library_item" }
+        ) { item ->
             LibraryGridCard(
                 item = item,
+                compactText = metrics.columns >= 3,
                 onOpen = { onOpenHistoryFilm(item.kinopoiskId) },
                 onLongPress = {
                     if (historyMode && item.viewedAtMillis != null) {
@@ -573,6 +555,7 @@ private fun LibraryPageGrid(
                 }
             )
         }
+    }
     }
 
     if (pendingDeleteId != 0) {
@@ -602,18 +585,15 @@ private fun LibraryPageGrid(
 @Composable
 private fun DiscoverContent(
     state: HomeUiState,
+    sourceItems: List<FilmItem>,
     metrics: GridMetrics,
     statusByFilmId: Map<Int, UserFilmStatus>,
+    progressByFilmId: Map<Int, WatchProgressUi>,
     onRetry: () -> Unit,
     onOpenFilm: (FilmItem) -> Unit,
-    onLoadMore: () -> Unit
+    onLoadMore: () -> Unit,
+    onCategorySelected: (DiscoverCategory) -> Unit
 ) {
-    val sourceItems = if (state.hideRussianContent) {
-        state.items.filterNot { it.isRussianContent() }
-    } else {
-        state.items
-    }
-
     when {
         state.loading -> LoadingCard()
         state.error != null -> ErrorCard(message = state.error, onRetry = onRetry)
@@ -627,17 +607,84 @@ private fun DiscoverContent(
         }
 
         else -> {
+            if (metrics.columns == 1) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    item {
+                        DiscoverTabs(
+                            selected = state.discoverCategory,
+                            isSearchResult = state.isSearchResult,
+                            onSelect = onCategorySelected
+                        )
+                    }
+                    items(
+                        items = sourceItems,
+                        key = { it.kinopoiskId },
+                        contentType = { "discover_vertical_item" }
+                    ) { film ->
+                        DiscoverVerticalRow(
+                            film = film,
+                            status = statusByFilmId[film.kinopoiskId],
+                            watchProgress = progressByFilmId[film.kinopoiskId],
+                            onOpenFilm = onOpenFilm
+                        )
+                    }
+                    item {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        if (state.loadingMore) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
+                            }
+                        } else if (state.hasMore) {
+                            OutlinedButton(
+                                onClick = onLoadMore,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Загрузить еще")
+                            }
+                        } else {
+                            Text(
+                                text = "Это конец списка",
+                                modifier = Modifier.fillMaxWidth(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                return
+            }
+
             LazyVerticalGrid(
                 columns = GridCells.Fixed(metrics.columns),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                items(sourceItems, key = { it.kinopoiskId }) { film ->
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    DiscoverTabs(
+                        selected = state.discoverCategory,
+                        isSearchResult = state.isSearchResult,
+                        onSelect = onCategorySelected
+                    )
+                }
+                items(
+                    items = sourceItems,
+                    key = { it.kinopoiskId },
+                    contentType = { "discover_item" }
+                ) { film ->
                     DiscoverGridCard(
                         film = film,
+                        compactText = metrics.columns >= 3,
                         status = statusByFilmId[film.kinopoiskId],
+                        watchProgress = progressByFilmId[film.kinopoiskId],
                         onOpenFilm = onOpenFilm
                     )
                 }
@@ -648,7 +695,7 @@ private fun DiscoverContent(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.Center
                         ) {
-                            CircularProgressIndicator()
+                            ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
                         }
                     } else if (state.hasMore) {
                         OutlinedButton(
@@ -676,8 +723,7 @@ private fun MoreContent(
     query: String,
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenAbout: () -> Unit,
-    onOpenUpdates: () -> Unit
+    onOpenAbout: () -> Unit
 ) {
     val allItems = listOf(
         MoreMenuItem(
@@ -692,13 +738,8 @@ private fun MoreContent(
         ),
         MoreMenuItem(
             title = "О приложении",
-            subtitle = "Версия, технологии, источники данных",
+            subtitle = "Версия, обновления и полезные ссылки",
             onClick = onOpenAbout
-        ),
-        MoreMenuItem(
-            title = "Обновления",
-            subtitle = "Проверить новую версию и скачать APK",
-            onClick = onOpenUpdates
         )
     )
     val items = if (query.isBlank()) {
@@ -768,50 +809,67 @@ private fun MenuCard(
 @Composable
 private fun DiscoverGridCard(
     film: FilmItem,
+    compactText: Boolean,
     status: UserFilmStatus?,
+    watchProgress: WatchProgressUi?,
     onOpenFilm: (FilmItem) -> Unit
 ) {
-    ElevatedCard(
+    val titleText = remember(film.nameRu, film.nameOriginal) {
+        film.nameRu ?: film.nameOriginal ?: "Без названия"
+    }
+    val metaText = remember(film.year, film.ratingKinopoisk) {
+        listOfNotNull(
+            film.year?.toString(),
+            film.ratingKinopoisk?.let { "KP ${"%.1f".format(it)}" }
+        ).joinToString(" • ")
+    }
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onOpenFilm(film) },
-        shape = RoundedCornerShape(20.dp)
+            .clickable { onOpenFilm(film) }
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(2f / 3f)
-                    .clip(RoundedCornerShape(14.dp))
-            ) {
-                AsyncImage(
-                    model = film.posterUrlPreview,
-                    contentDescription = film.nameRu,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(14.dp))
+        ) {
+            AsyncImage(
+                model = film.posterUrlPreview,
+                contentDescription = film.nameRu,
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.Low,
+                modifier = Modifier.fillMaxSize()
+            )
+            status?.let {
+                UserStatusBadge(
+                    status = it,
+                    modifier = Modifier.align(Alignment.BottomEnd)
                 )
-                status?.let {
-                    UserStatusBadge(
-                        status = it,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                    )
-                }
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            watchProgress?.let { progress ->
+                PosterBottomProgressBar(
+                    progress = progress.progress,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Column(
+            modifier = Modifier.padding(horizontal = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
             Text(
-                text = film.nameRu ?: film.nameOriginal ?: "Без названия",
-                style = MaterialTheme.typography.titleSmall,
+                text = titleText,
+                style = if (compactText) MaterialTheme.typography.bodySmall else MaterialTheme.typography.titleSmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = listOfNotNull(
-                    film.year?.toString(),
-                    film.ratingKinopoisk?.let { "KP ${"%.1f".format(it)}" }
-                ).joinToString(" • "),
-                style = MaterialTheme.typography.bodySmall,
+                text = metaText,
+                style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -824,75 +882,189 @@ private fun DiscoverGridCard(
 @Composable
 private fun LibraryGridCard(
     item: LibraryUiItem,
+    compactText: Boolean,
     onOpen: () -> Unit,
     onLongPress: () -> Unit
 ) {
-    ElevatedCard(
+    val watchProgress = remember(
+        item.type,
+        item.watchedSeasons,
+        item.watchedEpisodes,
+        item.totalEpisodesInSeason,
+        item.totalSeasons,
+        item.totalEpisodes
+    ) {
+        item.toWatchProgressUi()
+    }
+    val detailsText = remember(item.subtitle, item.ratingText, item.userRating) {
+        listOfNotNull(
+            item.subtitle,
+            item.ratingText,
+            item.userRating?.let { "Моя: $it/10" }
+        ).joinToString(" • ")
+    }
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onOpen,
                 onLongClick = onLongPress
-            ),
-        shape = RoundedCornerShape(20.dp)
+            )
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(2f / 3f)
-                    .clip(RoundedCornerShape(14.dp))
-            ) {
-                AsyncImage(
-                    model = item.posterUrl,
-                    contentDescription = item.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(14.dp))
+        ) {
+            AsyncImage(
+                model = item.posterUrl,
+                contentDescription = item.title,
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.Low,
+                modifier = Modifier.fillMaxSize()
+            )
+            item.status?.let {
+                UserStatusBadge(
+                    status = it,
+                    modifier = Modifier.align(Alignment.BottomEnd)
                 )
-                item.status?.let {
-                    UserStatusBadge(
-                        status = it,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                    )
-                }
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            watchProgress?.let { progress ->
+                PosterBottomProgressBar(
+                    progress = progress.progress,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Column(
+            modifier = Modifier.padding(horizontal = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
             Text(
                 text = item.title,
-                style = MaterialTheme.typography.titleSmall,
+                style = if (compactText) MaterialTheme.typography.bodySmall else MaterialTheme.typography.titleSmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = listOfNotNull(
-                    item.subtitle,
-                    item.ratingText,
-                    item.userRating?.let { "Моя: $it/10" }
-                ).joinToString(" • "),
-                style = MaterialTheme.typography.bodySmall,
+                text = detailsText,
+                style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            val statusLine = if (item.type == "TV_SERIES") {
-                "S${item.watchedSeasons ?: 0} E${item.watchedEpisodes ?: 0}"
-            } else {
-                ""
-            }
-            if (statusLine.isNotBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
+            val progressLabel = watchProgress?.progressLabel
+            if (!progressLabel.isNullOrBlank()) {
                 Text(
-                    text = statusLine,
-                    style = MaterialTheme.typography.bodySmall,
+                    text = progressLabel,
+                    style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
             if (!item.note.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = item.note,
+                    style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LibraryVerticalRow(
+    item: LibraryUiItem,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit
+) {
+    val watchProgress = remember(
+        item.type,
+        item.watchedSeasons,
+        item.watchedEpisodes,
+        item.totalEpisodesInSeason,
+        item.totalSeasons,
+        item.totalEpisodes
+    ) {
+        item.toWatchProgressUi()
+    }
+    val metaText = remember(item.subtitle, item.type, item.ratingText) {
+        listOfNotNull(
+            item.subtitle,
+            item.type?.let { if (it == "TV_SERIES") "TV" else "Movie" },
+            item.ratingText?.replace("KP ", "")
+        ).joinToString(" · ")
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onOpen,
+                onLongClick = onLongPress
+            ),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .width(92.dp)
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(16.dp))
+        ) {
+            AsyncImage(
+                model = item.posterUrl,
+                contentDescription = item.title,
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.Low,
+                modifier = Modifier.fillMaxSize()
+            )
+            item.status?.let {
+                UserStatusBadge(status = it, modifier = Modifier.align(Alignment.BottomEnd))
+            }
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = metaText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            if (watchProgress != null) {
+                LinearProgressIndicator(
+                    progress = { watchProgress.progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(99.dp)),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                )
+                Text(
+                    text = watchProgress.progressLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else if (!item.note.isNullOrBlank()) {
                 Text(
                     text = item.note,
                     style = MaterialTheme.typography.bodySmall,
@@ -902,6 +1074,169 @@ private fun LibraryGridCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DiscoverVerticalRow(
+    film: FilmItem,
+    status: UserFilmStatus?,
+    watchProgress: WatchProgressUi?,
+    onOpenFilm: (FilmItem) -> Unit
+) {
+    val titleText = remember(film.nameRu, film.nameOriginal) {
+        film.nameRu ?: film.nameOriginal ?: "Без названия"
+    }
+    val metaText = remember(film.year, film.ratingKinopoisk) {
+        listOfNotNull(
+            film.year?.toString(),
+            "TV",
+            film.ratingKinopoisk?.let { "%.2f★".format(it) }
+        ).joinToString(" · ")
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpenFilm(film) },
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .width(92.dp)
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(16.dp))
+        ) {
+            AsyncImage(
+                model = film.posterUrlPreview,
+                contentDescription = film.nameRu,
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.Low,
+                modifier = Modifier.fillMaxSize()
+            )
+            status?.let {
+                UserStatusBadge(status = it, modifier = Modifier.align(Alignment.BottomEnd))
+            }
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = titleText,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = metaText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (watchProgress != null) {
+                Text(
+                    text = watchProgress.progressLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+private data class WatchProgressUi(
+    val progress: Float,
+    val progressLabel: String
+)
+
+private fun LibraryUiItem.toWatchProgressUi(): WatchProgressUi? {
+    if (type != "TV_SERIES") return null
+
+    val watchedSeasonsSafe = (watchedSeasons ?: 0).coerceAtLeast(0)
+    val watchedEpisodesSafe = (watchedEpisodes ?: 0).coerceAtLeast(0)
+    val totalEpisodesInSeasonSafe = totalEpisodesInSeason?.takeIf { it > 0 }
+    val totalSeasonsSafe = totalSeasons?.takeIf { it > 0 }
+    val totalEpisodesSafe = totalEpisodes?.takeIf { it > 0 }
+    val watchedSeasonsBounded = totalSeasonsSafe?.let { watchedSeasonsSafe.coerceAtMost(it) } ?: watchedSeasonsSafe
+    if (watchedSeasonsSafe == 0 && watchedEpisodesSafe == 0 &&
+        totalSeasonsSafe == null && totalEpisodesSafe == null
+    ) {
+        return null
+    }
+
+    // watchedEpisodes is treated as episodes watched in current season (not full series).
+    val currentSeasonTotalEpisodes = when {
+        totalEpisodesInSeasonSafe != null -> totalEpisodesInSeasonSafe
+        totalSeasonsSafe == null || totalEpisodesSafe == null -> null
+        totalSeasonsSafe == 1 -> totalEpisodesSafe
+        else -> ceil(totalEpisodesSafe.toDouble() / totalSeasonsSafe.toDouble()).toInt().coerceAtLeast(1)
+    }
+
+    val watchedEpisodesInSeason = when {
+        currentSeasonTotalEpisodes == null -> watchedEpisodesSafe
+        totalSeasonsSafe == 1 && watchedSeasonsBounded >= 1 -> currentSeasonTotalEpisodes
+        else -> watchedEpisodesSafe.coerceAtMost(currentSeasonTotalEpisodes)
+    }
+
+    val progress = when {
+        totalSeasonsSafe != null && totalSeasonsSafe > 0 -> {
+            if (totalSeasonsSafe == 1 && watchedSeasonsBounded >= 1) {
+                1f
+            } else {
+                val completedSeasons = when {
+                    watchedSeasonsBounded <= 0 -> 0
+                    watchedEpisodesInSeason > 0 -> (watchedSeasonsBounded - 1).coerceAtLeast(0)
+                    else -> watchedSeasonsBounded
+                }
+                val currentSeasonPart = if (currentSeasonTotalEpisodes != null && currentSeasonTotalEpisodes > 0) {
+                    watchedEpisodesInSeason.toFloat() / currentSeasonTotalEpisodes.toFloat()
+                } else {
+                    0f
+                }
+                ((completedSeasons + currentSeasonPart) / totalSeasonsSafe.toFloat()).coerceIn(0f, 1f)
+            }
+        }
+
+        watchedEpisodesSafe > 0 || watchedSeasonsSafe > 0 -> 1f
+        else -> 0f
+    }
+
+    val progressLabel = buildList {
+        totalSeasonsSafe?.let { add("S $watchedSeasonsBounded/$it") } ?: run {
+            if (watchedSeasonsBounded > 0) add("S $watchedSeasonsBounded")
+        }
+        currentSeasonTotalEpisodes?.let { add("E $watchedEpisodesInSeason/$it") } ?: run {
+            if (watchedEpisodesSafe > 0) add("E $watchedEpisodesSafe")
+        }
+    }.joinToString(" • ")
+
+    return WatchProgressUi(
+        progress = progress,
+        progressLabel = progressLabel
+    )
+}
+
+@Composable
+private fun PosterBottomProgressBar(
+    progress: Float,
+    modifier: Modifier = Modifier
+) {
+    val clamped = progress.coerceIn(0f, 1f)
+    Box(
+        modifier = modifier
+            .height(4.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f))
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(clamped)
+                .height(4.dp)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.95f))
+        )
     }
 }
 
@@ -920,24 +1255,33 @@ private fun UserStatusBadge(
             bottomEnd = 14.dp
         ),
         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.94f),
-        shadowElevation = 2.dp
+        shadowElevation = 0.dp
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(
-                painter = painterResource(id = iconRes),
-                contentDescription = description,
-                modifier = Modifier.size(20.dp),
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
+            if (iconRes != null) {
+                Icon(
+                    painter = painterResource(id = iconRes),
+                    contentDescription = description,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = description,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
         }
     }
 }
 
-private fun UserFilmStatus.toBadgeIconAndDescription(): Pair<Int, String> {
+private fun UserFilmStatus.toBadgeIconAndDescription(): Pair<Int?, String> {
     return when (this) {
         UserFilmStatus.WATCHING -> android.R.drawable.ic_menu_view to "Смотрю"
         UserFilmStatus.PLANNED -> android.R.drawable.ic_menu_my_calendar to "В планах"
-        UserFilmStatus.COMPLETED -> android.R.drawable.checkbox_on_background to "Просмотрено"
+        UserFilmStatus.COMPLETED -> null to "Просмотрено"
         UserFilmStatus.REWATCHING -> android.R.drawable.ic_popup_sync to "Пересматриваю"
         UserFilmStatus.ON_HOLD -> android.R.drawable.ic_media_pause to "Отложено"
         UserFilmStatus.DROPPED -> android.R.drawable.ic_menu_close_clear_cancel to "Брошено"
@@ -1089,7 +1433,7 @@ private fun LoadingCard() {
                 .padding(vertical = 36.dp),
             contentAlignment = Alignment.Center
         ) {
-            CircularProgressIndicator()
+            ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
         }
     }
 }
@@ -1207,3 +1551,4 @@ private data class MoreMenuItem(
     val subtitle: String,
     val onClick: () -> Unit
 )
+

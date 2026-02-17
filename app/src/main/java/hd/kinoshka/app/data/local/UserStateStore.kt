@@ -37,7 +37,10 @@ enum class UserFilmStatus {
 data class UserPreferences(
     val themeMode: AppThemeMode = AppThemeMode.CURRENT,
     val hideRussianContent: Boolean = false,
-    val tileSize: FilmTileSize = FilmTileSize.MEDIUM
+    val tileSize: FilmTileSize = FilmTileSize.MEDIUM,
+    val discoverTileSize: FilmTileSize? = null,
+    val libraryTileSize: FilmTileSize? = null,
+    val showFpsCounter: Boolean = false
 )
 
 data class HistoryRecord(
@@ -63,6 +66,9 @@ data class UserFilmProfile(
     val note: String?,
     val watchedSeasons: Int?,
     val watchedEpisodes: Int?,
+    val totalEpisodesInSeason: Int?,
+    val totalSeasons: Int?,
+    val totalEpisodes: Int?,
     val updatedAt: Long
 )
 
@@ -85,7 +91,10 @@ class UserStateStore(context: Context) {
     private val avatarKey = "profile_avatar"
     private val themeModeKey = "theme_mode"
     private val hideRussianKey = "hide_russian_content"
-    private val tileSizeKey = "tile_size"
+    private val tileSizeKey = "tile_size" // legacy key for backward compatibility
+    private val discoverTileSizeKey = "discover_tile_size"
+    private val libraryTileSizeKey = "library_tile_size"
+    private val showFpsCounterKey = "show_fps_counter"
 
     private val prettyGson: Gson = GsonBuilder().setPrettyPrinting().create()
 
@@ -121,11 +130,40 @@ class UserStateStore(context: Context) {
         prefs.edit().putString(tileSizeKey, size.name).apply()
     }
 
+    fun getDiscoverTileSize(): FilmTileSize {
+        val fallback = getTileSize()
+        return readEnum(discoverTileSizeKey, fallback)
+    }
+
+    fun setDiscoverTileSize(size: FilmTileSize) {
+        prefs.edit().putString(discoverTileSizeKey, size.name).apply()
+    }
+
+    fun getLibraryTileSize(): FilmTileSize {
+        val fallback = getTileSize()
+        return readEnum(libraryTileSizeKey, fallback)
+    }
+
+    fun setLibraryTileSize(size: FilmTileSize) {
+        prefs.edit().putString(libraryTileSizeKey, size.name).apply()
+    }
+
+    fun isFpsCounterEnabled(): Boolean {
+        return prefs.getBoolean(showFpsCounterKey, false)
+    }
+
+    fun setFpsCounterEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(showFpsCounterKey, enabled).apply()
+    }
+
     fun getUserPreferences(): UserPreferences {
         return UserPreferences(
             themeMode = getThemeMode(),
             hideRussianContent = isHideRussianContentEnabled(),
-            tileSize = getTileSize()
+            tileSize = getTileSize(),
+            discoverTileSize = getDiscoverTileSize(),
+            libraryTileSize = getLibraryTileSize(),
+            showFpsCounter = isFpsCounterEnabled()
         )
     }
 
@@ -206,6 +244,9 @@ class UserStateStore(context: Context) {
                 note = existing?.note,
                 watchedSeasons = existing?.watchedSeasons,
                 watchedEpisodes = existing?.watchedEpisodes,
+                totalEpisodesInSeason = existing?.totalEpisodesInSeason,
+                totalSeasons = existing?.totalSeasons,
+                totalEpisodes = existing?.totalEpisodes,
                 updatedAt = System.currentTimeMillis()
             )
         )
@@ -228,7 +269,10 @@ class UserStateStore(context: Context) {
         userRating: Int?,
         note: String?,
         watchedSeasons: Int?,
-        watchedEpisodes: Int?
+        watchedEpisodes: Int?,
+        totalEpisodesInSeason: Int?,
+        totalSeasons: Int?,
+        totalEpisodes: Int?
     ): UserFilmProfile {
         val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
         val subtitle = item.year?.toString()
@@ -247,6 +291,9 @@ class UserStateStore(context: Context) {
             note = note?.trim().takeUnless { it.isNullOrBlank() },
             watchedSeasons = watchedSeasons,
             watchedEpisodes = watchedEpisodes,
+            totalEpisodesInSeason = totalEpisodesInSeason?.coerceAtLeast(0),
+            totalSeasons = totalSeasons?.coerceAtLeast(0),
+            totalEpisodes = totalEpisodes?.coerceAtLeast(0),
             updatedAt = System.currentTimeMillis()
         )
         upsertProfile(profile)
@@ -288,7 +335,11 @@ class UserStateStore(context: Context) {
             backup.preferences?.let { preferences ->
                 setThemeMode(preferences.themeMode)
                 setHideRussianContentEnabled(preferences.hideRussianContent)
-                setTileSize(preferences.tileSize)
+                val fallbackTileSize = runCatching { preferences.tileSize }.getOrDefault(FilmTileSize.MEDIUM)
+                setTileSize(fallbackTileSize)
+                setDiscoverTileSize(preferences.discoverTileSize ?: fallbackTileSize)
+                setLibraryTileSize(preferences.libraryTileSize ?: fallbackTileSize)
+                setFpsCounterEnabled(preferences.showFpsCounter)
             }
         }
     }

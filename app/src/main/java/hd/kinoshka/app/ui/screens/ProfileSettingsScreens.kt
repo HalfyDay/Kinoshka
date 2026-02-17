@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,8 +35,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,10 +43,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -74,6 +74,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -81,6 +82,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import hd.kinoshka.app.BuildConfig
+import hd.kinoshka.app.R
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
 import java.io.File
@@ -231,14 +233,21 @@ fun SettingsScreen(
     onBack: () -> Unit,
     selectedThemeMode: AppThemeMode,
     hideRussianContent: Boolean,
-    selectedTileSize: FilmTileSize,
+    selectedDiscoverTileSize: FilmTileSize,
+    selectedLibraryTileSize: FilmTileSize,
+    selectedShowFpsCounter: Boolean,
     onThemeModeSelected: (AppThemeMode) -> Unit,
     onHideRussianChanged: (Boolean) -> Unit,
-    onTileSizeSelected: (FilmTileSize) -> Unit,
+    onDiscoverTileSizeSelected: (FilmTileSize) -> Unit,
+    onLibraryTileSizeSelected: (FilmTileSize) -> Unit,
+    onShowFpsCounterChanged: (Boolean) -> Unit,
     onExportLibrary: () -> String,
     onImportLibrary: (String) -> Result<Unit>
 ) {
     val context = LocalContext.current
+    var showThemePicker by remember { mutableStateOf(false) }
+    var showDiscoverTileSizePicker by remember { mutableStateOf(false) }
+    var showLibraryTileSizePicker by remember { mutableStateOf(false) }
     val createExportFile = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
@@ -288,48 +297,21 @@ fun SettingsScreen(
                         .animateContentSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text("Тема", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FilterChip(
-                            selected = selectedThemeMode == AppThemeMode.CURRENT,
-                            onClick = { onThemeModeSelected(AppThemeMode.CURRENT) },
-                            label = { Text("Material") }
-                        )
-                        FilterChip(
-                            selected = selectedThemeMode == AppThemeMode.AMOLED,
-                            onClick = { onThemeModeSelected(AppThemeMode.AMOLED) },
-                            label = { Text("AMOLED") }
-                        )
-                    }
-
-                    Text("Размер плиток", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            selected = selectedTileSize == FilmTileSize.COMPACT,
-                            onClick = { onTileSizeSelected(FilmTileSize.COMPACT) },
-                            label = { Text("4 в ряд") }
-                        )
-                        FilterChip(
-                            selected = selectedTileSize == FilmTileSize.MEDIUM,
-                            onClick = { onTileSizeSelected(FilmTileSize.MEDIUM) },
-                            label = { Text("3 в ряд") }
-                        )
-                        FilterChip(
-                            selected = selectedTileSize == FilmTileSize.LARGE,
-                            onClick = { onTileSizeSelected(FilmTileSize.LARGE) },
-                            label = { Text("2 в ряд") }
-                        )
-                        FilterChip(
-                            selected = selectedTileSize == FilmTileSize.VERTICAL,
-                            onClick = { onTileSizeSelected(FilmTileSize.VERTICAL) },
-                            label = { Text("Вертикальные") }
-                        )
-                    }
+                    SettingsSelectRow(
+                        title = "Тема",
+                        value = selectedThemeMode.toUiLabel(),
+                        onClick = { showThemePicker = true }
+                    )
+                    SettingsSelectRow(
+                        title = "Размер плиток (Обзор)",
+                        value = selectedDiscoverTileSize.toUiLabel(),
+                        onClick = { showDiscoverTileSizePicker = true }
+                    )
+                    SettingsSelectRow(
+                        title = "Размер плиток (Библиотека)",
+                        value = selectedLibraryTileSize.toUiLabel(),
+                        onClick = { showLibraryTileSizePicker = true }
+                    )
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -349,6 +331,31 @@ fun SettingsScreen(
                             )
                         }
                         Switch(checked = hideRussianContent, onCheckedChange = onHideRussianChanged)
+                    }
+
+                    if (BuildConfig.DEBUG) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Показывать FPS",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Счетчик кадров поверх главного экрана (только debug).",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = selectedShowFpsCounter,
+                                onCheckedChange = onShowFpsCounterChanged
+                            )
+                        }
                     }
                 }
             }
@@ -386,44 +393,322 @@ fun SettingsScreen(
             }
         }
     }
+
+    if (showThemePicker) {
+        SelectBottomSheet(
+            title = "Тема",
+            options = listOf(AppThemeMode.CURRENT, AppThemeMode.AMOLED),
+            selected = selectedThemeMode,
+            optionLabel = { it.toUiLabel() },
+            onSelect = onThemeModeSelected,
+            onDismiss = { showThemePicker = false }
+        )
+    }
+
+    if (showDiscoverTileSizePicker) {
+        SelectBottomSheet(
+            title = "Размер плиток (Обзор)",
+            options = FilmTileSize.entries.toList(),
+            selected = selectedDiscoverTileSize,
+            optionLabel = { it.toUiLabel() },
+            onSelect = onDiscoverTileSizeSelected,
+            onDismiss = { showDiscoverTileSizePicker = false }
+        )
+    }
+
+    if (showLibraryTileSizePicker) {
+        SelectBottomSheet(
+            title = "Размер плиток (Библиотека)",
+            options = FilmTileSize.entries.toList(),
+            selected = selectedLibraryTileSize,
+            optionLabel = { it.toUiLabel() },
+            onSelect = onLibraryTileSizeSelected,
+            onDismiss = { showLibraryTileSizePicker = false }
+        )
+    }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun <T> SelectBottomSheet(
+    title: String,
+    options: List<T>,
+    selected: T,
+    optionLabel: (T) -> String,
+    onSelect: (T) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 4.dp)
+            )
+            options.forEach { option ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable {
+                            onSelect(option)
+                            onDismiss()
+                        }
+                        .padding(horizontal = 2.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    RadioButton(
+                        selected = selected == option,
+                        onClick = {
+                            onSelect(option)
+                            onDismiss()
+                        }
+                    )
+                    Text(
+                        text = optionLabel(option),
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+        }
+    }
 }
 
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(
+    onBack: () -> Unit,
+    updateStatusText: String,
+    isUpdateCheckRunning: Boolean,
+    onCheckUpdates: () -> Unit,
+    onOpenGithub: () -> Unit,
+    onOpenTelegram: () -> Unit,
+    onOpenShikimori: () -> Unit
+) {
+    val isUpdateAvailable = updateStatusText.contains("Доступна", ignoreCase = true)
+    val statusColor = if (isUpdateAvailable) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding(),
-        contentPadding = PaddingValues(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
             HeaderCard(
                 title = "О приложении",
-                subtitle = "Информация о сборке",
+                subtitle = "Версия, обновления и ссылки",
                 onBack = onBack
             )
         }
         item {
-            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
                 Column(
                     modifier = Modifier
-                        .padding(14.dp)
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 14.dp)
                         .animateContentSize(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Название: Киношка")
-                    Text("Версия: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-                    Text("Package: ${BuildConfig.APPLICATION_ID}")
-                    Text("Данные: Kinopoisk Unofficial API")
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                        contentDescription = "Иконка приложения",
+                        modifier = Modifier.size(90.dp)
+                    )
                     Text(
-                        text = "Экран плеера и библиотека работают локально на устройстве.",
+                        text = "Киношка",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = BuildConfig.APPLICATION_ID,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         }
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                        .animateContentSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(id = android.R.drawable.presence_online),
+                            contentDescription = null,
+                            tint = statusColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.size(10.dp))
+                        Text(
+                            text = updateStatusText,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = statusColor
+                        )
+                    }
+                    Button(
+                        onClick = onCheckUpdates,
+                        modifier = Modifier.fillMaxWidth(0.9f),
+                        enabled = !isUpdateCheckRunning
+                    ) {
+                        Text(if (isUpdateCheckRunning) "Проверка..." else "Проверить обновления")
+                    }
+                }
+            }
+        }
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    AboutLinkRow(
+                        badge = "GH",
+                        title = "GitHub",
+                        subtitle = "Исходный код приложения",
+                        onClick = onOpenGithub
+                    )
+                    AboutLinkRow(
+                        badge = "TG",
+                        title = "Telegram",
+                        subtitle = "Новые версии, обсуждение и новости",
+                        onClick = onOpenTelegram
+                    )
+                    AboutLinkRow(
+                        badge = "SH",
+                        title = "Shikimori",
+                        subtitle = "Энциклопедия аниме и манги",
+                        onClick = onOpenShikimori
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSelectRow(
+    title: String,
+    value: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun AboutLinkRow(
+    badge: String,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            modifier = Modifier.size(42.dp),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = badge,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+private fun AppThemeMode.toUiLabel(): String {
+    return when (this) {
+        AppThemeMode.CURRENT -> "Material"
+        AppThemeMode.AMOLED -> "AMOLED"
+    }
+}
+
+private fun FilmTileSize.toUiLabel(): String {
+    return when (this) {
+        FilmTileSize.COMPACT -> "4 в ряд"
+        FilmTileSize.MEDIUM -> "3 в ряд"
+        FilmTileSize.LARGE -> "2 в ряд"
+        FilmTileSize.VERTICAL -> "Вертикальные"
     }
 }
 

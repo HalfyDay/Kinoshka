@@ -32,12 +32,13 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -94,6 +95,7 @@ import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmLinkItem
 import hd.kinoshka.app.data.model.SeasonItem
+import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -109,7 +111,10 @@ fun DetailsScreen(
         userRating: Int?,
         note: String,
         watchedSeasons: Int?,
-        watchedEpisodes: Int?
+        watchedEpisodes: Int?,
+        totalEpisodesInSeason: Int?,
+        totalSeasons: Int?,
+        totalEpisodes: Int?
     ) -> Unit,
     onOpenUrl: (String) -> Unit,
     onOpenFilm: (Int) -> Unit,
@@ -159,15 +164,7 @@ fun DetailsScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f),
-                        MaterialTheme.colorScheme.background
-                    )
-                )
-            )
+            .background(MaterialTheme.colorScheme.background)
     ) {
         when {
             state.loading -> {
@@ -175,7 +172,7 @@ fun DetailsScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    CircularProgressIndicator()
+                    ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
                 }
             }
 
@@ -326,7 +323,14 @@ fun DetailsScreen(
                         rating,
                         note,
                         seasons,
-                        episodes
+                        episodes,
+                        seasons
+                            ?.takeIf { it > 0 }
+                            ?.let { seasonNumber ->
+                                state.seasons.firstOrNull { it.number == seasonNumber }?.episodes?.size
+                            },
+                        state.seasons.size.takeIf { it > 0 },
+                        state.seasons.sumOf { it.episodes.size }.takeIf { it > 0 }
                     )
                     showProfileEditor = false
                 }
@@ -1047,6 +1051,8 @@ private fun HorizontalFilmsCard(
     items: List<FilmLinkItem>,
     onOpenFilm: (Int) -> Unit
 ) {
+    val listState = rememberLazyListState()
+    val snapFling = rememberSnapFlingBehavior(lazyListState = listState)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1058,7 +1064,11 @@ private fun HorizontalFilmsCard(
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyRow(
+            state = listState,
+            flingBehavior = snapFling,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             items(
                 items = items.filter { it.id > 0 }.take(20),
                 key = { it.id }
@@ -1101,6 +1111,8 @@ private fun ImagesCard(
     onPreview: (Int) -> Unit
 ) {
     if (images.isEmpty()) return
+    val listState = rememberLazyListState()
+    val snapFling = rememberSnapFlingBehavior(lazyListState = listState)
 
     Column(
         modifier = Modifier
@@ -1113,7 +1125,11 @@ private fun ImagesCard(
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyRow(
+            state = listState,
+            flingBehavior = snapFling,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             items(
                 items = images.take(24),
                 key = { it.previewUrl ?: it.imageUrl.orEmpty() }
