@@ -1,5 +1,6 @@
 ﻿package hd.kinoshka.app.ui.theme
 
+import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
@@ -11,13 +12,17 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import hd.kinoshka.app.data.local.AppThemeMode
 
 private val ExpressiveLightColors: ColorScheme = lightColorScheme(
@@ -138,8 +143,16 @@ fun KinoTheme(
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
 
     val colors = when (themeMode) {
+        AppThemeMode.DARK -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                dynamicDarkColorScheme(context)
+            } else {
+                ExpressiveDarkColors
+            }
+        }
         AppThemeMode.AMOLED -> {
             val base = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 dynamicDarkColorScheme(context)
@@ -167,6 +180,31 @@ fun KinoTheme(
                 darkTheme -> ExpressiveDarkColors
                 else -> ExpressiveLightColors
             }
+        }
+    }
+
+    if (!view.isInEditMode) {
+        val isAmoled = themeMode == AppThemeMode.AMOLED
+        val isDarkForSystemBars = when (themeMode) {
+            AppThemeMode.CURRENT -> darkTheme
+            AppThemeMode.DARK -> true
+            AppThemeMode.AMOLED -> true
+        }
+        SideEffect {
+            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            window.navigationBarColor =
+                when (themeMode) {
+                    AppThemeMode.AMOLED -> Color.Black.toArgb()
+                    AppThemeMode.DARK -> colors.background.toArgb()
+                    AppThemeMode.CURRENT -> Color.Transparent.toArgb()
+                }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.isNavigationBarContrastEnforced = !isAmoled
+            }
+
+            WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars =
+                !isDarkForSystemBars
         }
     }
 

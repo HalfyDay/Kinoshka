@@ -2,6 +2,7 @@
 package hd.kinoshka.app.ui.screens
 
 import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Paint
@@ -52,6 +53,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -74,12 +76,15 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
 import coil.compose.AsyncImage
 import hd.kinoshka.app.BuildConfig
 import hd.kinoshka.app.R
@@ -397,7 +402,7 @@ fun SettingsScreen(
     if (showThemePicker) {
         SelectBottomSheet(
             title = "Тема",
-            options = listOf(AppThemeMode.CURRENT, AppThemeMode.AMOLED),
+            options = listOf(AppThemeMode.CURRENT, AppThemeMode.DARK, AppThemeMode.AMOLED),
             selected = selectedThemeMode,
             optionLabel = { it.toUiLabel() },
             onSelect = onThemeModeSelected,
@@ -442,6 +447,7 @@ private fun <T> SelectBottomSheet(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     ) {
+        KeepBottomSheetNavigationBarFromActivity()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -483,6 +489,47 @@ private fun <T> SelectBottomSheet(
                 }
             }
             Spacer(modifier = Modifier.height(14.dp))
+        }
+    }
+}
+
+@Composable
+private fun KeepBottomSheetNavigationBarFromActivity() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val dialogWindow = (view.parent as? DialogWindowProvider)?.window
+        val activityWindow = view.context.findActivity()?.window
+        if (dialogWindow == null || activityWindow == null) {
+            onDispose { }
+        } else {
+            val oldNavColor = dialogWindow.navigationBarColor
+            val oldLightNav =
+                WindowCompat.getInsetsController(dialogWindow, view).isAppearanceLightNavigationBars
+            val oldContrastEnforced =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    dialogWindow.isNavigationBarContrastEnforced
+                } else {
+                    false
+                }
+
+            val activityController =
+                WindowCompat.getInsetsController(activityWindow, activityWindow.decorView)
+            val dialogController = WindowCompat.getInsetsController(dialogWindow, view)
+            dialogWindow.navigationBarColor = activityWindow.navigationBarColor
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                dialogWindow.isNavigationBarContrastEnforced =
+                    activityWindow.isNavigationBarContrastEnforced
+            }
+            dialogController.isAppearanceLightNavigationBars =
+                activityController.isAppearanceLightNavigationBars
+
+            onDispose {
+                dialogWindow.navigationBarColor = oldNavColor
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    dialogWindow.isNavigationBarContrastEnforced = oldContrastEnforced
+                }
+                dialogController.isAppearanceLightNavigationBars = oldLightNav
+            }
         }
     }
 }
@@ -698,8 +745,17 @@ private fun AboutLinkRow(
 
 private fun AppThemeMode.toUiLabel(): String {
     return when (this) {
-        AppThemeMode.CURRENT -> "Material"
+        AppThemeMode.CURRENT -> "Системная"
+        AppThemeMode.DARK -> "Темная"
         AppThemeMode.AMOLED -> "AMOLED"
+    }
+}
+
+private tailrec fun Context.findActivity(): android.app.Activity? {
+    return when (this) {
+        is android.app.Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }
 

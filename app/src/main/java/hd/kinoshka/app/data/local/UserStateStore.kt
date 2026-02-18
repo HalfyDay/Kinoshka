@@ -15,6 +15,7 @@ enum class SavedViewMode {
 
 enum class AppThemeMode {
     CURRENT,
+    DARK,
     AMOLED
 }
 

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -82,6 +83,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -615,6 +617,7 @@ private fun UserProfileEditorSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss
     ) {
+        KeepBottomSheetNavigationBarFromActivity()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -730,6 +733,47 @@ private fun UserProfileEditorSheet(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun KeepBottomSheetNavigationBarFromActivity() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val dialogWindow = (view.parent as? DialogWindowProvider)?.window
+        val activityWindow = view.context.findActivity()?.window
+        if (dialogWindow == null || activityWindow == null) {
+            onDispose { }
+        } else {
+            val oldNavColor = dialogWindow.navigationBarColor
+            val oldLightNav =
+                WindowCompat.getInsetsController(dialogWindow, view).isAppearanceLightNavigationBars
+            val oldContrastEnforced =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    dialogWindow.isNavigationBarContrastEnforced
+                } else {
+                    false
+                }
+
+            val activityController =
+                WindowCompat.getInsetsController(activityWindow, activityWindow.decorView)
+            val dialogController = WindowCompat.getInsetsController(dialogWindow, view)
+            dialogWindow.navigationBarColor = activityWindow.navigationBarColor
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                dialogWindow.isNavigationBarContrastEnforced =
+                    activityWindow.isNavigationBarContrastEnforced
+            }
+            dialogController.isAppearanceLightNavigationBars =
+                activityController.isAppearanceLightNavigationBars
+
+            onDispose {
+                dialogWindow.navigationBarColor = oldNavColor
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    dialogWindow.isNavigationBarContrastEnforced = oldContrastEnforced
+                }
+                dialogController.isAppearanceLightNavigationBars = oldLightNav
+            }
         }
     }
 }
