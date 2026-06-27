@@ -1,10 +1,11 @@
-﻿package hd.kinoshka.app.data.repo
+package hd.kinoshka.app.data.repo
 
 import hd.kinoshka.app.data.api.KinopoiskApi
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.FilmLinkItem
+import hd.kinoshka.app.data.model.FiltersResponse
 import hd.kinoshka.app.data.model.SeasonItem
 import java.util.concurrent.ConcurrentHashMap
 
@@ -18,6 +19,7 @@ class FilmsRepository(private val api: KinopoiskApi) {
     private val similarsCache = ConcurrentHashMap<Int, CacheEntry<List<FilmLinkItem>>>()
     private val relationsCache = ConcurrentHashMap<Int, CacheEntry<List<FilmLinkItem>>>()
     private val imagesCache = ConcurrentHashMap<String, CacheEntry<List<FilmImageItem>>>()
+    private var cachedFilters: CacheEntry<FiltersResponse>? = null
 
     suspend fun popular(
         collectionType: String = "TOP_POPULAR_ALL",
@@ -31,13 +33,40 @@ class FilmsRepository(private val api: KinopoiskApi) {
     }
 
     suspend fun search(
-        query: String,
+        query: String? = null,
+        countryId: Int? = null,
+        genreId: Int? = null,
+        order: String = "RATING",
+        type: String = "ALL",
+        ratingFrom: Int? = null,
+        ratingTo: Int? = null,
+        yearFrom: Int? = null,
+        yearTo: Int? = null,
         page: Int = 1
     ): List<FilmItem> {
-        val key = "${query.trim().lowercase()}:$page"
+        val cleanQuery = query?.trim()?.takeIf { it.isNotBlank() }
+        val key = "$cleanQuery:$countryId:$genreId:$order:$type:$ratingFrom:$ratingTo:$yearFrom:$yearTo:$page"
         getIfFresh(searchCache[key])?.let { return it }
-        val loaded = api.search(keyword = query, page = page).items
+        val loaded = api.search(
+            keyword = cleanQuery,
+            countries = countryId,
+            genres = genreId,
+            order = order,
+            type = type,
+            ratingFrom = ratingFrom,
+            ratingTo = ratingTo,
+            yearFrom = yearFrom,
+            yearTo = yearTo,
+            page = page
+        ).items
         searchCache[key] = CacheEntry(loaded, System.currentTimeMillis())
+        return loaded
+    }
+
+    suspend fun filters(): FiltersResponse {
+        getIfFresh(cachedFilters)?.let { return it }
+        val loaded = api.filters()
+        cachedFilters = CacheEntry(loaded, System.currentTimeMillis())
         return loaded
     }
 

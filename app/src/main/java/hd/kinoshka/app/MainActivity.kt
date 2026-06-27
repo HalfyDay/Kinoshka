@@ -1,10 +1,20 @@
-﻿package hd.kinoshka.app
+package hd.kinoshka.app
 
+import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.graphics.Rect
+import android.graphics.drawable.Icon
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
-import android.graphics.Rect
 import android.util.Rational
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -12,12 +22,69 @@ import hd.kinoshka.app.ui.KinoApp
 import hd.kinoshka.app.ui.screens.PlayerPipState
 
 class MainActivity : ComponentActivity() {
+
+    private val pipReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                ACTION_PIP_PLAY_PAUSE -> {
+                    PlayerPipState.togglePlayPause()
+                    updatePipParams()
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Register PiP action receiver
+        val filter = IntentFilter(ACTION_PIP_PLAY_PAUSE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(pipReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(pipReceiver, filter)
+        }
+
+        // Tell Android AudioManager that this activity handles media keys,
+        // so Bluetooth headphone button events get routed to our Activity first
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        audioManager?.requestAudioFocus(
+            null,
+            AudioManager.STREAM_MUSIC,
+            AudioManager.AUDIOFOCUS_GAIN
+        )
+
         setContent {
             KinoApp()
         }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> {
+                PlayerPipState.togglePlayPause()
+                updatePipParams()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                PlayerPipState.play()
+                updatePipParams()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                PlayerPipState.pause()
+                updatePipParams()
+                true
+            }
+            else -> super.onKeyDown(keyCode, event)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try { unregisterReceiver(pipReceiver) } catch (e: Exception) {}
     }
 
     override fun onUserLeaveHint() {
@@ -25,33 +92,59 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         if (isInPictureInPictureMode) return
         if (!PlayerPipState.isPlayerScreenVisible) return
+        runCatching { enterPictureInPictureMode(buildPipParams()) }
+    }
 
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: android.content.res.Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            updatePipParams()
+        }
+    }
+
+    private fun updatePipParams() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+            runCatching { setPictureInPictureParams(buildPipParams()) }
+        }
+    }
+
+    private fun buildPipParams(): PictureInPictureParams {
+        val ratio = Rational(16, 9)
         val decor = window?.decorView
         val width = decor?.width ?: 0
         val height = decor?.height ?: 0
-        val ratio = Rational(16, 9)
         val sourceRectHint = calculateCenterCropRect(width, height, ratio)
 
-        val builder = PictureInPictureParams.Builder()
-            .setAspectRatio(ratio)
+        val builder = PictureInPictureParams.Builder().setAspectRatio(ratio)
         if (sourceRectHint != null) {
             builder.setSourceRectHint(sourceRectHint)
         }
-        val params = builder.build()
 
-        runCatching { enterPictureInPictureMode(params) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val intent = Intent(ACTION_PIP_PLAY_PAUSE)
+            val pi = PendingIntent.getBroadcast(this, 0, intent, pendingFlags)
+
+            val iconRes = if (PlayerPipState.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+            val title = if (PlayerPipState.isPlaying) "Пауза" else "Воспроизведение"
+            val action = RemoteAction(Icon.createWithResource(this, iconRes), title, title, pi)
+            builder.setActions(arrayListOf(action))
+        }
+
+        return builder.build()
     }
 
-    private fun calculateCenterCropRect(
-        width: Int,
-        height: Int,
-        targetRatio: Rational
-    ): Rect? {
+    private fun calculateCenterCropRect(width: Int, height: Int, targetRatio: Rational): Rect? {
         if (width <= 0 || height <= 0) return null
-
         val target = targetRatio.toFloat()
         val current = width.toFloat() / height.toFloat()
-
         return if (current > target) {
             val targetWidth = (height * target).toInt()
             val left = (width - targetWidth) / 2
@@ -62,5 +155,8 @@ class MainActivity : ComponentActivity() {
             Rect(0, top, width, top + targetHeight)
         }
     }
-}
 
+    companion object {
+        const val ACTION_PIP_PLAY_PAUSE = "hd.kinoshka.app.ACTION_PIP_PLAY_PAUSE"
+    }
+}

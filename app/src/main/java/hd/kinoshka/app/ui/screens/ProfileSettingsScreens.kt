@@ -1,4 +1,4 @@
-﻿
+
 package hd.kinoshka.app.ui.screens
 
 import android.content.Context
@@ -40,8 +40,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
@@ -781,11 +783,18 @@ private fun HeaderCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
-                modifier = Modifier.size(36.dp).clickable(onClick = onBack),
+                modifier = Modifier.size(40.dp).clickable(onClick = onBack),
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh
             ) {
-                Box(contentAlignment = Alignment.Center) { Text("←", style = MaterialTheme.typography.titleMedium) }
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Назад",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(text = title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)

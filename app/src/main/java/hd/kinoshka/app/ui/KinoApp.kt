@@ -254,7 +254,9 @@ fun KinoApp() {
                             onRemoveFromHistory = vm::removeFromHistory,
                             onOpenProfile = { navController.navigate("profile") },
                             onOpenSettings = { navController.navigate("settings") },
-                            onOpenAbout = { navController.navigate("about") }
+                            onOpenAbout = { navController.navigate("about") },
+                            onUpdateFilters = vm::updateFilters,
+                            onToggleFilterSheet = vm::setShowFilterSheet
                         )
                     }
                     composable(

@@ -1,4 +1,4 @@
-﻿package hd.kinoshka.app.data.model
+package hd.kinoshka.app.data.model
 
 import com.google.gson.annotations.SerializedName
 
@@ -114,5 +114,16 @@ data class FilmDetails(
 data class NameOnly(
     @SerializedName("genre") val genre: String? = null,
     @SerializedName("country") val country: String? = null
+)
+
+data class FilterItem(
+    @SerializedName("id") val id: Int,
+    @SerializedName("genre") val genre: String? = null,
+    @SerializedName("country") val country: String? = null
+)
+
+data class FiltersResponse(
+    @SerializedName("genres") val genres: List<FilterItem> = emptyList(),
+    @SerializedName("countries") val countries: List<FilterItem> = emptyList()
 )
 

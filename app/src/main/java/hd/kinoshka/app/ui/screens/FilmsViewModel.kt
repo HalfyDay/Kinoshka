@@ -1,4 +1,4 @@
-﻿package hd.kinoshka.app.ui.screens
+package hd.kinoshka.app.ui.screens
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -16,8 +16,10 @@ import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.FilmLinkItem
+import hd.kinoshka.app.data.model.FilterItem
 import hd.kinoshka.app.data.model.SeasonItem
 import hd.kinoshka.app.data.repo.FilmsRepository
+import hd.kinoshka.app.utils.SearchQueryUtils
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
@@ -57,6 +59,21 @@ data class LibraryUiItem(
     val updatedAt: Long
 )
 
+data class SearchFilterState(
+    val selectedCountryId: Int? = null,
+    val selectedGenreId: Int? = null,
+    val selectedOrder: String = "RATING",
+    val selectedType: String = "ALL",
+    val ratingFrom: Int? = null,
+    val ratingTo: Int? = null,
+    val yearFrom: Int? = null,
+    val yearTo: Int? = null
+) {
+    val isActive: Boolean
+        get() = selectedCountryId != null || selectedGenreId != null || selectedOrder != "RATING" ||
+                selectedType != "ALL" || ratingFrom != null || ratingTo != null || yearFrom != null || yearTo != null
+}
+
 data class HomeUiState(
     val loading: Boolean = false,
     val error: String? = null,
@@ -74,7 +91,11 @@ data class HomeUiState(
     val hideRussianContent: Boolean = false,
     val discoverTileSize: FilmTileSize = FilmTileSize.MEDIUM,
     val libraryTileSize: FilmTileSize = FilmTileSize.MEDIUM,
-    val showFpsCounter: Boolean = false
+    val showFpsCounter: Boolean = false,
+    val filterState: SearchFilterState = SearchFilterState(),
+    val availableGenres: List<FilterItem> = emptyList(),
+    val availableCountries: List<FilterItem> = emptyList(),
+    val showFilterSheet: Boolean = false
 )
 
 data class DetailsUiState(
@@ -102,6 +123,28 @@ class FilmsViewModel(
 
     init {
         loadDiscoverFirstPage(uiState.discoverCategory)
+        loadFilters()
+    }
+
+    private fun loadFilters() {
+        viewModelScope.launch {
+            runCatching { repository.filters() }
+                .onSuccess { res ->
+                    uiState = uiState.copy(
+                        availableGenres = res.genres.filter { !it.genre.isNullOrBlank() },
+                        availableCountries = res.countries.filter { !it.country.isNullOrBlank() }
+                    )
+                }
+        }
+    }
+
+    fun updateFilters(newFilters: SearchFilterState) {
+        uiState = uiState.copy(filterState = newFilters)
+        submitSearch()
+    }
+
+    fun setShowFilterSheet(show: Boolean) {
+        uiState = uiState.copy(showFilterSheet = show)
     }
 
     fun onQueryChange(query: String) {
@@ -110,7 +153,7 @@ class FilmsViewModel(
 
     fun submitSearch() {
         val query = uiState.query.trim()
-        if (query.isBlank()) {
+        if (query.isBlank() && !uiState.filterState.isActive) {
             loadDiscoverFirstPage(uiState.discoverCategory)
             return
         }
@@ -359,23 +402,66 @@ class FilmsViewModel(
                 currentPage = 1,
                 hasMore = true
             )
-            runCatching { repository.search(query = query, page = 1) }
-                .onSuccess { items ->
-                    uiState = uiState.copy(
-                        loading = false,
-                        items = items,
-                        isSearchResult = true,
-                        currentPage = 1,
-                        hasMore = items.isNotEmpty()
-                    )
+            val filters = uiState.filterState
+            val cleanQuery = query.trim()
+            runCatching {
+                repository.search(
+                    query = cleanQuery.ifEmpty { null },
+                    countryId = filters.selectedCountryId,
+                    genreId = filters.selectedGenreId,
+                    order = filters.selectedOrder,
+                    type = filters.selectedType,
+                    ratingFrom = filters.ratingFrom,
+                    ratingTo = filters.ratingTo,
+                    yearFrom = filters.yearFrom,
+                    yearTo = filters.yearTo,
+                    page = 1
+                )
+            }.onSuccess { items ->
+                // Typo tolerance fallback: if items is empty and query is not blank, try keyboard layout fix!
+                if (items.isEmpty() && cleanQuery.isNotBlank()) {
+                    val fixedQuery = SearchQueryUtils.fixKeyboardLayout(cleanQuery)
+                    if (fixedQuery != cleanQuery) {
+                        val fallbackItems = runCatching {
+                            repository.search(
+                                query = fixedQuery,
+                                countryId = filters.selectedCountryId,
+                                genreId = filters.selectedGenreId,
+                                order = filters.selectedOrder,
+                                type = filters.selectedType,
+                                ratingFrom = filters.ratingFrom,
+                                ratingTo = filters.ratingTo,
+                                yearFrom = filters.yearFrom,
+                                yearTo = filters.yearTo,
+                                page = 1
+                            )
+                        }.getOrDefault(emptyList())
+                        if (fallbackItems.isNotEmpty()) {
+                            uiState = uiState.copy(
+                                loading = false,
+                                items = fallbackItems,
+                                isSearchResult = true,
+                                currentPage = 1,
+                                hasMore = fallbackItems.isNotEmpty()
+                            )
+                            return@launch
+                        }
+                    }
                 }
-                .onFailure { ex ->
-                    uiState = uiState.copy(
-                        loading = false,
-                        error = ex.toUiMessage(),
-                        isSearchResult = true
-                    )
-                }
+                uiState = uiState.copy(
+                    loading = false,
+                    items = items,
+                    isSearchResult = true,
+                    currentPage = 1,
+                    hasMore = items.isNotEmpty()
+                )
+            }.onFailure { ex ->
+                uiState = uiState.copy(
+                    loading = false,
+                    error = ex.toUiMessage(),
+                    isSearchResult = true
+                )
+            }
         }
     }
 
@@ -383,22 +469,35 @@ class FilmsViewModel(
         viewModelScope.launch {
             val nextPage = uiState.currentPage + 1
             uiState = uiState.copy(loadingMore = true, error = null)
-            runCatching { repository.search(query = query, page = nextPage) }
-                .onSuccess { nextItems ->
-                    val merged = (uiState.items + nextItems).distinctBy { it.kinopoiskId }
-                    uiState = uiState.copy(
-                        loadingMore = false,
-                        items = merged,
-                        currentPage = if (nextItems.isEmpty()) uiState.currentPage else nextPage,
-                        hasMore = nextItems.isNotEmpty()
-                    )
-                }
-                .onFailure { ex ->
-                    uiState = uiState.copy(
-                        loadingMore = false,
-                        error = ex.toUiMessage()
-                    )
-                }
+            val filters = uiState.filterState
+            val cleanQuery = query.trim()
+            runCatching {
+                repository.search(
+                    query = cleanQuery.ifEmpty { null },
+                    countryId = filters.selectedCountryId,
+                    genreId = filters.selectedGenreId,
+                    order = filters.selectedOrder,
+                    type = filters.selectedType,
+                    ratingFrom = filters.ratingFrom,
+                    ratingTo = filters.ratingTo,
+                    yearFrom = filters.yearFrom,
+                    yearTo = filters.yearTo,
+                    page = nextPage
+                )
+            }.onSuccess { nextItems ->
+                val merged = (uiState.items + nextItems).distinctBy { it.kinopoiskId }
+                uiState = uiState.copy(
+                    loadingMore = false,
+                    items = merged,
+                    currentPage = if (nextItems.isEmpty()) uiState.currentPage else nextPage,
+                    hasMore = nextItems.isNotEmpty()
+                )
+            }.onFailure { ex ->
+                uiState = uiState.copy(
+                    loadingMore = false,
+                    error = ex.toUiMessage()
+                )
+            }
         }
     }
 
