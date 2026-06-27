@@ -1,4 +1,4 @@
-﻿package hd.kinoshka.app.ui.screens
+package hd.kinoshka.app.ui.screens
 
 import android.app.Activity
 import android.content.ClipData
@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -47,6 +48,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -54,6 +57,21 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.CardDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -207,43 +225,59 @@ fun DetailsScreen(
 
             state.item != null -> {
                 val item = state.item
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    item {
-                        HeroHeader(
-                            item = item,
-                            onPosterClick = {
-                                previewPosterUrl = item.posterUrl ?: item.posterUrlPreview
-                            }
-                        )
-                    }
+                val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                if (isAnime) {
+                    AnimeDetailsLayout(
+                        state = state,
+                        isInteractive = isInteractive,
+                        onWatch = { filmDetails ->
+                            isInteractive = false
+                            onWatch(filmDetails)
+                        },
+                        onOpenUrl = onOpenUrl,
+                        onOpenEditor = { showProfileEditor = true },
+                        onOpenFilm = { filmId ->
+                            isInteractive = false
+                            onOpenFilm(filmId)
+                        },
+                        onPreviewImage = { index ->
+                            imageViewerStartIndex = index
+                        },
+                        onPosterClick = {
+                            previewPosterUrl = item.posterUrl ?: item.posterUrlPreview
+                        },
+                        onBack = onBack
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        item {
+                            HeroHeader(
+                                item = item,
+                                onPosterClick = {
+                                    previewPosterUrl = item.posterUrl ?: item.posterUrlPreview
+                                }
+                            )
+                        }
                     item {
                         Box(modifier = Modifier.padding(horizontal = 12.dp)) {
                             ActionPanel(
                                 enabled = isInteractive,
+                                profile = state.userProfile,
                                 onWatch = {
                                     isInteractive = false
                                     onWatch(item)
                                     onOpenUrl(item.toWatchUrl())
                                 },
+                                onOpenEditor = { showProfileEditor = true },
                                 showDisableAdsButton = !adGuardDnsActive,
                                 onDisableAds = {
                                     openPrivateDnsWithAdGuard(context)
                                     adGuardDnsActive = isAdGuardDnsActive(context)
                                 }
-                            )
-                        }
-                    }
-                    item {
-                        Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                            UserProfileSummaryCard(
-                                item = item,
-                                profile = state.userProfile,
-                                enabled = isInteractive,
-                                onOpenEditor = { showProfileEditor = true }
                             )
                         }
                     }
@@ -271,21 +305,10 @@ fun DetailsScreen(
                     }
                     if (state.relations.isNotEmpty()) {
                         item {
+                            val relTitle = if (item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) "Связаное аниме и хронология" else "Связанные фильмы"
                             HorizontalFilmsCard(
-                                title = "Связанные фильмы",
+                                title = relTitle,
                                 items = state.relations,
-                                onOpenFilm = { id ->
-                                    isInteractive = false
-                                    onOpenFilm(id)
-                                }
-                            )
-                        }
-                    }
-                    if (state.similars.isNotEmpty()) {
-                        item {
-                            HorizontalFilmsCard(
-                                title = "Похожие фильмы",
-                                items = state.similars,
                                 onOpenFilm = { id ->
                                     isInteractive = false
                                     onOpenFilm(id)
@@ -296,6 +319,7 @@ fun DetailsScreen(
                 }
             }
         }
+    }
 
         previewPosterUrl?.let { imageUrl ->
             PosterPreviewDialog(
@@ -461,15 +485,37 @@ private fun HeroHeader(
                         maxLines = 2
                     )
 
-                    Text(
-                        text = listOfNotNull(
-                            item.ratingKinopoisk?.let { "KP ${formatRating(it)}" },
-                            item.ratingImdb?.let { "IMDb ${formatRating(it)}" }
-                        ).joinToString(" • "),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1
-                    )
+                    val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                    if (isAnime) {
+                        item.ratingKinopoisk?.let { r ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Star,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = formatRating(r),
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = listOfNotNull(
+                                item.ratingKinopoisk?.let { "KP ${formatRating(it)}" },
+                                item.ratingImdb?.let { "IMDb ${formatRating(it)}" }
+                            ).joinToString(" • "),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1
+                        )
+                    }
                 }
             }
         }
@@ -517,33 +563,89 @@ private fun PosterPreviewDialog(
 @Composable
 private fun ActionPanel(
     enabled: Boolean,
+    profile: UserFilmProfile?,
     onWatch: () -> Unit,
+    onOpenEditor: () -> Unit,
     showDisableAdsButton: Boolean,
     onDisableAds: () -> Unit
 ) {
-    Row(
+    val status = profile?.status
+    val statusText = when (status) {
+        UserFilmStatus.COMPLETED -> "Просмотрено"
+        UserFilmStatus.WATCHING -> "Смотрю"
+        UserFilmStatus.PLANNED -> "В планах"
+        UserFilmStatus.REWATCHING -> "Пересматриваю"
+        UserFilmStatus.ON_HOLD -> "Отложено"
+        UserFilmStatus.DROPPED -> "Брошено"
+        null -> "Добавить в список"
+    }
+    val statusIcon = when (status) {
+        UserFilmStatus.COMPLETED -> Icons.Default.Check
+        UserFilmStatus.WATCHING -> Icons.Default.PlayArrow
+        UserFilmStatus.PLANNED -> Icons.Default.Star
+        UserFilmStatus.REWATCHING -> Icons.Default.Refresh
+        UserFilmStatus.ON_HOLD -> Icons.Default.KeyboardArrowDown
+        UserFilmStatus.DROPPED -> Icons.Default.Close
+        null -> Icons.Default.Add
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .animateContentSize(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Button(
-            onClick = onWatch,
-            enabled = enabled,
-            modifier = Modifier
-                .weight(1f)
-                .height(52.dp),
-            shape = RoundedCornerShape(16.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Смотреть", style = MaterialTheme.typography.titleSmall)
+            Button(
+                onClick = onOpenEditor,
+                enabled = enabled,
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (status != null) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = if (status != null) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(52.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(imageVector = statusIcon, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            FilledIconButton(
+                onClick = onWatch,
+                enabled = enabled,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.size(52.dp)
+            ) {
+                Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Смотреть", modifier = Modifier.size(26.dp))
+            }
         }
+
         if (showDisableAdsButton) {
             OutlinedButton(
                 onClick = onDisableAds,
                 enabled = enabled,
                 modifier = Modifier
-                    .weight(1f)
-                    .height(52.dp),
+                    .fillMaxWidth()
+                    .height(48.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Text("Отключить рекламу", style = MaterialTheme.typography.bodyMedium)
@@ -634,22 +736,14 @@ private fun UserProfileEditorSheet(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f)
                 )
-                Surface(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clickable {
-                            status = null
-                        },
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.errorContainer
+                IconButton(
+                    onClick = { status = null }
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Filled.Delete,
-                            contentDescription = "Очистить статус",
-                            tint = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = "Очистить статус",
+                        tint = MaterialTheme.colorScheme.error
+                    )
                 }
             }
 
@@ -663,7 +757,26 @@ private fun UserProfileEditorSheet(
                 }
             }
 
-            if (item.type == "TV_SERIES") {
+            val isAnimeItem = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+            if (isAnimeItem) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    StepperField(
+                        label = "Серии",
+                        value = episodesCount,
+                        onValueChange = { episodesCount = it.coerceAtLeast(0) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    StepperField(
+                        label = "Повторения",
+                        value = seasonsCount,
+                        onValueChange = { seasonsCount = it.coerceAtLeast(0) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else if (item.type == "TV_SERIES") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -695,13 +808,20 @@ private fun UserProfileEditorSheet(
                 steps = 8
             )
 
-            OutlinedTextField(
+            TextField(
                 value = noteInput,
                 onValueChange = { noteInput = it },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("Заметка") },
                 minLines = 1,
-                maxLines = 2
+                maxLines = 2,
+                shape = RoundedCornerShape(14.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent
+                )
             )
 
             Row(
@@ -853,14 +973,21 @@ private fun ExpandableDescriptionInfoCard(item: FilmDetails) {
         FactEntry("Тип", item.type.toLocalizedType()),
         FactEntry("Возраст", item.ratingAgeLimits?.replace("age", "")?.let { "$it+" })
     )
-    val ratingItems = listOf(
-        FactEntry("Кинопоиск", item.ratingKinopoisk?.let { "${formatRating(it)} (${item.ratingKinopoiskVoteCount ?: 0})" }),
-        FactEntry("IMDb", item.ratingImdb?.let { "${formatRating(it)} (${item.ratingImdbVoteCount ?: 0})" }),
-        FactEntry("Критики", item.ratingFilmCritics?.let { "${formatRating(it)} (${item.ratingFilmCriticsVoteCount ?: 0})" }),
-        FactEntry("Ожидание", item.ratingAwait?.let { "${formatRating(it)} (${item.ratingAwaitCount ?: 0})" }),
-        FactEntry("РФ критики", item.ratingRfCritics?.let { "${formatRating(it)} (${item.ratingRfCriticsVoteCount ?: 0})" }),
-        FactEntry("Позитив", item.ratingGoodReview?.let { "${formatRating(it)}% (${item.ratingGoodReviewVoteCount ?: 0})" })
-    )
+    val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+    val ratingItems = if (isAnime) {
+        listOfNotNull(
+            FactEntry("Оценка", item.ratingKinopoisk?.let { "★ ${formatRating(it)}" })
+        )
+    } else {
+        listOf(
+            FactEntry("Кинопоиск", item.ratingKinopoisk?.let { "${formatRating(it)} (${item.ratingKinopoiskVoteCount ?: 0})" }),
+            FactEntry("IMDb", item.ratingImdb?.let { "${formatRating(it)} (${item.ratingImdbVoteCount ?: 0})" }),
+            FactEntry("Критики", item.ratingFilmCritics?.let { "${formatRating(it)} (${item.ratingFilmCriticsVoteCount ?: 0})" }),
+            FactEntry("Ожидание", item.ratingAwait?.let { "${formatRating(it)} (${item.ratingAwaitCount ?: 0})" }),
+            FactEntry("РФ критики", item.ratingRfCritics?.let { "${formatRating(it)} (${item.ratingRfCriticsVoteCount ?: 0})" }),
+            FactEntry("Позитив", item.ratingGoodReview?.let { "${formatRating(it)}% (${item.ratingGoodReviewVoteCount ?: 0})" })
+        )
+    }
 
     ElevatedCard(
         modifier = Modifier
@@ -1093,6 +1220,7 @@ private fun SeasonsCard(
 private fun HorizontalFilmsCard(
     title: String,
     items: List<FilmLinkItem>,
+    itemWidth: Dp = 132.dp,
     onOpenFilm: (Int) -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -1119,7 +1247,7 @@ private fun HorizontalFilmsCard(
             ) { linked ->
                 ElevatedCard(
                     modifier = Modifier
-                        .width(132.dp)
+                        .width(itemWidth)
                         .clickable { onOpenFilm(linked.id) },
                     shape = RoundedCornerShape(14.dp)
                 ) {
@@ -1181,7 +1309,7 @@ private fun ImagesCard(
                 val previewIndex = images.indexOf(image).takeIf { it >= 0 } ?: 0
                 ElevatedCard(
                     modifier = Modifier
-                        .width(164.dp)
+                        .width(220.dp)
                         .clickable {
                             onPreview(previewIndex)
                         },
@@ -1362,6 +1490,10 @@ private fun UserFilmStatus.toUiLabel(): String {
 }
 
 private fun FilmDetails.toWatchUrl(): String {
+    if (kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
+        val shikimoriId = kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+        return "https://kodik.info/find-player?shikimori_id=$shikimoriId"
+    }
     val web = webUrl.orEmpty().trim()
     if (web.isNotBlank()) {
         return web
@@ -1438,5 +1570,748 @@ private fun isAdGuardDnsActive(context: Context): Boolean {
             ?.lowercase(Locale.US)
         dnsServerName == targetHost
     }.getOrDefault(false)
+}
+
+@Composable
+private fun AnimeDetailsLayout(
+    state: DetailsUiState,
+    isInteractive: Boolean,
+    onWatch: (FilmDetails) -> Unit,
+    onOpenUrl: (String) -> Unit,
+    onOpenEditor: () -> Unit,
+    onOpenFilm: (Int) -> Unit,
+    onPreviewImage: (Int) -> Unit,
+    onPosterClick: () -> Unit,
+    onBack: () -> Unit
+) {
+    val item = state.item ?: return
+    val anime = state.animeDetails
+    val context = LocalContext.current
+    var showCharactersSheet by remember { mutableStateOf(false) }
+    var showChronologySheet by remember { mutableStateOf(false) }
+
+    val kindStr = when (anime?.kind?.lowercase()) {
+        "tv" -> "ТВ"
+        "movie" -> "Фильм"
+        "ova" -> "OVA"
+        "ona" -> "ONA"
+        "special" -> "Спешл"
+        else -> "Аниме"
+    }
+    val statusStr = when (anime?.status?.lowercase()) {
+        "released" -> "Вышло"
+        "ongoing" -> "Онгоинг"
+        "anons" -> "Анонс"
+        else -> anime?.status.orEmpty()
+    }
+    val seasonStr = formatAnimeSeason(anime?.season, anime?.airedOn ?: item.year?.toString())
+    val epStr = if (anime?.status == "ongoing" && anime.episodesAired != null && anime.episodesAired > 0) {
+        "${anime.episodesAired} из ${if (anime.episodes != null && anime.episodes > 0) anime.episodes else "?"} эп."
+    } else if (anime?.episodes != null && anime.episodes > 0) {
+        "${anime.episodes} эп."
+    } else "—"
+    val ageRatingStr = anime?.rating?.uppercase()?.replace("R_17", "R-17")?.replace("PG_13", "PG-13")?.replace("R_PLUS", "R+") ?: "—"
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // Hero Cover (520dp, clickable, with transparent top bar buttons)
+        item {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(520.dp)
+                    .clickable { onPosterClick() }
+            ) {
+                AsyncImage(
+                    model = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview,
+                    contentDescription = item.nameRu,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.background.copy(alpha = 0.5f),
+                                    Color.Transparent,
+                                    MaterialTheme.colorScheme.background.copy(alpha = 0.82f),
+                                    MaterialTheme.colorScheme.background
+                                )
+                            )
+                        )
+                )
+
+                // Top Buttons Row (Back & Share - No Circle Background)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Назад",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, item.webUrl ?: "https://shikimori.io/animes/${item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET}")
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Поделиться"))
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Поделиться",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    item.ratingKinopoisk?.let { r ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "%.1f".format(Locale.US, r),
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                    Text(
+                        text = item.nameRu ?: item.nameOriginal ?: "Без названия",
+                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("Тип", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("$kindStr · $statusStr", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium))
+                        }
+                        Column {
+                            Text("Сезон", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(seasonStr, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium))
+                        }
+                        Column {
+                            Text("Эпизоды", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(epStr, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium))
+                        }
+                        Column {
+                            Text("Рейтинг", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(ageRatingStr, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium))
+                        }
+                    }
+                }
+            }
+        }
+
+        // Action Buttons Row (Unified ActionPanel)
+        item {
+            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                ActionPanel(
+                    enabled = isInteractive,
+                    profile = state.userProfile,
+                    onWatch = {
+                        onWatch(item)
+                        onOpenUrl(item.toWatchUrl())
+                    },
+                    onOpenEditor = onOpenEditor,
+                    showDisableAdsButton = false,
+                    onDisableAds = {}
+                )
+            }
+        }
+
+        // Standalone Expandable Description with padding
+        if (!item.description.isNullOrBlank()) {
+            item {
+                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    AnimeExpandableDescription(description = item.description)
+                }
+            }
+        }
+
+        // Genres horizontally separated buttons
+        if (item.genres.isNotEmpty()) {
+            item {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(item.genres) { g ->
+                        g.genre?.let { genreName ->
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = genreName.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Characters Section
+        if (state.animeCharacters.isNotEmpty()) {
+            item {
+                AnimeCharactersCard(
+                    roles = state.animeCharacters,
+                    onOpenFullCharacters = { showCharactersSheet = true }
+                )
+            }
+        }
+
+        // Separate Related Section (compact width)
+        if (state.relations.isNotEmpty()) {
+            item {
+                HorizontalFilmsCard(
+                    title = "Связанное (${state.relations.size})",
+                    items = state.relations,
+                    itemWidth = 104.dp,
+                    onOpenFilm = onOpenFilm
+                )
+            }
+        }
+
+        // Separate Chronology Section
+        if (state.relations.isNotEmpty()) {
+            item {
+                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    AnimeChronologyCard(
+                        relations = state.relations,
+                        onOpenChronology = { showChronologySheet = true }
+                    )
+                }
+            }
+        }
+
+        // Screenshots / Frames Section
+        if (state.images.isNotEmpty()) {
+            item {
+                ImagesCard(
+                    images = state.images,
+                    onPreview = onPreviewImage
+                )
+            }
+        }
+
+        // Details Section
+        item {
+            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                AnimeFullDetailsCard(anime = anime, item = item)
+            }
+        }
+    }
+
+    if (showCharactersSheet) {
+        AnimeCharactersSheet(
+            roles = state.animeCharacters,
+            onDismiss = { showCharactersSheet = false }
+        )
+    }
+
+    if (showChronologySheet) {
+        AnimeChronologySheet(
+            currentItem = item,
+            relations = state.relations,
+            animeDetails = state.animeDetails,
+            onDismiss = { showChronologySheet = false },
+            onOpenFilm = onOpenFilm
+        )
+    }
+}
+
+@Composable
+private fun AnimeExpandableDescription(description: String) {
+    var expanded by remember { mutableStateOf(false) }
+    val bgColor = MaterialTheme.colorScheme.background
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize()
+            .clickable { expanded = !expanded }
+    ) {
+        Text(
+            text = description,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = if (expanded) Int.MAX_VALUE else 4,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (!expanded) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                bgColor.copy(alpha = 0.7f),
+                                bgColor
+                            )
+                        )
+                    )
+            )
+        }
+    }
+}
+
+@Composable
+private fun AnimeCharactersCard(
+    roles: List<hd.kinoshka.app.data.model.ShikimoriRole>,
+    onOpenFullCharacters: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .clickable { onOpenFullCharacters() },
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Персонажи",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+            )
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = "Все персонажи",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            items(roles.take(15)) { role ->
+                val char = role.character ?: return@items
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .width(76.dp)
+                        .clickable { onOpenFullCharacters() }
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(CircleShape),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh
+                    ) {
+                        AsyncImage(
+                            model = char.image?.getFullPreviewUrl(),
+                            contentDescription = char.russian ?: char.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = char.russian?.takeIf { it.isNotBlank() } ?: char.name ?: "",
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AnimeCharactersSheet(
+    roles: List<hd.kinoshka.app.data.model.ShikimoriRole>,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss
+    ) {
+        KeepBottomSheetNavigationBarFromActivity()
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Персонажи (${roles.size})",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+            )
+            LazyColumn(
+                contentPadding = PaddingValues(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxHeight(0.75f)
+            ) {
+                items(roles) { role ->
+                    val char = role.character ?: return@items
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .size(60.dp)
+                                .clip(CircleShape),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh
+                        ) {
+                            AsyncImage(
+                                model = char.image?.getFullPreviewUrl(),
+                                contentDescription = char.russian ?: char.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = char.russian?.takeIf { it.isNotBlank() } ?: char.name ?: "",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            if (!char.name.isNullOrBlank() && char.russian != null) {
+                                Text(
+                                    text = char.name,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnimeChronologyCard(
+    relations: List<FilmLinkItem>,
+    onOpenChronology: () -> Unit
+) {
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpenChronology() },
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Хронология",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                Text(
+                    text = "Список всех частей по порядку (${relations.size + 1})",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AnimeChronologySheet(
+    currentItem: FilmDetails?,
+    relations: List<FilmLinkItem>,
+    animeDetails: hd.kinoshka.app.data.model.ShikimoriAnimeDetails?,
+    onDismiss: () -> Unit,
+    onOpenFilm: (Int) -> Unit
+) {
+    val fullTimeline = remember(currentItem, relations, animeDetails) {
+        val list = mutableListOf<FilmLinkItem>()
+        currentItem?.let { item ->
+            val kindStr = when (animeDetails?.kind?.lowercase()) {
+                "tv" -> "ТВ"
+                "movie" -> "Фильм"
+                "ova" -> "OVA"
+                "ona" -> "ONA"
+                "special" -> "Спешл"
+                else -> animeDetails?.kind?.uppercase()
+            }
+            list.add(
+                FilmLinkItem(
+                    kinopoiskId = item.kinopoiskId,
+                    nameRu = item.nameRu,
+                    nameEn = item.nameOriginal,
+                    nameOriginal = item.nameOriginal,
+                    posterUrl = item.posterUrl,
+                    posterUrlPreview = item.posterUrlPreview,
+                    relationType = "Текущее",
+                    year = item.year,
+                    type = kindStr
+                )
+            )
+        }
+        list.addAll(relations.filter { it.id > 0 })
+        list.distinctBy { it.id }.sortedBy { it.year ?: it.id }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss
+    ) {
+        KeepBottomSheetNavigationBarFromActivity()
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Хронология просмотра (${fullTimeline.size})",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+            )
+            LazyColumn(
+                contentPadding = PaddingValues(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxHeight(0.75f)
+            ) {
+                itemsIndexed(fullTimeline) { index, item ->
+                    val isCurrent = item.id == currentItem?.kinopoiskId
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onDismiss()
+                                if (!isCurrent) onOpenFilm(item.id)
+                            },
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isCurrent) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "${index + 1}",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.width(24.dp)
+                            )
+                            Surface(
+                                modifier = Modifier
+                                    .width(44.dp)
+                                    .height(64.dp)
+                                    .clip(RoundedCornerShape(8.dp)),
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            ) {
+                                AsyncImage(
+                                    model = item.posterUrlPreview ?: item.posterUrl,
+                                    contentDescription = item.nameRu,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.nameRu ?: item.nameOriginal ?: item.nameEn ?: "Без названия",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val infoParts = listOfNotNull(
+                                    item.year?.let { "$it г." },
+                                    item.type,
+                                    item.relationType?.takeIf { it.isNotBlank() && it != "Текущее" }
+                                ).joinToString(" · ")
+                                if (infoParts.isNotBlank()) {
+                                    Text(
+                                        text = infoParts,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnimeFullDetailsCard(
+    anime: hd.kinoshka.app.data.model.ShikimoriAnimeDetails?,
+    item: FilmDetails
+) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Детали",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+            )
+
+            val studiosStr = anime?.studios?.mapNotNull { it.name }?.joinToString(", ")
+            DetailRow("Студия", studiosStr?.takeIf { it.isNotBlank() } ?: "—")
+
+            DetailRow("Первоисточник", formatAnimeSource(anime?.source))
+            DetailRow("Длительность эпизода", item.filmLength?.let { "$it мин." } ?: "—")
+            val licensorStr = anime?.licenseNameRu ?: anime?.licensors?.joinToString(", ")
+            DetailRow("Лицензировано", licensorStr?.takeIf { it.isNotBlank() } ?: "—")
+            DetailRow("Следующий эпизод", formatNextEpisode(anime?.nextEpisodeAt))
+            DetailRow("Начало показа", formatDateRu(anime?.airedOn))
+            DetailRow("Ромадзи", item.nameOriginal ?: "—")
+            DetailRow("По-русски", item.nameRu ?: "—")
+            DetailRow("По-английски", anime?.english?.joinToString(", ")?.takeIf { it.isNotBlank() } ?: "—")
+            DetailRow("По-японски", anime?.japanese?.joinToString(", ")?.takeIf { it.isNotBlank() } ?: "—")
+            DetailRow("Другие названия", anime?.synonyms?.joinToString(", ")?.takeIf { it.isNotBlank() } ?: "—")
+        }
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1.2f)
+        )
+    }
+}
+
+private fun formatAnimeSeason(season: String?, airedOn: String?): String {
+    if (!season.isNullOrBlank()) {
+        val parts = season.split("_")
+        val quarter = when (parts.getOrNull(0)?.lowercase() ?: parts.getOrNull(1)?.lowercase()) {
+            "spring" -> "Весна"
+            "summer" -> "Лето"
+            "fall", "autumn" -> "Осень"
+            "winter" -> "Зима"
+            else -> null
+        }
+        val year = parts.find { it.toIntOrNull() != null } ?: airedOn?.take(4)
+        if (quarter != null && year != null) return "$quarter $year"
+    }
+    return airedOn?.take(4) ?: "—"
+}
+
+private fun formatAnimeSource(source: String?): String {
+    return when (source?.lowercase()) {
+        "light_novel" -> "Ранобэ"
+        "manga" -> "Манга"
+        "original" -> "Оригинал"
+        "game" -> "Игра"
+        "visual_novel" -> "Визуальная новелла"
+        "web_manga" -> "Веб-манга"
+        "novel" -> "Новелла"
+        else -> source ?: "—"
+    }
+}
+
+private fun formatRussianDate(dateStr: String?): String {
+    if (dateStr.isNullOrBlank()) return "—"
+    val clean = dateStr.take(10)
+    val parts = clean.split("-")
+    if (parts.size < 3) return dateStr
+    val year = parts[0].toIntOrNull() ?: return dateStr
+    val monthInt = parts[1].toIntOrNull() ?: return dateStr
+    val dayInt = parts[2].toIntOrNull() ?: return dateStr
+
+    val monthRu = when (monthInt) {
+        1 -> "января"
+        2 -> "февраля"
+        3 -> "марта"
+        4 -> "апреля"
+        5 -> "мая"
+        6 -> "июня"
+        7 -> "июля"
+        8 -> "августа"
+        9 -> "сентября"
+        10 -> "октября"
+        11 -> "ноября"
+        12 -> "декабря"
+        else -> return dateStr
+    }
+    return "$dayInt $monthRu $year г."
+}
+
+private fun formatNextEpisode(isoDate: String?): String {
+    return formatRussianDate(isoDate)
+}
+
+private fun formatDateRu(dateStr: String?): String {
+    return formatRussianDate(dateStr)
 }
 

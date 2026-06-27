@@ -13,6 +13,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.SslErrorHandler
+import android.net.http.SslError
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -39,6 +41,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -71,20 +75,131 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
-// Data model for DDBB API player
+// Data model for player
 data class DdbbPlayer(
     val id: String,
     val name: String,
     val iframeUrl: String
 )
 
+// Standard HTTP client (for DDBB API - no SSL issues)
 private val httpClient by lazy {
     OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
+}
+
+// SSL-bypass HTTP client for Kodik and other Russian CDNs with untrusted certificates
+private val sslBypassClient by lazy {
+    try {
+        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        })
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(null, trustAllCerts, SecureRandom())
+        OkHttpClient.Builder()
+            .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
+            .hostnameVerifier { _, _ -> true }
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
+    } catch (e: Exception) {
+        httpClient
+    }
+}
+
+// Known Kodik API tokens (decoded from AnimeParsers tokens.json using reversed-base64 scheme)
+private val KODIK_TOKENS = listOf(
+    "01c44b54fe97004956a768d08f430919", // stable
+    "09d6c71182237a2541dfd1f84c21719b"  // fallback (unstable)
+)
+
+// Fetch anime episode data from Kodik API natively (SSL-bypassed)
+private suspend fun fetchKodikEmbedUrl(shikimoriId: Int): String? = withContext(Dispatchers.IO) {
+    for (token in KODIK_TOKENS) {
+        try {
+            // Query Kodik API
+            val apiUrl = "https://kodikapi.com/search" +
+                    "?token=$token" +
+                    "&shikimori_id=$shikimoriId" +
+                    "&with_episodes=true" +
+                    "&limit=1"
+            val request = Request.Builder()
+                .url(apiUrl)
+                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .addHeader("Referer", "https://shikimori.one/")
+                .build()
+
+            val response = sslBypassClient.newCall(request).execute()
+            if (!response.isSuccessful) continue
+            val body = response.body?.string() ?: continue
+
+            val json = JSONObject(body)
+            val results = json.optJSONArray("results") ?: continue
+            if (results.length() == 0) continue
+
+            val first = results.optJSONObject(0) ?: continue
+            var link = first.optString("link", "") ?: continue
+            if (link.isBlank()) continue
+
+            // Normalize URL: //aniqit.com/... → https://aniqit.com/...
+            if (link.startsWith("//")) link = "https:$link"
+            if (!link.startsWith("http")) link = "https://$link"
+
+            return@withContext link
+        } catch (e: Exception) {
+            continue
+        }
+    }
+
+    // Fallback: try scraping kodik.cc find-player page directly
+    fetchKodikEmbedFromPage(shikimoriId)
+}
+
+// Fallback: scrape the actual iframe src from kodik find-player page
+private suspend fun fetchKodikEmbedFromPage(shikimoriId: Int): String? = withContext(Dispatchers.IO) {
+    val mirrors = listOf(
+        "https://kodik.cc/find-player?shikimori_id=$shikimoriId",
+        "https://aniqit.com/find-player?shikimori_id=$shikimoriId",
+        "https://kodik.info/find-player?shikimori_id=$shikimoriId"
+    )
+    for (url in mirrors) {
+        try {
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .addHeader("Referer", "https://shikimori.one/animes/$shikimoriId")
+                .build()
+            val response = sslBypassClient.newCall(request).execute()
+            if (!response.isSuccessful) continue
+            val html = response.body?.string() ?: continue
+
+            // Parse iframe src
+            val iframeRegex = Regex("""<iframe[^>]+src=["']((?:https?:)?//[^"']+)["']""", RegexOption.IGNORE_CASE)
+            val match = iframeRegex.find(html)
+            if (match != null) {
+                var src = match.groupValues[1]
+                if (src.startsWith("//")) src = "https:$src"
+                return@withContext src
+            }
+            // The page itself might be the player
+            return@withContext url
+        } catch (e: Exception) {
+            continue
+        }
+    }
+    null
 }
 
 private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withContext(Dispatchers.IO) {
@@ -105,7 +220,6 @@ private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withC
                 val obj = arr.optJSONObject(i) ?: continue
                 val type = obj.optString("type", "Сервер ${i + 1}")
                 val defaultUrl = obj.optString("iframeUrl", "")
-                // Pick first working translation URL if available
                 val transArr = obj.optJSONArray("translations")
                 val resolvedUrl = if (transArr != null && transArr.length() > 0) {
                     transArr.optJSONObject(0)?.optString("iframeUrl", defaultUrl) ?: defaultUrl
@@ -145,6 +259,7 @@ fun InAppWebScreen(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var inVideoFullscreen by remember { mutableStateOf(false) }
     var savedWebViewState by rememberSaveable(url) { mutableStateOf<Bundle?>(null) }
+    val shikimoriId = remember(url) { extractShikimoriId(url) }
     val kinopoiskId = remember(url) { extractKinopoiskId(url) }
 
     // Controls visibility - touch anywhere to show/reset, auto-hides after 4s
@@ -152,14 +267,32 @@ fun InAppWebScreen(
     var touchResetTrigger by remember { mutableStateOf(0L) }
     var showServerSheet by remember { mutableStateOf(false) }
 
-    // DDBB server list state
+    // Server list state
     var ddbbPlayers by remember { mutableStateOf<List<DdbbPlayer>>(emptyList()) }
     var isLoadingPlayers by remember { mutableStateOf(false) }
     var selectedPlayer by remember { mutableStateOf<DdbbPlayer?>(null) }
 
-    // Fetch DDBB players from API on launch
-    LaunchedEffect(kinopoiskId) {
-        if (kinopoiskId != null) {
+    // Fetch players on launch
+    LaunchedEffect(url) {
+        if (shikimoriId != null) {
+            isLoadingPlayers = true
+            // Try fetching real Kodik embed URL natively (bypasses SSL issues)
+            val kodikUrl = fetchKodikEmbedUrl(shikimoriId)
+            val animePlayers = buildList {
+                if (kodikUrl != null) {
+                    add(DdbbPlayer("kodik_native", "Kodik (рекомендуется)", kodikUrl))
+                }
+                // Direct player URLs as fallback — loaded in main WebView frame, SSL bypass works
+                add(DdbbPlayer("aniqit", "Aniqit / Kodik (прямой)", "https://aniqit.com/find-player?shikimori_id=$shikimoriId"))
+                add(DdbbPlayer("kodik_cc", "Kodik.cc (прямой)", "https://kodik.cc/find-player?shikimori_id=$shikimoriId"))
+                add(DdbbPlayer("kodik_info", "Kodik.info (прямой)", "https://kodik.info/find-player?shikimori_id=$shikimoriId"))
+            }
+            ddbbPlayers = animePlayers
+            if (selectedPlayer == null) {
+                selectedPlayer = animePlayers.first()
+            }
+            isLoadingPlayers = false
+        } else if (kinopoiskId != null) {
             isLoadingPlayers = true
             val players = fetchDdbbPlayers(kinopoiskId)
             ddbbPlayers = players
@@ -255,8 +388,10 @@ fun InAppWebScreen(
 
                 webView.setBackgroundColor(Color.BLACK)
                 webView.keepScreenOn = true
+                webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
                 webView.settings.javaScriptEnabled = true
                 webView.settings.domStorageEnabled = true
+                webView.settings.databaseEnabled = true
                 webView.settings.javaScriptCanOpenWindowsAutomatically = true
                 webView.settings.setSupportMultipleWindows(true)
                 webView.settings.mediaPlaybackRequiresUserGesture = false
@@ -310,6 +445,11 @@ fun InAppWebScreen(
                 webView.webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
 
+                    // Bypass all SSL errors — needed for Kodik/Russian CDN certificates
+                    override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                        handler?.proceed()
+                    }
+
                     override fun onPageFinished(view: WebView?, loadedUrl: String?) {
                         super.onPageFinished(view, loadedUrl)
                         view?.evaluateJavascript(HIDE_WEB_TOP_BAR_JS, null)
@@ -320,12 +460,16 @@ fun InAppWebScreen(
                     }
                 }
 
-                // Load initial URL
+                // Load initial URL — always use direct loadUrl (not HTML wrapper)
                 if (savedWebViewState == null) {
-                    val initialUrl = if (kinopoiskId != null) {
-                        "https://ddbb.lol?id=$kinopoiskId&n=0"
-                    } else url
-                    webView.loadUrl(initialUrl)
+                    val sel = selectedPlayer
+                    val target = when {
+                        sel != null -> sel.iframeUrl
+                        shikimoriId != null -> "https://aniqit.com/find-player?shikimori_id=$shikimoriId"
+                        kinopoiskId != null -> "https://ddbb.lol?id=$kinopoiskId&n=0"
+                        else -> url
+                    }
+                    webView.loadUrl(target)
                 } else {
                     webView.restoreState(savedWebViewState!!)
                 }
@@ -337,6 +481,42 @@ fun InAppWebScreen(
                 PlayerPipState.setActiveWebView(webView)
             }
         )
+
+        // Floating top-left back button to exit player
+        AnimatedVisibility(
+            visible = showControls,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(16.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.65f),
+                contentColor = androidx.compose.ui.graphics.Color.White,
+                onClick = {
+                    val webView = webViewRef
+                    if (inVideoFullscreen && webView != null) {
+                        webView.webChromeClient?.onHideCustomView()
+                    } else {
+                        (activity as? androidx.activity.ComponentActivity)?.onBackPressedDispatcher?.onBackPressed() ?: activity?.finish()
+                    }
+                }
+            ) {
+                Box(
+                    modifier = Modifier.size(40.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Назад",
+                        tint = androidx.compose.ui.graphics.Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
 
         // Floating server selector button — auto-hides, tap screen to show again
         AnimatedVisibility(
@@ -376,7 +556,7 @@ fun InAppWebScreen(
                         )
                     }
                     Text(
-                        text = selectedPlayer?.name ?: "Серверы DDBB",
+                        text = selectedPlayer?.name ?: "Серверы",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = androidx.compose.ui.graphics.Color.White,
@@ -386,7 +566,7 @@ fun InAppWebScreen(
             }
         }
 
-        // Native BottomSheet for DDBB Player Selection
+        // Native BottomSheet for Player Selection
         if (showServerSheet) {
             ModalBottomSheet(
                 onDismissRequest = { showServerSheet = false },
@@ -400,7 +580,7 @@ fun InAppWebScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Выберите сервер DDBB",
+                        text = "Выберите источник / плеер",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -424,7 +604,10 @@ fun InAppWebScreen(
                                     onClick = {
                                         selectedPlayer = player
                                         showServerSheet = false
-                                        webViewRef?.loadUrl(player.iframeUrl)
+                                        val wv = webViewRef
+                                        if (wv != null) {
+                                            wv.loadUrl(player.iframeUrl)
+                                        }
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
@@ -472,6 +655,15 @@ private fun extractKinopoiskId(url: String): Int? {
     val type = segments[0]
     val id = segments[1].toIntOrNull() ?: return null
     return if (type == "film" || type == "series") id else null
+}
+
+private fun extractShikimoriId(url: String): Int? {
+    val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+    val param = uri.getQueryParameter("shikimori_id") ?: uri.getQueryParameter("shikimori")
+    if (param != null) return param.toIntOrNull()
+    val segments = uri.pathSegments
+    val last = segments.lastOrNull()?.toIntOrNull()
+    return if (url.contains("shikimori")) last else null
 }
 
 private const val IFRAME_PIP_PATCH_JS = """

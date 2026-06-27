@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.lazy.LazyColumn
@@ -88,6 +89,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -156,6 +158,7 @@ fun HomeScreen(
     onSubmitSearch: () -> Unit,
     onRetry: () -> Unit,
     onTabSelected: (HomeTab) -> Unit,
+    onContentTypeSelected: (ContentType) -> Unit = {},
     onOpenFilm: (FilmItem) -> Unit,
     onOpenHistoryFilm: (Int) -> Unit,
     onDiscoverCategorySelected: (DiscoverCategory) -> Unit,
@@ -360,18 +363,25 @@ fun HomeScreen(
                         }
 
                         MainSection.DISCOVER -> {
-                            DiscoverContent(
-                                state = state,
-                                sourceItems = discoverItems,
-                                metrics = discoverMetrics,
-                                statusByFilmId = statusByFilmId,
-                                progressByFilmId = progressByFilmId,
-                                onRetry = onRetry,
-                                onOpenFilm = onOpenFilm,
-                                onLoadMore = onLoadMore,
-                                onCategorySelected = onDiscoverCategorySelected,
-                                onUpdateFilters = onUpdateFilters
-                            )
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                ContentTypeTabs(
+                                    selectedType = state.contentType,
+                                    onSelect = onContentTypeSelected
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                DiscoverContent(
+                                    state = state,
+                                    sourceItems = discoverItems,
+                                    metrics = discoverMetrics,
+                                    statusByFilmId = statusByFilmId,
+                                    progressByFilmId = progressByFilmId,
+                                    onRetry = onRetry,
+                                    onOpenFilm = onOpenFilm,
+                                    onLoadMore = onLoadMore,
+                                    onCategorySelected = onDiscoverCategorySelected,
+                                    onUpdateFilters = onUpdateFilters
+                                )
+                            }
                         }
 
                         MainSection.MORE -> {
@@ -630,6 +640,56 @@ private fun LibraryPageGrid(
 }
 
 @Composable
+private fun ContentTypeTabs(
+    selectedType: ContentType,
+    onSelect: (ContentType) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        val types = listOf(
+            ContentType.FILMS to "🎬 Фильмы и сериалы",
+            ContentType.ANIME to "⛩️ Аниме"
+        )
+        types.forEach { (type, label) ->
+            val isSelected = selectedType == type
+            val backgroundColor by animateColorAsState(
+                if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                label = "bgColor"
+            )
+            val contentColor by animateColorAsState(
+                if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                label = "contentColor"
+            )
+            Surface(
+                onClick = { onSelect(type) },
+                shape = RoundedCornerShape(14.dp),
+                color = backgroundColor,
+                contentColor = contentColor,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun DiscoverContent(
     state: HomeUiState,
     sourceItems: List<FilmItem>,
@@ -674,8 +734,8 @@ private fun DiscoverContent(
                         )
                     }
                     item {
-                        Spacer(modifier = Modifier.height(4.dp))
                         if (state.loadingMore) {
+                            Spacer(modifier = Modifier.height(4.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.Center
@@ -683,19 +743,13 @@ private fun DiscoverContent(
                                 ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
                             }
                         } else if (state.hasMore) {
+                            Spacer(modifier = Modifier.height(4.dp))
                             OutlinedButton(
                                 onClick = onLoadMore,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("Загрузить еще")
                             }
-                        } else {
-                            Text(
-                                text = "Это конец списка",
-                                modifier = Modifier.fillMaxWidth(),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
                         }
                     }
                 }
@@ -723,8 +777,8 @@ private fun DiscoverContent(
                     )
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    Spacer(modifier = Modifier.height(4.dp))
                     if (state.loadingMore) {
+                        Spacer(modifier = Modifier.height(4.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.Center
@@ -732,19 +786,13 @@ private fun DiscoverContent(
                             ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
                         }
                     } else if (state.hasMore) {
+                        Spacer(modifier = Modifier.height(4.dp))
                         OutlinedButton(
                             onClick = onLoadMore,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("Загрузить еще")
                         }
-                    } else {
-                        Text(
-                            text = "Это конец списка",
-                            modifier = Modifier.fillMaxWidth(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                     }
                 }
             }
@@ -851,10 +899,12 @@ private fun DiscoverGridCard(
     val titleText = remember(film.nameRu, film.nameOriginal) {
         film.nameRu ?: film.nameOriginal ?: "Без названия"
     }
-    val metaText = remember(film.year, film.ratingKinopoisk) {
+    val isAnime = film.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+    val metaText = remember(film.year, film.countries, film.kinopoiskId) {
+        val extra = film.countries.getOrNull(1)?.country
         listOfNotNull(
-            film.year?.toString(),
-            film.ratingKinopoisk?.let { "KP ${"%.1f".format(it)}" }
+            film.year?.toString().takeUnless { isAnime },
+            extra.takeIf { isAnime }
         ).joinToString(" • ")
     }
     Column(
@@ -901,13 +951,21 @@ private fun DiscoverGridCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(
-                text = metaText,
-                style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (metaText.isNotBlank()) {
+                    Text(
+                        text = metaText,
+                        style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                RatingChip(rating = film.ratingKinopoisk, isAnime = isAnime)
+            }
         }
     }
 }
@@ -930,11 +988,10 @@ private fun LibraryGridCard(
     ) {
         item.toWatchProgressUi()
     }
-    val detailsText = remember(item.subtitle, item.ratingText, item.userRating) {
+    val detailsText = remember(item.subtitle, item.ratingText) {
         listOfNotNull(
             item.subtitle,
-            item.ratingText,
-            item.userRating?.let { "Моя: $it/10" }
+            item.ratingText?.replace("KP ", "★ ")
         ).joinToString(" • ")
     }
     Column(
@@ -1121,11 +1178,12 @@ private fun DiscoverVerticalRow(
     val titleText = remember(film.nameRu, film.nameOriginal) {
         film.nameRu ?: film.nameOriginal ?: "Без названия"
     }
-    val metaText = remember(film.year, film.ratingKinopoisk) {
+    val isAnime = film.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+    val metaText = remember(film.year, film.countries, film.kinopoiskId) {
+        val extra = film.countries.getOrNull(1)?.country
         listOfNotNull(
-            film.year?.toString(),
-            "TV",
-            film.ratingKinopoisk?.let { "%.2f★".format(it) }
+            film.year?.toString().takeUnless { isAnime },
+            extra.takeIf { isAnime }
         ).joinToString(" · ")
     }
     Row(
@@ -1162,13 +1220,21 @@ private fun DiscoverVerticalRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(
-                text = metaText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (metaText.isNotBlank()) {
+                    Text(
+                        text = metaText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                RatingChip(rating = film.ratingKinopoisk, isAnime = isAnime)
+            }
             if (watchProgress != null) {
                 Text(
                     text = watchProgress.progressLabel,
@@ -1179,6 +1245,32 @@ private fun DiscoverVerticalRow(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun RatingChip(
+    rating: Double?,
+    isAnime: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val r = rating ?: return
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        modifier = modifier
+    ) {
+        Icon(
+            imageVector = Icons.Default.Star,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(14.dp)
+        )
+        Text(
+            text = "%.1f".format(Locale.US, r),
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onSurface
+        )
     }
 }
 
@@ -1342,16 +1434,16 @@ private fun BottomSectionBar(
         contentAlignment = Alignment.BottomCenter
     ) {
         Surface(
-            modifier = Modifier.widthIn(min = 256.dp, max = 320.dp),
+            modifier = Modifier.widthIn(min = 240.dp, max = 280.dp),
             shape = CircleShape,
             color = containerColor,
-            tonalElevation = 1.dp,
-            shadowElevation = 2.dp
+            tonalElevation = 2.dp,
+            shadowElevation = 4.dp
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {

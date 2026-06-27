@@ -14,6 +14,8 @@ import java.util.concurrent.TimeUnit
 object ApiClient {
     @Volatile
     private var kinopoiskApiInstance: KinopoiskApi? = null
+    @Volatile
+    private var shikimoriApiInstance: ShikimoriApi? = null
     private const val API_CACHE_MAX_AGE_SECONDS = 3L * 24L * 60L * 60L
 
     private val authInterceptor = Interceptor { chain ->
@@ -21,6 +23,32 @@ object ApiClient {
             .addHeader("X-API-KEY", BuildConfig.KP_API_KEY)
             .build()
         chain.proceed(request)
+    }
+
+    private val shikimoriHeaderInterceptor = Interceptor { chain ->
+        val request = chain.request().newBuilder()
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+            .build()
+        chain.proceed(request)
+    }
+
+    private val shikimoriFallbackInterceptor = Interceptor { chain ->
+        val request = chain.request()
+        try {
+            chain.proceed(request)
+        } catch (e: java.io.IOException) {
+            val host = request.url.host
+            val nextHost = when (host) {
+                "shikimori.io" -> "shikimori.one"
+                "shikimori.one" -> "shikimori.me"
+                else -> "shikimori.io"
+            }
+            val newUrl = request.url.newBuilder().host(nextHost).build()
+            val newRequest = request.newBuilder().url(newUrl).build()
+            chain.proceed(newRequest)
+        }
     }
 
     private val rateLimitRetryInterceptor = Interceptor { chain ->
@@ -60,6 +88,15 @@ object ApiClient {
         return synchronized(this) {
             kinopoiskApiInstance ?: buildApi(context.applicationContext).also {
                 kinopoiskApiInstance = it
+            }
+        }
+    }
+
+    fun shikimoriApi(context: Context): ShikimoriApi {
+        shikimoriApiInstance?.let { return it }
+        return synchronized(this) {
+            shikimoriApiInstance ?: buildShikimoriApi(context.applicationContext).also {
+                shikimoriApiInstance = it
             }
         }
     }
@@ -111,5 +148,26 @@ object ApiClient {
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(KinopoiskApi::class.java)
+    }
+
+    private fun buildShikimoriApi(context: Context): ShikimoriApi {
+        val cacheSizeBytes = 50L * 1024L * 1024L
+        val cache = Cache(context.cacheDir.resolve("http_shikimori_cache"), cacheSizeBytes)
+
+        val client: OkHttpClient = OkHttpClient.Builder()
+            .cache(cache)
+            .addInterceptor(shikimoriHeaderInterceptor)
+            .addInterceptor(shikimoriFallbackInterceptor)
+            .addInterceptor(rateLimitRetryInterceptor)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+
+        return Retrofit.Builder()
+            .baseUrl("https://shikimori.io/")
+            .client(client)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(ShikimoriApi::class.java)
     }
 }

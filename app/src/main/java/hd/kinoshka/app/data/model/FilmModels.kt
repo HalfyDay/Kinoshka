@@ -48,7 +48,9 @@ data class FilmLinkItem(
     @SerializedName("nameOriginal") val nameOriginal: String? = null,
     @SerializedName("posterUrl") val posterUrl: String? = null,
     @SerializedName("posterUrlPreview") val posterUrlPreview: String? = null,
-    @SerializedName("relationType") val relationType: String? = null
+    @SerializedName("relationType") val relationType: String? = null,
+    @SerializedName("year") val year: Int? = null,
+    @SerializedName("type") val type: String? = null
 ) {
     val id: Int
         get() = kinopoiskId ?: filmId ?: 0

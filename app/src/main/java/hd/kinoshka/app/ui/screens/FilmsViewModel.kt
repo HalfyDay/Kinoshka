@@ -17,7 +17,9 @@ import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.FilmLinkItem
 import hd.kinoshka.app.data.model.FilterItem
+import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
 import hd.kinoshka.app.data.model.SeasonItem
+import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.utils.SearchQueryUtils
 import kotlinx.coroutines.async
@@ -26,6 +28,11 @@ import retrofit2.HttpException
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
+
+enum class ContentType {
+    FILMS,
+    ANIME
+}
 
 enum class HomeTab {
     CATALOG,
@@ -95,7 +102,8 @@ data class HomeUiState(
     val filterState: SearchFilterState = SearchFilterState(),
     val availableGenres: List<FilterItem> = emptyList(),
     val availableCountries: List<FilterItem> = emptyList(),
-    val showFilterSheet: Boolean = false
+    val showFilterSheet: Boolean = false,
+    val contentType: ContentType = ContentType.FILMS
 )
 
 data class DetailsUiState(
@@ -107,11 +115,14 @@ data class DetailsUiState(
     val relations: List<FilmLinkItem> = emptyList(),
     val images: List<FilmImageItem> = emptyList(),
     val userProfile: UserFilmProfile? = null,
-    val savingProfile: Boolean = false
+    val savingProfile: Boolean = false,
+    val animeDetails: hd.kinoshka.app.data.model.ShikimoriAnimeDetails? = null,
+    val animeCharacters: List<hd.kinoshka.app.data.model.ShikimoriRole> = emptyList()
 )
 
 class FilmsViewModel(
     private val repository: FilmsRepository,
+    private val animeRepository: AnimeRepository,
     private val userStateStore: UserStateStore
 ) : ViewModel() {
 
@@ -163,6 +174,20 @@ class FilmsViewModel(
     fun retryHome() {
         if (uiState.isSearchResult && uiState.query.trim().isNotBlank()) {
             loadSearchFirstPage(uiState.query.trim())
+        } else {
+            loadDiscoverFirstPage(uiState.discoverCategory)
+        }
+    }
+
+    fun onContentTypeSelected(contentType: ContentType) {
+        if (uiState.contentType == contentType) return
+        uiState = uiState.copy(
+            contentType = contentType,
+            isSearchResult = false,
+            query = ""
+        )
+        if (uiState.query.isNotBlank() || uiState.filterState.isActive) {
+            submitSearch()
         } else {
             loadDiscoverFirstPage(uiState.discoverCategory)
         }
@@ -285,40 +310,92 @@ class FilmsViewModel(
         viewModelScope.launch {
             detailsState = DetailsUiState(loading = true)
             runCatching {
-                val details = repository.details(id)
-                val seasonsDeferred = async {
-                    if (details.type == "TV_SERIES") {
-                        runCatching { repository.seasons(id) }.getOrDefault(emptyList())
-                    } else {
-                        emptyList()
+                if (id >= ANIME_ID_OFFSET) {
+                    val shikimoriId = id - ANIME_ID_OFFSET
+                    val animeDetails = animeRepository.details(shikimoriId)
+                    val screenshotsDeferred = async {
+                        runCatching { animeRepository.screenshots(shikimoriId) }.getOrDefault(emptyList())
                     }
+                    val relatedDeferred = async {
+                        runCatching { animeRepository.related(shikimoriId) }.getOrDefault(emptyList())
+                    }
+                    val rolesDeferred = async {
+                        runCatching { animeRepository.roles(shikimoriId) }.getOrDefault(emptyList())
+                    }
+                    val screenshots = screenshotsDeferred.await()
+                    val relatedList = relatedDeferred.await()
+                    val rolesList = rolesDeferred.await()
+
+                    val validCharacters = rolesList
+                        .filter { it.character != null && !it.character.name.isNullOrBlank() }
+                        .distinctBy { it.character?.id }
+
+                    val imageItems = screenshots.map {
+                        FilmImageItem(imageUrl = it.getFullOriginalUrl(), previewUrl = it.getFullPreviewUrl())
+                    }
+                    val relationItems = relatedList.mapNotNull { rel ->
+                        val a = rel.anime ?: return@mapNotNull null
+                        val yearInt = a.airedOn?.take(4)?.toIntOrNull()
+                        val kindStr = when (a.kind?.lowercase()) {
+                            "tv" -> "ТВ"
+                            "movie" -> "Фильм"
+                            "ova" -> "OVA"
+                            "ona" -> "ONA"
+                            "special" -> "Спешл"
+                            else -> a.kind?.uppercase()
+                        }
+                        FilmLinkItem(
+                            filmId = a.id + ANIME_ID_OFFSET,
+                            kinopoiskId = a.id + ANIME_ID_OFFSET,
+                            nameRu = a.russian?.takeIf { it.isNotBlank() } ?: a.name,
+                            nameOriginal = a.name,
+                            posterUrl = a.image?.getFullOriginalUrl(),
+                            posterUrlPreview = a.image?.getFullOriginalUrl() ?: a.image?.getFullPreviewUrl(),
+                            relationType = rel.relationRussian ?: rel.relation,
+                            year = yearInt,
+                            type = kindStr
+                        )
+                    }
+                    DetailsUiState(
+                        item = animeDetails.toFilmDetails(),
+                        seasons = emptyList(),
+                        similars = emptyList(),
+                        relations = relationItems,
+                        images = imageItems,
+                        userProfile = userStateStore.getProfile(id),
+                        animeDetails = animeDetails,
+                        animeCharacters = validCharacters
+                    )
+                } else {
+                    val details = repository.details(id)
+                    val seasonsDeferred = async {
+                        if (details.type == "TV_SERIES") {
+                            runCatching { repository.seasons(id) }.getOrDefault(emptyList())
+                        } else {
+                            emptyList()
+                        }
+                    }
+                    val relationsDeferred = async {
+                        runCatching { repository.relations(id) }.getOrDefault(emptyList())
+                    }
+                    val imagesDeferred = async {
+                        runCatching { repository.images(id = id, page = 1) }.getOrDefault(emptyList())
+                    }
+                    val seasons = seasonsDeferred.await()
+                    val relations = relationsDeferred.await()
+                    val images = imagesDeferred.await()
+                    DetailsUiState(
+                        item = details,
+                        seasons = seasons,
+                        similars = emptyList(),
+                        relations = relations
+                            .filter { it.id > 0 }
+                            .distinctBy { it.id },
+                        images = images
+                            .filter { !it.previewUrl.isNullOrBlank() || !it.imageUrl.isNullOrBlank() },
+                        userProfile = userStateStore.getProfile(id)
+                    )
                 }
-                val similarsDeferred = async {
-                    runCatching { repository.similars(id) }.getOrDefault(emptyList())
-                }
-                val relationsDeferred = async {
-                    runCatching { repository.relations(id) }.getOrDefault(emptyList())
-                }
-                val imagesDeferred = async {
-                    runCatching { repository.images(id = id, page = 1) }.getOrDefault(emptyList())
-                }
-                val seasons = seasonsDeferred.await()
-                val similars = similarsDeferred.await()
-                val relations = relationsDeferred.await()
-                val images = imagesDeferred.await()
-                DetailsUiState(
-                    item = details,
-                    seasons = seasons,
-                    similars = similars
-                        .filter { it.id > 0 }
-                        .distinctBy { it.id },
-                    relations = relations
-                        .filter { it.id > 0 }
-                        .distinctBy { it.id },
-                    images = images
-                        .filter { !it.previewUrl.isNullOrBlank() || !it.imageUrl.isNullOrBlank() },
-                    userProfile = userStateStore.getProfile(id)
-                )
             }
                 .onSuccess { loaded ->
                     detailsState = loaded
@@ -340,10 +417,14 @@ class FilmsViewModel(
                 hasMore = true
             )
             runCatching {
-                repository.popular(
-                    collectionType = category.apiType,
-                    page = 1
-                )
+                if (uiState.contentType == ContentType.ANIME) {
+                    animeRepository.popular(page = 1).map { it.toFilmItem() }
+                } else {
+                    repository.popular(
+                        collectionType = category.apiType,
+                        page = 1
+                    )
+                }
             }
                 .onSuccess { items ->
                     uiState = uiState.copy(
@@ -369,10 +450,14 @@ class FilmsViewModel(
             val nextPage = uiState.currentPage + 1
             uiState = uiState.copy(loadingMore = true, error = null)
             runCatching {
-                repository.popular(
-                    collectionType = category.apiType,
-                    page = nextPage
-                )
+                if (uiState.contentType == ContentType.ANIME) {
+                    animeRepository.popular(page = nextPage).map { it.toFilmItem() }
+                } else {
+                    repository.popular(
+                        collectionType = category.apiType,
+                        page = nextPage
+                    )
+                }
             }
                 .onSuccess { nextItems ->
                     val merged = (uiState.items + nextItems).distinctBy { it.kinopoiskId }
@@ -405,36 +490,43 @@ class FilmsViewModel(
             val filters = uiState.filterState
             val cleanQuery = query.trim()
             runCatching {
-                repository.search(
-                    query = cleanQuery.ifEmpty { null },
-                    countryId = filters.selectedCountryId,
-                    genreId = filters.selectedGenreId,
-                    order = filters.selectedOrder,
-                    type = filters.selectedType,
-                    ratingFrom = filters.ratingFrom,
-                    ratingTo = filters.ratingTo,
-                    yearFrom = filters.yearFrom,
-                    yearTo = filters.yearTo,
-                    page = 1
-                )
+                if (uiState.contentType == ContentType.ANIME) {
+                    animeRepository.search(query = cleanQuery, page = 1).map { it.toFilmItem() }
+                } else {
+                    repository.search(
+                        query = cleanQuery.ifEmpty { null },
+                        countryId = filters.selectedCountryId,
+                        genreId = filters.selectedGenreId,
+                        order = filters.selectedOrder,
+                        type = filters.selectedType,
+                        ratingFrom = filters.ratingFrom,
+                        ratingTo = filters.ratingTo,
+                        yearFrom = filters.yearFrom,
+                        yearTo = filters.yearTo,
+                        page = 1
+                    )
+                }
             }.onSuccess { items ->
-                // Typo tolerance fallback: if items is empty and query is not blank, try keyboard layout fix!
                 if (items.isEmpty() && cleanQuery.isNotBlank()) {
                     val fixedQuery = SearchQueryUtils.fixKeyboardLayout(cleanQuery)
                     if (fixedQuery != cleanQuery) {
                         val fallbackItems = runCatching {
-                            repository.search(
-                                query = fixedQuery,
-                                countryId = filters.selectedCountryId,
-                                genreId = filters.selectedGenreId,
-                                order = filters.selectedOrder,
-                                type = filters.selectedType,
-                                ratingFrom = filters.ratingFrom,
-                                ratingTo = filters.ratingTo,
-                                yearFrom = filters.yearFrom,
-                                yearTo = filters.yearTo,
-                                page = 1
-                            )
+                            if (uiState.contentType == ContentType.ANIME) {
+                                animeRepository.search(query = fixedQuery, page = 1).map { it.toFilmItem() }
+                            } else {
+                                repository.search(
+                                    query = fixedQuery,
+                                    countryId = filters.selectedCountryId,
+                                    genreId = filters.selectedGenreId,
+                                    order = filters.selectedOrder,
+                                    type = filters.selectedType,
+                                    ratingFrom = filters.ratingFrom,
+                                    ratingTo = filters.ratingTo,
+                                    yearFrom = filters.yearFrom,
+                                    yearTo = filters.yearTo,
+                                    page = 1
+                                )
+                            }
                         }.getOrDefault(emptyList())
                         if (fallbackItems.isNotEmpty()) {
                             uiState = uiState.copy(
@@ -472,18 +564,22 @@ class FilmsViewModel(
             val filters = uiState.filterState
             val cleanQuery = query.trim()
             runCatching {
-                repository.search(
-                    query = cleanQuery.ifEmpty { null },
-                    countryId = filters.selectedCountryId,
-                    genreId = filters.selectedGenreId,
-                    order = filters.selectedOrder,
-                    type = filters.selectedType,
-                    ratingFrom = filters.ratingFrom,
-                    ratingTo = filters.ratingTo,
-                    yearFrom = filters.yearFrom,
-                    yearTo = filters.yearTo,
-                    page = nextPage
-                )
+                if (uiState.contentType == ContentType.ANIME) {
+                    animeRepository.search(query = cleanQuery, page = nextPage).map { it.toFilmItem() }
+                } else {
+                    repository.search(
+                        query = cleanQuery.ifEmpty { null },
+                        countryId = filters.selectedCountryId,
+                        genreId = filters.selectedGenreId,
+                        order = filters.selectedOrder,
+                        type = filters.selectedType,
+                        ratingFrom = filters.ratingFrom,
+                        ratingTo = filters.ratingTo,
+                        yearFrom = filters.yearFrom,
+                        yearTo = filters.yearTo,
+                        page = nextPage
+                    )
+                }
             }.onSuccess { nextItems ->
                 val merged = (uiState.items + nextItems).distinctBy { it.kinopoiskId }
                 uiState = uiState.copy(
@@ -628,10 +724,11 @@ private fun UserFilmProfile.toLibraryUiItem(): LibraryUiItem {
 
 class FilmsViewModelFactory(
     private val repository: FilmsRepository,
+    private val animeRepository: AnimeRepository,
     private val userStateStore: UserStateStore
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return FilmsViewModel(repository, userStateStore) as T
+        return FilmsViewModel(repository, animeRepository, userStateStore) as T
     }
 }

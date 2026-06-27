@@ -1,4 +1,4 @@
-﻿package hd.kinoshka.app.data.local
+package hd.kinoshka.app.data.local
 
 import android.content.Context
 import com.google.gson.Gson
@@ -277,7 +277,7 @@ class UserStateStore(context: Context) {
     ): UserFilmProfile {
         val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
         val subtitle = item.year?.toString()
-        val ratingText = item.ratingKinopoisk?.let { "KP %.1f".format(Locale.US, it) }
+        val ratingText = item.ratingKinopoisk?.let { "★ %.1f".format(Locale.US, it) }
         val isRussian = item.isRussianContent()
         val profile = UserFilmProfile(
             kinopoiskId = item.kinopoiskId,

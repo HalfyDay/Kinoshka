@@ -32,6 +32,7 @@ import androidx.navigation.navArgument
 import hd.kinoshka.app.BuildConfig
 import hd.kinoshka.app.data.api.ApiClient
 import hd.kinoshka.app.data.local.UserStateStore
+import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.data.update.AppUpdateManager
 import hd.kinoshka.app.data.update.UpdateCheckResult
@@ -227,6 +228,7 @@ fun KinoApp() {
     val vm: FilmsViewModel = viewModel(
         factory = FilmsViewModelFactory(
             FilmsRepository(ApiClient.kinopoiskApi(appContext)),
+            AnimeRepository(ApiClient.shikimoriApi(appContext)),
             UserStateStore(appContext)
         )
     )
@@ -247,6 +249,7 @@ fun KinoApp() {
                             onSubmitSearch = vm::submitSearch,
                             onRetry = vm::retryHome,
                             onTabSelected = vm::onTabSelected,
+                            onContentTypeSelected = vm::onContentTypeSelected,
                             onOpenFilm = { film -> navController.navigate(detailsRoute(film.kinopoiskId)) },
                             onOpenHistoryFilm = { id -> navController.navigate(detailsRoute(id)) },
                             onDiscoverCategorySelected = vm::onDiscoverCategorySelected,
