@@ -17,18 +17,34 @@ class AnimeRepository(private val api: ShikimoriApi) {
     private val rolesCache = ConcurrentHashMap<Int, AnimeCacheEntry<List<hd.kinoshka.app.data.model.ShikimoriRole>>>()
 
     suspend fun popular(page: Int = 1): List<ShikimoriAnimeItem> {
-        getIfFresh(popularCache[page])?.let { return it }
-        val loaded = api.popular(order = "popularity", limit = 20, page = page)
-        popularCache[page] = AnimeCacheEntry(loaded, System.currentTimeMillis())
-        return loaded
+        return search(order = "popularity", page = page)
     }
 
-    suspend fun search(query: String, page: Int = 1): List<ShikimoriAnimeItem> {
-        val cleanQuery = query.trim()
-        if (cleanQuery.isBlank()) return emptyList()
-        val key = "$cleanQuery:$page"
+    suspend fun search(
+        query: String? = null,
+        kind: String? = null,
+        status: String? = null,
+        rating: String? = null,
+        genreId: Int? = null,
+        order: String? = "popularity",
+        scoreFrom: Int? = null,
+        page: Int = 1
+    ): List<ShikimoriAnimeItem> {
+        val cleanQuery = query?.trim()?.ifEmpty { null }
+        val genreStr = genreId?.toString()
+        val key = "$cleanQuery:$kind:$status:$rating:$genreStr:$order:$scoreFrom:$page"
         getIfFresh(searchCache[key])?.let { return it }
-        val loaded = api.search(search = cleanQuery, order = "popularity", limit = 20, page = page)
+        val loaded = api.search(
+            search = cleanQuery,
+            order = order,
+            kind = kind,
+            status = status,
+            score = scoreFrom,
+            rating = rating,
+            genre = genreStr,
+            limit = 20,
+            page = page
+        )
         searchCache[key] = AnimeCacheEntry(loaded, System.currentTimeMillis())
         return loaded
     }

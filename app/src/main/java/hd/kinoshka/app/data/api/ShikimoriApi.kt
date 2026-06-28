@@ -9,16 +9,15 @@ import retrofit2.http.Query
 
 interface ShikimoriApi {
     @GET("api/animes")
-    suspend fun popular(
-        @Query("order") order: String = "popularity",
-        @Query("limit") limit: Int = 20,
-        @Query("page") page: Int = 1
-    ): List<ShikimoriAnimeItem>
-
-    @GET("api/animes")
     suspend fun search(
-        @Query("search") search: String,
-        @Query("order") order: String = "popularity",
+        @Query("search") search: String? = null,
+        @Query("order") order: String? = "popularity",
+        @Query("kind") kind: String? = null,
+        @Query("status") status: String? = null,
+        @Query("season") season: String? = null,
+        @Query("score") score: Int? = null,
+        @Query("rating") rating: String? = null,
+        @Query("genre") genre: String? = null,
         @Query("limit") limit: Int = 20,
         @Query("page") page: Int = 1
     ): List<ShikimoriAnimeItem>

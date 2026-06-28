@@ -116,6 +116,7 @@ import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmLinkItem
 import hd.kinoshka.app.data.model.SeasonItem
 import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
+import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -389,7 +390,7 @@ private fun HeroHeader(
             .fillMaxWidth()
             .height(320.dp)
     ) {
-        AsyncImage(
+        KinoshkaAsyncImage(
             model = cover,
             contentDescription = item.nameRu,
             contentScale = ContentScale.Crop,
@@ -427,7 +428,7 @@ private fun HeroHeader(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.56f)
             ) {
-                AsyncImage(
+                KinoshkaAsyncImage(
                     model = item.posterUrlPreview ?: item.posterUrl,
                     contentDescription = item.nameRu,
                     contentScale = ContentScale.Crop,
@@ -535,7 +536,7 @@ private fun PosterPreviewDialog(
             .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
             .clickable(onClick = onDismiss)
     ) {
-        AsyncImage(
+        KinoshkaAsyncImage(
             model = imageUrl,
             contentDescription = title,
             contentScale = ContentScale.Crop,
@@ -548,7 +549,7 @@ private fun PosterPreviewDialog(
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background.copy(alpha = 0.42f))
         )
-        AsyncImage(
+        KinoshkaAsyncImage(
             model = imageUrl,
             contentDescription = title,
             contentScale = ContentScale.Fit,
@@ -1252,7 +1253,7 @@ private fun HorizontalFilmsCard(
                     shape = RoundedCornerShape(14.dp)
                 ) {
                     Column(modifier = Modifier.padding(8.dp)) {
-                        AsyncImage(
+                        KinoshkaAsyncImage(
                             model = linked.posterUrlPreview ?: linked.posterUrl,
                             contentDescription = linked.nameRu ?: linked.nameOriginal,
                             contentScale = ContentScale.Crop,
@@ -1315,7 +1316,7 @@ private fun ImagesCard(
                         },
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    AsyncImage(
+                    KinoshkaAsyncImage(
                         model = image.previewUrl ?: image.imageUrl,
                         contentDescription = "Кадр",
                         contentScale = ContentScale.Crop,
@@ -1412,7 +1413,7 @@ private fun ImagesViewerDialog(
                         }
                     }
             ) {
-                AsyncImage(
+                KinoshkaAsyncImage(
                     model = fullUrls[page],
                     contentDescription = "Кадр ${page + 1}",
                     contentScale = ContentScale.Fit,
@@ -1625,7 +1626,7 @@ private fun AnimeDetailsLayout(
                     .height(520.dp)
                     .clickable { onPosterClick() }
             ) {
-                AsyncImage(
+                KinoshkaAsyncImage(
                     model = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview,
                     contentDescription = item.nameRu,
                     contentScale = ContentScale.Crop,
@@ -1944,7 +1945,7 @@ private fun AnimeCharactersCard(
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.surfaceContainerHigh
                     ) {
-                        AsyncImage(
+                        KinoshkaAsyncImage(
                             model = char.image?.getFullPreviewUrl(),
                             contentDescription = char.russian ?: char.name,
                             contentScale = ContentScale.Crop,
@@ -2003,7 +2004,7 @@ private fun AnimeCharactersSheet(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.surfaceContainerHigh
                         ) {
-                            AsyncImage(
+                            KinoshkaAsyncImage(
                                 model = char.image?.getFullPreviewUrl(),
                                 contentDescription = char.russian ?: char.name,
                                 contentScale = ContentScale.Crop,
@@ -2157,7 +2158,7 @@ private fun AnimeChronologySheet(
                                     .clip(RoundedCornerShape(8.dp)),
                                 color = MaterialTheme.colorScheme.surfaceVariant
                             ) {
-                                AsyncImage(
+                                KinoshkaAsyncImage(
                                     model = item.posterUrlPreview ?: item.posterUrl,
                                     contentDescription = item.nameRu,
                                     contentScale = ContentScale.Crop,

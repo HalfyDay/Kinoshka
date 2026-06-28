@@ -88,6 +88,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import coil.compose.AsyncImage
+import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.BuildConfig
 import hd.kinoshka.app.R
 import hd.kinoshka.app.data.local.AppThemeMode
@@ -818,7 +819,7 @@ private fun AvatarPreview(
     ) {
         Box(contentAlignment = Alignment.Center) {
             if (hasCustomAvatar) {
-                AsyncImage(
+                KinoshkaAsyncImage(
                     model = avatar,
                     contentDescription = "Аватар",
                     contentScale = ContentScale.Crop,

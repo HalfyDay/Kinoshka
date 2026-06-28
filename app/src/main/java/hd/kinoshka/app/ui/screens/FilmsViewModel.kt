@@ -74,12 +74,44 @@ data class SearchFilterState(
     val ratingFrom: Int? = null,
     val ratingTo: Int? = null,
     val yearFrom: Int? = null,
-    val yearTo: Int? = null
+    val yearTo: Int? = null,
+    // Anime specific filters (Shikimori API)
+    val animeKind: String? = null,
+    val animeStatus: String? = null,
+    val animeRating: String? = null,
+    val animeGenreId: Int? = null,
+    val animeOrder: String = "popularity",
+    val animeScoreFrom: Int? = null
 ) {
     val isActive: Boolean
         get() = selectedCountryId != null || selectedGenreId != null || selectedOrder != "RATING" ||
-                selectedType != "ALL" || ratingFrom != null || ratingTo != null || yearFrom != null || yearTo != null
+                selectedType != "ALL" || ratingFrom != null || ratingTo != null || yearFrom != null || yearTo != null ||
+                animeKind != null || animeStatus != null || animeRating != null || animeGenreId != null ||
+                animeOrder != "popularity" || animeScoreFrom != null
 }
+
+val shikimoriGenres = listOf(
+    FilterItem(id = 1, genre = "Экшен"),
+    FilterItem(id = 2, genre = "Приключения"),
+    FilterItem(id = 4, genre = "Комедия"),
+    FilterItem(id = 8, genre = "Драма"),
+    FilterItem(id = 10, genre = "Фэнтези"),
+    FilterItem(id = 14, genre = "Ужасы"),
+    FilterItem(id = 7, genre = "Детектив"),
+    FilterItem(id = 22, genre = "Романтика"),
+    FilterItem(id = 24, genre = "Фантастика"),
+    FilterItem(id = 36, genre = "Повседневность"),
+    FilterItem(id = 30, genre = "Спорт"),
+    FilterItem(id = 37, genre = "Сверхъестественное"),
+    FilterItem(id = 41, genre = "Триллер"),
+    FilterItem(id = 62, genre = "Исэкай"),
+    FilterItem(id = 18, genre = "Меха"),
+    FilterItem(id = 19, genre = "Музыка"),
+    FilterItem(id = 23, genre = "Школа"),
+    FilterItem(id = 27, genre = "Сёнэн"),
+    FilterItem(id = 25, genre = "Сёдзе"),
+    FilterItem(id = 42, genre = "Сэйнэн")
+)
 
 data class HomeUiState(
     val loading: Boolean = false,
@@ -406,6 +438,20 @@ class FilmsViewModel(
         }
     }
 
+    private suspend fun fetchAnime(query: String?, page: Int): List<FilmItem> {
+        val filters = uiState.filterState
+        return animeRepository.search(
+            query = query?.ifEmpty { null },
+            kind = filters.animeKind,
+            status = filters.animeStatus,
+            rating = filters.animeRating,
+            genreId = filters.animeGenreId,
+            order = filters.animeOrder,
+            scoreFrom = filters.animeScoreFrom,
+            page = page
+        ).map { it.toFilmItem() }
+    }
+
     private fun loadDiscoverFirstPage(category: DiscoverCategory) {
         viewModelScope.launch {
             uiState = uiState.copy(
@@ -418,7 +464,7 @@ class FilmsViewModel(
             )
             runCatching {
                 if (uiState.contentType == ContentType.ANIME) {
-                    animeRepository.popular(page = 1).map { it.toFilmItem() }
+                    fetchAnime(null, 1)
                 } else {
                     repository.popular(
                         collectionType = category.apiType,
@@ -451,7 +497,7 @@ class FilmsViewModel(
             uiState = uiState.copy(loadingMore = true, error = null)
             runCatching {
                 if (uiState.contentType == ContentType.ANIME) {
-                    animeRepository.popular(page = nextPage).map { it.toFilmItem() }
+                    fetchAnime(null, nextPage)
                 } else {
                     repository.popular(
                         collectionType = category.apiType,
@@ -491,7 +537,7 @@ class FilmsViewModel(
             val cleanQuery = query.trim()
             runCatching {
                 if (uiState.contentType == ContentType.ANIME) {
-                    animeRepository.search(query = cleanQuery, page = 1).map { it.toFilmItem() }
+                    fetchAnime(cleanQuery, 1)
                 } else {
                     repository.search(
                         query = cleanQuery.ifEmpty { null },
@@ -512,7 +558,7 @@ class FilmsViewModel(
                     if (fixedQuery != cleanQuery) {
                         val fallbackItems = runCatching {
                             if (uiState.contentType == ContentType.ANIME) {
-                                animeRepository.search(query = fixedQuery, page = 1).map { it.toFilmItem() }
+                                fetchAnime(fixedQuery, 1)
                             } else {
                                 repository.search(
                                     query = fixedQuery,
@@ -565,7 +611,7 @@ class FilmsViewModel(
             val cleanQuery = query.trim()
             runCatching {
                 if (uiState.contentType == ContentType.ANIME) {
-                    animeRepository.search(query = cleanQuery, page = nextPage).map { it.toFilmItem() }
+                    fetchAnime(cleanQuery, nextPage)
                 } else {
                     repository.search(
                         query = cleanQuery.ifEmpty { null },
