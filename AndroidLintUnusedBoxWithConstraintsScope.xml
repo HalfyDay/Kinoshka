@@ -1,0 +1,30 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt</file>
+  <line>1503</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt" />
+  <problem_class id="AndroidLintUnusedBoxWithConstraintsScope" severity="ERROR" attribute_key="ERRORS_ATTRIBUTES">BoxWithConstraints content should use the constraints provided via BoxWithConstraintsScope</problem_class>
+  <hints />
+  <description>&lt;html&gt;BoxWithConstraints scope is not used&lt;/html&gt;</description>
+  <highlighted_element>{ val hasTwoColumns = maxWidth &gt;= 420.dp val rows = if (hasTwoColumns) { ...</highlighted_element>
+  <language>kotlin</language>
+  <offset>59</offset>
+  <length>880</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt</file>
+  <line>2876</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt" />
+  <problem_class id="AndroidLintUnusedBoxWithConstraintsScope" severity="ERROR" attribute_key="ERRORS_ATTRIBUTES">BoxWithConstraints content should use the constraints provided via BoxWithConstraintsScope</problem_class>
+  <hints />
+  <description>&lt;html&gt;BoxWithConstraints scope is not used&lt;/html&gt;</description>
+  <highlighted_element>{ val containerW = with(density) { maxWidth.toPx() } val containerH = with(density) ...</highlighted_element>
+  <language>kotlin</language>
+  <offset>58</offset>
+  <length>8216</length>
+</problem>
+</problems>

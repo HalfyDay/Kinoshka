@@ -1,0 +1,14 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/icons/icon.svg</file>
+  <line>7</line>
+  <module>Kino</module>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/icons/icon.svg" />
+  <problem_class id="CheckTagEmptyBody" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Empty element content</problem_class>
+  <description>XML tag has empty body</description>
+  <highlighted_element>&lt;div xmlns=&quot;http://www.w3.org/1999/xhtml&quot; style=&quot;background:conic-gradient(from 90deg,rgba(69, 166, ...</highlighted_element>
+  <language>SVG</language>
+  <offset>223</offset>
+  <length>349</length>
+</problem>
+</problems>

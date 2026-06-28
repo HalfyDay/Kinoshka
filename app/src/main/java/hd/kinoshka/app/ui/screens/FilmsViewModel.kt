@@ -135,7 +135,12 @@ data class HomeUiState(
     val availableGenres: List<FilterItem> = emptyList(),
     val availableCountries: List<FilterItem> = emptyList(),
     val showFilterSheet: Boolean = false,
-    val contentType: ContentType = ContentType.FILMS
+    val contentType: ContentType = ContentType.FILMS,
+    val shikimoriAuthState: hd.kinoshka.app.data.local.ShikimoriAuthState = hd.kinoshka.app.data.local.ShikimoriAuthState(),
+    val calendarItems: List<hd.kinoshka.app.data.model.ShikimoriCalendarItem> = emptyList(),
+    val topics: List<hd.kinoshka.app.data.model.ShikimoriTopic> = emptyList(),
+    val calendarLoading: Boolean = false,
+    val topicsLoading: Boolean = false
 )
 
 data class DetailsUiState(
@@ -145,6 +150,8 @@ data class DetailsUiState(
     val seasons: List<SeasonItem> = emptyList(),
     val similars: List<FilmLinkItem> = emptyList(),
     val relations: List<FilmLinkItem> = emptyList(),
+    val fullChronology: List<FilmLinkItem> = emptyList(),
+    val franchiseResponse: hd.kinoshka.app.data.model.ShikimoriFranchiseResponse? = null,
     val images: List<FilmImageItem> = emptyList(),
     val userProfile: UserFilmProfile? = null,
     val savingProfile: Boolean = false,
@@ -155,8 +162,11 @@ data class DetailsUiState(
 class FilmsViewModel(
     private val repository: FilmsRepository,
     private val animeRepository: AnimeRepository,
-    private val userStateStore: UserStateStore
+    private val userStateStore: UserStateStore,
+    private val shikimoriAuthStore: hd.kinoshka.app.data.local.ShikimoriAuthStore? = null
 ) : ViewModel() {
+
+    private var cachedShikimoriRates: List<hd.kinoshka.app.data.model.ShikimoriUserRate> = emptyList()
 
     var uiState by mutableStateOf(buildInitialState())
         private set
@@ -167,6 +177,112 @@ class FilmsViewModel(
     init {
         loadDiscoverFirstPage(uiState.discoverCategory)
         loadFilters()
+        refreshShikimoriAuth()
+        loadCalendar()
+        loadTopics()
+    }
+
+    fun refreshShikimoriAuth() {
+        shikimoriAuthStore?.let { store ->
+            val state = store.getAuthState()
+            uiState = uiState.copy(shikimoriAuthState = state)
+            if (state.isLoggedIn && state.userId > 0) {
+                viewModelScope.launch {
+                    val rates = animeRepository.getUserRates(state.userId)
+                    cachedShikimoriRates = rates
+                    uiState = uiState.copy(library = buildLibraryItems())
+
+                    val missingDetailsRates = rates.filter { it.anime == null && it.targetId > 0 }
+                    if (missingDetailsRates.isNotEmpty()) {
+                        val updatedRates = rates.toMutableList()
+                        missingDetailsRates.take(40).forEach { rate ->
+                            runCatching {
+                                val details = animeRepository.details(rate.targetId)
+                                val animeItem = hd.kinoshka.app.data.model.ShikimoriAnimeItem(
+                                    id = details.id,
+                                    name = details.name,
+                                    russian = details.russian,
+                                    image = details.image,
+                                    url = details.url,
+                                    kind = details.kind,
+                                    score = details.score,
+                                    status = details.status,
+                                    episodes = details.episodes,
+                                    episodesAired = details.episodesAired
+                                )
+                                val idx = updatedRates.indexOfFirst { it.id == rate.id || (it.targetId == rate.targetId && it.targetId > 0) }
+                                if (idx >= 0) {
+                                    updatedRates[idx] = updatedRates[idx].copy(anime = animeItem)
+                                }
+                            }
+                        }
+                        cachedShikimoriRates = updatedRates
+                        uiState = uiState.copy(library = buildLibraryItems())
+                    }
+                }
+            } else {
+                cachedShikimoriRates = emptyList()
+                uiState = uiState.copy(library = buildLibraryItems())
+            }
+        }
+    }
+
+    fun loadCalendar() {
+        viewModelScope.launch {
+            uiState = uiState.copy(calendarLoading = true)
+            val items = animeRepository.calendar()
+            uiState = uiState.copy(calendarItems = items, calendarLoading = false)
+        }
+    }
+
+    fun loadTopics() {
+        viewModelScope.launch {
+            uiState = uiState.copy(topicsLoading = true)
+            val items = animeRepository.topics()
+            uiState = uiState.copy(topics = items, topicsLoading = false)
+        }
+    }
+
+    fun saveShikimoriToken(token: String) {
+        viewModelScope.launch {
+            val whoami = animeRepository.whoami(token)
+            if (whoami != null) {
+                val rawAvatar = whoami.avatar ?: whoami.image?.original
+                val fullAvatar = if (rawAvatar?.startsWith("/") == true) "https://shikimori.io$rawAvatar" else rawAvatar
+                shikimoriAuthStore?.saveSession(
+                    token = token,
+                    refresh = null,
+                    userId = whoami.id,
+                    nickname = whoami.nickname,
+                    avatarUrl = fullAvatar
+                )
+                if (!fullAvatar.isNullOrBlank()) {
+                    setProfileAvatar(fullAvatar)
+                }
+                refreshShikimoriAuth()
+            }
+        }
+    }
+
+    fun saveShikimoriSession(token: String, userId: Int, nickname: String, avatarUrl: String?) {
+        val fullAvatar = if (avatarUrl?.startsWith("/") == true) "https://shikimori.io$avatarUrl" else avatarUrl
+        shikimoriAuthStore?.saveSession(
+            token = token,
+            refresh = null,
+            userId = userId,
+            nickname = nickname,
+            avatarUrl = fullAvatar
+        )
+        if (!fullAvatar.isNullOrBlank()) {
+            setProfileAvatar(fullAvatar)
+        }
+        refreshShikimoriAuth()
+    }
+
+    fun logoutShikimori() {
+        shikimoriAuthStore?.clearSession()
+        cachedShikimoriRates = emptyList()
+        refreshShikimoriAuth()
     }
 
     private fun loadFilters() {
@@ -183,6 +299,29 @@ class FilmsViewModel(
 
     fun updateFilters(newFilters: SearchFilterState) {
         uiState = uiState.copy(filterState = newFilters)
+        submitSearch()
+    }
+
+    fun searchGenre(genreName: String, isAnime: Boolean) {
+        if (isAnime) {
+            userStateStore.setSavedContentType(ContentType.ANIME)
+            val matchedGenre = shikimoriGenres.firstOrNull { it.genre.equals(genreName, ignoreCase = true) }
+            uiState = uiState.copy(
+                tab = HomeTab.CATALOG,
+                contentType = ContentType.ANIME,
+                query = "",
+                filterState = SearchFilterState(animeGenreId = matchedGenre?.id)
+            )
+        } else {
+            userStateStore.setSavedContentType(ContentType.FILMS)
+            val matchedGenre = uiState.availableGenres.firstOrNull { it.genre.equals(genreName, ignoreCase = true) }
+            uiState = uiState.copy(
+                tab = HomeTab.CATALOG,
+                contentType = ContentType.FILMS,
+                query = "",
+                filterState = SearchFilterState(selectedGenreId = matchedGenre?.id)
+            )
+        }
         submitSearch()
     }
 
@@ -213,16 +352,14 @@ class FilmsViewModel(
 
     fun onContentTypeSelected(contentType: ContentType) {
         if (uiState.contentType == contentType) return
+        userStateStore.setSavedContentType(contentType)
         uiState = uiState.copy(
             contentType = contentType,
             isSearchResult = false,
-            query = ""
+            query = "",
+            filterState = SearchFilterState()
         )
-        if (uiState.query.isNotBlank() || uiState.filterState.isActive) {
-            submitSearch()
-        } else {
-            loadDiscoverFirstPage(uiState.discoverCategory)
-        }
+        loadDiscoverFirstPage(uiState.discoverCategory)
     }
 
     fun onDiscoverCategorySelected(category: DiscoverCategory) {
@@ -239,9 +376,8 @@ class FilmsViewModel(
         val snapshot = uiState
         if (snapshot.loading || snapshot.loadingMore || !snapshot.hasMore) return
 
-        if (snapshot.isSearchResult) {
+        if (snapshot.isSearchResult || snapshot.filterState.isActive) {
             val query = snapshot.query.trim()
-            if (query.isBlank()) return
             loadSearchNextPage(query)
         } else {
             loadDiscoverNextPage(snapshot.discoverCategory)
@@ -345,96 +481,109 @@ class FilmsViewModel(
                 if (id >= ANIME_ID_OFFSET) {
                     val shikimoriId = id - ANIME_ID_OFFSET
                     val animeDetails = animeRepository.details(shikimoriId)
-                    val screenshotsDeferred = async {
-                        runCatching { animeRepository.screenshots(shikimoriId) }.getOrDefault(emptyList())
-                    }
-                    val relatedDeferred = async {
-                        runCatching { animeRepository.related(shikimoriId) }.getOrDefault(emptyList())
-                    }
-                    val rolesDeferred = async {
-                        runCatching { animeRepository.roles(shikimoriId) }.getOrDefault(emptyList())
-                    }
-                    val screenshots = screenshotsDeferred.await()
-                    val relatedList = relatedDeferred.await()
-                    val rolesList = rolesDeferred.await()
-
-                    val validCharacters = rolesList
-                        .filter { it.character != null && !it.character.name.isNullOrBlank() }
-                        .distinctBy { it.character?.id }
-
-                    val imageItems = screenshots.map {
-                        FilmImageItem(imageUrl = it.getFullOriginalUrl(), previewUrl = it.getFullPreviewUrl())
-                    }
-                    val relationItems = relatedList.mapNotNull { rel ->
-                        val a = rel.anime ?: return@mapNotNull null
-                        val yearInt = a.airedOn?.take(4)?.toIntOrNull()
-                        val kindStr = when (a.kind?.lowercase()) {
-                            "tv" -> "ТВ"
-                            "movie" -> "Фильм"
-                            "ova" -> "OVA"
-                            "ona" -> "ONA"
-                            "special" -> "Спешл"
-                            else -> a.kind?.uppercase()
-                        }
-                        FilmLinkItem(
-                            filmId = a.id + ANIME_ID_OFFSET,
-                            kinopoiskId = a.id + ANIME_ID_OFFSET,
-                            nameRu = a.russian?.takeIf { it.isNotBlank() } ?: a.name,
-                            nameOriginal = a.name,
-                            posterUrl = a.image?.getFullOriginalUrl(),
-                            posterUrlPreview = a.image?.getFullOriginalUrl() ?: a.image?.getFullPreviewUrl(),
-                            relationType = rel.relationRussian ?: rel.relation,
-                            year = yearInt,
-                            type = kindStr
-                        )
-                    }
-                    DetailsUiState(
+                    val baseState = DetailsUiState(
                         item = animeDetails.toFilmDetails(),
-                        seasons = emptyList(),
-                        similars = emptyList(),
-                        relations = relationItems,
-                        images = imageItems,
-                        userProfile = userStateStore.getProfile(id),
+                        userProfile = getUserProfileForFilm(id),
                         animeDetails = animeDetails,
-                        animeCharacters = validCharacters
+                        loading = false
                     )
+                    detailsState = baseState
+
+                    launch {
+                        val screenshots = runCatching { animeRepository.screenshots(shikimoriId) }.getOrDefault(emptyList())
+                        val imageItems = screenshots.map {
+                            FilmImageItem(imageUrl = it.getFullOriginalUrl(), previewUrl = it.getFullPreviewUrl())
+                        }
+                        detailsState = detailsState.copy(images = imageItems)
+                    }
+                    launch {
+                        val relatedList = runCatching { animeRepository.related(shikimoriId) }.getOrDefault(emptyList())
+                        val relationItems = relatedList.mapNotNull { rel ->
+                            val a = rel.anime ?: return@mapNotNull null
+                            val yearInt = a.airedOn?.take(4)?.toIntOrNull()
+                            val kindStr = when (a.kind?.lowercase()) {
+                                "tv" -> "ТВ"
+                                "movie" -> "Фильм"
+                                "ova" -> "OVA"
+                                "ona" -> "ONA"
+                                "special" -> "Спешл"
+                                else -> a.kind?.uppercase()
+                            }
+                            FilmLinkItem(
+                                filmId = a.id + ANIME_ID_OFFSET,
+                                kinopoiskId = a.id + ANIME_ID_OFFSET,
+                                nameRu = a.russian?.takeIf { it.isNotBlank() } ?: a.name,
+                                nameOriginal = a.name,
+                                posterUrl = a.image?.getFullOriginalUrl(a.id) ?: "https://smarthard.net/static/animes/${a.id}.jpeg",
+                                posterUrlPreview = a.image?.getFullPreviewUrl(a.id) ?: "https://smarthard.net/static/animes/${a.id}.jpeg",
+                                relationType = rel.relationRussian ?: rel.relation,
+                                year = yearInt,
+                                type = kindStr
+                            )
+                        }
+                        detailsState = detailsState.copy(relations = relationItems)
+                    }
+                    launch {
+                        val rolesList = runCatching { animeRepository.roles(shikimoriId) }.getOrDefault(emptyList())
+                        val validCharacters = rolesList
+                            .filter { it.character != null && !it.character.name.isNullOrBlank() }
+                            .distinctBy { it.character?.id }
+                        detailsState = detailsState.copy(animeCharacters = validCharacters)
+                    }
+                    launch {
+                        val franchiseData = runCatching { animeRepository.franchise(shikimoriId) }.getOrNull()
+                        val fullChronologyItems = franchiseData?.nodes?.mapNotNull { node ->
+                            val kindStr = when (node.kind?.lowercase()) {
+                                "tv" -> "ТВ"
+                                "movie" -> "Фильм"
+                                "ova" -> "OVA"
+                                "ona" -> "ONA"
+                                "special" -> "Спешл"
+                                else -> node.kind?.uppercase()
+                            }
+                            FilmLinkItem(
+                                filmId = node.id + ANIME_ID_OFFSET,
+                                kinopoiskId = node.id + ANIME_ID_OFFSET,
+                                nameRu = node.name?.takeIf { it.isNotBlank() && it != "" } ?: "Аниме #${node.id}",
+                                nameOriginal = node.name,
+                                posterUrl = node.imageUrl ?: "https://smarthard.net/static/animes/${node.id}.jpeg",
+                                posterUrlPreview = node.imageUrl ?: "https://smarthard.net/static/animes/${node.id}.jpeg",
+                                relationType = node.kind,
+                                year = node.year,
+                                type = kindStr
+                            )
+                        }?.sortedWith(compareBy<FilmLinkItem> { it.year ?: 9999 }.thenBy { it.id }) ?: emptyList()
+                        detailsState = detailsState.copy(franchiseResponse = franchiseData, fullChronology = fullChronologyItems)
+                    }
                 } else {
                     val details = repository.details(id)
-                    val seasonsDeferred = async {
+                    detailsState = DetailsUiState(
+                        item = details,
+                        userProfile = getUserProfileForFilm(id),
+                        loading = false
+                    )
+
+                    launch {
                         if (details.type == "TV_SERIES") {
-                            runCatching { repository.seasons(id) }.getOrDefault(emptyList())
-                        } else {
-                            emptyList()
+                            val seasons = runCatching { repository.seasons(id) }.getOrDefault(emptyList())
+                            detailsState = detailsState.copy(seasons = seasons)
                         }
                     }
-                    val relationsDeferred = async {
-                        runCatching { repository.relations(id) }.getOrDefault(emptyList())
-                    }
-                    val imagesDeferred = async {
-                        runCatching { repository.images(id = id, page = 1) }.getOrDefault(emptyList())
-                    }
-                    val seasons = seasonsDeferred.await()
-                    val relations = relationsDeferred.await()
-                    val images = imagesDeferred.await()
-                    DetailsUiState(
-                        item = details,
-                        seasons = seasons,
-                        similars = emptyList(),
-                        relations = relations
+                    launch {
+                        val relations = runCatching { repository.relations(id) }.getOrDefault(emptyList())
                             .filter { it.id > 0 }
-                            .distinctBy { it.id },
-                        images = images
-                            .filter { !it.previewUrl.isNullOrBlank() || !it.imageUrl.isNullOrBlank() },
-                        userProfile = userStateStore.getProfile(id)
-                    )
+                            .distinctBy { it.id }
+                        detailsState = detailsState.copy(relations = relations)
+                    }
+                    launch {
+                        val images = runCatching { repository.images(id = id, page = 1) }.getOrDefault(emptyList())
+                            .filter { !it.previewUrl.isNullOrBlank() || !it.imageUrl.isNullOrBlank() }
+                        detailsState = detailsState.copy(images = images)
+                    }
                 }
+            }.onFailure { ex ->
+                detailsState = DetailsUiState(error = ex.toUiMessage())
             }
-                .onSuccess { loaded ->
-                    detailsState = loaded
-                }
-                .onFailure { ex ->
-                    detailsState = DetailsUiState(error = ex.toUiMessage())
-                }
         }
     }
 
@@ -654,7 +803,8 @@ class FilmsViewModel(
             hideRussianContent = preferences.hideRussianContent,
             discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
             libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
-            showFpsCounter = preferences.showFpsCounter
+            showFpsCounter = preferences.showFpsCounter,
+            contentType = preferences.contentType
         )
     }
 
@@ -692,19 +842,106 @@ class FilmsViewModel(
         )
         val result = mutableListOf<LibraryUiItem>()
 
-        historyRecords.sortedByDescending { it.viewedAt }.forEach { history ->
+        historyRecords.forEach { history ->
             val profile = profileMap.remove(history.kinopoiskId)
             result += history.toLibraryUiItem(profile, format)
         }
 
-        profileMap.values
-            .sortedByDescending { it.updatedAt }
-            .forEach { profile ->
-                result += profile.toLibraryUiItem()
-            }
+        profileMap.values.forEach { profile ->
+            result += profile.toLibraryUiItem()
+        }
 
-        return result
+        val existingIds = result.map { it.kinopoiskId }.toSet()
+        (cachedShikimoriRates ?: emptyList()).forEach { rate ->
+            val item = rate.toLibraryUiItem() ?: return@forEach
+            if (!existingIds.contains(item.kinopoiskId)) {
+                result.add(item)
+            }
+        }
+
+        // Sort globally: newest recent items on top, oldest at bottom
+        return result.sortedByDescending { it.viewedAtMillis ?: it.updatedAt }
     }
+
+    private fun getUserProfileForFilm(id: Int): UserFilmProfile? {
+        val local = userStateStore.getProfile(id)
+        if (local != null) return local
+        if (id >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
+            val rawAnimeId = id - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+            val rate = cachedShikimoriRates?.firstOrNull { 
+                it.targetId == rawAnimeId || it.anime?.id == rawAnimeId 
+            }
+            if (rate != null) {
+                val filmStatus = when (rate.status.lowercase()) {
+                    "watching" -> UserFilmStatus.WATCHING
+                    "planned" -> UserFilmStatus.PLANNED
+                    "completed" -> UserFilmStatus.COMPLETED
+                    "rewatching" -> UserFilmStatus.REWATCHING
+                    "on_hold" -> UserFilmStatus.ON_HOLD
+                    "dropped" -> UserFilmStatus.DROPPED
+                    else -> UserFilmStatus.WATCHING
+                }
+                return UserFilmProfile(
+                    kinopoiskId = id,
+                    title = rate.anime?.displayTitle ?: "Аниме #$rawAnimeId",
+                    subtitle = rate.anime?.name,
+                    posterUrl = rate.anime?.posterUrl,
+                    ratingText = rate.anime?.score ?: if (rate.score > 0) rate.score.toString() else null,
+                    type = "ANIME",
+                    status = filmStatus,
+                    userRating = if (rate.score > 0) rate.score else null,
+                    note = rate.text,
+                    watchedSeasons = null,
+                    watchedEpisodes = if (rate.episodes > 0) rate.episodes else null,
+                    totalEpisodesInSeason = null,
+                    totalSeasons = null,
+                    totalEpisodes = rate.anime?.episodes,
+                    updatedAt = rate.getUpdatedEpochMillis()
+                )
+            }
+        }
+        return null
+    }
+}
+
+private fun hd.kinoshka.app.data.model.ShikimoriUserRate.toLibraryUiItem(): LibraryUiItem? {
+    val animeItem = anime
+    val actualTargetId = if (animeItem != null) animeItem.id else targetId
+    if (actualTargetId <= 0) return null
+
+    val appFilmId = actualTargetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+    val appTitle = animeItem?.displayTitle ?: "Аниме #$actualTargetId"
+    val appPoster = animeItem?.posterUrl
+    val filmStatus = when (status.lowercase()) {
+        "watching" -> UserFilmStatus.WATCHING
+        "planned" -> UserFilmStatus.PLANNED
+        "completed" -> UserFilmStatus.COMPLETED
+        "rewatching" -> UserFilmStatus.REWATCHING
+        "on_hold" -> UserFilmStatus.ON_HOLD
+        "dropped" -> UserFilmStatus.DROPPED
+        else -> UserFilmStatus.WATCHING
+    }
+    val rateTime = getUpdatedEpochMillis().takeIf { it > 0 } ?: System.currentTimeMillis()
+    return LibraryUiItem(
+        kinopoiskId = appFilmId,
+        title = appTitle,
+        subtitle = animeItem?.name,
+        posterUrl = appPoster,
+        ratingText = animeItem?.score ?: if (score > 0) score.toString() else null,
+        type = "ANIME",
+        isRussian = false,
+        viewedAtMillis = rateTime,
+        viewedAtLabel = null,
+        status = filmStatus,
+        userRating = if (score > 0) score else null,
+        note = text,
+        watchedSeasons = null,
+        watchedEpisodes = if (episodes > 0) episodes else null,
+        totalEpisodesInSeason = null,
+        totalSeasons = null,
+        totalEpisodes = animeItem?.episodes,
+        updatedAt = rateTime
+    )
 }
 
 private fun Throwable.toUiMessage(): String {
@@ -771,10 +1008,11 @@ private fun UserFilmProfile.toLibraryUiItem(): LibraryUiItem {
 class FilmsViewModelFactory(
     private val repository: FilmsRepository,
     private val animeRepository: AnimeRepository,
-    private val userStateStore: UserStateStore
+    private val userStateStore: UserStateStore,
+    private val shikimoriAuthStore: hd.kinoshka.app.data.local.ShikimoriAuthStore? = null
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return FilmsViewModel(repository, animeRepository, userStateStore) as T
+        return FilmsViewModel(repository, animeRepository, userStateStore, shikimoriAuthStore) as T
     }
 }

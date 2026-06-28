@@ -41,7 +41,8 @@ data class UserPreferences(
     val tileSize: FilmTileSize = FilmTileSize.MEDIUM,
     val discoverTileSize: FilmTileSize? = null,
     val libraryTileSize: FilmTileSize? = null,
-    val showFpsCounter: Boolean = false
+    val showFpsCounter: Boolean = false,
+    val contentType: hd.kinoshka.app.ui.screens.ContentType = hd.kinoshka.app.ui.screens.ContentType.FILMS
 )
 
 data class HistoryRecord(
@@ -157,6 +158,15 @@ class UserStateStore(context: Context) {
         prefs.edit().putBoolean(showFpsCounterKey, enabled).apply()
     }
 
+    fun getSavedContentType(): hd.kinoshka.app.ui.screens.ContentType {
+        val name = prefs.getString("saved_content_type", null) ?: return hd.kinoshka.app.ui.screens.ContentType.FILMS
+        return runCatching { hd.kinoshka.app.ui.screens.ContentType.valueOf(name) }.getOrDefault(hd.kinoshka.app.ui.screens.ContentType.FILMS)
+    }
+
+    fun setSavedContentType(type: hd.kinoshka.app.ui.screens.ContentType) {
+        prefs.edit().putString("saved_content_type", type.name).apply()
+    }
+
     fun getUserPreferences(): UserPreferences {
         return UserPreferences(
             themeMode = getThemeMode(),
@@ -164,7 +174,8 @@ class UserStateStore(context: Context) {
             tileSize = getTileSize(),
             discoverTileSize = getDiscoverTileSize(),
             libraryTileSize = getLibraryTileSize(),
-            showFpsCounter = isFpsCounterEnabled()
+            showFpsCounter = isFpsCounterEnabled(),
+            contentType = getSavedContentType()
         )
     }
 

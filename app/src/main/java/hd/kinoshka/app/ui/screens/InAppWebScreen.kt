@@ -138,7 +138,7 @@ private suspend fun fetchKodikEmbedUrl(shikimoriId: Int): String? = withContext(
             val request = Request.Builder()
                 .url(apiUrl)
                 .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .addHeader("Referer", "https://shikimori.one/")
+                .addHeader("Referer", "https://shikimori.io/")
                 .build()
 
             val response = sslBypassClient.newCall(request).execute()
@@ -179,7 +179,7 @@ private suspend fun fetchKodikEmbedFromPage(shikimoriId: Int): String? = withCon
             val request = Request.Builder()
                 .url(url)
                 .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .addHeader("Referer", "https://shikimori.one/animes/$shikimoriId")
+                .addHeader("Referer", "https://shikimori.io/animes/$shikimoriId")
                 .build()
             val response = sslBypassClient.newCall(request).execute()
             if (!response.isSuccessful) continue
@@ -338,7 +338,9 @@ fun InAppWebScreen(
             }
             insetsController?.show(WindowInsetsCompat.Type.systemBars())
             if (window != null) {
-                WindowCompat.setDecorFitsSystemWindows(window, true)
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                window.statusBarColor = android.graphics.Color.TRANSPARENT
+                window.navigationBarColor = android.graphics.Color.TRANSPARENT
                 window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
             if (previousOrientation != null) {

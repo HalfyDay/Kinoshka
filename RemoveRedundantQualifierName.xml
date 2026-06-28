@@ -1,0 +1,132 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/MainActivity.kt</file>
+  <line>52</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.MainActivity void onCreate(android.os.Bundle savedInstanceState)" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>Context</highlighted_element>
+  <language>kotlin</language>
+  <offset>44</offset>
+  <length>7</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>352</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriUserRate long getUpdatedEpochMillis()" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>java.util</highlighted_element>
+  <language>kotlin</language>
+  <offset>68</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt</file>
+  <line>879</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.DetailsScreenKt void ActionPanel(boolean enabled, hd.kinoshka.app.data.local.UserFilmProfile profile, java.util.List&lt;hd.kinoshka.app.data.model.SeasonItem&gt; seasons, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onWatch, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onOpenEditor, boolean showDisableAdsButton, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onDisableAds)" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>hd.kinoshka.app.data.model</highlighted_element>
+  <language>kotlin</language>
+  <offset>18</offset>
+  <length>26</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/FilmsViewModel.kt</file>
+  <line>869</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.FilmsViewModel hd.kinoshka.app.data.local.UserFilmProfile getUserProfileForFilm(int id)" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>hd.kinoshka.app.data.model</highlighted_element>
+  <language>kotlin</language>
+  <offset>18</offset>
+  <length>26</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/FilmsViewModel.kt</file>
+  <line>870</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.FilmsViewModel hd.kinoshka.app.data.local.UserFilmProfile getUserProfileForFilm(int id)" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>hd.kinoshka.app.data.model</highlighted_element>
+  <language>kotlin</language>
+  <offset>34</offset>
+  <length>26</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/FilmsViewModel.kt</file>
+  <line>912</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.FilmsViewModelKt hd.kinoshka.app.ui.screens.LibraryUiItem toLibraryUiItem(hd.kinoshka.app.data.model.ShikimoriUserRate $this$toLibraryUiItem)" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>hd.kinoshka.app.data.model</highlighted_element>
+  <language>kotlin</language>
+  <offset>37</offset>
+  <length>26</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>342</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>android.graphics</highlighted_element>
+  <language>kotlin</language>
+  <offset>40</offset>
+  <length>16</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>343</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>android.graphics</highlighted_element>
+  <language>kotlin</language>
+  <offset>44</offset>
+  <length>16</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>645</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void SelectBottomSheet(java.lang.String title, java.util.List&lt;? extends T&gt; options, T selected, kotlin.jvm.functions.Function1&lt;? super T,java.lang.String&gt; optionLabel, kotlin.jvm.functions.Function1&lt;? super T,kotlin.Unit&gt; onSelect, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onDismiss)" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>androidx.compose.material3</highlighted_element>
+  <language>kotlin</language>
+  <offset>7</offset>
+  <length>26</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1161</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void AvatarCropDialog(android.graphics.Bitmap sourceBitmap, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onDismiss, kotlin.jvm.functions.Function1&lt;? super android.graphics.Bitmap,kotlin.Unit&gt; onCropped)" />
+  <problem_class id="RemoveRedundantQualifierName" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant qualifier name</problem_class>
+  <description>Remove redundant qualifier name</description>
+  <highlighted_element>androidx.compose.foundation.layout</highlighted_element>
+  <language>kotlin</language>
+  <offset>20</offset>
+  <length>34</length>
+</problem>
+</problems>

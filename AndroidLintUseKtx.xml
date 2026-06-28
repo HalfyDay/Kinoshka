@@ -1,0 +1,338 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/ShikimoriAuthStore.kt</file>
+  <line>36</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/ShikimoriAuthStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/ShikimoriAuthStore.kt</file>
+  <line>46</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/ShikimoriAuthStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>108</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>116</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>124</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>132</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>141</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>150</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>158</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>167</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>189</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>197</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>376</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt</file>
+  <line>380</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.local</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/local/UserStateStore.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>prefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/update/AppUpdateManager.kt</file>
+  <line>151</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.update</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/update/AppUpdateManager.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;String.toUri&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>Uri.parse(&quot;package:${appContext.packageName}&quot;)</highlighted_element>
+  <language>kotlin</language>
+  <offset>12</offset>
+  <length>46</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/update/AppUpdateManager.kt</file>
+  <line>171</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.update</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/update/AppUpdateManager.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;String.toUri&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>Uri.parse(url.trim())</highlighted_element>
+  <language>kotlin</language>
+  <offset>18</offset>
+  <length>21</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/KinoApp.kt</file>
+  <line>93</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/KinoApp.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;String.toUri&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>Uri.parse(url)</highlighted_element>
+  <language>kotlin</language>
+  <offset>43</offset>
+  <length>14</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/KinoApp.kt</file>
+  <line>102</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/KinoApp.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>updatePrefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>18</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/KinoApp.kt</file>
+  <line>242</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/KinoApp.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;SharedPreferences.edit&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>updatePrefs.edit()</highlighted_element>
+  <language>kotlin</language>
+  <offset>8</offset>
+  <length>18</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>654</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;String.toUri&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>Uri.parse(url)</highlighted_element>
+  <language>kotlin</language>
+  <offset>28</offset>
+  <length>14</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>663</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX extension function &lt;code&gt;String.toUri&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>Uri.parse(url)</highlighted_element>
+  <language>kotlin</language>
+  <offset>28</offset>
+  <length>14</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1336</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX function &lt;code&gt;createBitmap&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>Bitmap.createBitmap(viewportW, viewportH, Bitmap.Config.ARGB_8888)</highlighted_element>
+  <language>kotlin</language>
+  <offset>25</offset>
+  <length>66</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1356</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX function &lt;code&gt;createBitmap&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>Bitmap.createBitmap(outSize, outSize, Bitmap.Config.ARGB_8888)</highlighted_element>
+  <language>kotlin</language>
+  <offset>17</offset>
+  <length>62</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1361</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt" />
+  <problem_class id="AndroidLintUseKtx" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Use KTX extension function</problem_class>
+  <hints />
+  <description>&lt;html&gt;Use the KTX function &lt;code&gt;createBitmap&lt;/code&gt; instead?&lt;/html&gt;</description>
+  <highlighted_element>Bitmap.createBitmap(outSize, outSize, Bitmap.Config.ARGB_8888)</highlighted_element>
+  <language>kotlin</language>
+  <offset>17</offset>
+  <length>62</length>
+</problem>
+</problems>

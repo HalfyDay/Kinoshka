@@ -1,0 +1,15 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>610</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="IfThenToSafeAccess" severity="WEAK WARNING" attribute_key="INFO_ATTRIBUTES">If-Then foldable to '?.'</problem_class>
+  <description>Foldable if-then</description>
+  <highlighted_element>if (wv != null)</highlighted_element>
+  <language>kotlin</language>
+  <offset>40</offset>
+  <length>15</length>
+</problem>
+</problems>

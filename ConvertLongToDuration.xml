@@ -1,0 +1,67 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt</file>
+  <line>261</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.DetailsScreenKt void DetailsScreen(int filmId, hd.kinoshka.app.ui.screens.DetailsUiState state, kotlin.jvm.functions.Function1&lt;? super java.lang.Integer,kotlin.Unit&gt; load, kotlin.jvm.functions.Function1&lt;? super hd.kinoshka.app.data.model.FilmDetails,kotlin.Unit&gt; onWatch, kotlin.jvm.functions.Function9&lt;? super hd.kinoshka.app.data.model.FilmDetails,? super hd.kinoshka.app.data.local.UserFilmStatus,? super java.lang.Integer,? super java.lang.String,? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Integer,kotlin.Unit&gt; onSaveUserProfile, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onOpenUrl, kotlin.jvm.functions.Function1&lt;? super java.lang.Integer,kotlin.Unit&gt; onOpenFilm, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, kotlin.jvm.functions.Function2&lt;? super java.lang.String,? super java.lang.Boolean,kotlin.Unit&gt; onOpenGenre, kotlin.jvm.functions.Function5&lt;? super java.lang.String,? super java.util.Map&lt;java.lang.String,java.lang.String&gt;,? super java.lang.String,? super java.lang.Integer,? super java.lang.String,kotlin.Unit&gt; onOpenNativePlayer)" />
+  <problem_class id="ConvertLongToDuration" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Long overload to Duration conversion</problem_class>
+  <description>Legacy Long overload can be converted to Duration</description>
+  <highlighted_element>delay(380)</highlighted_element>
+  <language>kotlin</language>
+  <offset>12</offset>
+  <length>10</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt</file>
+  <line>805</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.DetailsScreenKt void PosterPreviewDialog(java.lang.String imageUrl, java.lang.String title, androidx.compose.ui.geometry.Offset clickOffset, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onDismiss)" />
+  <problem_class id="ConvertLongToDuration" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Long overload to Duration conversion</problem_class>
+  <description>Legacy Long overload can be converted to Duration</description>
+  <highlighted_element>delay(280)</highlighted_element>
+  <language>kotlin</language>
+  <offset>16</offset>
+  <length>10</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>309</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="ConvertLongToDuration" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Long overload to Duration conversion</problem_class>
+  <description>Legacy Long overload can be converted to Duration</description>
+  <highlighted_element>delay(4000)</highlighted_element>
+  <language>kotlin</language>
+  <offset>12</offset>
+  <length>11</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/MpvExPlayerScreen.kt</file>
+  <line>160</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.MpvExPlayerScreenKt void MpvExPlayerScreen(java.lang.String streamUrl, java.util.Map&lt;java.lang.String,java.lang.String&gt; headers, java.lang.String animeTitle, int episodeNumber, java.lang.String episodeTitle, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onNextEpisode, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onPrevEpisode)" />
+  <problem_class id="ConvertLongToDuration" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Long overload to Duration conversion</problem_class>
+  <description>Legacy Long overload can be converted to Duration</description>
+  <highlighted_element>delay(4000)</highlighted_element>
+  <language>kotlin</language>
+  <offset>12</offset>
+  <length>11</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/MpvExPlayerScreen.kt</file>
+  <line>211</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.MpvExPlayerScreenKt void MpvExPlayerScreen(java.lang.String streamUrl, java.util.Map&lt;java.lang.String,java.lang.String&gt; headers, java.lang.String animeTitle, int episodeNumber, java.lang.String episodeTitle, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onNextEpisode, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onPrevEpisode)" />
+  <problem_class id="ConvertLongToDuration" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Long overload to Duration conversion</problem_class>
+  <description>Legacy Long overload can be converted to Duration</description>
+  <highlighted_element>delay(500)</highlighted_element>
+  <language>kotlin</language>
+  <offset>12</offset>
+  <length>10</length>
+</problem>
+</problems>

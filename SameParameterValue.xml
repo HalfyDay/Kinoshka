@@ -1,0 +1,44 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/components/AnimePlaybackSelectionSheet.kt</file>
+  <line>440</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.components</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.components.AnimePlaybackSelectionSheetKt androidx.compose.foundation.BorderStroke borderForSelected(boolean selected)" />
+  <problem_class id="SameParameterValue" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Method parameter always has the same value</problem_class>
+  <hints />
+  <description>Value of parameter &lt;code&gt;selected&lt;/code&gt; is always 'false'</description>
+  <highlighted_element>selected</highlighted_element>
+  <language>kotlin</language>
+  <offset>30</offset>
+  <length>8</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/components/ExpressiveBlobLoadingIndicator.kt</file>
+  <line>79</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.components</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicatorKt androidx.compose.ui.graphics.Path smoothClosedPath(java.util.List&lt;androidx.compose.ui.geometry.Offset&gt; points, float smoothness)" />
+  <problem_class id="SameParameterValue" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Method parameter always has the same value</problem_class>
+  <hints />
+  <description>Value of parameter &lt;code&gt;smoothness&lt;/code&gt; is always '0.18'</description>
+  <highlighted_element>smoothness</highlighted_element>
+  <language>kotlin</language>
+  <offset>4</offset>
+  <length>10</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt</file>
+  <line>1613</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.DetailsScreenKt void HorizontalFilmsCard(java.lang.String title, java.util.List&lt;hd.kinoshka.app.data.model.FilmLinkItem&gt; items, float itemWidth, kotlin.jvm.functions.Function1&lt;? super java.lang.Integer,kotlin.Unit&gt; onOpenFilm)" />
+  <problem_class id="SameParameterValue" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Method parameter always has the same value</problem_class>
+  <hints />
+  <description>Value of parameter &lt;code&gt;title&lt;/code&gt; is always '&quot;Похожее&quot;'</description>
+  <highlighted_element>title</highlighted_element>
+  <language>kotlin</language>
+  <offset>4</offset>
+  <length>5</length>
+</problem>
+</problems>

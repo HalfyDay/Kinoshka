@@ -1,0 +1,15 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/source/AnimeStreamResolver.kt</file>
+  <line>233</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.source</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.source.AnimeStreamResolver java.lang.Object resolveAniLibriaStream(int shikimoriId, int episodeNumber, kotlin.coroutines.Continuation&lt;? super hd.kinoshka.app.data.model.AnimeMediaStream&gt; $completion)" />
+  <problem_class id="VerboseNullabilityAndEmptiness" severity="WEAK WARNING" attribute_key="INFO_ATTRIBUTES">Verbose nullability and emptiness check</problem_class>
+  <description>Replace subsequent checks with '!isNullOrBlank()' call</description>
+  <highlighted_element>streamPath != null</highlighted_element>
+  <language>kotlin</language>
+  <offset>24</offset>
+  <length>18</length>
+</problem>
+</problems>

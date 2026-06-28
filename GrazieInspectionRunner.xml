@@ -1,0 +1,754 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/README.md</file>
+  <line>34</line>
+  <module>Kino</module>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/README.md" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Kinopoisk'</description>
+  <highlighted_element>Kinopoisk</highlighted_element>
+  <language>Markdown</language>
+  <offset>29</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/release/output-metadata.json</file>
+  <line>36</line>
+  <module>Kino.app</module>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/release/output-metadata.json" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'minSdkVersionForDexing'</description>
+  <highlighted_element>minSdkVersionForDexing</highlighted_element>
+  <language>JSON</language>
+  <offset>3</offset>
+  <length>22</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/AnimePlaybackModels.kt</file>
+  <line>4</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="field" FQNAME="hd.kinoshka.app.data.model.AnimeSourceType KODIK" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Kodik'</description>
+  <highlighted_element>Kodik</highlighted_element>
+  <language>kotlin</language>
+  <offset>11</offset>
+  <length>5</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/AnimePlaybackModels.kt</file>
+  <line>5</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="field" FQNAME="hd.kinoshka.app.data.model.AnimeSourceType ANILIBRIA" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'AniLibria'</description>
+  <highlighted_element>AniLibria</highlighted_element>
+  <language>kotlin</language>
+  <offset>15</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/FilmModels.kt</file>
+  <line>6</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.FilmItem FilmItem(int kinopoiskId, java.lang.String nameRu, java.lang.String nameOriginal, java.lang.String posterUrlPreview, java.lang.Double ratingKinopoisk, java.lang.Integer year, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; countries)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'kinopoiskId'</description>
+  <highlighted_element>kinopoiskId</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>11</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/FilmModels.kt</file>
+  <line>10</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.FilmItem FilmItem(int kinopoiskId, java.lang.String nameRu, java.lang.String nameOriginal, java.lang.String posterUrlPreview, java.lang.Double ratingKinopoisk, java.lang.Integer year, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; countries)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'ratingKinopoisk'</description>
+  <highlighted_element>ratingKinopoisk</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>15</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/FilmModels.kt</file>
+  <line>45</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.FilmLinkItem FilmLinkItem(java.lang.Integer filmId, java.lang.Integer kinopoiskId, java.lang.String nameRu, java.lang.String nameEn, java.lang.String nameOriginal, java.lang.String posterUrl, java.lang.String posterUrlPreview, java.lang.String relationType, java.lang.Integer year, java.lang.String type)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'kinopoiskId'</description>
+  <highlighted_element>kinopoiskId</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>11</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/FilmModels.kt</file>
+  <line>71</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.FilmDetails FilmDetails(int kinopoiskId, java.lang.String kinopoiskHDId, java.lang.String imdbId, java.lang.String nameRu, java.lang.String nameEn, java.lang.String nameOriginal, java.lang.String posterUrl, java.lang.String posterUrlPreview, java.lang.String coverUrl, java.lang.String logoUrl, java.lang.Integer reviewsCount, java.lang.Double ratingGoodReview, java.lang.Integer ratingGoodReviewVoteCount, java.lang.Double ratingKinopoisk, java.lang.Integer ratingKinopoiskVoteCount, java.lang.Double ratingImdb, java.lang.Integer ratingImdbVoteCount, java.lang.Double ratingFilmCritics, java.lang.Integer ratingFilmCriticsVoteCount, java.lang.Double ratingAwait, java.lang.Integer ratingAwaitCount, java.lang.Double ratingRfCritics, java.lang.Integer ratingRfCriticsVoteCount, java.lang.String webUrl, java.lang.Integer year, java.lang.Integer filmLength, java.lang.String slogan, java.lang.String description, java.lang.String shortDescription, java.lang.String editorAnnotation, java.lang.String productionStatus, java.lang.String type, java.lang.String ratingMpaa, java.lang.String ratingAgeLimits, java.lang.Boolean hasImax, java.lang.Boolean has3D, java.lang.Integer startYear, java.lang.Integer endYear, java.lang.Boolean serial, java.lang.Boolean shortFilm, java.lang.Boolean completed, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; genres, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; countries)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'kinopoiskId'</description>
+  <highlighted_element>kinopoiskId</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>11</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/FilmModels.kt</file>
+  <line>72</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.FilmDetails FilmDetails(int kinopoiskId, java.lang.String kinopoiskHDId, java.lang.String imdbId, java.lang.String nameRu, java.lang.String nameEn, java.lang.String nameOriginal, java.lang.String posterUrl, java.lang.String posterUrlPreview, java.lang.String coverUrl, java.lang.String logoUrl, java.lang.Integer reviewsCount, java.lang.Double ratingGoodReview, java.lang.Integer ratingGoodReviewVoteCount, java.lang.Double ratingKinopoisk, java.lang.Integer ratingKinopoiskVoteCount, java.lang.Double ratingImdb, java.lang.Integer ratingImdbVoteCount, java.lang.Double ratingFilmCritics, java.lang.Integer ratingFilmCriticsVoteCount, java.lang.Double ratingAwait, java.lang.Integer ratingAwaitCount, java.lang.Double ratingRfCritics, java.lang.Integer ratingRfCriticsVoteCount, java.lang.String webUrl, java.lang.Integer year, java.lang.Integer filmLength, java.lang.String slogan, java.lang.String description, java.lang.String shortDescription, java.lang.String editorAnnotation, java.lang.String productionStatus, java.lang.String type, java.lang.String ratingMpaa, java.lang.String ratingAgeLimits, java.lang.Boolean hasImax, java.lang.Boolean has3D, java.lang.Integer startYear, java.lang.Integer endYear, java.lang.Boolean serial, java.lang.Boolean shortFilm, java.lang.Boolean completed, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; genres, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; countries)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'kinopoiskHDId'</description>
+  <highlighted_element>kinopoiskHDId</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>13</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/FilmModels.kt</file>
+  <line>84</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.FilmDetails FilmDetails(int kinopoiskId, java.lang.String kinopoiskHDId, java.lang.String imdbId, java.lang.String nameRu, java.lang.String nameEn, java.lang.String nameOriginal, java.lang.String posterUrl, java.lang.String posterUrlPreview, java.lang.String coverUrl, java.lang.String logoUrl, java.lang.Integer reviewsCount, java.lang.Double ratingGoodReview, java.lang.Integer ratingGoodReviewVoteCount, java.lang.Double ratingKinopoisk, java.lang.Integer ratingKinopoiskVoteCount, java.lang.Double ratingImdb, java.lang.Integer ratingImdbVoteCount, java.lang.Double ratingFilmCritics, java.lang.Integer ratingFilmCriticsVoteCount, java.lang.Double ratingAwait, java.lang.Integer ratingAwaitCount, java.lang.Double ratingRfCritics, java.lang.Integer ratingRfCriticsVoteCount, java.lang.String webUrl, java.lang.Integer year, java.lang.Integer filmLength, java.lang.String slogan, java.lang.String description, java.lang.String shortDescription, java.lang.String editorAnnotation, java.lang.String productionStatus, java.lang.String type, java.lang.String ratingMpaa, java.lang.String ratingAgeLimits, java.lang.Boolean hasImax, java.lang.Boolean has3D, java.lang.Integer startYear, java.lang.Integer endYear, java.lang.Boolean serial, java.lang.Boolean shortFilm, java.lang.Boolean completed, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; genres, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; countries)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'ratingKinopoisk'</description>
+  <highlighted_element>ratingKinopoisk</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>15</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/FilmModels.kt</file>
+  <line>85</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.FilmDetails FilmDetails(int kinopoiskId, java.lang.String kinopoiskHDId, java.lang.String imdbId, java.lang.String nameRu, java.lang.String nameEn, java.lang.String nameOriginal, java.lang.String posterUrl, java.lang.String posterUrlPreview, java.lang.String coverUrl, java.lang.String logoUrl, java.lang.Integer reviewsCount, java.lang.Double ratingGoodReview, java.lang.Integer ratingGoodReviewVoteCount, java.lang.Double ratingKinopoisk, java.lang.Integer ratingKinopoiskVoteCount, java.lang.Double ratingImdb, java.lang.Integer ratingImdbVoteCount, java.lang.Double ratingFilmCritics, java.lang.Integer ratingFilmCriticsVoteCount, java.lang.Double ratingAwait, java.lang.Integer ratingAwaitCount, java.lang.Double ratingRfCritics, java.lang.Integer ratingRfCriticsVoteCount, java.lang.String webUrl, java.lang.Integer year, java.lang.Integer filmLength, java.lang.String slogan, java.lang.String description, java.lang.String shortDescription, java.lang.String editorAnnotation, java.lang.String productionStatus, java.lang.String type, java.lang.String ratingMpaa, java.lang.String ratingAgeLimits, java.lang.Boolean hasImax, java.lang.Boolean has3D, java.lang.Integer startYear, java.lang.Integer endYear, java.lang.Boolean serial, java.lang.Boolean shortFilm, java.lang.Boolean completed, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; genres, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; countries)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'ratingKinopoiskVoteCount'</description>
+  <highlighted_element>ratingKinopoiskVoteCount</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>24</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/FilmModels.kt</file>
+  <line>103</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.FilmDetails FilmDetails(int kinopoiskId, java.lang.String kinopoiskHDId, java.lang.String imdbId, java.lang.String nameRu, java.lang.String nameEn, java.lang.String nameOriginal, java.lang.String posterUrl, java.lang.String posterUrlPreview, java.lang.String coverUrl, java.lang.String logoUrl, java.lang.Integer reviewsCount, java.lang.Double ratingGoodReview, java.lang.Integer ratingGoodReviewVoteCount, java.lang.Double ratingKinopoisk, java.lang.Integer ratingKinopoiskVoteCount, java.lang.Double ratingImdb, java.lang.Integer ratingImdbVoteCount, java.lang.Double ratingFilmCritics, java.lang.Integer ratingFilmCriticsVoteCount, java.lang.Double ratingAwait, java.lang.Integer ratingAwaitCount, java.lang.Double ratingRfCritics, java.lang.Integer ratingRfCriticsVoteCount, java.lang.String webUrl, java.lang.Integer year, java.lang.Integer filmLength, java.lang.String slogan, java.lang.String description, java.lang.String shortDescription, java.lang.String editorAnnotation, java.lang.String productionStatus, java.lang.String type, java.lang.String ratingMpaa, java.lang.String ratingAgeLimits, java.lang.Boolean hasImax, java.lang.Boolean has3D, java.lang.Integer startYear, java.lang.Integer endYear, java.lang.Boolean serial, java.lang.Boolean shortFilm, java.lang.Boolean completed, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; genres, java.util.List&lt;hd.kinoshka.app.data.model.NameOnly&gt; countries)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'ratingMpaa'</description>
+  <highlighted_element>ratingMpaa</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>10</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>22</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriImage boolean isMissingPlaceholder()" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori's'</description>
+  <highlighted_element>Shikimori's</highlighted_element>
+  <language>kotlin</language>
+  <offset>44</offset>
+  <length>11</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>61</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriGenre ShikimoriGenre(int id, java.lang.String name, java.lang.String russian, java.lang.String kind)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'russian'</description>
+  <highlighted_element>russian</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>7</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>95</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriAnimeItem ShikimoriAnimeItem(int id, java.lang.String name, java.lang.String russian, hd.kinoshka.app.data.model.ShikimoriImage image, java.lang.String url, java.lang.String kind, java.lang.String score, java.lang.String status, java.lang.Integer episodes, java.lang.Integer episodesAired, java.lang.String airedOn, java.lang.String releasedOn)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'russian'</description>
+  <highlighted_element>russian</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>7</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>107</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriAnimeItem java.lang.String getPosterUrl()" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori'</description>
+  <highlighted_element>Shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>26</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>152</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriAnimeDetails ShikimoriAnimeDetails(int id, java.lang.String name, java.lang.String russian, hd.kinoshka.app.data.model.ShikimoriImage image, java.lang.String url, java.lang.String kind, java.lang.String score, java.lang.String status, java.lang.Integer episodes, java.lang.Integer episodesAired, java.lang.String airedOn, java.lang.String releasedOn, java.lang.String rating, java.lang.Integer duration, java.lang.String description, java.lang.String descriptionHtml, java.lang.String franchise, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriStudio&gt; studios, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriGenre&gt; genres, java.util.List&lt;java.lang.String&gt; japanese, java.util.List&lt;java.lang.String&gt; english, java.util.List&lt;java.lang.String&gt; synonyms, java.lang.String licenseNameRu, java.util.List&lt;java.lang.String&gt; licensors, java.lang.String nextEpisodeAt, java.lang.String source, java.lang.String season, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriStat&gt; ratesScoresStats, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriStat&gt; ratesStatusesStats)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'russian'</description>
+  <highlighted_element>russian</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>7</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>169</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriAnimeDetails ShikimoriAnimeDetails(int id, java.lang.String name, java.lang.String russian, hd.kinoshka.app.data.model.ShikimoriImage image, java.lang.String url, java.lang.String kind, java.lang.String score, java.lang.String status, java.lang.Integer episodes, java.lang.Integer episodesAired, java.lang.String airedOn, java.lang.String releasedOn, java.lang.String rating, java.lang.Integer duration, java.lang.String description, java.lang.String descriptionHtml, java.lang.String franchise, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriStudio&gt; studios, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriGenre&gt; genres, java.util.List&lt;java.lang.String&gt; japanese, java.util.List&lt;java.lang.String&gt; english, java.util.List&lt;java.lang.String&gt; synonyms, java.lang.String licenseNameRu, java.util.List&lt;java.lang.String&gt; licensors, java.lang.String nextEpisodeAt, java.lang.String source, java.lang.String season, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriStat&gt; ratesScoresStats, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriStat&gt; ratesStatusesStats)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'japanese'</description>
+  <highlighted_element>japanese</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>8</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>170</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriAnimeDetails ShikimoriAnimeDetails(int id, java.lang.String name, java.lang.String russian, hd.kinoshka.app.data.model.ShikimoriImage image, java.lang.String url, java.lang.String kind, java.lang.String score, java.lang.String status, java.lang.Integer episodes, java.lang.Integer episodesAired, java.lang.String airedOn, java.lang.String releasedOn, java.lang.String rating, java.lang.Integer duration, java.lang.String description, java.lang.String descriptionHtml, java.lang.String franchise, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriStudio&gt; studios, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriGenre&gt; genres, java.util.List&lt;java.lang.String&gt; japanese, java.util.List&lt;java.lang.String&gt; english, java.util.List&lt;java.lang.String&gt; synonyms, java.lang.String licenseNameRu, java.util.List&lt;java.lang.String&gt; licensors, java.lang.String nextEpisodeAt, java.lang.String source, java.lang.String season, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriStat&gt; ratesScoresStats, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriStat&gt; ratesStatusesStats)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'english'</description>
+  <highlighted_element>english</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>7</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>321</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriCharacter ShikimoriCharacter(int id, java.lang.String name, java.lang.String russian, hd.kinoshka.app.data.model.ShikimoriImage image)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'russian'</description>
+  <highlighted_element>russian</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>7</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>389</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriCharacterDetails ShikimoriCharacterDetails(int id, java.lang.String name, java.lang.String russian, hd.kinoshka.app.data.model.ShikimoriImage image, java.lang.String url, java.lang.String altName, java.lang.String japanese, java.lang.String description, java.lang.String descriptionHtml, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriAnimeItem&gt; animes)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'russian'</description>
+  <highlighted_element>russian</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>7</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>393</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriCharacterDetails ShikimoriCharacterDetails(int id, java.lang.String name, java.lang.String russian, hd.kinoshka.app.data.model.ShikimoriImage image, java.lang.String url, java.lang.String altName, java.lang.String japanese, java.lang.String description, java.lang.String descriptionHtml, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriAnimeItem&gt; animes)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'japanese'</description>
+  <highlighted_element>japanese</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>8</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>396</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriCharacterDetails ShikimoriCharacterDetails(int id, java.lang.String name, java.lang.String russian, hd.kinoshka.app.data.model.ShikimoriImage image, java.lang.String url, java.lang.String altName, java.lang.String japanese, java.lang.String description, java.lang.String descriptionHtml, java.util.List&lt;hd.kinoshka.app.data.model.ShikimoriAnimeItem&gt; animes)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'animes'</description>
+  <highlighted_element>animes</highlighted_element>
+  <language>kotlin</language>
+  <offset>21</offset>
+  <length>6</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/source/AnimeStreamResolver.kt</file>
+  <line>81</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.source</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.source.AnimeStreamResolver java.lang.Object fetchTranslations(int shikimoriId, hd.kinoshka.app.data.model.AnimeSourceType sourceType, kotlin.coroutines.Continuation&lt;? super java.util.List&lt;hd.kinoshka.app.data.model.AnimeTranslation&gt;&gt; $completion)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'anilibria'</description>
+  <highlighted_element>anilibria</highlighted_element>
+  <language>kotlin</language>
+  <offset>41</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/source/AnimeStreamResolver.kt</file>
+  <line>81</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.source</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.source.AnimeStreamResolver java.lang.Object fetchTranslations(int shikimoriId, hd.kinoshka.app.data.model.AnimeSourceType sourceType, kotlin.coroutines.Continuation&lt;? super java.util.List&lt;hd.kinoshka.app.data.model.AnimeTranslation&gt;&gt; $completion)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'AniLibria'</description>
+  <highlighted_element>AniLibria</highlighted_element>
+  <language>kotlin</language>
+  <offset>59</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/update/AppUpdateManager.kt</file>
+  <line>42</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.update</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.update.AppUpdateManager java.lang.Object checkForUpdate(java.lang.String releasesUrl, java.lang.String currentVersionName, kotlin.coroutines.Continuation&lt;? super hd.kinoshka.app.data.update.UpdateCheckResult&gt; $completion)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Kinoshka'</description>
+  <highlighted_element>Kinoshka</highlighted_element>
+  <language>kotlin</language>
+  <offset>35</offset>
+  <length>8</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/update/AppUpdateManager.kt</file>
+  <line>108</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.update</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.update.AppUpdateManager java.lang.Object downloadApk(hd.kinoshka.app.data.update.AppRelease release, kotlin.coroutines.Continuation&lt;? super kotlin.Result&lt;? extends java.io.File&gt;&gt; $completion)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Kinoshka'</description>
+  <highlighted_element>Kinoshka</highlighted_element>
+  <language>kotlin</language>
+  <offset>39</offset>
+  <length>8</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/update/AppUpdateManager.kt</file>
+  <line>159</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.update</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.update.AppUpdateManager java.lang.Object launchApkInstaller(java.io.File apkFile)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'fileprovider'</description>
+  <highlighted_element>fileprovider</highlighted_element>
+  <language>kotlin</language>
+  <offset>39</offset>
+  <length>12</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/components/ShimmerLoading.kt</file>
+  <line>104</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.components</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.components.ShimmerLoadingKt void KinoshkaAsyncImage(java.lang.Object model, java.lang.String contentDescription, androidx.compose.ui.Modifier modifier, androidx.compose.ui.layout.ContentScale contentScale, int filterQuality, boolean useOriginalSize, kotlin.jvm.functions.Function1&lt;? super coil.compose.AsyncImagePainter.State.Success,kotlin.Unit&gt; onSuccess)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori'</description>
+  <highlighted_element>Shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>42</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/components/ShimmerLoading.kt</file>
+  <line>104</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.components</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.components.ShimmerLoadingKt void KinoshkaAsyncImage(java.lang.Object model, java.lang.String contentDescription, androidx.compose.ui.Modifier modifier, androidx.compose.ui.layout.ContentScale contentScale, int filterQuality, boolean useOriginalSize, kotlin.jvm.functions.Function1&lt;? super coil.compose.AsyncImagePainter.State.Success,kotlin.Unit&gt; onSuccess)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Smarthard'</description>
+  <highlighted_element>Smarthard</highlighted_element>
+  <language>kotlin</language>
+  <offset>55</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/components/ShimmerLoading.kt</file>
+  <line>112</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.components</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.components.ShimmerLoadingKt void KinoshkaAsyncImage(java.lang.Object model, java.lang.String contentDescription, androidx.compose.ui.Modifier modifier, androidx.compose.ui.layout.ContentScale contentScale, int filterQuality, boolean useOriginalSize, kotlin.jvm.functions.Function1&lt;? super coil.compose.AsyncImagePainter.State.Success,kotlin.Unit&gt; onSuccess)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'shikimori'</description>
+  <highlighted_element>shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>33</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/AnimeFeedScreen.kt</file>
+  <line>143</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.AnimeFeedScreenKt void TopicFeedCard(hd.kinoshka.app.data.model.ShikimoriTopic topic, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onClick)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori'</description>
+  <highlighted_element>Shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>56</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt</file>
+  <line>517</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.HomeScreenKt void SearchRow(java.lang.String query, java.lang.String avatar, java.lang.String placeholder, hd.kinoshka.app.ui.screens.MainSection section, hd.kinoshka.app.ui.screens.ContentType contentType, kotlin.jvm.functions.Function1&lt;? super hd.kinoshka.app.ui.screens.ContentType,kotlin.Unit&gt; onContentTypeSelected, hd.kinoshka.app.ui.screens.LibraryFilterType libraryFilter, kotlin.jvm.functions.Function1&lt;? super hd.kinoshka.app.ui.screens.LibraryFilterType,kotlin.Unit&gt; onLibraryFilterSelected, boolean isFilterActive, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onFilterClick, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onQueryChange, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onSearch, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onAvatarClick, androidx.compose.ui.Modifier modifier)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'filterBg'</description>
+  <highlighted_element>filterBg</highlighted_element>
+  <language>kotlin</language>
+  <offset>53</offset>
+  <length>8</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt</file>
+  <line>541</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.HomeScreenKt void SearchRow(java.lang.String query, java.lang.String avatar, java.lang.String placeholder, hd.kinoshka.app.ui.screens.MainSection section, hd.kinoshka.app.ui.screens.ContentType contentType, kotlin.jvm.functions.Function1&lt;? super hd.kinoshka.app.ui.screens.ContentType,kotlin.Unit&gt; onContentTypeSelected, hd.kinoshka.app.ui.screens.LibraryFilterType libraryFilter, kotlin.jvm.functions.Function1&lt;? super hd.kinoshka.app.ui.screens.LibraryFilterType,kotlin.Unit&gt; onLibraryFilterSelected, boolean isFilterActive, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onFilterClick, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onQueryChange, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onSearch, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onAvatarClick, androidx.compose.ui.Modifier modifier)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'discoverBg'</description>
+  <highlighted_element>discoverBg</highlighted_element>
+  <language>kotlin</language>
+  <offset>53</offset>
+  <length>10</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt</file>
+  <line>585</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.HomeScreenKt void SearchRow(java.lang.String query, java.lang.String avatar, java.lang.String placeholder, hd.kinoshka.app.ui.screens.MainSection section, hd.kinoshka.app.ui.screens.ContentType contentType, kotlin.jvm.functions.Function1&lt;? super hd.kinoshka.app.ui.screens.ContentType,kotlin.Unit&gt; onContentTypeSelected, hd.kinoshka.app.ui.screens.LibraryFilterType libraryFilter, kotlin.jvm.functions.Function1&lt;? super hd.kinoshka.app.ui.screens.LibraryFilterType,kotlin.Unit&gt; onLibraryFilterSelected, boolean isFilterActive, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onFilterClick, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onQueryChange, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onSearch, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onAvatarClick, androidx.compose.ui.Modifier modifier)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'libBg'</description>
+  <highlighted_element>libBg</highlighted_element>
+  <language>kotlin</language>
+  <offset>53</offset>
+  <length>5</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt</file>
+  <line>821</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.HomeScreenKt void ContentTypeTabs(hd.kinoshka.app.ui.screens.ContentType selectedType, kotlin.jvm.functions.Function1&lt;? super hd.kinoshka.app.ui.screens.ContentType,kotlin.Unit&gt; onSelect)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'bgColor'</description>
+  <highlighted_element>bgColor</highlighted_element>
+  <language>kotlin</language>
+  <offset>25</offset>
+  <length>7</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>283</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'kodik'</description>
+  <highlighted_element>kodik</highlighted_element>
+  <language>kotlin</language>
+  <offset>36</offset>
+  <length>5</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>283</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Kodik'</description>
+  <highlighted_element>Kodik</highlighted_element>
+  <language>kotlin</language>
+  <offset>52</offset>
+  <length>5</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>286</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'aniqit'</description>
+  <highlighted_element>aniqit</highlighted_element>
+  <language>kotlin</language>
+  <offset>32</offset>
+  <length>6</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>286</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Aniqit'</description>
+  <highlighted_element>Aniqit</highlighted_element>
+  <language>kotlin</language>
+  <offset>42</offset>
+  <length>6</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>286</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Kodik'</description>
+  <highlighted_element>Kodik</highlighted_element>
+  <language>kotlin</language>
+  <offset>51</offset>
+  <length>5</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>287</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'kodik'</description>
+  <highlighted_element>kodik</highlighted_element>
+  <language>kotlin</language>
+  <offset>32</offset>
+  <length>5</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>288</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt void InAppWebScreen(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'kodik'</description>
+  <highlighted_element>kodik</highlighted_element>
+  <language>kotlin</language>
+  <offset>32</offset>
+  <length>5</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>664</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt java.lang.Integer extractShikimoriId(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'shikimori'</description>
+  <highlighted_element>shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>39</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>664</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt java.lang.Integer extractShikimoriId(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'shikimori'</description>
+  <highlighted_element>shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>80</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>668</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.InAppWebScreenKt java.lang.Integer extractShikimoriId(java.lang.String url)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'shikimori'</description>
+  <highlighted_element>shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>29</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>680</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="field" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt IFRAME_PIP_PATCH_JS" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'referrerpolicy'</description>
+  <highlighted_element>referrerpolicy</highlighted_element>
+  <language>kotlin</language>
+  <offset>26</offset>
+  <length>14</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>216</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void ProfileScreen(java.lang.String avatar, java.util.List&lt;hd.kinoshka.app.ui.screens.LibraryUiItem&gt; library, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onAvatarSelected, hd.kinoshka.app.data.local.ShikimoriAuthState shikimoriAuthState, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriToken, kotlin.jvm.functions.Function4&lt;? super java.lang.String,? super java.lang.Integer,? super java.lang.String,? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriSession, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onLogoutShikimori)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Kinoshka'</description>
+  <highlighted_element>Kinoshka</highlighted_element>
+  <language>kotlin</language>
+  <offset>141</offset>
+  <length>8</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>238</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void ProfileScreen(java.lang.String avatar, java.util.List&lt;hd.kinoshka.app.ui.screens.LibraryUiItem&gt; library, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onAvatarSelected, hd.kinoshka.app.data.local.ShikimoriAuthState shikimoriAuthState, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriToken, kotlin.jvm.functions.Function4&lt;? super java.lang.String,? super java.lang.Integer,? super java.lang.String,? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriSession, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onLogoutShikimori)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori'</description>
+  <highlighted_element>Shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>52</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>346</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void ProfileScreen(java.lang.String avatar, java.util.List&lt;hd.kinoshka.app.ui.screens.LibraryUiItem&gt; library, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onAvatarSelected, hd.kinoshka.app.data.local.ShikimoriAuthState shikimoriAuthState, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriToken, kotlin.jvm.functions.Function4&lt;? super java.lang.String,? super java.lang.Integer,? super java.lang.String,? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriSession, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onLogoutShikimori)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori'</description>
+  <highlighted_element>Shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>44</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>386</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void ProfileScreen(java.lang.String avatar, java.util.List&lt;hd.kinoshka.app.ui.screens.LibraryUiItem&gt; library, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onAvatarSelected, hd.kinoshka.app.data.local.ShikimoriAuthState shikimoriAuthState, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriToken, kotlin.jvm.functions.Function4&lt;? super java.lang.String,? super java.lang.Integer,? super java.lang.String,? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriSession, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onLogoutShikimori)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori'</description>
+  <highlighted_element>Shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>73</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>395</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void ProfileScreen(java.lang.String avatar, java.util.List&lt;hd.kinoshka.app.ui.screens.LibraryUiItem&gt; library, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onAvatarSelected, hd.kinoshka.app.data.local.ShikimoriAuthState shikimoriAuthState, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriToken, kotlin.jvm.functions.Function4&lt;? super java.lang.String,? super java.lang.Integer,? super java.lang.String,? super java.lang.String,kotlin.Unit&gt; onSaveShikimoriSession, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onLogoutShikimori)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori'</description>
+  <highlighted_element>Shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>51</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>866</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void AboutScreen(kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, java.lang.String updateStatusText, boolean isUpdateCheckRunning, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onCheckUpdates, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onOpenGithub, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onOpenTelegram, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onOpenShikimori)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori'</description>
+  <highlighted_element>Shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>33</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1408</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void ShikimoriWebLoginDialog(kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onDismiss, kotlin.jvm.functions.Function4&lt;? super java.lang.String,? super java.lang.Integer,? super java.lang.String,? super java.lang.String,kotlin.Unit&gt; onSuccess)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'Shikimori'</description>
+  <highlighted_element>Shikimori</highlighted_element>
+  <language>kotlin</language>
+  <offset>45</offset>
+  <length>9</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1427</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt void ShikimoriWebLoginDialog(kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onDismiss, kotlin.jvm.functions.Function4&lt;? super java.lang.String,? super java.lang.Integer,? super java.lang.String,? super java.lang.String,kotlin.Unit&gt; onSuccess)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'KinoshkaApp'</description>
+  <highlighted_element>KinoshkaApp</highlighted_element>
+  <language>kotlin</language>
+  <offset>181</offset>
+  <length>11</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1449</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt$-1 boolean onConsoleMessage(android.webkit.ConsoleMessage consoleMessage)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'SHIKI'</description>
+  <highlighted_element>SHIKI</highlighted_element>
+  <language>kotlin</language>
+  <offset>56</offset>
+  <length>5</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1450</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.ProfileSettingsScreensKt$-1 boolean onConsoleMessage(android.webkit.ConsoleMessage consoleMessage)" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'SHIKI'</description>
+  <highlighted_element>SHIKI</highlighted_element>
+  <language>kotlin</language>
+  <offset>72</offset>
+  <length>5</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/utils/SearchQueryUtils.kt</file>
+  <line>4</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.utils</package>
+  <entry_point TYPE="field" FQNAME="hd.kinoshka.app.utils.SearchQueryUtils EN_CHARS" />
+  <problem_class id="GrazieInspectionRunner" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Grammar</problem_class>
+  <description>Typo: In word 'zxcvbnm'</description>
+  <highlighted_element>zxcvbnm</highlighted_element>
+  <language>kotlin</language>
+  <offset>57</offset>
+  <length>7</length>
+</problem>
+</problems>

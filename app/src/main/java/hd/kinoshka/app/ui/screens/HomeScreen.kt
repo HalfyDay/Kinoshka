@@ -41,9 +41,18 @@ import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.draw.clip
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.expandVertically
@@ -74,6 +83,7 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -89,6 +99,7 @@ import hd.kinoshka.app.data.model.FilterItem
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -119,6 +130,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import coil.compose.AsyncImage
@@ -176,7 +188,9 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenAbout: () -> Unit,
     onUpdateFilters: (SearchFilterState) -> Unit = {},
-    onToggleFilterSheet: (Boolean) -> Unit = {}
+    onToggleFilterSheet: (Boolean) -> Unit = {},
+    onOpenCalendar: () -> Unit = {},
+    onOpenFeed: () -> Unit = {}
 ) {
     val focusManager = LocalFocusManager.current
     val libraryMetrics = state.libraryTileSize.toGridMetrics()
@@ -197,6 +211,9 @@ fun HomeScreen(
             if (state.tab == HomeTab.HISTORY) MainSection.LIBRARY else MainSection.DISCOVER
         )
     }
+    LaunchedEffect(state.tab) {
+        section = if (state.tab == HomeTab.HISTORY) MainSection.LIBRARY else MainSection.DISCOVER
+    }
     var libraryQuery by rememberSaveable { mutableStateOf("") }
     var discoverQuery by rememberSaveable { mutableStateOf("") }
     var moreQuery by rememberSaveable { mutableStateOf("") }
@@ -206,15 +223,23 @@ fun HomeScreen(
         MainSection.MORE -> moreQuery
     }
     var libraryTab by rememberSaveable { mutableStateOf(LibraryTab.WATCHING) }
+    var libraryFilter by rememberSaveable { mutableStateOf(LibraryFilterType.ALL) }
     val searchRowHeight = SearchChromeHeight
     val searchRowAlpha = 1f
     val normalizedQuery = state.query.trim()
-    val libraryItemsByTab = remember(state.library, state.hideRussianContent, normalizedQuery) {
+    val libraryItemsByTab = remember(state.library, state.hideRussianContent, normalizedQuery, libraryFilter) {
         LibraryTab.entries.associateWith { tab ->
             state.library
                 .filterByTab(tab)
                 .filterByRussian(state.hideRussianContent)
                 .filterByQuery(normalizedQuery)
+                .filter { item ->
+                    when (libraryFilter) {
+                        LibraryFilterType.ALL -> true
+                        LibraryFilterType.FILMS -> item.type != "ANIME"
+                        LibraryFilterType.ANIME -> item.type == "ANIME"
+                    }
+                }
         }
     }
     val discoverItems = remember(state.items, state.hideRussianContent) {
@@ -252,8 +277,8 @@ fun HomeScreen(
                             onDiscoverCategorySelected(DiscoverCategory.POPULAR)
                         }
                         MainSection.MORE -> {
-                            onQueryChange(moreQuery)
-                            onTabSelected(HomeTab.CATALOG)
+                            moreQuery = ""
+                            onQueryChange("")
                         }
                     }
                 }
@@ -288,10 +313,14 @@ fun HomeScreen(
                         avatar = state.profileAvatar,
                         placeholder = when (section) {
                             MainSection.LIBRARY -> "Поиск в библиотеке"
-                            MainSection.DISCOVER -> "Поиск фильмов и сериалов"
+                            MainSection.DISCOVER -> if (state.contentType == ContentType.ANIME) "Поиск аниме" else "Поиск фильмов"
                             MainSection.MORE -> "Поиск по разделу Ещё"
                         },
                         section = section,
+                        contentType = state.contentType,
+                        onContentTypeSelected = onContentTypeSelected,
+                        libraryFilter = libraryFilter,
+                        onLibraryFilterSelected = { libraryFilter = it },
                         isFilterActive = state.filterState.isActive,
                         onFilterClick = { onToggleFilterSheet(true) },
                         onQueryChange = { value ->
@@ -340,24 +369,33 @@ fun HomeScreen(
                                 ) { page ->
                                     val pageTab = LibraryTab.entries[page]
                                     val items = libraryItemsByTab[pageTab].orEmpty()
-                                    LibraryPageGrid(
-                                        items = items,
-                                        historyMode = pageTab == LibraryTab.HISTORY,
-                                        onOpenHistoryFilm = onOpenHistoryFilm,
-                                        onRemoveFromHistory = onRemoveFromHistory,
-                                        metrics = libraryMetrics
-                                    )
+                                    AnimatedContent(
+                                        targetState = state.contentType,
+                                        transitionSpec = {
+                                            fadeIn(animationSpec = tween(250)).togetherWith(fadeOut(animationSpec = tween(150)))
+                                        },
+                                        label = "libraryGridAnim"
+                                    ) { _ ->
+                                        LibraryPageGrid(
+                                            items = items,
+                                            historyMode = pageTab == LibraryTab.HISTORY,
+                                            onOpenHistoryFilm = onOpenHistoryFilm,
+                                            onRemoveFromHistory = onRemoveFromHistory,
+                                            metrics = libraryMetrics
+                                        )
+                                    }
                                 }
                             }
                         }
 
                         MainSection.DISCOVER -> {
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                ContentTypeTabs(
-                                    selectedType = state.contentType,
-                                    onSelect = onContentTypeSelected
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
+                            AnimatedContent(
+                                targetState = state.contentType,
+                                transitionSpec = {
+                                    fadeIn(animationSpec = tween(250)).togetherWith(fadeOut(animationSpec = tween(150)))
+                                },
+                                label = "discoverGridAnim"
+                            ) { _ ->
                                 DiscoverContent(
                                     state = state,
                                     sourceItems = discoverItems,
@@ -367,8 +405,8 @@ fun HomeScreen(
                                     onRetry = onRetry,
                                     onOpenFilm = onOpenFilm,
                                     onLoadMore = onLoadMore,
-                                    onCategorySelected = onDiscoverCategorySelected,
-                                    onUpdateFilters = onUpdateFilters
+                                    onOpenCalendar = onOpenCalendar,
+                                    onOpenFeed = onOpenFeed
                                 )
                             }
                         }
@@ -400,70 +438,198 @@ fun HomeScreen(
     }
 }
 
+enum class LibraryFilterType(val label: String) {
+    ALL("Все"),
+    FILMS("Кино"),
+    ANIME("Аниме")
+}
+
 @Composable
 private fun SearchRow(
     query: String,
     avatar: String,
     placeholder: String,
     section: MainSection,
-    isFilterActive: Boolean = false,
-    onFilterClick: (() -> Unit)? = null,
     onQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
     onAvatarClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contentType: ContentType = ContentType.FILMS,
+    onContentTypeSelected: ((ContentType) -> Unit)? = null,
+    libraryFilter: LibraryFilterType = LibraryFilterType.ALL,
+    onLibraryFilterSelected: ((LibraryFilterType) -> Unit)? = null,
+    isFilterActive: Boolean = false,
+    onFilterClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        TextField(
-            value = query,
-            onValueChange = onQueryChange,
-            modifier = Modifier.weight(1f),
-            singleLine = true,
-            leadingIcon = {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(horizontal = 14.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Default.Search,
                     contentDescription = "Поиск",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
-            },
-            placeholder = { Text(placeholder) },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { onSearch() }),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                disabledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                disabledIndicatorColor = Color.Transparent
-            ),
-            shape = RoundedCornerShape(28.dp)
-        )
-
-        Spacer(modifier = Modifier.width(10.dp))
-
-        if (section == MainSection.DISCOVER) {
-            Surface(
-                modifier = Modifier
-                    .size(46.dp)
-                    .clickable { onFilterClick?.invoke() },
-                shape = CircleShape,
-                color = if (isFilterActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
-            ) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    FilterTuneIcon(
-                        tint = if (isFilterActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                    if (query.isEmpty()) {
+                        Text(
+                            text = placeholder,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    BasicTextField(
+                        value = query,
+                        onValueChange = onQueryChange,
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
-        } else {
+        }
+
+        if (section == MainSection.DISCOVER) {
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // 1. Filter button matched to 48.dp height
+            val filterBgColor by animateColorAsState(
+                if (isFilterActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                animationSpec = tween(280), label = "filterBg"
+            )
+            val filterIconColor by animateColorAsState(
+                if (isFilterActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                animationSpec = tween(280), label = "filterIcon"
+            )
             Surface(
                 modifier = Modifier
-                    .size(46.dp)
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable { onFilterClick?.invoke() },
+                shape = CircleShape,
+                color = filterBgColor
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    FilterTuneIcon(tint = filterIconColor)
+                }
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // 2. Choice of anime or cinema (No Emojis)!
+            val discoverBgColor by animateColorAsState(
+                if (contentType == ContentType.ANIME) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.primaryContainer,
+                animationSpec = tween(280), label = "discoverBg"
+            )
+            val discoverTextColor by animateColorAsState(
+                if (contentType == ContentType.ANIME) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                animationSpec = tween(280), label = "discoverText"
+            )
+            Surface(
+                modifier = Modifier
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .clickable {
+                        val next = if (contentType == ContentType.FILMS) ContentType.ANIME else ContentType.FILMS
+                        onContentTypeSelected?.invoke(next)
+                    },
+                shape = RoundedCornerShape(24.dp),
+                color = discoverBgColor
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
+                    AnimatedContent(
+                        targetState = contentType,
+                        transitionSpec = {
+                            (fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.88f, animationSpec = tween(220))) togetherWith
+                            (fadeOut(animationSpec = tween(180)) + scaleOut(targetScale = 0.88f, animationSpec = tween(180)))
+                        },
+                        label = "contentTypeAnim"
+                    ) { targetType ->
+                        Text(
+                            text = if (targetType == ContentType.FILMS) "Кино" else "Аниме",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = discoverTextColor
+                        )
+                    }
+                }
+            }
+        } else if (section == MainSection.LIBRARY) {
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // Library filter switcher [Все] [Кино] [Аниме] (No Emojis)!
+            val libBgColor by animateColorAsState(
+                when (libraryFilter) {
+                    LibraryFilterType.ALL -> MaterialTheme.colorScheme.surfaceContainerHigh
+                    LibraryFilterType.FILMS -> MaterialTheme.colorScheme.primaryContainer
+                    LibraryFilterType.ANIME -> MaterialTheme.colorScheme.tertiaryContainer
+                },
+                animationSpec = tween(280), label = "libBg"
+            )
+            val libTextColor by animateColorAsState(
+                when (libraryFilter) {
+                    LibraryFilterType.ALL -> MaterialTheme.colorScheme.onSurface
+                    LibraryFilterType.FILMS -> MaterialTheme.colorScheme.onPrimaryContainer
+                    LibraryFilterType.ANIME -> MaterialTheme.colorScheme.onTertiaryContainer
+                },
+                animationSpec = tween(280), label = "libText"
+            )
+            Surface(
+                modifier = Modifier
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .clickable {
+                        val next = when (libraryFilter) {
+                            LibraryFilterType.ALL -> LibraryFilterType.FILMS
+                            LibraryFilterType.FILMS -> LibraryFilterType.ANIME
+                            LibraryFilterType.ANIME -> LibraryFilterType.ALL
+                        }
+                        onLibraryFilterSelected?.invoke(next)
+                    },
+                shape = RoundedCornerShape(24.dp),
+                color = libBgColor
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
+                    AnimatedContent(
+                        targetState = libraryFilter,
+                        transitionSpec = {
+                            (fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.88f, animationSpec = tween(220))) togetherWith
+                            (fadeOut(animationSpec = tween(180)) + scaleOut(targetScale = 0.88f, animationSpec = tween(180)))
+                        },
+                        label = "libFilterAnim"
+                    ) { targetFilter ->
+                        Text(
+                            text = targetFilter.label,
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = libTextColor
+                        )
+                    }
+                }
+            }
+        } else if (section == MainSection.MORE) {
+            Spacer(modifier = Modifier.width(6.dp))
+            Surface(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
                     .clickable(onClick = onAvatarClick),
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.primary
@@ -693,8 +859,8 @@ private fun DiscoverContent(
     onRetry: () -> Unit,
     onOpenFilm: (FilmItem) -> Unit,
     onLoadMore: () -> Unit,
-    onCategorySelected: (DiscoverCategory) -> Unit,
-    onUpdateFilters: (SearchFilterState) -> Unit
+    onOpenCalendar: () -> Unit,
+    onOpenFeed: () -> Unit
 ) {
     when {
         state.loading -> {
@@ -721,6 +887,11 @@ private fun DiscoverContent(
                     contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
+                    if (state.contentType == ContentType.ANIME) {
+                        item(key = "anime_header_buttons") {
+                            AnimeHeaderButtonsRow(onOpenCalendar = onOpenCalendar, onOpenFeed = onOpenFeed)
+                        }
+                    }
                     itemsIndexed(
                         items = sourceItems,
                         key = { _, film -> film.kinopoiskId },
@@ -754,6 +925,11 @@ private fun DiscoverContent(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                if (state.contentType == ContentType.ANIME) {
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "anime_header_buttons") {
+                        AnimeHeaderButtonsRow(onOpenCalendar = onOpenCalendar, onOpenFeed = onOpenFeed)
+                    }
+                }
                 gridItemsIndexed(
                     items = sourceItems,
                     key = { _, film -> film.kinopoiskId },
@@ -777,6 +953,55 @@ private fun DiscoverContent(
                         SkeletonGridCard(compactText = metrics.columns >= 3)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnimeHeaderButtonsRow(
+    onOpenCalendar: () -> Unit,
+    onOpenFeed: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            modifier = Modifier
+                .weight(1f)
+                .height(42.dp)
+                .clip(RoundedCornerShape(21.dp))
+                .clickable(onClick = onOpenCalendar),
+            shape = RoundedCornerShape(21.dp),
+            color = MaterialTheme.colorScheme.primaryContainer
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Text(
+                    text = "Календарь релизов",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+        Surface(
+            modifier = Modifier
+                .weight(1f)
+                .height(42.dp)
+                .clip(RoundedCornerShape(21.dp))
+                .clickable(onClick = onOpenFeed),
+            shape = RoundedCornerShape(21.dp),
+            color = MaterialTheme.colorScheme.secondaryContainer
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Text(
+                    text = "Лента релизов",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
             }
         }
     }
@@ -849,6 +1074,7 @@ private fun MenuCard(
         modifier = Modifier
             .fillMaxWidth()
             .animateContentSize()
+            .clip(RoundedCornerShape(22.dp))
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(22.dp)
     ) {
@@ -892,6 +1118,7 @@ private fun DiscoverGridCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
             .clickable { onOpenFilm(film) }
     ) {
         Box(
@@ -970,11 +1197,19 @@ private fun LibraryGridCard(
     ) {
         item.toWatchProgressUi()
     }
-    val detailsText = remember(item.subtitle, item.ratingText) {
-        listOfNotNull(
-            item.subtitle,
-            item.ratingText?.replace("KP ", "★ ")
-        ).joinToString(" • ")
+    val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME"
+    val detailsText = remember(item.type, item.totalEpisodes, item.ratingText, item.subtitle, isAnime) {
+        if (isAnime) {
+            val typeStr = if (item.totalEpisodes != null && item.totalEpisodes > 1) "TV" else "Фильм"
+            val epStr = item.totalEpisodes?.let { "$it эп." }
+            val rateStr = item.ratingText?.takeIf { it.isNotBlank() }?.let { "★ " + it.replace("KP ", "").replace("★", "").trim() }
+            listOfNotNull(typeStr, epStr, rateStr).joinToString(" • ")
+        } else {
+            listOfNotNull(
+                item.subtitle,
+                item.ratingText?.replace("KP ", "★ ")
+            ).joinToString(" • ")
+        }
     }
     Column(
         modifier = Modifier
@@ -1030,25 +1265,6 @@ private fun LibraryGridCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            val progressLabel = watchProgress?.progressLabel
-            if (!progressLabel.isNullOrBlank()) {
-                Text(
-                    text = progressLabel,
-                    style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            if (!item.note.isNullOrBlank()) {
-                Text(
-                    text = item.note,
-                    style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
         }
     }
 }
@@ -1130,7 +1346,8 @@ private fun LibraryVerticalRow(
                         .height(4.dp)
                         .clip(RoundedCornerShape(99.dp)),
                     color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    drawStopIndicator = {}
                 )
                 Text(
                     text = watchProgress.progressLabel,
@@ -1171,6 +1388,7 @@ private fun DiscoverVerticalRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
             .clickable { onOpenFilm(film) },
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.Top
@@ -1262,7 +1480,7 @@ private data class WatchProgressUi(
 )
 
 private fun LibraryUiItem.toWatchProgressUi(): WatchProgressUi? {
-    if (type != "TV_SERIES") return null
+    if (type != "TV_SERIES" && type != "ANIME") return null
 
     val watchedSeasonsSafe = (watchedSeasons ?: 0).coerceAtLeast(0)
     val watchedEpisodesSafe = (watchedEpisodes ?: 0).coerceAtLeast(0)
@@ -1309,18 +1527,24 @@ private fun LibraryUiItem.toWatchProgressUi(): WatchProgressUi? {
             }
         }
 
-        watchedEpisodesSafe > 0 || watchedSeasonsSafe > 0 -> 1f
+        watchedEpisodesSafe > 0 || watchedSeasonsSafe > 0 -> {
+            if (totalEpisodesSafe != null && totalEpisodesSafe > 0) {
+                (watchedEpisodesSafe.toFloat() / totalEpisodesSafe.toFloat()).coerceIn(0f, 1f)
+            } else {
+                1f
+            }
+        }
         else -> 0f
     }
 
     val progressLabel = buildList {
-        totalSeasonsSafe?.let { add("S $watchedSeasonsBounded/$it") } ?: run {
-            if (watchedSeasonsBounded > 0) add("S $watchedSeasonsBounded")
+        totalSeasonsSafe?.let { add("Сезон $watchedSeasonsBounded из $it") } ?: run {
+            if (watchedSeasonsBounded > 0) add("Сезон $watchedSeasonsBounded")
         }
-        currentSeasonTotalEpisodes?.let { add("E $watchedEpisodesInSeason/$it") } ?: run {
-            if (watchedEpisodesSafe > 0) add("E $watchedEpisodesSafe")
+        totalEpisodesSafe?.let { add("Серия $watchedEpisodesSafe из $it") } ?: currentSeasonTotalEpisodes?.let { add("Серия $watchedEpisodesInSeason из $it") } ?: run {
+            if (watchedEpisodesSafe > 0) add("Серия $watchedEpisodesSafe")
         }
-    }.joinToString(" • ")
+    }.joinToString(", ")
 
     return WatchProgressUi(
         progress = progress,
@@ -1663,9 +1887,9 @@ private data class MoreMenuItem(
 @Composable
 private fun FilterTuneIcon(
     tint: Color,
-    modifier: Modifier = Modifier.size(20.dp)
+    modifier: Modifier = Modifier
 ) {
-    Canvas(modifier = modifier) {
+    Canvas(modifier = modifier.size(20.dp)) {
         val w = size.width
         val h = size.height
         val strokeWidth = 1.6.dp.toPx()
@@ -1725,485 +1949,444 @@ private fun SearchFilterBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 6.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+                .padding(horizontal = 18.dp, vertical = 4.dp)
         ) {
+            // Header Row
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = if (contentType == ContentType.ANIME) "Фильтры аниме (Shikimori)" else "Фильтры поиска",
-                    style = MaterialTheme.typography.titleLarge,
+                    text = if (contentType == ContentType.ANIME) "Фильтры аниме" else "Фильтры поиска",
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 if (tempState.isActive) {
-                    TextButton(onClick = {
-                        tempState = SearchFilterState()
-                        countrySearchQuery = ""
-                    }) {
-                        Text("Сбросить все", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                    TextButton(
+                        onClick = {
+                            tempState = SearchFilterState()
+                            countrySearchQuery = ""
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    ) {
+                        Text("Сбросить", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
 
-            if (contentType == ContentType.ANIME) {
-                // Anime Card 1: Тип аниме и Статус
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Тип аниме", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                val kinds = listOf(null to "Все", "tv" to "ТВ Сериал", "movie" to "Фильм", "ova" to "OVA", "ona" to "ONA", "special" to "Спешл")
-                                kinds.forEach { (code, label) ->
-                                    FilterChip(
-                                        selected = tempState.animeKind == code,
-                                        onClick = { tempState = tempState.copy(animeKind = code) },
-                                        label = { Text(label) }
-                                    )
-                                }
-                            }
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (contentType == ContentType.ANIME) {
+                    // 1. Тип
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Тип", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        val rawKinds = listOf(null to "Все", "tv" to "ТВ", "movie" to "Фильм", "ova" to "OVA", "ona" to "ONA", "special" to "Спешл")
+                        val kinds = remember(tempState.animeKind) {
+                            if (tempState.animeKind == null) rawKinds
+                            else listOf(rawKinds.first { it.first == tempState.animeKind }) + rawKinds.filter { it.first != tempState.animeKind }
                         }
-
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Статус выхода", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                val statuses = listOf(null to "Все", "released" to "Вышло", "ongoing" to "Онгоинг", "anons" to "Анонс")
-                                statuses.forEach { (code, label) ->
-                                    FilterChip(
-                                        selected = tempState.animeStatus == code,
-                                        onClick = { tempState = tempState.copy(animeStatus = code) },
-                                        label = { Text(label) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Anime Card 2: Сортировка и Минимальная оценка
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Сортировка", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                val orders = listOf(
-                                    "popularity" to "По популярности",
-                                    "ranked" to "По рейтингу",
-                                    "aired_on" to "По дате выхода",
-                                    "name" to "По алфавиту",
-                                    "random" to "Случайно"
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(kinds) { (code, label) ->
+                                FilterChip(
+                                    selected = tempState.animeKind == code,
+                                    onClick = { tempState = tempState.copy(animeKind = code) },
+                                    label = { Text(label, style = MaterialTheme.typography.bodySmall) }
                                 )
-                                orders.forEach { (code, label) ->
-                                    FilterChip(
-                                        selected = tempState.animeOrder == code,
-                                        onClick = { tempState = tempState.copy(animeOrder = code) },
-                                        label = { Text(label) }
-                                    )
-                                }
-                            }
-                        }
-
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Минимальная оценка", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                val scores = listOf(null to "Любая", 6 to "6+ ★", 7 to "7+ ★", 8 to "8+ ★", 9 to "9+ ★")
-                                scores.forEach { (score, label) ->
-                                    FilterChip(
-                                        selected = tempState.animeScoreFrom == score,
-                                        onClick = { tempState = tempState.copy(animeScoreFrom = score) },
-                                        label = { Text(label) }
-                                    )
-                                }
                             }
                         }
                     }
-                }
 
-                // Anime Card 3: Возрастной рейтинг
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text("Возрастной рейтинг", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            val ratings = listOf(
-                                null to "Все",
-                                "g" to "G (0+)",
-                                "pg" to "PG (6+)",
-                                "pg_13" to "PG-13 (13+)",
-                                "r" to "R-17 (17+)",
-                                "r_plus" to "R+ (18+)"
-                            )
-                            ratings.forEach { (code, label) ->
+                    // 2. Статус
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Статус выхода", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        val rawStatuses = listOf(null to "Все", "released" to "Вышло", "ongoing" to "Онгоинг", "anons" to "Анонс")
+                        val statuses = remember(tempState.animeStatus) {
+                            if (tempState.animeStatus == null) rawStatuses
+                            else listOf(rawStatuses.first { it.first == tempState.animeStatus }) + rawStatuses.filter { it.first != tempState.animeStatus }
+                        }
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(statuses) { (code, label) ->
+                                FilterChip(
+                                    selected = tempState.animeStatus == code,
+                                    onClick = { tempState = tempState.copy(animeStatus = code) },
+                                    label = { Text(label, style = MaterialTheme.typography.bodySmall) }
+                                )
+                            }
+                        }
+                    }
+
+                    // 3. Сортировка
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Сортировка", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        val rawOrders = listOf(
+                            "popularity" to "Популярность",
+                            "ranked" to "Рейтинг",
+                            "aired_on" to "Дата выхода",
+                            "name" to "Алфавит",
+                            "random" to "Случайно"
+                        )
+                        val orders = remember(tempState.animeOrder) {
+                            val active = tempState.animeOrder
+                            if (active == null) rawOrders
+                            else listOf(rawOrders.first { it.first == active }) + rawOrders.filter { it.first != active }
+                        }
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(orders) { (code, label) ->
+                                FilterChip(
+                                    selected = tempState.animeOrder == code,
+                                    onClick = { tempState = tempState.copy(animeOrder = code) },
+                                    label = { Text(label, style = MaterialTheme.typography.bodySmall) }
+                                )
+                            }
+                        }
+                    }
+
+                    // 4. Оценка
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Минимальная оценка", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        val rawScores = listOf(null to "Любая", 6 to "6+ ★", 7 to "7+ ★", 8 to "8+ ★", 9 to "9+ ★")
+                        val scores = remember(tempState.animeScoreFrom) {
+                            if (tempState.animeScoreFrom == null) rawScores
+                            else listOf(rawScores.first { it.first == tempState.animeScoreFrom }) + rawScores.filter { it.first != tempState.animeScoreFrom }
+                        }
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(scores) { (score, label) ->
+                                FilterChip(
+                                    selected = tempState.animeScoreFrom == score,
+                                    onClick = { tempState = tempState.copy(animeScoreFrom = score) },
+                                    label = { Text(label, style = MaterialTheme.typography.bodySmall) }
+                                )
+                            }
+                        }
+                    }
+
+                    // 5. Возрастной рейтинг
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Возраст", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        val rawRatings = listOf(
+                            null to "Все",
+                            "g" to "0+",
+                            "pg" to "6+",
+                            "pg_13" to "13+",
+                            "r" to "17+",
+                            "r_plus" to "18+"
+                        )
+                        val ratings = remember(tempState.animeRating) {
+                            if (tempState.animeRating == null) rawRatings
+                            else listOf(rawRatings.first { it.first == tempState.animeRating }) + rawRatings.filter { it.first != tempState.animeRating }
+                        }
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(ratings) { (code, label) ->
                                 FilterChip(
                                     selected = tempState.animeRating == code,
                                     onClick = { tempState = tempState.copy(animeRating = code) },
-                                    label = { Text(label) }
+                                    label = { Text(label, style = MaterialTheme.typography.bodySmall) }
                                 )
                             }
                         }
                     }
-                }
 
-                // Anime Card 4: Жанры аниме
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .animateContentSize()
-                            .padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                    // 6. Жанр
+                    Column(modifier = Modifier.animateContentSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Жанр аниме", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            TextButton(onClick = { isGenresExpanded = !isGenresExpanded }) {
-                                Text(
-                                    if (isGenresExpanded) "Свернуть ▲" else "Показать все (${shikimoriGenres.size}) ▼",
-                                    style = MaterialTheme.typography.labelMedium
-                                )
+                            Text("Жанр", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            TextButton(onClick = { isGenresExpanded = !isGenresExpanded }, contentPadding = PaddingValues(0.dp)) {
+                                Text(if (isGenresExpanded) "Свернуть ▲" else "Все (${shikimoriGenres.size}) ▼", style = MaterialTheme.typography.labelSmall)
                             }
                         }
-
+                        val sortedShikimoriGenres = remember(shikimoriGenres, tempState.animeGenreId) {
+                            if (tempState.animeGenreId == null) shikimoriGenres
+                            else shikimoriGenres.sortedByDescending { it.id == tempState.animeGenreId }
+                        }
                         if (!isGenresExpanded) {
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 item {
                                     FilterChip(
                                         selected = tempState.animeGenreId == null,
                                         onClick = { tempState = tempState.copy(animeGenreId = null) },
-                                        label = { Text("Все жанры") }
+                                        label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
                                     )
                                 }
-                                items(shikimoriGenres) { genre ->
+                                items(sortedShikimoriGenres) { genre ->
                                     FilterChip(
                                         selected = tempState.animeGenreId == genre.id,
                                         onClick = { tempState = tempState.copy(animeGenreId = genre.id) },
-                                        label = { Text(genre.genre.orEmpty()) }
+                                        label = { Text(genre.genre.orEmpty(), style = MaterialTheme.typography.bodySmall) }
                                     )
                                 }
                             }
                         } else {
-                            AnimatedVisibility(
-                                visible = isGenresExpanded,
-                                enter = expandVertically() + fadeIn(),
-                                exit = shrinkVertically() + fadeOut()
-                            ) {
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    verticalArrangement = Arrangement.spacedBy(1.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                FilterChip(
+                                    selected = tempState.animeGenreId == null,
+                                    onClick = { tempState = tempState.copy(animeGenreId = null) },
+                                    label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
+                                )
+                                sortedShikimoriGenres.forEach { genre ->
                                     FilterChip(
-                                        selected = tempState.animeGenreId == null,
-                                        onClick = { tempState = tempState.copy(animeGenreId = null) },
-                                        label = { Text("Все жанры") }
-                                    )
-                                    shikimoriGenres.forEach { genre ->
-                                        FilterChip(
-                                            selected = tempState.animeGenreId == genre.id,
-                                            onClick = { tempState = tempState.copy(animeGenreId = genre.id) },
-                                            label = { Text(genre.genre.orEmpty()) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Card 1: Категории и Сортировка
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Тип контента", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                val types = listOf("ALL" to "Все", "FILM" to "Фильмы", "TV_SERIES" to "Сериалы")
-                                types.forEach { (code, label) ->
-                                    FilterChip(
-                                        selected = tempState.selectedType == code,
-                                        onClick = { tempState = tempState.copy(selectedType = code) },
-                                        label = { Text(label) }
-                                    )
-                                }
-                            }
-                        }
-
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Сортировка", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                val orders = listOf("RATING" to "Рейтинг", "NUM_VOTE" to "Популярность", "YEAR" to "Дата")
-                                orders.forEach { (code, label) ->
-                                    FilterChip(
-                                        selected = tempState.selectedOrder == code,
-                                        onClick = { tempState = tempState.copy(selectedOrder = code) },
-                                        label = { Text(label) }
+                                        selected = tempState.animeGenreId == genre.id,
+                                        onClick = { tempState = tempState.copy(animeGenreId = genre.id) },
+                                        label = { Text(genre.genre.orEmpty(), style = MaterialTheme.typography.bodySmall) }
                                     )
                                 }
                             }
                         }
                     }
-                }
-
-                // Card 2: Рейтинг и Годы (Ползунки с отступами от краев)
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Минимальный рейтинг", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                Text(
-                                    text = tempState.ratingFrom?.let { r -> "от $r.0 ★" } ?: "Любой",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                                Slider(
-                                    value = (tempState.ratingFrom ?: 0).toFloat(),
-                                    onValueChange = { valFloat ->
-                                        val v = valFloat.toInt()
-                                        tempState = tempState.copy(ratingFrom = if (v <= 0) null else v)
-                                    },
-                                    valueRange = 0f..9f,
-                                    steps = 8
-                                )
-                            }
+                } else {
+                    // Фильмы / Сериалы
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Тип контента", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        val rawTypes = listOf("ALL" to "Все", "FILM" to "Фильмы", "TV_SERIES" to "Сериалы")
+                        val types = remember(tempState.selectedType) {
+                            val active = tempState.selectedType ?: "ALL"
+                            listOf(rawTypes.first { it.first == active }) + rawTypes.filter { it.first != active }
                         }
-
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            val currentYearFrom = (tempState.yearFrom ?: 1980).toFloat()
-                            val currentYearTo = (tempState.yearTo ?: 2026).toFloat()
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Год выпуска", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                Text(
-                                    text = if (tempState.yearFrom == null && tempState.yearTo == null) "Все года"
-                                           else "${currentYearFrom.toInt()} — ${currentYearTo.toInt()}",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                                RangeSlider(
-                                    value = currentYearFrom..currentYearTo,
-                                    onValueChange = { range ->
-                                        val yFrom = if (range.start <= 1980f) null else range.start.toInt()
-                                        val yTo = if (range.endInclusive >= 2026f) null else range.endInclusive.toInt()
-                                        tempState = tempState.copy(yearFrom = yFrom, yearTo = yTo)
-                                    },
-                                    valueRange = 1980f..2026f,
-                                    steps = 45
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(types) { (code, label) ->
+                                FilterChip(
+                                    selected = tempState.selectedType == code,
+                                    onClick = { tempState = tempState.copy(selectedType = code) },
+                                    label = { Text(label, style = MaterialTheme.typography.bodySmall) }
                                 )
                             }
                         }
                     }
-                }
 
-                // Card 3: Жанры
-                if (sortedGenres.isNotEmpty()) {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .animateContentSize()
-                                .padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Жанр", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                TextButton(onClick = { isGenresExpanded = !isGenresExpanded }) {
-                                    Text(
-                                        if (isGenresExpanded) "Свернуть ▲" else "Показать все (${sortedGenres.size}) ▼",
-                                        style = MaterialTheme.typography.labelMedium
-                                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Сортировка", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        val rawOrders = listOf("RATING" to "Рейтинг", "NUM_VOTE" to "Популярность", "YEAR" to "Дата")
+                        val orders = remember(tempState.selectedOrder) {
+                            val active = tempState.selectedOrder
+                            if (active == null) rawOrders
+                            else listOf(rawOrders.first { it.first == active }) + rawOrders.filter { it.first != active }
+                        }
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(orders) { (code, label) ->
+                                FilterChip(
+                                    selected = tempState.selectedOrder == code,
+                                    onClick = { tempState = tempState.copy(selectedOrder = code) },
+                                    label = { Text(label, style = MaterialTheme.typography.bodySmall) }
+                                )
+                            }
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Минимальный рейтинг", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Text(tempState.ratingFrom?.let { "от $it★" } ?: "Любой", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                        }
+                        Slider(
+                            value = (tempState.ratingFrom ?: 0).toFloat(),
+                            onValueChange = { valFloat ->
+                                val v = valFloat.toInt()
+                                tempState = tempState.copy(ratingFrom = if (v <= 0) null else v)
+                            },
+                            valueRange = 0f..9f,
+                            steps = 8,
+                            thumb = {
+                                Surface(
+                                    modifier = Modifier.size(8.dp, 20.dp),
+                                    shape = RoundedCornerShape(3.dp),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shadowElevation = 2.dp
+                                ) {}
+                            }
+                        )
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        val currentYearFrom = (tempState.yearFrom ?: 1980).toFloat()
+                        val currentYearTo = (tempState.yearTo ?: 2026).toFloat()
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Годы выпуска", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                if (tempState.yearFrom == null && tempState.yearTo == null) "Все"
+                                else "${currentYearFrom.toInt()} — ${currentYearTo.toInt()}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        RangeSlider(
+                            value = currentYearFrom..currentYearTo,
+                            onValueChange = { range ->
+                                val yFrom = if (range.start <= 1980f) null else range.start.toInt()
+                                val yTo = if (range.endInclusive >= 2026f) null else range.endInclusive.toInt()
+                                tempState = tempState.copy(yearFrom = yFrom, yearTo = yTo)
+                            },
+                            valueRange = 1980f..2026f,
+                            steps = 45,
+                            startThumb = {
+                                Surface(
+                                    modifier = Modifier.size(8.dp, 20.dp),
+                                    shape = RoundedCornerShape(3.dp),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shadowElevation = 2.dp
+                                ) {}
+                            },
+                            endThumb = {
+                                Surface(
+                                    modifier = Modifier.size(8.dp, 20.dp),
+                                    shape = RoundedCornerShape(3.dp),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shadowElevation = 2.dp
+                                ) {}
+                            }
+                        )
+                    }
+
+                    if (sortedGenres.isNotEmpty()) {
+                        Column(modifier = Modifier.animateContentSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("Жанр", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                TextButton(onClick = { isGenresExpanded = !isGenresExpanded }, contentPadding = PaddingValues(0.dp)) {
+                                    Text(if (isGenresExpanded) "Свернуть ▲" else "Все (${sortedGenres.size}) ▼", style = MaterialTheme.typography.labelSmall)
                                 }
                             }
-
+                            val displayGenres = remember(sortedGenres, tempState.selectedGenreId) {
+                                if (tempState.selectedGenreId == null) sortedGenres
+                                else sortedGenres.sortedByDescending { it.id == tempState.selectedGenreId }
+                            }
                             if (!isGenresExpanded) {
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     item {
                                         FilterChip(
                                             selected = tempState.selectedGenreId == null,
                                             onClick = { tempState = tempState.copy(selectedGenreId = null) },
-                                            label = { Text("Все жанры") }
+                                            label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
                                         )
                                     }
-                                    items(sortedGenres) { genre ->
+                                    items(displayGenres) { genre ->
                                         FilterChip(
                                             selected = tempState.selectedGenreId == genre.id,
                                             onClick = { tempState = tempState.copy(selectedGenreId = genre.id) },
-                                            label = { Text(genre.genre.orEmpty().replaceFirstChar { char -> char.uppercase() }) }
+                                            label = { Text(genre.genre.orEmpty().replaceFirstChar { char -> char.uppercase() }, style = MaterialTheme.typography.bodySmall) }
                                         )
                                     }
                                 }
                             } else {
-                                AnimatedVisibility(
-                                    visible = isGenresExpanded,
-                                    enter = expandVertically() + fadeIn(),
-                                    exit = shrinkVertically() + fadeOut()
-                                ) {
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        verticalArrangement = Arrangement.spacedBy(1.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    FilterChip(
+                                        selected = tempState.selectedGenreId == null,
+                                        onClick = { tempState = tempState.copy(selectedGenreId = null) },
+                                        label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
+                                    )
+                                    displayGenres.forEach { genre ->
                                         FilterChip(
-                                            selected = tempState.selectedGenreId == null,
-                                            onClick = { tempState = tempState.copy(selectedGenreId = null) },
-                                            label = { Text("Все жанры") }
+                                            selected = tempState.selectedGenreId == genre.id,
+                                            onClick = { tempState = tempState.copy(selectedGenreId = genre.id) },
+                                            label = { Text(genre.genre.orEmpty().replaceFirstChar { char -> char.uppercase() }, style = MaterialTheme.typography.bodySmall) }
                                         )
-                                        sortedGenres.forEach { genre ->
-                                            FilterChip(
-                                                selected = tempState.selectedGenreId == genre.id,
-                                                onClick = { tempState = tempState.copy(selectedGenreId = genre.id) },
-                                                label = { Text(genre.genre.orEmpty().replaceFirstChar { char -> char.uppercase() }) }
-                                            )
-                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                // Card 4: Страны
-                if (sortedCountries.isNotEmpty()) {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .animateContentSize()
-                                .padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Страна", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                TextButton(onClick = { isCountriesExpanded = !isCountriesExpanded }) {
-                                    Text(
-                                        if (isCountriesExpanded) "Свернуть ▲" else "Показать все (${sortedCountries.size}) ▼",
-                                        style = MaterialTheme.typography.labelMedium
-                                    )
+                    if (sortedCountries.isNotEmpty()) {
+                        Column(modifier = Modifier.animateContentSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("Страна", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                TextButton(onClick = { isCountriesExpanded = !isCountriesExpanded }, contentPadding = PaddingValues(0.dp)) {
+                                    Text(if (isCountriesExpanded) "Свернуть ▲" else "Все (${sortedCountries.size}) ▼", style = MaterialTheme.typography.labelSmall)
                                 }
                             }
-
                             if (isCountriesExpanded) {
-                                OutlinedTextField(
-                                    value = countrySearchQuery,
-                                    onValueChange = { countrySearchQuery = it },
+                                Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(bottom = 4.dp),
-                                    placeholder = { Text("Поиск страны...") },
-                                    singleLine = true,
-                                    shape = RoundedCornerShape(12.dp)
-                                )
+                                        .height(40.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                        .padding(horizontal = 10.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Search,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                                            if (countrySearchQuery.isEmpty()) {
+                                                Text(
+                                                    text = "Поиск...",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                                )
+                                            }
+                                            BasicTextField(
+                                                value = countrySearchQuery,
+                                                onValueChange = { countrySearchQuery = it },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                singleLine = true,
+                                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface)
+                                            )
+                                        }
+                                        if (countrySearchQuery.isNotEmpty()) {
+                                            TextButton(
+                                                onClick = { countrySearchQuery = "" },
+                                                contentPadding = PaddingValues(0.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
-
+                            val displayCountries = remember(filteredCountries, tempState.selectedCountryId) {
+                                if (tempState.selectedCountryId == null) filteredCountries
+                                else filteredCountries.sortedByDescending { it.id == tempState.selectedCountryId }
+                            }
                             if (!isCountriesExpanded) {
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     item {
                                         FilterChip(
                                             selected = tempState.selectedCountryId == null,
                                             onClick = { tempState = tempState.copy(selectedCountryId = null) },
-                                            label = { Text("Все страны") }
+                                            label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
                                         )
                                     }
-                                    items(filteredCountries) { country ->
+                                    items(displayCountries) { country ->
                                         FilterChip(
                                             selected = tempState.selectedCountryId == country.id,
                                             onClick = { tempState = tempState.copy(selectedCountryId = country.id) },
-                                            label = { Text(country.country.orEmpty()) }
+                                            label = { Text(country.country.orEmpty(), style = MaterialTheme.typography.bodySmall) }
                                         )
                                     }
                                 }
                             } else {
-                                AnimatedVisibility(
-                                    visible = isCountriesExpanded,
-                                    enter = expandVertically() + fadeIn(),
-                                    exit = shrinkVertically() + fadeOut()
-                                ) {
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        verticalArrangement = Arrangement.spacedBy(1.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    FilterChip(
+                                        selected = tempState.selectedCountryId == null,
+                                        onClick = { tempState = tempState.copy(selectedCountryId = null) },
+                                        label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
+                                    )
+                                    displayCountries.forEach { country ->
                                         FilterChip(
-                                            selected = tempState.selectedCountryId == null,
-                                            onClick = { tempState = tempState.copy(selectedCountryId = null) },
-                                            label = { Text("Все страны") }
+                                            selected = tempState.selectedCountryId == country.id,
+                                            onClick = { tempState = tempState.copy(selectedCountryId = country.id) },
+                                            label = { Text(country.country.orEmpty(), style = MaterialTheme.typography.bodySmall) }
                                         )
-                                        filteredCountries.forEach { country ->
-                                            FilterChip(
-                                                selected = tempState.selectedCountryId == country.id,
-                                                onClick = { tempState = tempState.copy(selectedCountryId = country.id) },
-                                                label = { Text(country.country.orEmpty()) }
-                                            )
-                                        }
                                     }
                                 }
                             }
@@ -2212,6 +2395,7 @@ private fun SearchFilterBottomSheet(
                 }
             }
 
+            Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = {
                     onApply(tempState)
@@ -2219,11 +2403,12 @@ private fun SearchFilterBottomSheet(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                shape = RoundedCornerShape(14.dp)
+                    .height(46.dp),
+                shape = RoundedCornerShape(23.dp)
             ) {
-                Text("Применить фильтры", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text("Показать результаты", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
             }
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }

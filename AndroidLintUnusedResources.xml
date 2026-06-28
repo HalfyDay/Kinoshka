@@ -1,0 +1,15 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/res/drawable/ic_launcher_foreground_layer.xml</file>
+  <line>2</line>
+  <module>Kino.app.main</module>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/res/drawable/ic_launcher_foreground_layer.xml" />
+  <problem_class id="AndroidLintUnusedResources" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Unused resources</problem_class>
+  <hints />
+  <description>&lt;html&gt;The resource &lt;code&gt;R.drawable.ic_launcher_foreground_layer&lt;/code&gt; appears to be unused&lt;/html&gt;</description>
+  <highlighted_element>&lt;layer-list xmlns:android=&quot;http://schemas.android.com/apk/res/android&quot;&gt; &lt;item android:wi...</highlighted_element>
+  <language>XML</language>
+  <offset>0</offset>
+  <length>250</length>
+</problem>
+</problems>

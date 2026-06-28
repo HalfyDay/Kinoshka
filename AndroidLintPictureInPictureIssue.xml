@@ -1,0 +1,15 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/AndroidManifest.xml</file>
+  <line>6</line>
+  <module>Kino.app.main</module>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/AndroidManifest.xml" />
+  <problem_class id="AndroidLintPictureInPictureIssue" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Picture In Picture best practices not followed</problem_class>
+  <hints />
+  <description>&lt;html&gt;An activity in this app supports picture-in-picture and the targetSdkVersion is 31 or above; it is therefore strongly recommended to call both &lt;code&gt;setAutoEnterEnabled(true)&lt;/code&gt; and &lt;code&gt;setSourceRectHint(...)&lt;/code&gt;&lt;/html&gt;</description>
+  <highlighted_element>application</highlighted_element>
+  <language>XML</language>
+  <offset>5</offset>
+  <length>11</length>
+</problem>
+</problems>

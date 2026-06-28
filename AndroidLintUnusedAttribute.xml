@@ -1,0 +1,15 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/AndroidManifest.xml</file>
+  <line>9</line>
+  <module>Kino.app.main</module>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/AndroidManifest.xml" />
+  <problem_class id="AndroidLintUnusedAttribute" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Attribute unused on older versions</problem_class>
+  <hints />
+  <description>&lt;html&gt;Attribute &lt;code&gt;enableOnBackInvokedCallback&lt;/code&gt; is only used in API level 33 and higher (current min is 26)&lt;/html&gt;</description>
+  <highlighted_element>android:enableOnBackInvokedCallback=&quot;true&quot;</highlighted_element>
+  <language>XML</language>
+  <offset>8</offset>
+  <length>42</length>
+</problem>
+</problems>

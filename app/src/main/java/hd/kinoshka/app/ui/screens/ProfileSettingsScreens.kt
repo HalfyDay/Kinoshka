@@ -14,6 +14,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.widget.Toast
+import hd.kinoshka.app.data.local.UserFilmStatus
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -36,9 +37,23 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import android.view.ViewGroup
+import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.viewinterop.AndroidView
+import org.json.JSONObject
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -47,6 +62,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -110,11 +126,25 @@ fun ProfileScreen(
     avatar: String,
     library: List<LibraryUiItem>,
     onBack: () -> Unit,
-    onAvatarSelected: (String) -> Unit
+    onAvatarSelected: (String) -> Unit,
+    shikimoriAuthState: hd.kinoshka.app.data.local.ShikimoriAuthState = hd.kinoshka.app.data.local.ShikimoriAuthState(),
+    onSaveShikimoriToken: (String) -> Unit = {},
+    onSaveShikimoriSession: (token: String, userId: Int, nickname: String, avatarUrl: String?) -> Unit = { _, _, _, _ -> },
+    onLogoutShikimori: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var cropSourceBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var showWebLoginDialog by remember { mutableStateOf(false) }
+
+    if (showWebLoginDialog) {
+        ShikimoriWebLoginDialog(
+            onDismiss = { showWebLoginDialog = false },
+            onSuccess = { token, userId, nickname, avatarUrl ->
+                onSaveShikimoriSession(token, userId, nickname, avatarUrl)
+            }
+        )
+    }
 
     val pickAvatar = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -138,84 +168,260 @@ fun ProfileScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding(),
-        contentPadding = PaddingValues(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
             HeaderCard(
-                title = "Профиль",
-                subtitle = "Локальный профиль просмотра",
+                title = "Профиль пользователя",
+                subtitle = "Настройки аккаунта, синхронизация и статистика",
                 onBack = onBack
             )
         }
+
+        // Hero Profile Header Card
         item {
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp)
+                shape = RoundedCornerShape(28.dp),
+                elevation = androidx.compose.material3.CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
             ) {
-                Column(
+                Box(
                     modifier = Modifier
-                        .padding(14.dp)
-                        .animateContentSize(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                        .fillMaxWidth()
+                        .background(
+                            androidx.compose.ui.graphics.Brush.linearGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                    MaterialTheme.colorScheme.surface
+                                )
+                            )
+                        )
+                        .padding(20.dp)
                 ) {
-                    Text(
-                        text = "Аватар",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    AvatarPreview(
-                        avatar = avatar,
-                        onClick = { pickAvatar.launch(arrayOf("image/*")) }
-                    )
-                    Text(
-                        text = "Нажмите на аватар, чтобы выбрать изображение",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.BottomEnd) {
+                            AvatarPreview(
+                                avatar = if (shikimoriAuthState.isLoggedIn && !shikimoriAuthState.avatarUrl.isNullOrBlank()) shikimoriAuthState.avatarUrl else avatar,
+                                onClick = { pickAvatar.launch(arrayOf("image/*")) }
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = if (shikimoriAuthState.isLoggedIn) (shikimoriAuthState.nickname ?: "Пользователь") else "Пользователь Kinoshka",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (shikimoriAuthState.isLoggedIn) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF4CAF50).copy(alpha = 0.15f),
+                                    modifier = Modifier.padding(top = 2.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF4CAF50))
+                                        )
+                                        Text(
+                                            text = "Shikimori Синхронизирован",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = Color(0xFF4CAF50),
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    text = "Нажмите на аватар, чтобы сменить фото",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
+
+        // Quick Stats Grid
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Общая статистика",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ElevatedCard(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("📚 Всего", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${library.size}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    ElevatedCard(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("👁️ Смотрю", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${library.count { it.status == UserFilmStatus.WATCHING }}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ElevatedCard(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("✅ Завершено", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${library.count { it.status == UserFilmStatus.COMPLETED }}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                        }
+                    }
+                    ElevatedCard(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("📝 С заметками", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${library.count { !it.note.isNullOrBlank() }}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Shikimori Account Integration Section
         item {
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp)
+                shape = RoundedCornerShape(24.dp)
             ) {
                 Column(
                     modifier = Modifier
-                        .padding(14.dp)
+                        .padding(16.dp)
+                        .animateContentSize(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Аккаунт Shikimori",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (shikimoriAuthState.isLoggedIn) {
+                            OutlinedButton(
+                                onClick = onLogoutShikimori,
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Text("Отключить")
+                            }
+                        }
+                    }
+                    if (shikimoriAuthState.isLoggedIn) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            KinoshkaAsyncImage(
+                                model = shikimoriAuthState.avatarUrl,
+                                contentDescription = shikimoriAuthState.nickname,
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .clip(CircleShape)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = shikimoriAuthState.nickname ?: "Пользователь",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Списки и оценки аниме синхронизируются",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "Авторизуйтесь через официальный сайт Shikimori для автоматической синхронизации ваших списков просмотров.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Button(
+                            onClick = { showWebLoginDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Войти через сайт Shikimori", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Activity Chart Section
+        item {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(16.dp)
                         .animateContentSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
                         text = "Активность за 14 дней",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Нажмите на столбец, чтобы увидеть точное количество просмотров",
+                        text = "Нажмите на столбец, чтобы увидеть количество просмотров",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     ActivityBars(activity)
-                }
-            }
-        }
-        item {
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .padding(14.dp)
-                        .animateContentSize(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text("Статистика", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text("Всего в библиотеке: ${library.size}")
-                    Text("Со статусом: ${library.count { it.status != null }}")
-                    Text("С заметками: ${library.count { !it.note.isNullOrBlank() }}")
                 }
             }
         }
@@ -1170,3 +1376,103 @@ private fun saveAvatarBitmap(context: Context, bitmap: Bitmap): Uri {
     }
     return Uri.fromFile(file)
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ShikimoriWebLoginDialog(
+    onDismiss: () -> Unit,
+    onSuccess: (token: String, userId: Int, nickname: String, avatarUrl: String?) -> Unit
+) {
+    var isLoading by remember { mutableStateOf(true) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Вход на сайт Shikimori",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                    }
+                }
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    AndroidView(
+                        factory = { ctx ->
+                            val webView = WebView(ctx)
+                            webView.layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            webView.settings.javaScriptEnabled = true
+                            webView.settings.domStorageEnabled = true
+                            webView.settings.userAgentString = "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 KinoshkaApp"
+
+                            val cookieManager = CookieManager.getInstance()
+                            cookieManager.setAcceptCookie(true)
+                            cookieManager.setAcceptThirdPartyCookies(webView, true)
+
+                            webView.webViewClient = object : WebViewClient() {
+                                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                                    isLoading = true
+                                }
+
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    isLoading = false
+                                    view?.evaluateJavascript(
+                                        "(function() { fetch('/api/users/whoami').then(r => r.json()).then(d => { if(d && d.id) { console.log('SHIKI_USER:' + JSON.stringify(d)); } }).catch(e => {}); })();",
+                                        null
+                                    )
+                                }
+                            }
+                            webView.webChromeClient = object : WebChromeClient() {
+                                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                                    val msg = consoleMessage?.message() ?: ""
+                                    if (msg.startsWith("SHIKI_USER:")) {
+                                        val jsonStr = msg.removePrefix("SHIKI_USER:")
+                                        runCatching {
+                                            val json = JSONObject(jsonStr)
+                                            val id = json.optInt("id")
+                                            val nick = json.optString("nickname")
+                                            val avatar = json.optString("avatar")
+                                            if (id > 0 && nick.isNotBlank()) {
+                                                val cookies = CookieManager.getInstance().getCookie("https://shikimori.io")
+                                                onSuccess(cookies ?: "session", id, nick, avatar)
+                                                onDismiss()
+                                            }
+                                        }
+                                    }
+                                    return super.onConsoleMessage(consoleMessage)
+                                }
+                            }
+                            webView.loadUrl("https://shikimori.io/users/sign_in")
+                            webView
+                        },
+                        modifier = Modifier.fillMaxSize()
+                        )
+                        if (isLoading) {
+                            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                        }
+                    }
+                }
+            }
+        }
+    }

@@ -1,0 +1,30 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>394</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt" />
+  <problem_class id="AndroidLintSetJavaScriptEnabled" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Using setJavaScriptEnabled</problem_class>
+  <hints />
+  <description>&lt;html&gt;Using &lt;code&gt;setJavaScriptEnabled&lt;/code&gt; can introduce XSS vulnerabilities into your application, review carefully&lt;/html&gt;</description>
+  <highlighted_element>webView.settings.javaScriptEnabled = true</highlighted_element>
+  <language>kotlin</language>
+  <offset>16</offset>
+  <length>41</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1425</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt" />
+  <problem_class id="AndroidLintSetJavaScriptEnabled" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Using setJavaScriptEnabled</problem_class>
+  <hints />
+  <description>&lt;html&gt;Using &lt;code&gt;setJavaScriptEnabled&lt;/code&gt; can introduce XSS vulnerabilities into your application, review carefully&lt;/html&gt;</description>
+  <highlighted_element>webView.settings.javaScriptEnabled = true</highlighted_element>
+  <language>kotlin</language>
+  <offset>28</offset>
+  <length>41</length>
+</problem>
+</problems>

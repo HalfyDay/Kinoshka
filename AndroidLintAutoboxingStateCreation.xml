@@ -1,0 +1,44 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt</file>
+  <line>550</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt" />
+  <problem_class id="AndroidLintAutoboxingStateCreation" severity="WEAK WARNING" attribute_key="INFO_ATTRIBUTES">State&lt;T&gt; will autobox values assigned to this state. Use a specialized state type instead.</problem_class>
+  <hints />
+  <description>&lt;html&gt;Prefer &lt;code&gt;mutableFloatStateOf&lt;/code&gt; instead of &lt;code&gt;mutableStateOf&lt;/code&gt;&lt;/html&gt;</description>
+  <highlighted_element>mutableStateOf</highlighted_element>
+  <language>kotlin</language>
+  <offset>58</offset>
+  <length>14</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt</file>
+  <line>267</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/InAppWebScreen.kt" />
+  <problem_class id="AndroidLintAutoboxingStateCreation" severity="WEAK WARNING" attribute_key="INFO_ATTRIBUTES">State&lt;T&gt; will autobox values assigned to this state. Use a specialized state type instead.</problem_class>
+  <hints />
+  <description>&lt;html&gt;Prefer &lt;code&gt;mutableLongStateOf&lt;/code&gt; instead of &lt;code&gt;mutableStateOf&lt;/code&gt;&lt;/html&gt;</description>
+  <highlighted_element>mutableStateOf</highlighted_element>
+  <language>kotlin</language>
+  <offset>40</offset>
+  <length>14</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt</file>
+  <line>1068</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/ProfileSettingsScreens.kt" />
+  <problem_class id="AndroidLintAutoboxingStateCreation" severity="WEAK WARNING" attribute_key="INFO_ATTRIBUTES">State&lt;T&gt; will autobox values assigned to this state. Use a specialized state type instead.</problem_class>
+  <hints />
+  <description>&lt;html&gt;Prefer &lt;code&gt;mutableFloatStateOf&lt;/code&gt; instead of &lt;code&gt;mutableStateOf&lt;/code&gt;&lt;/html&gt;</description>
+  <highlighted_element>mutableStateOf</highlighted_element>
+  <language>kotlin</language>
+  <offset>41</offset>
+  <length>14</length>
+</problem>
+</problems>

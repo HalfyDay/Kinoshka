@@ -1,0 +1,30 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt</file>
+  <line>378</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt" />
+  <problem_class id="AndroidLintUnusedContentLambdaTargetStateParameter" severity="ERROR" attribute_key="ERRORS_ATTRIBUTES">AnimatedContent calls should use the provided T parameter in the content lambda</problem_class>
+  <hints />
+  <description>&lt;html&gt;Target state parameter &lt;code&gt;_&lt;/code&gt; is not used&lt;/html&gt;</description>
+  <highlighted_element>_</highlighted_element>
+  <language>kotlin</language>
+  <offset>40</offset>
+  <length>1</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt</file>
+  <line>398</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="file" FQNAME="file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt" />
+  <problem_class id="AndroidLintUnusedContentLambdaTargetStateParameter" severity="ERROR" attribute_key="ERRORS_ATTRIBUTES">AnimatedContent calls should use the provided T parameter in the content lambda</problem_class>
+  <hints />
+  <description>&lt;html&gt;Target state parameter &lt;code&gt;_&lt;/code&gt; is not used&lt;/html&gt;</description>
+  <highlighted_element>_</highlighted_element>
+  <language>kotlin</language>
+  <offset>32</offset>
+  <length>1</length>
+</problem>
+</problems>

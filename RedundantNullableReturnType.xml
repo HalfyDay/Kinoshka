@@ -1,0 +1,15 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/data/model/ShikimoriModels.kt</file>
+  <line>108</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.data.model</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.data.model.ShikimoriAnimeItem java.lang.String getPosterUrl()" />
+  <problem_class id="RedundantNullableReturnType" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Redundant nullable return type</problem_class>
+  <description>'posterUrl' is always non-null type</description>
+  <highlighted_element>?</highlighted_element>
+  <language>kotlin</language>
+  <offset>25</offset>
+  <length>1</length>
+</problem>
+</problems>

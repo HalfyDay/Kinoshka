@@ -1,0 +1,67 @@
+<problems>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/MainActivity.kt</file>
+  <line>127</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.MainActivity android.app.PictureInPictureParams buildPipParams()" />
+  <problem_class id="KotlinConstantConditions" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Constant conditions</problem_class>
+  <description>Condition 'Build.VERSION.SDK_INT &gt;= Build.VERSION_CODES.M' is always true</description>
+  <highlighted_element>Build.VERSION.SDK_INT &gt;= Build.VERSION_CODES.M</highlighted_element>
+  <language>kotlin</language>
+  <offset>35</offset>
+  <length>46</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/components/DebugPerformanceOverlay.kt</file>
+  <line>46</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.components</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.components.DebugPerformanceOverlayKt void DebugPerformanceOverlay(boolean enabled, androidx.compose.ui.Modifier modifier)" />
+  <problem_class id="KotlinConstantConditions" severity="WEAK WARNING" attribute_key="INFO_ATTRIBUTES">Constant conditions</problem_class>
+  <description>Value of 'enabled' is always true</description>
+  <highlighted_element>enabled</highlighted_element>
+  <language>kotlin</language>
+  <offset>19</offset>
+  <length>7</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/DetailsScreen.kt</file>
+  <line>262</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.DetailsScreenKt void DetailsScreen(int filmId, hd.kinoshka.app.ui.screens.DetailsUiState state, kotlin.jvm.functions.Function1&lt;? super java.lang.Integer,kotlin.Unit&gt; load, kotlin.jvm.functions.Function1&lt;? super hd.kinoshka.app.data.model.FilmDetails,kotlin.Unit&gt; onWatch, kotlin.jvm.functions.Function9&lt;? super hd.kinoshka.app.data.model.FilmDetails,? super hd.kinoshka.app.data.local.UserFilmStatus,? super java.lang.Integer,? super java.lang.String,? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Integer,kotlin.Unit&gt; onSaveUserProfile, kotlin.jvm.functions.Function1&lt;? super java.lang.String,kotlin.Unit&gt; onOpenUrl, kotlin.jvm.functions.Function1&lt;? super java.lang.Integer,kotlin.Unit&gt; onOpenFilm, kotlin.jvm.functions.Function0&lt;kotlin.Unit&gt; onBack, kotlin.jvm.functions.Function2&lt;? super java.lang.String,? super java.lang.Boolean,kotlin.Unit&gt; onOpenGenre, kotlin.jvm.functions.Function5&lt;? super java.lang.String,? super java.util.Map&lt;java.lang.String,java.lang.String&gt;,? super java.lang.String,? super java.lang.Integer,? super java.lang.String,kotlin.Unit&gt; onOpenNativePlayer)" />
+  <problem_class id="KotlinConstantConditions" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Constant conditions</problem_class>
+  <description>Condition 'state.loading' is always true</description>
+  <highlighted_element>state.loading</highlighted_element>
+  <language>kotlin</language>
+  <offset>16</offset>
+  <length>13</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt</file>
+  <line>1512</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.HomeScreenKt hd.kinoshka.app.ui.screens.WatchProgressUi toWatchProgressUi(hd.kinoshka.app.ui.screens.LibraryUiItem $this$toWatchProgressUi)" />
+  <problem_class id="KotlinConstantConditions" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Constant conditions</problem_class>
+  <description>Condition 'totalSeasonsSafe &gt; 0' is always true when reached</description>
+  <highlighted_element>totalSeasonsSafe &gt; 0</highlighted_element>
+  <language>kotlin</language>
+  <offset>36</offset>
+  <length>20</length>
+</problem>
+<problem>
+  <file>file://$PROJECT_DIR$/app/src/main/java/hd/kinoshka/app/ui/screens/HomeScreen.kt</file>
+  <line>1531</line>
+  <module>Kino.app.main</module>
+  <package>hd.kinoshka.app.ui.screens</package>
+  <entry_point TYPE="method" FQNAME="hd.kinoshka.app.ui.screens.HomeScreenKt hd.kinoshka.app.ui.screens.WatchProgressUi toWatchProgressUi(hd.kinoshka.app.ui.screens.LibraryUiItem $this$toWatchProgressUi)" />
+  <problem_class id="KotlinConstantConditions" severity="WARNING" attribute_key="WARNING_ATTRIBUTES">Constant conditions</problem_class>
+  <description>Condition 'totalEpisodesSafe &gt; 0' is always true when reached</description>
+  <highlighted_element>totalEpisodesSafe &gt; 0</highlighted_element>
+  <language>kotlin</language>
+  <offset>45</offset>
+  <length>21</length>
+</problem>
+</problems>

@@ -5,8 +5,13 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -31,22 +36,34 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import hd.kinoshka.app.BuildConfig
 import hd.kinoshka.app.data.api.ApiClient
+import hd.kinoshka.app.data.local.ShikimoriAuthStore
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.data.update.AppUpdateManager
 import hd.kinoshka.app.data.update.UpdateCheckResult
 import hd.kinoshka.app.ui.screens.AboutScreen
+import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
+import hd.kinoshka.app.ui.screens.AnimeFeedScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.FilmsViewModel
 import hd.kinoshka.app.ui.screens.FilmsViewModelFactory
 import hd.kinoshka.app.ui.screens.HomeScreen
 import hd.kinoshka.app.ui.screens.InAppWebScreen
+import hd.kinoshka.app.ui.screens.MpvExPlayerScreen
 import hd.kinoshka.app.ui.screens.ProfileScreen
 import hd.kinoshka.app.ui.screens.SettingsScreen
 import hd.kinoshka.app.ui.components.DebugPerformanceOverlay
 import hd.kinoshka.app.ui.theme.KinoTheme
 import kotlinx.coroutines.launch
+
+data class NativePlayerArgs(
+    val streamUrl: String,
+    val headers: Map<String, String>,
+    val animeTitle: String,
+    val episodeNumber: Int,
+    val episodeTitle: String
+)
 
 @Composable
 fun KinoApp() {
@@ -58,6 +75,7 @@ fun KinoApp() {
     }
     val scope = rememberCoroutineScope()
     var isUpdateFlowRunning by remember { mutableStateOf(false) }
+    var activeNativePlayerArgs by remember { mutableStateOf<NativePlayerArgs?>(null) }
     var updateStatusText by remember(updatePrefs) {
         mutableStateOf(
             updatePrefs.getString(KEY_LAST_UPDATE_STATUS, "Проверка версии...")
@@ -229,7 +247,8 @@ fun KinoApp() {
         factory = FilmsViewModelFactory(
             FilmsRepository(ApiClient.kinopoiskApi(appContext)),
             AnimeRepository(ApiClient.shikimoriApi(appContext)),
-            UserStateStore(appContext)
+            UserStateStore(appContext),
+            ShikimoriAuthStore(appContext)
         )
     )
 
@@ -259,23 +278,54 @@ fun KinoApp() {
                             onOpenSettings = { navController.navigate("settings") },
                             onOpenAbout = { navController.navigate("about") },
                             onUpdateFilters = vm::updateFilters,
-                            onToggleFilterSheet = vm::setShowFilterSheet
+                            onToggleFilterSheet = vm::setShowFilterSheet,
+                            onOpenCalendar = { navController.navigate("anime_calendar") },
+                            onOpenFeed = { navController.navigate("anime_feed") }
+                        )
+                    }
+                    composable(
+                        route = "anime_calendar",
+                        enterTransition = { fadeIn(animationSpec = tween(140)) },
+                        exitTransition = { fadeOut(animationSpec = tween(120)) },
+                        popEnterTransition = { fadeIn(animationSpec = tween(140)) },
+                        popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                    ) {
+                        AnimeCalendarScreen(
+                            calendarItems = vm.uiState.calendarItems,
+                            loading = vm.uiState.calendarLoading,
+                            onBack = { navController.popBackStack() },
+                            onOpenAnime = { targetId -> navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)) }
+                        )
+                    }
+                    composable(
+                        route = "anime_feed",
+                        enterTransition = { fadeIn(animationSpec = tween(140)) },
+                        exitTransition = { fadeOut(animationSpec = tween(120)) },
+                        popEnterTransition = { fadeIn(animationSpec = tween(140)) },
+                        popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                    ) {
+                        AnimeFeedScreen(
+                            topics = vm.uiState.topics,
+                            loading = vm.uiState.topicsLoading,
+                            onBack = { navController.popBackStack() },
+                            onOpenAnime = { targetId -> navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)) }
                         )
                     }
                     composable(
                         route = "details/{id}",
                         arguments = listOf(navArgument("id") { type = NavType.IntType }),
                         enterTransition = {
-                            fadeIn(animationSpec = tween(durationMillis = 190))
+                            fadeIn(animationSpec = tween(200)) +
+                            scaleIn(initialScale = 0.92f, animationSpec = tween(200))
                         },
                         exitTransition = {
-                            fadeOut(animationSpec = tween(durationMillis = 160))
+                            fadeOut(animationSpec = tween(150))
                         },
                         popEnterTransition = {
-                            fadeIn(animationSpec = tween(durationMillis = 170))
+                            fadeIn(animationSpec = tween(180))
                         },
                         popExitTransition = {
-                            fadeOut(animationSpec = tween(durationMillis = 150))
+                            fadeOut(animationSpec = tween(150))
                         }
                     ) { backStackEntry ->
                         val id = backStackEntry.arguments?.getInt("id") ?: return@composable
@@ -287,18 +337,41 @@ fun KinoApp() {
                             onSaveUserProfile = vm::saveUserProfile,
                             onOpenUrl = { rawUrl -> navController.navigate("web/${Uri.encode(rawUrl)}") },
                             onOpenFilm = { targetId -> navController.navigate(detailsRoute(targetId)) },
-                            onBack = { navController.popBackStack() }
+                            onBack = { navController.popBackStack() },
+                            onOpenGenre = { genreName, isAnime ->
+                                vm.searchGenre(genreName, isAnime)
+                                navController.popBackStack("home", false)
+                            },
+                            onOpenNativePlayer = { streamUrl, headers, title, epNum, epTitle ->
+                                activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, title, epNum, epTitle)
+                            }
                         )
                     }
-                    composable("profile") {
+                    composable(
+                        route = "profile",
+                        enterTransition = { fadeIn(animationSpec = tween(140)) },
+                        exitTransition = { fadeOut(animationSpec = tween(120)) },
+                        popEnterTransition = { fadeIn(animationSpec = tween(140)) },
+                        popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                    ) {
                         ProfileScreen(
                             avatar = vm.uiState.profileAvatar,
                             library = vm.uiState.library,
                             onBack = { navController.popBackStack() },
-                            onAvatarSelected = vm::setProfileAvatar
+                            onAvatarSelected = vm::setProfileAvatar,
+                            shikimoriAuthState = vm.uiState.shikimoriAuthState,
+                            onSaveShikimoriToken = vm::saveShikimoriToken,
+                            onSaveShikimoriSession = vm::saveShikimoriSession,
+                            onLogoutShikimori = vm::logoutShikimori
                         )
                     }
-                    composable("settings") {
+                    composable(
+                        route = "settings",
+                        enterTransition = { fadeIn(animationSpec = tween(140)) },
+                        exitTransition = { fadeOut(animationSpec = tween(120)) },
+                        popEnterTransition = { fadeIn(animationSpec = tween(140)) },
+                        popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                    ) {
                         SettingsScreen(
                             onBack = { navController.popBackStack() },
                             selectedThemeMode = vm.uiState.themeMode,
@@ -315,7 +388,13 @@ fun KinoApp() {
                             onImportLibrary = vm::importLibraryJson
                         )
                     }
-                    composable("about") {
+                    composable(
+                        route = "about",
+                        enterTransition = { fadeIn(animationSpec = tween(140)) },
+                        exitTransition = { fadeOut(animationSpec = tween(120)) },
+                        popEnterTransition = { fadeIn(animationSpec = tween(140)) },
+                        popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                    ) {
                         AboutScreen(
                             onBack = { navController.popBackStack() },
                             updateStatusText = updateStatusText,
@@ -342,6 +421,18 @@ fun KinoApp() {
                         .statusBarsPadding()
                         .padding(start = 8.dp, top = 8.dp)
                 )
+
+                if (activeNativePlayerArgs != null) {
+                    val args = activeNativePlayerArgs!!
+                    MpvExPlayerScreen(
+                        streamUrl = args.streamUrl,
+                        headers = args.headers,
+                        animeTitle = args.animeTitle,
+                        episodeNumber = args.episodeNumber,
+                        episodeTitle = args.episodeTitle,
+                        onBack = { activeNativePlayerArgs = null }
+                    )
+                }
             }
         }
     }
