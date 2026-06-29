@@ -43,6 +43,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -105,7 +106,7 @@ fun AnimePlaybackSelectionSheet(
         isLoading = true
         errorMessage = null
         try {
-            val res = AnimeStreamResolver.fetchAvailableSources(shikimoriId)
+            val res = AnimeStreamResolver.fetchAvailableSources(shikimoriId, animeTitle)
             sources = res
             isLoading = false
         } catch (e: Exception) {
@@ -120,9 +121,13 @@ fun AnimePlaybackSelectionSheet(
         selectedSource = source
         currentStep = SelectionStep.TRANSLATION
         isLoading = true
+        errorMessage = null
         scope.launch {
             try {
-                val list = AnimeStreamResolver.fetchTranslations(shikimoriId, source.type)
+                val list = AnimeStreamResolver.fetchTranslations(shikimoriId, animeTitle, source.type)
+                if (list.isEmpty()) {
+                    throw IllegalStateException("Источник ${source.type.displayName} не вернул доступных озвучек.")
+                }
                 translations = list
                 isLoading = false
                 if (list.size == 1) {
@@ -130,12 +135,15 @@ fun AnimePlaybackSelectionSheet(
                     selectedTranslation = list.first()
                     currentStep = SelectionStep.EPISODE
                     isLoading = true
-                    val epList = AnimeStreamResolver.fetchEpisodes(shikimoriId, source.type, list.first().id)
+                    val epList = AnimeStreamResolver.fetchEpisodes(shikimoriId, animeTitle, source.type, list.first().id)
+                    if (epList.isEmpty()) {
+                        throw IllegalStateException("Не удалось загрузить серии для озвучки ${list.first().title}")
+                    }
                     episodes = epList
                     isLoading = false
                 }
             } catch (e: Exception) {
-                errorMessage = "Ошибка загрузки озвучек: ${e.localizedMessage}"
+                errorMessage = e.localizedMessage ?: "Ошибка загрузки озвучек"
                 isLoading = false
             }
         }
@@ -146,14 +154,18 @@ fun AnimePlaybackSelectionSheet(
         selectedTranslation = tr
         currentStep = SelectionStep.EPISODE
         isLoading = true
+        errorMessage = null
         scope.launch {
             try {
                 val src = selectedSource?.type ?: AnimeSourceType.KODIK
-                val epList = AnimeStreamResolver.fetchEpisodes(shikimoriId, src, tr.id)
+                val epList = AnimeStreamResolver.fetchEpisodes(shikimoriId, animeTitle, src, tr.id)
+                if (epList.isEmpty()) {
+                    throw IllegalStateException("Не удалось загрузить серии для озвучки ${tr.title}")
+                }
                 episodes = epList
                 isLoading = false
             } catch (e: Exception) {
-                errorMessage = "Ошибка загрузки серий: ${e.localizedMessage}"
+                errorMessage = e.localizedMessage ?: "Ошибка загрузки серий"
                 isLoading = false
             }
         }
@@ -167,7 +179,7 @@ fun AnimePlaybackSelectionSheet(
         isResolvingStream = true
         scope.launch {
             try {
-                val stream = AnimeStreamResolver.resolveStream(shikimoriId, src, tr.id, ep.number)
+                val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, src, tr.id, ep.number)
                 isResolvingStream = false
                 if (stream != null) {
                     onStreamSelected(stream, ep.number, ep.title ?: "Серия ${ep.number}", src, tr.title)
@@ -298,8 +310,32 @@ fun AnimePlaybackSelectionSheet(
                 ) { step ->
                     when (step) {
                         SelectionStep.SOURCE -> StepSourceContent(sources = sources, onSelect = ::onSelectSource)
-                        SelectionStep.TRANSLATION -> StepTranslationContent(translations = translations, onSelect = ::onSelectTranslation)
-                        SelectionStep.EPISODE -> StepEpisodeContent(episodes = episodes, onSelect = ::onSelectEpisode)
+                        SelectionStep.TRANSLATION -> {
+                            if (translations.isEmpty()) {
+                                EmptyStepContent(
+                                    message = "Переводы не найдены",
+                                    retryLabel = "Повторить",
+                                    onRetry = {
+                                        selectedSource?.let { onSelectSource(it) }
+                                    }
+                                )
+                            } else {
+                                StepTranslationContent(translations = translations, onSelect = ::onSelectTranslation)
+                            }
+                        }
+                        SelectionStep.EPISODE -> {
+                            if (episodes.isEmpty()) {
+                                EmptyStepContent(
+                                    message = "Серии не найдены",
+                                    retryLabel = "Повторить",
+                                    onRetry = {
+                                        selectedTranslation?.let { onSelectTranslation(it) }
+                                    }
+                                )
+                            } else {
+                                StepEpisodeContent(episodes = episodes, onSelect = ::onSelectEpisode)
+                            }
+                        }
                     }
                 }
             }
@@ -431,6 +467,34 @@ private fun StepEpisodeContent(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyStepContent(
+    message: String,
+    retryLabel: String,
+    onRetry: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 180.dp)
+            .padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(onClick = onRetry) {
+                Text(retryLabel)
             }
         }
     }

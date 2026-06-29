@@ -71,20 +71,27 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 enum class PlayerResizeMode(val label: String, val mode: Int) {
     FIT("Вписать", AspectRatioFrameLayout.RESIZE_MODE_FIT),
@@ -97,6 +104,7 @@ enum class PlayerResizeMode(val label: String, val mode: Int) {
 fun MpvExPlayerScreen(
     streamUrl: String,
     headers: Map<String, String> = emptyMap(),
+    qualities: Map<String, String> = emptyMap(),
     animeTitle: String,
     episodeNumber: Int,
     episodeTitle: String,
@@ -121,11 +129,22 @@ fun MpvExPlayerScreen(
     var isSpeedBoosted by remember { mutableStateOf(false) }
 
     var resizeMode by remember { mutableStateOf(PlayerResizeMode.FIT) }
+    val availableQualities = remember(streamUrl, qualities) {
+        if (qualities.isEmpty()) mapOf("Auto" to streamUrl) else qualities
+    }
+    var selectedQuality by remember(streamUrl, qualities) {
+        mutableStateOf(availableQualities.entries.firstOrNull { it.value == streamUrl }?.key ?: availableQualities.keys.first())
+    }
+    var retryCount by remember { mutableStateOf(0) }
 
     // Gesture indicator overlays
     var gestureVolumeValue by remember { mutableStateOf<Float?>(null) }
     var gestureBrightnessValue by remember { mutableStateOf<Float?>(null) }
     var gestureSeekDelta by remember { mutableStateOf<Long?>(null) }
+
+    val httpDataSourceFactory = remember(streamUrl, headers) {
+        createHttpDataSourceFactory(headers)
+    }
 
     // Setup Landscape and Fullscreen
     DisposableEffect(Unit) {
@@ -163,21 +182,21 @@ fun MpvExPlayerScreen(
     }
 
     // ExoPlayer Instance
-    val exoPlayer = remember {
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setAllowCrossProtocolRedirects(true)
-            .setUserAgent(headers["User-Agent"] ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-            .setDefaultRequestProperties(headers)
+    val exoPlayer = remember(streamUrl, headers) {
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                30_000,
+                120_000,
+                1_500,
+                3_000
+            )
+            .build()
 
-        val mediaItem = MediaItem.fromUri(streamUrl)
-        val mediaSource: MediaSource = if (streamUrl.contains(".m3u8")) {
-            HlsMediaSource.Factory(httpDataSourceFactory).createMediaSource(mediaItem)
-        } else {
-            ProgressiveMediaSource.Factory(httpDataSourceFactory).createMediaSource(mediaItem)
-        }
-
-        ExoPlayer.Builder(context).build().apply {
-            setMediaSource(mediaSource)
+        ExoPlayer.Builder(context)
+            .setLoadControl(loadControl)
+            .build()
+            .apply {
+            setMediaSource(createMediaSource(streamUrl, httpDataSourceFactory))
             prepare()
             playWhenReady = true
         }
@@ -192,8 +211,33 @@ fun MpvExPlayerScreen(
             override fun onPlaybackStateChanged(state: Int) {
                 isBuffering = state == Player.STATE_BUFFERING
                 if (state == Player.STATE_READY) {
+                    retryCount = 0
                     duration = exoPlayer.duration.coerceAtLeast(0L)
                 }
+            }
+            override fun onPlayerError(error: PlaybackException) {
+                val qualityOrder = listOf("1080p", "720p", "480p", "360p", "240p", "Auto")
+                val currentIndex = qualityOrder.indexOf(selectedQuality).takeIf { it >= 0 } ?: 0
+                val fallbackQuality = qualityOrder.drop(currentIndex + 1).firstOrNull { availableQualities.containsKey(it) }
+
+                if (fallbackQuality != null) {
+                val url = availableQualities[fallbackQuality] ?: return
+                val resumePosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+                selectedQuality = fallbackQuality
+                retryCount = 0
+                exoPlayer.setMediaSource(createMediaSource(url, httpDataSourceFactory))
+                exoPlayer.prepare()
+                exoPlayer.seekTo(resumePosition)
+                exoPlayer.playWhenReady = true
+                    return
+                }
+
+                if (retryCount >= 2) return
+                retryCount += 1
+                val resumePosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+                exoPlayer.prepare()
+                exoPlayer.seekTo(resumePosition)
+                exoPlayer.playWhenReady = true
             }
         }
         exoPlayer.addListener(listener)
@@ -504,6 +548,17 @@ fun MpvExPlayerScreen(
                             currentSpeed = spd
                             exoPlayer.setPlaybackParameters(PlaybackParameters(spd))
                         },
+                        qualities = availableQualities,
+                        selectedQuality = selectedQuality,
+                        onQualitySelected = { quality, url ->
+                            val resumePosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+                            val wasPlaying = exoPlayer.isPlaying || exoPlayer.playWhenReady
+                            selectedQuality = quality
+                            exoPlayer.setMediaSource(createMediaSource(url, httpDataSourceFactory))
+                            exoPlayer.prepare()
+                            exoPlayer.seekTo(resumePosition)
+                            exoPlayer.playWhenReady = wasPlaying
+                        },
                         onPrevEpisode = onPrevEpisode,
                         onNextEpisode = onNextEpisode,
                         modifier = Modifier
@@ -581,11 +636,15 @@ private fun PlayerBottomBar(
     currentSpeed: Float,
     onSeek: (Long) -> Unit,
     onSpeedSelected: (Float) -> Unit,
+    qualities: Map<String, String>,
+    selectedQuality: String,
+    onQualitySelected: (String, String) -> Unit,
     onPrevEpisode: (() -> Unit)?,
     onNextEpisode: (() -> Unit)?,
     modifier: Modifier = Modifier
 ) {
     var showSpeedMenu by remember { mutableStateOf(false) }
+    var showQualityMenu by remember { mutableStateOf(false) }
 
     Column(modifier = modifier) {
         // Slider & Timers
@@ -642,7 +701,57 @@ private fun PlayerBottomBar(
                 }
             }
 
-            Box {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box {
+                    Surface(
+                        onClick = { showQualityMenu = !showQualityMenu },
+                        color = Color.White.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = selectedQuality,
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+
+                    if (showQualityMenu) {
+                        Surface(
+                            color = Color.DarkGray,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(bottom = 36.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                qualities.forEach { (quality, url) ->
+                                    Text(
+                                        text = quality,
+                                        color = if (quality == selectedQuality) MaterialTheme.colorScheme.primary else Color.White,
+                                        fontWeight = if (quality == selectedQuality) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 14.sp,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .pointerInput(quality, url) {
+                                                detectTapGestures {
+                                                    onQualitySelected(quality, url)
+                                                    showQualityMenu = false
+                                                }
+                                            }
+                                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(10.dp))
+
+                Box {
                 Surface(
                     onClick = { showSpeedMenu = !showSpeedMenu },
                     color = Color.White.copy(alpha = 0.2f),
@@ -688,13 +797,14 @@ private fun PlayerBottomBar(
                                             }
                                         }
                                         .padding(horizontal = 16.dp, vertical = 6.dp)
-                                )
-                            }
-                        }
+                        )
                     }
                 }
             }
+            }
         }
+    }
+}
     }
 }
 
@@ -746,4 +856,43 @@ private fun formatTime(ms: Long): String {
     } else {
         String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds)
     }
+}
+
+@OptIn(UnstableApi::class)
+private fun createMediaSource(
+    url: String,
+    httpDataSourceFactory: OkHttpDataSource.Factory
+): MediaSource {
+    val mediaItem = MediaItem.Builder()
+        .setUri(url)
+        .setMimeType(if (url.contains(".m3u8", ignoreCase = true)) MimeTypes.APPLICATION_M3U8 else null)
+        .build()
+    return if (url.contains(".m3u8", ignoreCase = true)) {
+        HlsMediaSource.Factory(httpDataSourceFactory)
+            .setAllowChunklessPreparation(true)
+            .createMediaSource(mediaItem)
+    } else {
+        ProgressiveMediaSource.Factory(httpDataSourceFactory).createMediaSource(mediaItem)
+    }
+}
+
+private fun createHttpDataSourceFactory(headers: Map<String, String>): OkHttpDataSource.Factory {
+    val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) = Unit
+        override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) = Unit
+        override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = emptyArray()
+    })
+    val sslContext = SSLContext.getInstance("TLS")
+    sslContext.init(null, trustAllCerts, java.security.SecureRandom())
+
+    val client = OkHttpClient.Builder()
+        .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
+        .hostnameVerifier { _, _ -> true }
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
+
+    return OkHttpDataSource.Factory(client)
+        .setUserAgent(headers["User-Agent"] ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        .setDefaultRequestProperties(headers)
 }
