@@ -3,6 +3,7 @@ package hd.kinoshka.app.ui.screens
 import android.os.SystemClock
 import android.view.KeyEvent
 import android.webkit.WebView
+import `is`.xyz.mpv.MPVLib
 import java.lang.ref.WeakReference
 
 object PlayerPipState {
@@ -13,18 +14,31 @@ object PlayerPipState {
     var isPlaying: Boolean = false
 
     private var activeWebViewRef: WeakReference<WebView>? = null
+    private var activeMpvViewRef: WeakReference<KinoMPVView>? = null
 
     fun setActiveWebView(webView: WebView?) {
         activeWebViewRef = if (webView != null) WeakReference(webView) else null
     }
 
+    fun setActiveMpvView(mpvView: KinoMPVView?) {
+        activeMpvViewRef = if (mpvView != null) WeakReference(mpvView) else null
+    }
+
     /**
-     * Dispatches a hardware MEDIA_PLAY_PAUSE key event directly to the WebView.
-     * This works for ANY video inside the WebView including cross-origin iframes,
-     * because Android routes media key events through the view's focus chain to
-     * the active HTML5 media element.
+     * Dispatches a play/pause action. Routes to MPV player if active,
+     * otherwise dispatches hardware MEDIA_PLAY_PAUSE key event to the WebView.
      */
     fun togglePlayPause() {
+        val mpvView = activeMpvViewRef?.get()
+        if (mpvView != null) {
+            mpvView.post {
+                val paused = MPVLib.getPropertyBoolean("pause") ?: false
+                MPVLib.setPropertyBoolean("pause", !paused)
+            }
+            isPlaying = !isPlaying
+            return
+        }
+
         val webView = activeWebViewRef?.get() ?: return
         webView.post {
             val now = SystemClock.uptimeMillis()
@@ -37,6 +51,15 @@ object PlayerPipState {
     }
 
     fun play() {
+        val mpvView = activeMpvViewRef?.get()
+        if (mpvView != null) {
+            mpvView.post {
+                MPVLib.setPropertyBoolean("pause", false)
+            }
+            isPlaying = true
+            return
+        }
+
         val webView = activeWebViewRef?.get() ?: return
         webView.post {
             val now = SystemClock.uptimeMillis()
@@ -49,6 +72,15 @@ object PlayerPipState {
     }
 
     fun pause() {
+        val mpvView = activeMpvViewRef?.get()
+        if (mpvView != null) {
+            mpvView.post {
+                MPVLib.setPropertyBoolean("pause", true)
+            }
+            isPlaying = false
+            return
+        }
+
         val webView = activeWebViewRef?.get() ?: return
         webView.post {
             val now = SystemClock.uptimeMillis()
@@ -60,3 +92,4 @@ object PlayerPipState {
         isPlaying = false
     }
 }
+

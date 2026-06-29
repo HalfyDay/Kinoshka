@@ -15,6 +15,7 @@ import android.os.Build
 import android.provider.MediaStore
 import android.widget.Toast
 import hd.kinoshka.app.data.local.UserFilmStatus
+import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -450,6 +451,8 @@ fun SettingsScreen(
     selectedDiscoverTileSize: FilmTileSize,
     selectedLibraryTileSize: FilmTileSize,
     selectedShowFpsCounter: Boolean,
+    selectedPlaybackSequence: PlaybackSequenceOption,
+    onPlaybackSequenceSelected: (PlaybackSequenceOption) -> Unit,
     onThemeModeSelected: (AppThemeMode) -> Unit,
     onHideRussianChanged: (Boolean) -> Unit,
     onDiscoverTileSizeSelected: (FilmTileSize) -> Unit,
@@ -462,6 +465,7 @@ fun SettingsScreen(
     var showThemePicker by remember { mutableStateOf(false) }
     var showDiscoverTileSizePicker by remember { mutableStateOf(false) }
     var showLibraryTileSizePicker by remember { mutableStateOf(false) }
+    var showPlaybackSequencePicker by remember { mutableStateOf(false) }
     val createExportFile = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
@@ -525,6 +529,11 @@ fun SettingsScreen(
                         title = "Размер плиток (Библиотека)",
                         value = selectedLibraryTileSize.toUiLabel(),
                         onClick = { showLibraryTileSizePicker = true }
+                    )
+                    SettingsSelectRow(
+                        title = "Порядок выбора в плеере",
+                        value = selectedPlaybackSequence.toUiLabel(),
+                        onClick = { showPlaybackSequencePicker = true }
                     )
 
                     Row(
@@ -638,6 +647,17 @@ fun SettingsScreen(
             optionLabel = { it.toUiLabel() },
             onSelect = onLibraryTileSizeSelected,
             onDismiss = { showLibraryTileSizePicker = false }
+        )
+    }
+
+    if (showPlaybackSequencePicker) {
+        SelectBottomSheet(
+            title = "Порядок выбора в плеере",
+            options = PlaybackSequenceOption.entries.toList(),
+            selected = selectedPlaybackSequence,
+            optionLabel = { it.toUiLabel() },
+            onSelect = onPlaybackSequenceSelected,
+            onDismiss = { showPlaybackSequencePicker = false }
         )
     }
 }

@@ -5,7 +5,9 @@ import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.AnimeSource
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.AnimeTranslation
+import hd.kinoshka.app.data.model.FlatTranslation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -79,6 +81,81 @@ object AnimeStreamResolver {
             AnimeSource(AnimeSourceType.ANILIBERTY, isAvailable = true),
             AnimeSource(AnimeSourceType.ANILIB, isAvailable = true)
         )
+    }
+
+    suspend fun prefetchAllMedia(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        kotlinx.coroutines.coroutineScope {
+            val deferredKodik = async {
+                runCatching {
+                    val results = kodikSearch(shikimoriId, animeTitle, null)
+                    results.mapNotNull { result ->
+                        val translation = result.optJSONObject("translation")
+                        if (translation != null) {
+                            val id = translation.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                            val title = translation.optString("title").ifBlank { "Озвучка $id" }
+                            val type = translation.optString("type").ifBlank { "voice" }
+                            val episodes = extractKodikEpisodes(result)
+                            FlatTranslation(
+                                source = AnimeSourceType.KODIK,
+                                translationId = id,
+                                title = title,
+                                type = type,
+                                episodes = episodes
+                            )
+                        } else if (result.has("link") || result.has("player_url")) {
+                            val id = "default"
+                            FlatTranslation(
+                                source = AnimeSourceType.KODIK,
+                                translationId = id,
+                                title = "Основной плеер Kodik",
+                                type = "voice",
+                                episodes = extractKodikEpisodes(result)
+                            )
+                        } else null
+                    }
+                }.getOrElse { emptyList() }
+            }
+
+            val deferredAniLiberty = async {
+                runCatching {
+                    val release = findAniLibertyRelease(shikimoriId, animeTitle)
+                    if (release != null) {
+                        val episodes = fetchAniLibertyEpisodes(shikimoriId, animeTitle)
+                        val title = release.optString("name").ifBlank { "AniLiberty" }
+                        listOf(
+                            FlatTranslation(
+                                source = AnimeSourceType.ANILIBERTY,
+                                translationId = "default",
+                                title = title,
+                                type = "voice",
+                                episodes = episodes
+                            )
+                        )
+                    } else emptyList()
+                }.getOrElse { emptyList() }
+            }
+
+            val deferredAniLib = async {
+                runCatching {
+                    val release = findAniLibRelease(shikimoriId, animeTitle)
+                    if (release != null) {
+                        val episodes = fetchAniLibEpisodes(shikimoriId, animeTitle)
+                        val title = release.optString("name").ifBlank { "AniLib" }
+                        listOf(
+                            FlatTranslation(
+                                source = AnimeSourceType.ANILIB,
+                                translationId = "default",
+                                title = title,
+                                type = "voice",
+                                episodes = episodes
+                            )
+                        )
+                    } else emptyList()
+                }.getOrElse { emptyList() }
+            }
+
+            deferredKodik.await() + deferredAniLiberty.await() + deferredAniLib.await()
+        }
     }
 
     suspend fun fetchTranslations(

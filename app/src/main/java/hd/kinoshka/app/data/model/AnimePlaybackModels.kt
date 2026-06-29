@@ -33,3 +33,29 @@ data class AnimeMediaStream(
     val quality: String = "Auto",
     val title: String = ""
 )
+
+enum class SelectionStep {
+    SOURCE,
+    TRANSLATION,
+    EPISODE
+}
+
+enum class PlaybackSequenceOption(val displayName: String, val steps: List<SelectionStep>) {
+    EPISODES_TRANSLATIONS_SOURCES("Серии -> Озвучка -> Источники", listOf(SelectionStep.EPISODE, SelectionStep.TRANSLATION, SelectionStep.SOURCE)),
+    TRANSLATIONS_EPISODES_SOURCES("Озвучка -> Серии -> Источники", listOf(SelectionStep.TRANSLATION, SelectionStep.EPISODE, SelectionStep.SOURCE)),
+    SOURCES_TRANSLATIONS_EPISODES("Источники -> Озвучка -> Серии", listOf(SelectionStep.SOURCE, SelectionStep.TRANSLATION, SelectionStep.EPISODE)),
+    SOURCES_EPISODES_TRANSLATIONS("Источники -> Серии -> Озвучка", listOf(SelectionStep.SOURCE, SelectionStep.EPISODE, SelectionStep.TRANSLATION)),
+    EPISODES_SOURCES_TRANSLATIONS("Серии -> Источники -> Озвучка", listOf(SelectionStep.EPISODE, SelectionStep.SOURCE, SelectionStep.TRANSLATION)),
+    TRANSLATIONS_SOURCES_EPISODES("Озвучка -> Источники -> Серии", listOf(SelectionStep.TRANSLATION, SelectionStep.SOURCE, SelectionStep.EPISODE));
+
+    fun toUiLabel(): String = displayName
+}
+
+data class FlatTranslation(
+    val source: AnimeSourceType,
+    val translationId: String,
+    val title: String,
+    val type: String = "voice",
+    val episodes: List<AnimeEpisode> = emptyList()
+)
+

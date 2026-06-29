@@ -7,8 +7,29 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import okhttp3.Cache
 import okhttp3.OkHttpClient
+import org.koin.android.ext.koin.androidContext
+import org.koin.core.context.startKoin
 
 class KinoApplication : Application(), ImageLoaderFactory {
+
+    override fun onCreate() {
+        super.onCreate()
+
+        // Initialize Koin for mpvEx
+        startKoin {
+            androidContext(this@KinoApplication)
+            modules(
+                app.marlboroadvance.mpvex.di.PreferencesModule,
+                app.marlboroadvance.mpvex.di.DatabaseModule,
+                app.marlboroadvance.mpvex.di.FileManagerModule,
+                app.marlboroadvance.mpvex.di.domainModule,
+            )
+        }
+
+        // Initialize FastThumbnails from mpv-android-lib
+        `is`.xyz.mpv.FastThumbnails.initialize(this)
+    }
+
     override fun newImageLoader(): ImageLoader {
         val imageHttpCache = Cache(cacheDir.resolve("http_image_cache"), 80L * 1024L * 1024L)
         val imageClient = OkHttpClient.Builder()
@@ -32,3 +53,4 @@ class KinoApplication : Application(), ImageLoaderFactory {
             .build()
     }
 }
+

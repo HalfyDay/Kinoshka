@@ -4,7 +4,6 @@ import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -49,11 +48,12 @@ class MainActivity : ComponentActivity() {
 
         // Tell Android AudioManager that this activity handles media keys,
         // so Bluetooth headphone button events get routed to our Activity first
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
+        @Suppress("DEPRECATION")
         audioManager?.requestAudioFocus(
             null,
             AudioManager.STREAM_MUSIC,
-            AudioManager.AUDIOFOCUS_GAIN
+            AudioManager.AUDIOFOCUS_GAIN,
         )
 
         setContent {
@@ -84,12 +84,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        try { unregisterReceiver(pipReceiver) } catch (e: Exception) {}
+        try {
+            unregisterReceiver(pipReceiver)
+        } catch (_: Exception) {
+        }
     }
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         if (isInPictureInPictureMode) return
         if (!PlayerPipState.isPlayerScreenVisible) return
         runCatching { enterPictureInPictureMode(buildPipParams()) }
@@ -106,7 +108,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updatePipParams() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+        if (isInPictureInPictureMode) {
             runCatching { setPictureInPictureParams(buildPipParams()) }
         }
     }
@@ -119,24 +121,19 @@ class MainActivity : ComponentActivity() {
         val sourceRectHint = calculateCenterCropRect(width, height, ratio)
 
         val builder = PictureInPictureParams.Builder().setAspectRatio(ratio)
-        if (sourceRectHint != null) {
-            builder.setSourceRectHint(sourceRectHint)
+        sourceRectHint?.let {
+            builder.setSourceRectHint(it)
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            val intent = Intent(ACTION_PIP_PLAY_PAUSE)
-            val pi = PendingIntent.getBroadcast(this, 0, intent, pendingFlags)
+        val pendingFlags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val intent = Intent(ACTION_PIP_PLAY_PAUSE)
+        val pi = PendingIntent.getBroadcast(this, 0, intent, pendingFlags)
 
-            val iconRes = if (PlayerPipState.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
-            val title = if (PlayerPipState.isPlaying) "Пауза" else "Воспроизведение"
-            val action = RemoteAction(Icon.createWithResource(this, iconRes), title, title, pi)
-            builder.setActions(arrayListOf(action))
-        }
+        val iconRes =
+            if (PlayerPipState.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+        val title = if (PlayerPipState.isPlaying) "Пауза" else "Воспроизведение"
+        val action = RemoteAction(Icon.createWithResource(this, iconRes), title, title, pi)
+        builder.setActions(arrayListOf(action))
 
         return builder.build()
     }

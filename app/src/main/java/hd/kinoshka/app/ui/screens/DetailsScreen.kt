@@ -1,6 +1,7 @@
 package hd.kinoshka.app.ui.screens
 
 import hd.kinoshka.app.ui.components.AnimePlaybackSelectionSheet
+import hd.kinoshka.app.data.model.PlaybackSequenceOption
 
 import android.app.Activity
 import android.content.ClipData
@@ -205,7 +206,8 @@ fun DetailsScreen(
     onOpenFilm: (Int) -> Unit,
     onBack: () -> Unit,
     onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null,
-    onOpenNativePlayer: ((streamUrl: String, headers: Map<String, String>, qualities: Map<String, String>, animeTitle: String, episodeNumber: Int, episodeTitle: String) -> Unit)? = null
+    onOpenNativePlayer: ((streamUrl: String, headers: Map<String, String>, qualities: Map<String, String>, animeTitle: String, episodeNumber: Int, episodeTitle: String) -> Unit)? = null,
+    playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -216,6 +218,7 @@ fun DetailsScreen(
     var selectedCharacterId by remember(filmId) { mutableStateOf<Int?>(null) }
     var adGuardDnsActive by remember { mutableStateOf(isAdGuardDnsActive(context)) }
     var isInteractive by remember { mutableStateOf(true) }
+    var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
 
     LaunchedEffect(filmId) {
         load(filmId)
@@ -223,6 +226,7 @@ fun DetailsScreen(
 
     BackHandler {
         when {
+            activePlaybackSelection -> activePlaybackSelection = false
             selectedCharacterId != null -> selectedCharacterId = null
             previewPosterUrl != null -> {
                 previewPosterUrl = null
@@ -315,30 +319,61 @@ fun DetailsScreen(
                 val item = state.item
                 val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
                 if (isAnime) {
-                    AnimeDetailsLayout(
-                        state = state,
-                        isInteractive = isInteractive,
-                        onWatch = { filmDetails ->
-                            onWatch(filmDetails)
-                        },
-                        onOpenUrl = onOpenUrl,
-                        onOpenEditor = { showProfileEditor = true },
-                        onOpenFilm = { filmId ->
-                            isInteractive = false
-                            onOpenFilm(filmId)
-                        },
-                        onPreviewImage = { index ->
-                            imageViewerStartIndex = index
-                        },
-                        onPosterClick = { offset ->
-                            previewPosterOffset = offset
-                            previewPosterUrl = item.posterUrl ?: item.posterUrlPreview
-                        },
-                        onBack = onBack,
-                        onOpenCharacter = { charId -> selectedCharacterId = charId },
-                        onOpenGenre = onOpenGenre,
-                        onOpenNativePlayer = onOpenNativePlayer
-                    )
+                    if (activePlaybackSelection) {
+                        val shikimoriId = item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                        AnimePlaybackSelectionScreen(
+                            shikimoriId = shikimoriId,
+                            animeTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
+                            watchedEpisodes = state.userProfile?.watchedEpisodes ?: 0,
+                            playbackSequence = playbackSequence,
+                            onDismissRequest = { activePlaybackSelection = false },
+                            onStreamSelected = { stream, epNum, epTitle, _, _ ->
+                                if (stream.url.startsWith("http", ignoreCase = true)) {
+                                    onOpenNativePlayer?.invoke(stream.url, stream.headers, stream.qualities, item.nameRu ?: item.nameOriginal ?: "Аниме", epNum, epTitle)
+                                } else {
+                                    onOpenUrl(stream.url)
+                                }
+                            },
+                            onSaveWatchedEpisode = { epNum ->
+                                onSaveUserProfile(
+                                    item,
+                                    UserFilmStatus.WATCHING,
+                                    state.userProfile?.userRating,
+                                    state.userProfile?.note.orEmpty(),
+                                    state.userProfile?.watchedSeasons,
+                                    epNum,
+                                    state.userProfile?.totalEpisodesInSeason,
+                                    state.userProfile?.totalSeasons,
+                                    state.userProfile?.totalEpisodes
+                                )
+                            }
+                        )
+                    } else {
+                        AnimeDetailsLayout(
+                            state = state,
+                            isInteractive = isInteractive,
+                            onWatch = { filmDetails ->
+                                onWatch(filmDetails)
+                                activePlaybackSelection = true
+                            },
+                            onOpenUrl = onOpenUrl,
+                            onOpenEditor = { showProfileEditor = true },
+                            onOpenFilm = { filmId ->
+                                isInteractive = false
+                                onOpenFilm(filmId)
+                            },
+                            onPreviewImage = { index ->
+                                imageViewerStartIndex = index
+                            },
+                            onPosterClick = { offset ->
+                                previewPosterOffset = offset
+                                previewPosterUrl = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview
+                            },
+                            onBack = onBack,
+                            onOpenCharacter = { charId -> selectedCharacterId = charId },
+                            onOpenGenre = onOpenGenre
+                        )
+                    }
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -2105,15 +2140,13 @@ private fun AnimeDetailsLayout(
     onPosterClick: (Offset) -> Unit,
     onBack: () -> Unit,
     onOpenCharacter: (Int) -> Unit,
-    onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null,
-    onOpenNativePlayer: ((streamUrl: String, headers: Map<String, String>, qualities: Map<String, String>, animeTitle: String, episodeNumber: Int, episodeTitle: String) -> Unit)?
+    onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null
 ) {
     val item = state.item ?: return
     val anime = state.animeDetails
     val context = LocalContext.current
     var showCharactersSheet by remember { mutableStateOf(false) }
     var showChronologySheet by remember { mutableStateOf(false) }
-    var showPlaybackSelectionSheet by remember { mutableStateOf(false) }
     var posterBounds by remember { mutableStateOf<Rect?>(null) }
 
     val kindStr = when (anime?.kind?.lowercase()) {
@@ -2273,7 +2306,6 @@ private fun AnimeDetailsLayout(
                     seasons = state.seasons,
                     onWatch = {
                         onWatch(item)
-                        showPlaybackSelectionSheet = true
                     },
                     onOpenEditor = onOpenEditor,
                     showDisableAdsButton = false,
@@ -2400,24 +2432,6 @@ private fun AnimeDetailsLayout(
             animeDetails = state.animeDetails,
             onDismiss = { showChronologySheet = false },
             onOpenFilm = onOpenFilm
-        )
-    }
-
-    if (showPlaybackSelectionSheet) {
-        val shikimoriId = item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
-        AnimePlaybackSelectionSheet(
-            shikimoriId = shikimoriId,
-            animeTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
-            onDismissRequest = { showPlaybackSelectionSheet = false },
-            onStreamSelected = { stream, epNum, epTitle, source, translationTitle ->
-                showPlaybackSelectionSheet = false
-                if (stream.url.startsWith("http", ignoreCase = true)) {
-                    onOpenNativePlayer?.invoke(stream.url, stream.headers, stream.qualities, item.nameRu ?: item.nameOriginal ?: "Аниме", epNum, epTitle)
-                } else {
-                    // Fallback to web view if stream is web embed link
-                    onOpenUrl(stream.url)
-                }
-            }
         )
     }
 }
