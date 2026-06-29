@@ -60,6 +60,7 @@ import kotlinx.coroutines.launch
 data class NativePlayerArgs(
     val streamUrl: String,
     val headers: Map<String, String>,
+    val qualities: Map<String, String>,
     val animeTitle: String,
     val episodeNumber: Int,
     val episodeTitle: String
@@ -342,8 +343,8 @@ fun KinoApp() {
                                 vm.searchGenre(genreName, isAnime)
                                 navController.popBackStack("home", false)
                             },
-                            onOpenNativePlayer = { streamUrl, headers, title, epNum, epTitle ->
-                                activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, title, epNum, epTitle)
+                            onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle ->
+                                activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle)
                             }
                         )
                     }
@@ -427,6 +428,7 @@ fun KinoApp() {
                     MpvExPlayerScreen(
                         streamUrl = args.streamUrl,
                         headers = args.headers,
+                        qualities = args.qualities,
                         animeTitle = args.animeTitle,
                         episodeNumber = args.episodeNumber,
                         episodeTitle = args.episodeTitle,

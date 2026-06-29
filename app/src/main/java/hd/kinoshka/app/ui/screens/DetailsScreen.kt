@@ -205,7 +205,7 @@ fun DetailsScreen(
     onOpenFilm: (Int) -> Unit,
     onBack: () -> Unit,
     onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null,
-    onOpenNativePlayer: ((streamUrl: String, headers: Map<String, String>, animeTitle: String, episodeNumber: Int, episodeTitle: String) -> Unit)? = null
+    onOpenNativePlayer: ((streamUrl: String, headers: Map<String, String>, qualities: Map<String, String>, animeTitle: String, episodeNumber: Int, episodeTitle: String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -2106,7 +2106,7 @@ private fun AnimeDetailsLayout(
     onBack: () -> Unit,
     onOpenCharacter: (Int) -> Unit,
     onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null,
-    onOpenNativePlayer: ((streamUrl: String, headers: Map<String, String>, animeTitle: String, episodeNumber: Int, episodeTitle: String) -> Unit)?
+    onOpenNativePlayer: ((streamUrl: String, headers: Map<String, String>, qualities: Map<String, String>, animeTitle: String, episodeNumber: Int, episodeTitle: String) -> Unit)?
 ) {
     val item = state.item ?: return
     val anime = state.animeDetails
@@ -2411,8 +2411,8 @@ private fun AnimeDetailsLayout(
             onDismissRequest = { showPlaybackSelectionSheet = false },
             onStreamSelected = { stream, epNum, epTitle, source, translationTitle ->
                 showPlaybackSelectionSheet = false
-                if (stream.url.startsWith("http") && (stream.url.contains(".m3u8") || stream.url.contains(".mp4") || stream.url.contains("cache.libria.fun"))) {
-                    onOpenNativePlayer?.invoke(stream.url, stream.headers, item.nameRu ?: item.nameOriginal ?: "Аниме", epNum, epTitle)
+                if (stream.url.startsWith("http", ignoreCase = true)) {
+                    onOpenNativePlayer?.invoke(stream.url, stream.headers, stream.qualities, item.nameRu ?: item.nameOriginal ?: "Аниме", epNum, epTitle)
                 } else {
                     // Fallback to web view if stream is web embed link
                     onOpenUrl(stream.url)
