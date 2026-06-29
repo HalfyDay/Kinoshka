@@ -6,7 +6,9 @@ import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmItem
+import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import java.util.Locale
+
 
 enum class SavedViewMode {
     LIST,
@@ -42,7 +44,8 @@ data class UserPreferences(
     val discoverTileSize: FilmTileSize? = null,
     val libraryTileSize: FilmTileSize? = null,
     val showFpsCounter: Boolean = false,
-    val contentType: hd.kinoshka.app.ui.screens.ContentType = hd.kinoshka.app.ui.screens.ContentType.FILMS
+    val contentType: hd.kinoshka.app.ui.screens.ContentType = hd.kinoshka.app.ui.screens.ContentType.FILMS,
+    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES
 )
 
 data class HistoryRecord(
@@ -97,8 +100,17 @@ class UserStateStore(context: Context) {
     private val discoverTileSizeKey = "discover_tile_size"
     private val libraryTileSizeKey = "library_tile_size"
     private val showFpsCounterKey = "show_fps_counter"
+    private val playbackSequenceKey = "playback_sequence"
 
     private val prettyGson: Gson = GsonBuilder().setPrettyPrinting().create()
+
+    fun getPlaybackSequence(): PlaybackSequenceOption {
+        return readEnum(playbackSequenceKey, PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES)
+    }
+
+    fun setPlaybackSequence(option: PlaybackSequenceOption) {
+        prefs.edit().putString(playbackSequenceKey, option.name).apply()
+    }
 
     fun getViewMode(): SavedViewMode {
         return readEnum(viewModeKey, SavedViewMode.LIST)
@@ -175,7 +187,8 @@ class UserStateStore(context: Context) {
             discoverTileSize = getDiscoverTileSize(),
             libraryTileSize = getLibraryTileSize(),
             showFpsCounter = isFpsCounterEnabled(),
-            contentType = getSavedContentType()
+            contentType = getSavedContentType(),
+            playbackSequence = getPlaybackSequence()
         )
     }
 

@@ -35,6 +35,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import hd.kinoshka.app.BuildConfig
+import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import hd.kinoshka.app.data.api.ApiClient
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
 import hd.kinoshka.app.data.local.UserStateStore
@@ -345,7 +346,8 @@ fun KinoApp() {
                             },
                             onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle ->
                                 activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle)
-                            }
+                            },
+                            playbackSequence = vm.uiState.playbackSequence
                         )
                     }
                     composable(
@@ -380,6 +382,8 @@ fun KinoApp() {
                             selectedDiscoverTileSize = vm.uiState.discoverTileSize,
                             selectedLibraryTileSize = vm.uiState.libraryTileSize,
                             selectedShowFpsCounter = vm.uiState.showFpsCounter,
+                            selectedPlaybackSequence = vm.uiState.playbackSequence,
+                            onPlaybackSequenceSelected = vm::setPlaybackSequence,
                             onThemeModeSelected = vm::setThemeMode,
                             onHideRussianChanged = vm::setHideRussianContent,
                             onDiscoverTileSizeSelected = vm::setDiscoverTileSize,

@@ -2,17 +2,19 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.devtools.ksp")
 }
 
 android {
     namespace = "hd.kinoshka.app"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "hd.kinoshka.app"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         versionCode = 4
         versionName = "1.0.5"
 
@@ -41,6 +43,9 @@ android {
             .removeSurrounding("'")
         buildConfigField("String", "KP_API_KEY", "\"$apiKey\"")
         buildConfigField("String", "GITHUB_RELEASES_URL", "\"$githubReleasesUrl\"")
+        buildConfigField("boolean", "ENABLE_UPDATE_FEATURE", "false")
+        buildConfigField("boolean", "SCOPED_STORAGE_ONLY", "false")
+        buildConfigField("String", "GIT_SHA", "\"unknown\"")
     }
 
     buildTypes {
@@ -57,16 +62,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+
     buildFeatures {
         compose = true
         buildConfig = true
+        viewBinding = true
     }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -75,31 +77,92 @@ android {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2025.01.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.03.00")
 
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material3:material3:1.5.0-alpha22")
+    implementation("androidx.compose.material:material")
     implementation("androidx.compose.material:material-icons-core")
-    implementation("androidx.activity:activity-compose:1.10.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.navigation:navigation-compose:2.8.0")
-    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.compose.material:material-icons-extended:1.7.8")
+    implementation("androidx.compose.animation:animation-graphics")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
+    implementation("androidx.navigation:navigation-compose:2.9.8")
+    implementation("com.google.android.material:material:1.14.0")
 
     implementation("io.coil-kt:coil-compose:2.7.0")
-    implementation("com.squareup.retrofit2:retrofit:2.11.0")
-    implementation("com.squareup.retrofit2:converter-gson:2.11.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    implementation("com.squareup.retrofit2:retrofit:3.0.0")
+    implementation("com.squareup.retrofit2:converter-gson:3.0.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:5.4.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
-    val media3Version = "1.5.1"
+    val media3Version = "1.10.1"
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-exoplayer-hls:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
     implementation("androidx.media3:media3-datasource-okhttp:$media3Version")
+
+    implementation("androidx.media:media:1.8.0")
+    implementation(files("libs/mpv-android-lib-v0.0.1.aar"))
+
+    // Koin
+    implementation("io.insert-koin:koin-core:4.2.2")
+    implementation("io.insert-koin:koin-android:4.2.2")
+    implementation("io.insert-koin:koin-compose:4.2.2")
+    implementation("io.insert-koin:koin-compose-viewmodel:4.2.2")
+
+    // Room
+    val roomVersion = "2.8.4"
+    implementation("androidx.room:room-runtime:$roomVersion")
+    ksp("androidx.room:room-compiler:$roomVersion")
+    implementation("androidx.room:room-ktx:$roomVersion")
+
+    // Serialization
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+
+    // Seeker, preference, reorderable, scrollbar
+    implementation("com.github.abdallahmehiz:seeker:2.0.1")
+    implementation("me.zhanghai.compose.preference:preference:2.2.0")
+    implementation("androidx.preference:preference-ktx:1.2.1")
+    implementation("sh.calvin.reorderable:reorderable:3.1.0")
+    implementation("com.github.nanihadesuka:LazyColumnScrollbar:2.2.0")
+
+    // Network protocols
+    implementation("commons-net:commons-net:3.13.0")
+    implementation("com.hierynomus:smbj:0.14.0")
+    implementation("com.github.thegrizzlylabs:sardine-android:0.8")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+
+    // Other utilities
+    implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.5.0")
+    implementation("io.github.yubyf:truetypeparser-light:2.1.4")
+    implementation("com.github.K1rakishou:Fuck-Storage-Access-Framework:1.1.3")
+    implementation("com.google.accompanist:accompanist-permissions:0.37.3")
+    implementation("androidx.documentfile:documentfile:1.1.0")
+    implementation("androidx.constraintlayout:constraintlayout-compose:1.1.1")
+    implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation("com.github.marlboro-advance:mediainfoAndroid:v1.0.0-fix")
+
+    // Navigation3 for mpvEx
+    implementation("androidx.navigation3:navigation3-runtime:1.1.3")
+    implementation("androidx.navigation3:navigation3-ui:1.1.3")
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        freeCompilerArgs.addAll(
+            "-opt-in=kotlin.RequiresOptIn",
+            "-opt-in=com.google.accompanist.permissions.ExperimentalPermissionsApi",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3ExpressiveApi",
+            "-opt-in=androidx.compose.material.ExperimentalMaterialApi"
+        )
+    }
 }
 

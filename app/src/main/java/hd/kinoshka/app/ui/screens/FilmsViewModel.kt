@@ -22,6 +22,7 @@ import hd.kinoshka.app.data.model.SeasonItem
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.utils.SearchQueryUtils
+import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
@@ -140,7 +141,8 @@ data class HomeUiState(
     val calendarItems: List<hd.kinoshka.app.data.model.ShikimoriCalendarItem> = emptyList(),
     val topics: List<hd.kinoshka.app.data.model.ShikimoriTopic> = emptyList(),
     val calendarLoading: Boolean = false,
-    val topicsLoading: Boolean = false
+    val topicsLoading: Boolean = false,
+    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES
 )
 
 data class DetailsUiState(
@@ -463,6 +465,11 @@ class FilmsViewModel(
     fun setShowFpsCounter(enabled: Boolean) {
         userStateStore.setFpsCounterEnabled(enabled)
         uiState = uiState.copy(showFpsCounter = enabled)
+    }
+
+    fun setPlaybackSequence(option: PlaybackSequenceOption) {
+        userStateStore.setPlaybackSequence(option)
+        uiState = uiState.copy(playbackSequence = option)
     }
 
     fun exportLibraryJson(): String = userStateStore.exportLibraryJson()
@@ -804,7 +811,8 @@ class FilmsViewModel(
             discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
             libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
             showFpsCounter = preferences.showFpsCounter,
-            contentType = preferences.contentType
+            contentType = preferences.contentType,
+            playbackSequence = preferences.playbackSequence
         )
     }
 
@@ -825,7 +833,8 @@ class FilmsViewModel(
             hideRussianContent = preferences.hideRussianContent,
             discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
             libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
-            showFpsCounter = preferences.showFpsCounter
+            showFpsCounter = preferences.showFpsCounter,
+            playbackSequence = preferences.playbackSequence
         )
     }
 
