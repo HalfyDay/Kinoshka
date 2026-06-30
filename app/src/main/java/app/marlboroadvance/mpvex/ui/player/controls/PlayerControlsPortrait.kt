@@ -34,6 +34,7 @@ import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.player.Sheets
 import app.marlboroadvance.mpvex.ui.player.VideoAspect
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeEpisodeDropdown
+import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeQualityDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeShaderControl
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeTranslationDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
@@ -55,8 +56,10 @@ fun TopPlayerControlsPortrait(
 
   val animeEpisodes by viewModel.animeEpisodes.collectAsState()
   val animeTranslations by viewModel.animeTranslations.collectAsState()
+  val animeQualities by viewModel.animeQualities.collectAsState()
   val currentEpisode by viewModel.currentAnimeEpisodeNumber.collectAsState()
   val currentTranslationId by viewModel.currentAnimeTranslationId.collectAsState()
+  val currentQualityId by viewModel.currentAnimeQualityId.collectAsState()
 
   Column {
     Row(
@@ -156,10 +159,10 @@ fun TopPlayerControlsPortrait(
         }
       }
       
-      AnimeShaderControl(hideBackground = hideBackground)
+      AnimeShaderControl(hideBackground = hideBackground, viewModel = viewModel)
     }
     
-    if (animeEpisodes.isNotEmpty() || animeTranslations.isNotEmpty()) {
+    if (animeEpisodes.isNotEmpty() || animeTranslations.isNotEmpty() || animeQualities.isNotEmpty()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = MaterialTheme.spacing.medium, vertical = MaterialTheme.spacing.extraSmall),
             horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)
@@ -169,6 +172,7 @@ fun TopPlayerControlsPortrait(
                     episodes = animeEpisodes,
                     currentEpisode = currentEpisode,
                     hideBackground = hideBackground,
+                    viewModel = viewModel,
                     onEpisodeSelected = { viewModel.onAnimeEpisodeSelected?.invoke(it) }
                 )
             }
@@ -177,7 +181,17 @@ fun TopPlayerControlsPortrait(
                     translations = animeTranslations,
                     currentTranslationId = currentTranslationId,
                     hideBackground = hideBackground,
+                    viewModel = viewModel,
                     onTranslationSelected = { viewModel.onAnimeTranslationSelected?.invoke(it) }
+                )
+            }
+            if (animeTranslations.isNotEmpty()) {
+                AnimeQualityDropdown(
+                    qualities = animeQualities,
+                    currentQualityId = currentQualityId,
+                    hideBackground = hideBackground,
+                    viewModel = viewModel,
+                    onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
                 )
             }
         }

@@ -74,6 +74,17 @@ object AnimeStreamResolver {
     @Volatile
     private var kodikTokensCache: List<String>? = null
 
+    @Volatile
+    private var lastWorkingKodikToken: String? = null
+
+    private data class CacheEntry<T>(val data: T, val timestamp: Long)
+
+    private val prefetchAllMediaCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<FlatTranslation>>>()
+    private val resolveStreamCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<AnimeMediaStream>>()
+    private val aniLibertyReleaseCache = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
+    
+    private const val CACHE_TTL_MS = 10 * 60 * 1000L // 10 minutes cache
+
     @Suppress("UNUSED_PARAMETER")
     suspend fun fetchAvailableSources(shikimoriId: Int, animeTitle: String = ""): List<AnimeSource> = withContext(Dispatchers.IO) {
         listOf(
@@ -83,7 +94,38 @@ object AnimeStreamResolver {
         )
     }
 
-    suspend fun prefetchAllMedia(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
+    private fun parseAniLibertyEpisodes(release: JSONObject): List<AnimeEpisode> {
+        val episodes = release.optJSONArray("episodes") ?: return emptyList()
+        return episodes.asSequenceObjects().mapNotNull { episode ->
+            val number = episode.optInt("ordinal").takeIf { it > 0 }
+                ?: episode.optInt("sort_order").takeIf { it > 0 }
+                ?: episode.optInt("id").takeIf { it > 0 }
+                ?: return@mapNotNull null
+            val title = episode.optString("name").ifBlank {
+                episode.optString("name_english").ifBlank { "Серия $number" }
+            }
+            AnimeEpisode(number = number, title = title, id = episode.optInt("id").takeIf { it > 0 })
+        }.sortedBy { it.number }.toList()
+    }
+
+    suspend fun prefetchAllMedia(shikimoriId: Int, animeTitle: String): List<FlatTranslation> {
+        val cacheKey = "$shikimoriId:$animeTitle"
+        prefetchAllMediaCache[cacheKey]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) {
+                return entry.data
+            } else {
+                prefetchAllMediaCache.remove(cacheKey)
+            }
+        }
+
+        val loaded = prefetchAllMediaInternal(shikimoriId, animeTitle)
+        if (loaded.isNotEmpty()) {
+            prefetchAllMediaCache[cacheKey] = CacheEntry(loaded, System.currentTimeMillis())
+        }
+        return loaded
+    }
+
+    private suspend fun prefetchAllMediaInternal(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
         kotlinx.coroutines.coroutineScope {
             val deferredKodik = async {
                 runCatching {
@@ -120,8 +162,8 @@ object AnimeStreamResolver {
                 runCatching {
                     val release = findAniLibertyRelease(shikimoriId, animeTitle)
                     if (release != null) {
-                        val episodes = fetchAniLibertyEpisodes(shikimoriId, animeTitle)
-                        val title = release.optString("name").ifBlank { "AniLiberty" }
+                        val episodes = parseAniLibertyEpisodes(release)
+                        val title = getAniLibertyTitle(release)
                         listOf(
                             FlatTranslation(
                                 source = AnimeSourceType.ANILIBERTY,
@@ -139,7 +181,7 @@ object AnimeStreamResolver {
                 runCatching {
                     val release = findAniLibRelease(shikimoriId, animeTitle)
                     if (release != null) {
-                        val episodes = fetchAniLibEpisodes(shikimoriId, animeTitle)
+                        val episodes = parseAniLibReleaseEpisodes(release) ?: emptyList()
                         val title = release.optString("name").ifBlank { "AniLib" }
                         listOf(
                             FlatTranslation(
@@ -178,7 +220,7 @@ object AnimeStreamResolver {
     ): List<AnimeEpisode> = withContext(Dispatchers.IO) {
         when (sourceType) {
             AnimeSourceType.KODIK -> fetchKodikEpisodes(shikimoriId, animeTitle, translationId)
-            AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle)
+            AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle)
         }
     }
@@ -189,10 +231,33 @@ object AnimeStreamResolver {
         sourceType: AnimeSourceType,
         translationId: String,
         episodeNumber: Int
+    ): AnimeMediaStream? {
+        val cacheKey = "$shikimoriId:$animeTitle:${sourceType.name}:$translationId:$episodeNumber"
+        resolveStreamCache[cacheKey]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) {
+                return entry.data
+            } else {
+                resolveStreamCache.remove(cacheKey)
+            }
+        }
+
+        val stream = resolveStreamInternal(shikimoriId, animeTitle, sourceType, translationId, episodeNumber)
+        if (stream != null) {
+            resolveStreamCache[cacheKey] = CacheEntry(stream, System.currentTimeMillis())
+        }
+        return stream
+    }
+
+    private suspend fun resolveStreamInternal(
+        shikimoriId: Int,
+        animeTitle: String,
+        sourceType: AnimeSourceType,
+        translationId: String,
+        episodeNumber: Int
     ): AnimeMediaStream? = withContext(Dispatchers.IO) {
         when (sourceType) {
             AnimeSourceType.KODIK -> resolveKodikStream(shikimoriId, animeTitle, translationId, episodeNumber)
-            AnimeSourceType.ANILIBERTY -> resolveAniLibertyStream(shikimoriId, animeTitle, episodeNumber)
+            AnimeSourceType.ANILIBERTY -> resolveAniLibertyStream(shikimoriId, animeTitle, episodeNumber, translationId)
             AnimeSourceType.ANILIB -> resolveAniLibStream(shikimoriId, animeTitle, translationId, episodeNumber)
         }
     }
@@ -253,33 +318,24 @@ object AnimeStreamResolver {
 
     private suspend fun fetchAniLibertyTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> = withContext(Dispatchers.IO) {
         val release = findAniLibertyRelease(shikimoriId, animeTitle) ?: return@withContext emptyList()
+        val alias = release.optString("alias").ifBlank { release.optInt("id").toString() }
         listOf(
             AnimeTranslation(
-                id = release.optString("alias").ifBlank { release.optInt("id").toString() },
-                title = release.optString("name").ifBlank { "AniLiberty" },
+                id = alias,
+                title = getAniLibertyTitle(release),
                 type = "voice",
                 episodesCount = release.optJSONArray("episodes")?.length() ?: release.optInt("episodes_total", 0)
             )
         )
     }
 
-    private suspend fun fetchAniLibertyEpisodes(shikimoriId: Int, animeTitle: String): List<AnimeEpisode> = withContext(Dispatchers.IO) {
-        val release = findAniLibertyRelease(shikimoriId, animeTitle) ?: return@withContext emptyList()
-        val episodes = release.optJSONArray("episodes") ?: return@withContext emptyList()
-        episodes.asSequenceObjects().mapNotNull { episode ->
-            val number = episode.optInt("ordinal").takeIf { it > 0 }
-                ?: episode.optInt("sort_order").takeIf { it > 0 }
-                ?: episode.optInt("id").takeIf { it > 0 }
-                ?: return@mapNotNull null
-            val title = episode.optString("name").ifBlank {
-                episode.optString("name_english").ifBlank { "Серия $number" }
-            }
-            AnimeEpisode(number = number, title = title, id = episode.optInt("id").takeIf { it > 0 })
-        }.sortedBy { it.number }.toList()
+    private suspend fun fetchAniLibertyEpisodes(shikimoriId: Int, animeTitle: String, translationId: String = "default"): List<AnimeEpisode> = withContext(Dispatchers.IO) {
+        val release = findAniLibertyRelease(shikimoriId, animeTitle, translationId) ?: return@withContext emptyList()
+        parseAniLibertyEpisodes(release)
     }
 
-    private suspend fun resolveAniLibertyStream(shikimoriId: Int, animeTitle: String, episodeNumber: Int): AnimeMediaStream? = withContext(Dispatchers.IO) {
-        val release = findAniLibertyRelease(shikimoriId, animeTitle) ?: return@withContext null
+    private suspend fun resolveAniLibertyStream(shikimoriId: Int, animeTitle: String, episodeNumber: Int, translationId: String = "default"): AnimeMediaStream? = withContext(Dispatchers.IO) {
+        val release = findAniLibertyRelease(shikimoriId, animeTitle, translationId) ?: return@withContext null
         val episodes = release.optJSONArray("episodes") ?: return@withContext null
         val episode = episodes.asSequenceObjects().firstOrNull { ep ->
             ep.optInt("ordinal") == episodeNumber || ep.optInt("sort_order") == episodeNumber
@@ -291,7 +347,9 @@ object AnimeStreamResolver {
         episode.optString("hls_480").takeIf { it.isNotBlank() }?.let { qualities["480p"] = it }
 
         if (qualities.isEmpty()) {
-            val fallbackUrl = release.optString("external_player")
+            val fallbackUrl = episode.optString("external_player")
+                .ifBlank { episode.optString("player_url") }
+                .ifBlank { release.optString("external_player") }
                 .ifBlank { release.optString("player_url") }
                 .ifBlank { release.optString("playerUrl") }
             if (fallbackUrl.isNotBlank()) {
@@ -313,7 +371,25 @@ object AnimeStreamResolver {
     }
 
     private suspend fun resolveAniLibertyExternalPlayer(fallbackUrl: String): AnimeMediaStream? = withContext(Dispatchers.IO) {
-        val resolvedUrl = absoluteUrl("https://anilibria.top/", fallbackUrl)
+        val resolvedUrl = if (fallbackUrl.startsWith("//")) "https:$fallbackUrl" else absoluteUrl("https://anilibria.top/", fallbackUrl)
+        
+        // Handle Kodik mirrors directly if possible
+        if (resolvedUrl.contains("kodik") || resolvedUrl.contains("aniqit") || resolvedUrl.contains("adsterratechnology") || resolvedUrl.contains("vsh.my")) {
+            val kodikQualities = resolveKodikHls(resolvedUrl)
+            if (kodikQualities.isNotEmpty()) {
+                val url = kodikQualities["720p"] ?: kodikQualities["480p"] ?: kodikQualities.values.firstOrNull() ?: return@withContext null
+                return@withContext AnimeMediaStream(
+                    url = url,
+                    qualities = kodikQualities,
+                    quality = kodikQualities.entries.firstOrNull { it.value == url }?.key ?: "Auto",
+                    headers = mapOf(
+                        "User-Agent" to USER_AGENT,
+                        "Referer" to resolvedUrl
+                    )
+                )
+            }
+        }
+
         val html = get(resolvedUrl, referer = "https://anilibria.top/") ?: return@withContext null
         val direct = extractM3u8Links(html)
         val qualities = if (direct.isNotEmpty()) {
@@ -401,14 +477,22 @@ object AnimeStreamResolver {
 
     private suspend fun kodikSearch(shikimoriId: Int, animeTitle: String, translationId: String?): List<JSONObject> {
         val limit = if (translationId == null) 100 else 10
-        for (token in loadKodikTokens()) {
+        val tokens = loadKodikTokens()
+        val orderedTokens = lastWorkingKodikToken?.let { working ->
+            listOf(working) + tokens.filter { it != working }
+        } ?: tokens
+
+        for (token in orderedTokens) {
             for (base in KODIK_API_BASES) {
-                val shikimoriUrl = kodikSearchUrl(base, token, "shikimori_id", shikimoriId.toString(), translationId, limit)
-                val body = get(shikimoriUrl, referer = "https://kodik.info/")
-                if (body != null) {
-                    val results = runCatching { JSONObject(body).optJSONArray("results") }.getOrNull()
-                    if (results != null && results.length() > 0) {
-                        return (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+                if (shikimoriId > 0) {
+                    val shikimoriUrl = kodikSearchUrl(base, token, "shikimori_id", shikimoriId.toString(), translationId, limit)
+                    val body = get(shikimoriUrl, referer = "https://kodik.info/")
+                    if (body != null) {
+                        val results = runCatching { JSONObject(body).optJSONArray("results") }.getOrNull()
+                        if (results != null && results.length() > 0) {
+                            lastWorkingKodikToken = token
+                            return (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+                        }
                     }
                 }
 
@@ -418,12 +502,15 @@ object AnimeStreamResolver {
                     val tBody = get(titleUrl, referer = "https://kodik.info/") ?: continue
                     val results = runCatching { JSONObject(tBody).optJSONArray("results") }.getOrNull() ?: continue
                     if (results.length() > 0) {
+                        lastWorkingKodikToken = token
                         return (0 until results.length()).mapNotNull { results.optJSONObject(it) }
                     }
                 }
             }
         }
-        fetchKodikFromFindPlayer(shikimoriId)?.let { return listOf(it) }
+        if (shikimoriId > 0) {
+            fetchKodikFromFindPlayer(shikimoriId)?.let { return listOf(it) }
+        }
         return emptyList()
     }
 
@@ -504,6 +591,20 @@ object AnimeStreamResolver {
                 .orEmpty()
                 .ifBlank { directEpisodes.optString(key) }
             episodes.add(AnimeEpisode(number = number, title = "Серия $number", link = link))
+        }
+
+        // Add specials
+        item.optJSONObject("specials")?.let { specials ->
+            specials.keys().asSequence().forEach { key ->
+                val number = key.toIntOrNull() ?: return@forEach
+                val link = specials.optJSONObject(key)?.optString("link")
+                    .orEmpty()
+                    .ifBlank { specials.optString(key) }
+                // Use a high number for specials to avoid conflict with regular episodes
+                // and keep them at the end of the list.
+                val specialNumber = number + 10000 
+                episodes.add(AnimeEpisode(number = specialNumber, title = "Special $number", link = link))
+            }
         }
 
         return episodes.distinctBy { it.number }.sortedBy { it.number }
@@ -640,7 +741,19 @@ object AnimeStreamResolver {
         }.getOrDefault(emptyMap())
     }
 
-    private suspend fun findAniLibertyRelease(shikimoriId: Int, animeTitle: String): JSONObject? {
+    private suspend fun findAniLibertyRelease(shikimoriId: Int, animeTitle: String, knownIdOrAlias: String? = null): JSONObject? {
+        val cacheKey = if (!knownIdOrAlias.isNullOrBlank() && knownIdOrAlias != "default") knownIdOrAlias else "$shikimoriId:$animeTitle"
+        aniLibertyReleaseCache[cacheKey]?.let { return it }
+
+        if (!knownIdOrAlias.isNullOrBlank() && knownIdOrAlias != "default") {
+            for (base in ANILIBERTY_API) {
+                fetchAniLibertyReleaseDetail(base, knownIdOrAlias)?.let {
+                    aniLibertyReleaseCache[cacheKey] = it
+                    return it
+                }
+            }
+        }
+
         val candidateAliases = buildAnimeSearchQueries(animeTitle)
             .flatMap { query ->
                 listOfNotNull(
@@ -653,24 +766,27 @@ object AnimeStreamResolver {
             for (alias in candidateAliases) {
                 val summary = get("$base/api/v1/anime/releases/list?aliases=${enc(alias)}", referer = "https://anilibria.top/")
                     ?.let { parseAniLibertyRelease(it, alias) } ?: continue
-                val detail = fetchAniLibertyReleaseDetail(base, summary)
-                if (detail != null) return detail
+                val detail = fetchAniLibertyReleaseDetail(base, summary.optString("alias").ifBlank { summary.optInt("id").toString() })
+                if (detail != null) {
+                    aniLibertyReleaseCache[cacheKey] = detail
+                    return detail
+                }
             }
 
             if (animeTitle.isNotBlank()) {
                 val summary = get("$base/api/v1/app/search/releases?query=${enc(animeTitle)}", referer = "https://anilibria.top/")
                     ?.let { parseAniLibertyRelease(it, slugifyAnimeTitle(animeTitle)) } ?: continue
-                val detail = fetchAniLibertyReleaseDetail(base, summary)
-                if (detail != null) return detail
+                val detail = fetchAniLibertyReleaseDetail(base, summary.optString("alias").ifBlank { summary.optInt("id").toString() })
+                if (detail != null) {
+                    aniLibertyReleaseCache[cacheKey] = detail
+                    return detail
+                }
             }
         }
         return null
     }
 
-    private suspend fun fetchAniLibertyReleaseDetail(base: String, summary: JSONObject): JSONObject? {
-        val idOrAlias = summary.optInt("id").takeIf { it > 0 }?.toString()
-            ?: summary.optString("alias").takeIf { it.isNotBlank() }
-            ?: return null
+    private suspend fun fetchAniLibertyReleaseDetail(base: String, idOrAlias: String): JSONObject? {
         val body = get("$base/api/v1/anime/releases/$idOrAlias", referer = "https://anilibria.top/") ?: return null
         return runCatching {
             val root = JSONObject(body)
@@ -683,7 +799,7 @@ object AnimeStreamResolver {
         val trimmed = body.trim()
         return runCatching {
             when {
-                trimmed.startsWith("[") -> JSONArray(trimmed).firstReleaseMatchingAlias(preferredAlias)
+                trimmed.startsWith("[") -> firstReleaseMatchingAlias(JSONArray(trimmed), preferredAlias)
                 else -> {
                     val json = JSONObject(trimmed)
                     val data = json.optJSONArray("data")
@@ -692,7 +808,7 @@ object AnimeStreamResolver {
                         ?: json.optJSONArray("items")
                         ?: json.optJSONArray("results")
                         ?: return@runCatching if (json.has("episodes")) json else null
-                    data.firstReleaseMatchingAlias(preferredAlias)
+                    firstReleaseMatchingAlias(data, preferredAlias)
                 }
             }
         }.getOrNull()
@@ -750,26 +866,51 @@ object AnimeStreamResolver {
         if (raw.isBlank()) return emptyList()
 
         val compact = raw
-            .replace(Regex("""[\[\]{}()|/,]+"""), " ")
+            .replace(Regex("""[\[\]{}()|/,.-]+"""), " ")
             .replace(Regex("""\s+"""), " ")
             .trim()
 
-        val prefixes = listOf(
-            compact.substringBefore(" - "),
-            compact.substringBefore(" — "),
-            compact.substringBefore(": "),
-            compact.substringBefore(" ("),
-            compact.substringBefore(","),
-            compact
-        ).map { it.trim() }.filter { it.isNotBlank() }
+        val queries = mutableListOf<String>()
+        queries.add(compact)
 
-        val firstWords = compact.split(Regex("""\s+"""))
-        val shortForms = buildList {
-            if (firstWords.isNotEmpty()) add(firstWords.first())
-            if (firstWords.size >= 2) add(firstWords.take(2).joinToString(" "))
+        // Try to strip season tags or trailing season numbers
+        val seasonRegex = Regex("""(?i)\b(сезон|\d+\s*сезон|\b\d+\b)\s*$""")
+        val cleanTitle = compact.replace(seasonRegex, "").trim()
+        if (cleanTitle.length >= 3) {
+            queries.add(cleanTitle)
         }
 
-        return (prefixes + shortForms + slugifyAnimeTitle(compact).replace("-", " ")).distinct()
+        // Add prefix queries before separators
+        val separators = listOf(" / ", " | ", " - ", " — ", ": ", " (", ",", " 1 ", " 2 ", " 3 ", " 4 ", " 5 ", " 6 ", " 7 ", " 8 ", " 9 ", " 10 ")
+        for (sep in separators) {
+            if (raw.contains(sep)) {
+                val prefix = raw.substringBefore(sep).trim()
+                    .replace(Regex("""[\[\]{}()|/,.-]+"""), " ")
+                    .replace(Regex("""\s+"""), " ")
+                    .trim()
+                if (prefix.length >= 3) {
+                    queries.add(prefix)
+                }
+                
+                // Also add the second part
+                val suffix = raw.substringAfter(sep).trim()
+                    .replace(Regex("""[\[\]{}()|/,.-]+"""), " ")
+                    .replace(Regex("""\s+"""), " ")
+                    .trim()
+                if (suffix.length >= 3) {
+                    queries.add(suffix)
+                }
+            }
+        }
+
+        // Add slugified version
+        val slug = slugifyAnimeTitle(compact).replace("-", " ").trim()
+        if (slug.length >= 3) {
+            queries.add(slug)
+        }
+
+        // Filter out any short query to avoid broad searches
+        return queries.distinct().filter { it.length >= 3 }
     }
 
     private fun parseAniLibSearchHref(body: String): String? {
@@ -1014,15 +1155,29 @@ object AnimeStreamResolver {
         }
     }
 
-    private fun JSONArray.firstReleaseMatchingAlias(preferredAlias: String?): JSONObject? {
-        if (length() == 0) return null
-        val items = asSequenceObjects().toList()
+    private fun firstReleaseMatchingAlias(data: JSONArray, preferredAlias: String?): JSONObject? {
+        if (data.length() == 0) return null
+        val items = data.asSequenceObjects().toList()
         preferredAlias?.takeIf { it.isNotBlank() }?.let { alias ->
             items.firstOrNull { item ->
                 item.optString("alias").equals(alias, ignoreCase = true) ||
-                    item.optString("name").equals(alias, ignoreCase = true)
+                    getAniLibertyTitle(item, false).equals(alias, ignoreCase = true) ||
+                    getAniLibertyTitle(item, true).equals(alias, ignoreCase = true) ||
+                    slugifyAnimeTitle(getAniLibertyTitle(item, false)).equals(alias, ignoreCase = true) ||
+                    slugifyAnimeTitle(getAniLibertyTitle(item, true)).equals(alias, ignoreCase = true)
             }?.let { return it }
         }
         return items.firstOrNull()
+    }
+
+    private fun getAniLibertyTitle(release: JSONObject, useEnglish: Boolean = false): String {
+        val nameObj = release.optJSONObject("name")
+        return if (useEnglish) {
+            nameObj?.optString("english")?.ifBlank { nameObj.optString("main") }
+                ?: release.optString("name").ifBlank { "AniLiberty" }
+        } else {
+            nameObj?.optString("main")
+                ?: release.optString("name").ifBlank { "AniLiberty" }
+        }
     }
 }

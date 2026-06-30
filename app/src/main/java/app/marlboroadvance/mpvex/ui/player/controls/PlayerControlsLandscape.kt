@@ -36,6 +36,7 @@ import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.player.Sheets
 import app.marlboroadvance.mpvex.ui.player.VideoAspect
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeEpisodeDropdown
+import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeQualityDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeShaderControl
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeTranslationDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
@@ -56,8 +57,10 @@ fun TopLeftPlayerControlsLandscape(
 
   val animeEpisodes by viewModel.animeEpisodes.collectAsState()
   val animeTranslations by viewModel.animeTranslations.collectAsState()
+  val animeQualities by viewModel.animeQualities.collectAsState()
   val currentEpisode by viewModel.currentAnimeEpisodeNumber.collectAsState()
   val currentTranslationId by viewModel.currentAnimeTranslationId.collectAsState()
+  val currentQualityId by viewModel.currentAnimeQualityId.collectAsState()
 
   Row(
     modifier = Modifier.fillMaxWidth(),
@@ -76,6 +79,7 @@ fun TopLeftPlayerControlsLandscape(
         episodes = animeEpisodes,
         currentEpisode = currentEpisode,
         hideBackground = hideBackground,
+        viewModel = viewModel,
         onEpisodeSelected = { viewModel.onAnimeEpisodeSelected?.invoke(it) }
       )
     }
@@ -85,8 +89,19 @@ fun TopLeftPlayerControlsLandscape(
         translations = animeTranslations,
         currentTranslationId = currentTranslationId,
         hideBackground = hideBackground,
+        viewModel = viewModel,
         onTranslationSelected = { viewModel.onAnimeTranslationSelected?.invoke(it) }
       )
+    }
+
+    if (animeTranslations.isNotEmpty()) {
+        AnimeQualityDropdown(
+            qualities = animeQualities,
+            currentQualityId = currentQualityId,
+            hideBackground = hideBackground,
+            viewModel = viewModel,
+            onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
+        )
     }
 
     if (animeEpisodes.isEmpty()) {
@@ -198,7 +213,7 @@ fun TopRightPlayerControlsLandscape(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),
   ) {
-    AnimeShaderControl(hideBackground = hideBackground)
+    AnimeShaderControl(hideBackground = hideBackground, viewModel = viewModel)
     
     buttons.forEach { button ->
       RenderPlayerButton(
@@ -246,8 +261,6 @@ fun BottomRightPlayerControlsLandscape(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),
   ) {
-    AnimeShaderControl(hideBackground = hideBackground)
-    
     buttons.forEach { button ->
       RenderPlayerButton(
         button = button,
@@ -294,8 +307,6 @@ fun BottomLeftPlayerControlsLandscape(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),
   ) {
-    AnimeShaderControl(hideBackground = hideBackground)
-
     buttons.forEach { button ->
       RenderPlayerButton(
         button = button,

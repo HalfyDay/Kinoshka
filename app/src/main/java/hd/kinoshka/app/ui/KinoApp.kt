@@ -344,7 +344,7 @@ fun KinoApp() {
                             load = vm::loadDetails,
                             onWatch = vm::onWatch,
                             onSaveUserProfile = vm::saveUserProfile,
-                            onOpenUrl = { rawUrl -> navController.navigate("web/${Uri.encode(rawUrl)}") },
+                            onOpenUrl = { rawUrl -> navController.navigate("web?url=${Uri.encode(rawUrl)}") },
                             onOpenFilm = { targetId -> navController.navigate(detailsRoute(targetId)) },
                             onBack = { navController.popBackStack() },
                             onOpenGenre = { genreName, isAnime ->
@@ -418,10 +418,16 @@ fun KinoApp() {
                         )
                     }
                     composable(
-                        route = "web/{url}",
-                        arguments = listOf(navArgument("url") { type = NavType.StringType })
+                        route = "web?url={url}",
+                        arguments = listOf(
+                            navArgument("url") {
+                                type = NavType.StringType
+                                nullable = true
+                                defaultValue = ""
+                            }
+                        )
                     ) { backStackEntry ->
-                        val encodedUrl = backStackEntry.arguments?.getString("url") ?: return@composable
+                        val encodedUrl = backStackEntry.arguments?.getString("url").orEmpty()
                         InAppWebScreen(url = Uri.decode(encodedUrl))
                     }
                 }

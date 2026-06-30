@@ -151,19 +151,52 @@ class PlayerViewModel(
   private val _currentAnimeTranslationId = MutableStateFlow<String?>(null)
   val currentAnimeTranslationId: StateFlow<String?> = _currentAnimeTranslationId.asStateFlow()
 
+  private val _animeQualities = MutableStateFlow<Map<String, String>>(emptyMap())
+  val animeQualities: StateFlow<Map<String, String>> = _animeQualities.asStateFlow()
+
+  private val _currentAnimeQualityId = MutableStateFlow<String?>(null)
+  val currentAnimeQualityId: StateFlow<String?> = _currentAnimeQualityId.asStateFlow()
+
+  private val _watchedEpisodesCount = MutableStateFlow(0)
+  val watchedEpisodesCount: StateFlow<Int> = _watchedEpisodesCount.asStateFlow()
+
+  fun setWatchedEpisodesCount(count: Int) {
+    _watchedEpisodesCount.value = count
+  }
+
+  private val _isLoadingStream = MutableStateFlow(false)
+  val isLoadingStream: StateFlow<Boolean> = _isLoadingStream.asStateFlow()
+
+  private val _isAnimeModalOpen = MutableStateFlow(false)
+  val isAnimeModalOpen: StateFlow<Boolean> = _isAnimeModalOpen.asStateFlow()
+
   var onAnimeEpisodeSelected: ((Int) -> Unit)? = null
   var onAnimeTranslationSelected: ((String) -> Unit)? = null
+  var onAnimeQualitySelected: ((String) -> Unit)? = null
 
   fun setAnimeData(
     episodes: List<AnimeEpisode>,
     translations: List<FlatTranslation>,
     currentEpisode: Int?,
-    currentTranslationId: String?
+    currentTranslationId: String?,
+    qualities: Map<String, String> = emptyMap(),
+    currentQuality: String? = null
   ) {
     _animeEpisodes.value = episodes
     _animeTranslations.value = translations
     _currentAnimeEpisodeNumber.value = currentEpisode
     _currentAnimeTranslationId.value = currentTranslationId
+    _animeQualities.value = qualities
+    _currentAnimeQualityId.value = currentQuality
+  }
+
+  fun setLoadingStream(loading: Boolean) {
+    _isLoadingStream.value = loading
+  }
+
+  fun setAnimeModalOpen(open: Boolean) {
+    _isAnimeModalOpen.value = open
+    if (open) showControls()
   }
 
   fun toggleOnlineSection() {

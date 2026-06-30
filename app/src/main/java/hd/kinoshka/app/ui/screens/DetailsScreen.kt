@@ -1,5 +1,18 @@
 package hd.kinoshka.app.ui.screens
 
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.graphics.SolidColor
 import hd.kinoshka.app.ui.components.AnimePlaybackSelectionSheet
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
 
@@ -48,6 +61,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -58,6 +72,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.draw.blur
@@ -158,11 +173,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.activity.compose.BackHandler
@@ -329,10 +342,16 @@ fun DetailsScreen(
 
             state.item != null -> {
                 val item = state.item
-                val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
-                if (isAnime) {
+                val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.any { it.genre?.lowercase() == "аниме" }
+                val scrollState = rememberLazyListState()
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (isAnime) {
                     if (activePlaybackSelection) {
-                        val shikimoriId = item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                        val shikimoriId = if (item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
+                            item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                        } else {
+                            0
+                        }
                         AnimePlaybackSelectionScreen(
                             shikimoriId = shikimoriId,
                             animeTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
@@ -340,9 +359,13 @@ fun DetailsScreen(
                             playbackSequence = playbackSequence,
                             onDismissRequest = { activePlaybackSelection = false },
                             onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
-                                if (stream.url.startsWith("http", ignoreCase = true)) {
+                                var normalizedUrl = stream.url
+                                if (normalizedUrl.startsWith("//")) {
+                                    normalizedUrl = "https:$normalizedUrl"
+                                }
+                                if (normalizedUrl.startsWith("http", ignoreCase = true)) {
                                     onOpenNativePlayer?.invoke(
-                                        stream.url,
+                                        normalizedUrl,
                                         stream.headers,
                                         stream.qualities,
                                         item.nameRu ?: item.nameOriginal ?: "Аниме",
@@ -355,25 +378,13 @@ fun DetailsScreen(
                                         trId
                                     )
                                 } else {
-                                    onOpenUrl(stream.url)
+                                    throw IllegalArgumentException("Некорректная ссылка на видеопоток: $normalizedUrl")
                                 }
                             },
-                            onSaveWatchedEpisode = { epNum ->
-                                onSaveUserProfile(
-                                    item,
-                                    UserFilmStatus.WATCHING,
-                                    state.userProfile?.userRating,
-                                    state.userProfile?.note.orEmpty(),
-                                    state.userProfile?.watchedSeasons,
-                                    epNum,
-                                    state.userProfile?.totalEpisodesInSeason,
-                                    state.userProfile?.totalSeasons,
-                                    state.userProfile?.totalEpisodes
-                                )
-                            }
                         )
                     } else {
                         AnimeDetailsLayout(
+                            scrollState = scrollState,
                             state = state,
                             isInteractive = isInteractive,
                             onWatch = { filmDetails ->
@@ -393,13 +404,13 @@ fun DetailsScreen(
                                 previewPosterOffset = offset
                                 previewPosterUrl = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview
                             },
-                            onBack = onBack,
                             onOpenCharacter = { charId -> selectedCharacterId = charId },
                             onOpenGenre = onOpenGenre
                         )
                     }
                 } else {
                     LazyColumn(
+                        state = scrollState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -407,7 +418,6 @@ fun DetailsScreen(
                         item {
                             HeroHeader(
                                 item = item,
-                                onBack = onBack,
                                 onPosterClick = { offset ->
                                     previewPosterOffset = offset
                                     previewPosterUrl = item.posterUrl ?: item.posterUrlPreview
@@ -522,6 +532,16 @@ fun DetailsScreen(
                             }
                         }
                     }
+                }
+
+                if (!isAnime || !activePlaybackSelection) {
+                    DetailsTopBar(
+                        item = item,
+                        isAnime = isAnime,
+                        scrollState = scrollState,
+                        onBack = onBack
+                    )
+                }
             }
         }
     }
@@ -554,6 +574,11 @@ fun DetailsScreen(
                 saving = state.savingProfile,
                 onDismiss = { showProfileEditor = false },
                 onSave = { status, rating, note, seasons, episodes ->
+                    val totalSeasons = state.seasons.size.takeIf { it > 0 }
+                        ?: if (state.animeDetails != null) 1 else null
+                    val totalEpisodes = state.seasons.sumOf { it.episodes.size }.takeIf { it > 0 }
+                        ?: state.animeDetails?.episodes?.takeIf { it > 0 }
+
                     onSaveUserProfile(
                         state.item,
                         status,
@@ -566,8 +591,8 @@ fun DetailsScreen(
                             ?.let { seasonNumber ->
                                 state.seasons.firstOrNull { it.number == seasonNumber }?.episodes?.size
                             },
-                        state.seasons.size.takeIf { it > 0 },
-                        state.seasons.sumOf { it.episodes.size }.takeIf { it > 0 }
+                        totalSeasons,
+                        totalEpisodes
                     )
                     showProfileEditor = false
                 }
@@ -601,7 +626,6 @@ fun DetailsScreen(
 @Composable
 private fun HeroHeader(
     item: FilmDetails,
-    onBack: () -> Unit,
     onPosterClick: (Offset) -> Unit
 ) {
     val context = LocalContext.current
@@ -654,39 +678,6 @@ private fun HeroHeader(
                     )
                 )
         )
-
-        // Top Buttons Row (Back & Share)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Назад",
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
-            }
-            IconButton(
-                onClick = {
-                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, item.webUrl ?: "https://www.kinopoisk.ru/film/${item.kinopoiskId}/")
-                    }
-                    context.startActivity(Intent.createChooser(shareIntent, "Поделиться"))
-                }
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Share,
-                    contentDescription = "Поделиться",
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
 
         Row(
             modifier = Modifier
@@ -1207,7 +1198,11 @@ private fun UserProfileEditorSheet(
                 ) {
                     if (status != null) {
                         IconButton(
-                            onClick = { status = null },
+                            onClick = { 
+                                status = null 
+                                seasonsCount = 0
+                                episodesCount = 0
+                            },
                             modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
@@ -1245,6 +1240,17 @@ private fun UserProfileEditorSheet(
                 }
             }
 
+            // Season and Episodes Counter Section with Max Boundaries & Season Reset
+            val isAnimeItem = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.any { it.genre?.lowercase() == "аниме" }
+            val maxAnimeEpisodes = maxOf(
+                animeDetails?.episodes ?: 0,
+                profile?.totalEpisodes ?: 0,
+                profile?.watchedEpisodes ?: 0
+            ).takeIf { it > 0 } ?: Int.MAX_VALUE
+            val maxSeasons = seasons.size.takeIf { it > 0 } ?: Int.MAX_VALUE
+            val currentSeasonObj = seasons.firstOrNull { it.number == seasonsCount } ?: seasons.firstOrNull()
+            val maxEpisodesInSeason = currentSeasonObj?.episodes?.size?.takeIf { it > 0 } ?: Int.MAX_VALUE
+
             // Status Connected Segmented Row
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -1260,7 +1266,21 @@ private fun UserProfileEditorSheet(
                         Surface(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable { status = option },
+                                .clickable {
+                                    status = option
+                                    if (option == UserFilmStatus.COMPLETED) {
+                                        if (isAnimeItem) {
+                                            // seasonsCount = 1 (do not change repeats automatically)
+                                            episodesCount = maxAnimeEpisodes.takeIf { it != Int.MAX_VALUE } ?: 1
+                                        } else if (item.type == "TV_SERIES" && seasons.isNotEmpty()) {
+                                            seasonsCount = seasons.size
+                                            episodesCount = seasons.last().episodes.size
+                                        } else {
+                                            // seasonsCount = 1
+                                            episodesCount = 1
+                                        }
+                                    }
+                                },
                             shape = RoundedCornerShape(10.dp),
                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
                         ) {
@@ -1275,13 +1295,6 @@ private fun UserProfileEditorSheet(
                     }
                 }
             }
-
-            // Season and Episodes Counter Section with Max Boundaries & Season Reset
-            val isAnimeItem = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
-            val maxAnimeEpisodes = animeDetails?.episodes?.takeIf { it > 0 } ?: Int.MAX_VALUE
-            val maxSeasons = seasons.size.takeIf { it > 0 } ?: Int.MAX_VALUE
-            val currentSeasonObj = seasons.firstOrNull { it.number == seasonsCount } ?: seasons.firstOrNull()
-            val maxEpisodesInSeason = currentSeasonObj?.episodes?.size?.takeIf { it > 0 } ?: Int.MAX_VALUE
 
             if (isAnimeItem) {
                 Row(
@@ -1422,19 +1435,24 @@ private fun CompactCounterField(
     onValueChange: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var showEditDialog by remember { mutableStateOf(false) }
+
     Surface(
-        modifier = modifier,
+        modifier = modifier.height(52.dp),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .fillMaxSize()
+                .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier
+                .weight(1f)
+                .clickable { showEditDialog = true }
+            ) {
                 Text(
                     text = label,
                     style = MaterialTheme.typography.labelSmall,
@@ -1447,10 +1465,14 @@ private fun CompactCounterField(
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Surface(
                     modifier = Modifier
-                        .size(30.dp)
+                        .size(32.dp)
                         .clip(CircleShape)
                         .clickable { onValueChange((value - 1).coerceAtLeast(0)) },
                     shape = CircleShape,
@@ -1462,7 +1484,7 @@ private fun CompactCounterField(
                 }
                 Surface(
                     modifier = Modifier
-                        .size(30.dp)
+                        .size(32.dp)
                         .clip(CircleShape)
                         .clickable { onValueChange(value + 1) },
                     shape = CircleShape,
@@ -1474,6 +1496,36 @@ private fun CompactCounterField(
                 }
             }
         }
+    }
+
+    if (showEditDialog) {
+        val tempValue = remember { mutableStateOf(value.toString()) }
+        AlertDialog(
+            onDismissRequest = { showEditDialog = false },
+            title = { Text(label) },
+            text = {
+                OutlinedTextField(
+                    value = tempValue.value,
+                    onValueChange = { tempValue.value = it.filter { c -> c.isDigit() }.take(5) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    tempValue.value.toIntOrNull()?.let { onValueChange(it) }
+                    showEditDialog = false
+                }) {
+                    Text("OK")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditDialog = false }) {
+                    Text("Отмена")
+                }
+            }
+        )
     }
 }
 
@@ -2154,6 +2206,7 @@ private fun isAdGuardDnsActive(context: Context): Boolean {
 
 @Composable
 private fun AnimeDetailsLayout(
+    scrollState: LazyListState,
     state: DetailsUiState,
     isInteractive: Boolean,
     onWatch: (FilmDetails) -> Unit,
@@ -2162,7 +2215,6 @@ private fun AnimeDetailsLayout(
     onOpenFilm: (Int) -> Unit,
     onPreviewImage: (Int) -> Unit,
     onPosterClick: (Offset) -> Unit,
-    onBack: () -> Unit,
     onOpenCharacter: (Int) -> Unit,
     onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null
 ) {
@@ -2196,6 +2248,7 @@ private fun AnimeDetailsLayout(
     val ageRatingStr = anime?.rating?.uppercase()?.replace("R_17", "R-17")?.replace("PG_13", "PG-13")?.replace("R_PLUS", "R+") ?: "—"
 
     LazyColumn(
+        state = scrollState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -2231,39 +2284,6 @@ private fun AnimeDetailsLayout(
                             )
                         )
                 )
-
-                // Top Buttons Row (Back & Share - No Circle Background)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Назад",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, item.webUrl ?: "https://shikimori.io/animes/${item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET}")
-                            }
-                            context.startActivity(Intent.createChooser(shareIntent, "Поделиться"))
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = "Поделиться",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
 
                 Column(
                     modifier = Modifier
@@ -3479,4 +3499,98 @@ private fun CharacterDetailsSheet(
         }
     }
 }
+
+@Composable
+private fun DetailsTopBar(
+    item: FilmDetails,
+    isAnime: Boolean,
+    scrollState: LazyListState,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    
+    val thresholdPx = with(density) { (if (isAnime) 380.dp else 200.dp).toPx() }
+    val fadeRangePx = with(density) { 40.dp.toPx() }
+    
+    val currentScroll = if (scrollState.firstVisibleItemIndex > 0) {
+        thresholdPx + fadeRangePx
+    } else {
+        scrollState.firstVisibleItemScrollOffset.toFloat()
+    }
+    
+    val alpha = ((currentScroll - thresholdPx) / fadeRangePx).coerceIn(0f, 1f)
+
+    val backgroundColor = MaterialTheme.colorScheme.background
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        backgroundColor.copy(alpha = alpha),
+                        backgroundColor.copy(alpha = alpha * 0.85f),
+                        backgroundColor.copy(alpha = alpha * 0.45f),
+                        Color.Transparent
+                    )
+                )
+            )
+    ) {
+        Box(
+            modifier = Modifier
+                .statusBarsPadding()
+                .fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Назад",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                
+                Text(
+                    text = item.nameRu ?: item.nameOriginal ?: "Без названия",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                        .graphicsLayer { this.alpha = alpha },
+                    textAlign = TextAlign.Center
+                )
+                
+                IconButton(
+                    onClick = {
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            val shareUrl = if (isAnime) {
+                                item.webUrl ?: "https://shikimori.io/animes/${item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET}"
+                            } else {
+                                item.webUrl ?: "https://www.kinopoisk.ru/film/${item.kinopoiskId}/"
+                            }
+                            putExtra(Intent.EXTRA_TEXT, shareUrl)
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "Поделиться"))
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = "Поделиться",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
+}
+
 

@@ -235,6 +235,9 @@ fun PlayerControls(
     appearancePreferences.parseButtons(portraitBottomControlsPref, mutableSetOf())
   }
 
+  val isLoadingStream by viewModel.isLoadingStream.collectAsState()
+  val isAnimeModalOpen by viewModel.isAnimeModalOpen.collectAsState()
+
   var isUnlockSliderDragging by remember { mutableStateOf(false) }
 
   LaunchedEffect(
@@ -244,8 +247,9 @@ fun PlayerControls(
     resetControlsTimestamp,
     areControlsLocked,
     isUnlockSliderDragging,
+    isAnimeModalOpen,
   ) {
-    if (controlsShown && paused == false && !isSeeking && !isUnlockSliderDragging) {
+    if (controlsShown && paused == false && !isSeeking && !isUnlockSliderDragging && !isAnimeModalOpen) {
       // Use 2 second delay when controls are locked, otherwise use user preference
       val delayTime = if (areControlsLocked) 2000L else playerTimeToDisappear.toLong()
       delay(delayTime)
@@ -373,6 +377,15 @@ fun PlayerControls(
               bottom.linkTo(parent.bottom, spacing.extraLarge)
             },
         ) { BrightnessSlider(brightness, 0f..1f) }
+
+        if (isLoadingStream) {
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)),
+                contentAlignment = Alignment.Center
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            }
+        }
 
         AnimatedVisibility(
           isVolumeSliderShown,
@@ -678,12 +691,7 @@ fun PlayerControls(
                     contentColor = MaterialTheme.colorScheme.onSurface,
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp,
-                    border =
-                      if (!hideBackground) {
-                        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                      } else {
-                        null
-                      },
+                    border = null,
                   ) {
                     Icon(
                       imageVector = Icons.Default.SkipPrevious,
@@ -730,12 +738,7 @@ fun PlayerControls(
                     contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp,
-                    border =
-                      if (!hideBackground) {
-                        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                      } else {
-                        null
-                      },
+                    border = null,
                   ) {
                     Image(
                       painter = rememberAnimatedVectorPainter(icon, paused == false),
@@ -776,12 +779,7 @@ fun PlayerControls(
                     contentColor = MaterialTheme.colorScheme.onSurface,
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp,
-                    border =
-                      if (!hideBackground) {
-                        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                      } else {
-                        null
-                      },
+                    border = null,
                   ) {
                     Icon(
                       imageVector = Icons.Default.SkipNext,
@@ -829,12 +827,7 @@ fun PlayerControls(
                   contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
                   tonalElevation = 0.dp,
                   shadowElevation = 0.dp,
-                  border =
-                    if (!hideBackground) {
-                      BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                    } else {
-                      null
-                    },
+                  border = null,
                 ) {
                   Image(
                     painter = rememberAnimatedVectorPainter(icon, paused == false),
