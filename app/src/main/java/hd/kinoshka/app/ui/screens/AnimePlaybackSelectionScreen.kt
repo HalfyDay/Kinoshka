@@ -42,7 +42,16 @@ fun AnimePlaybackSelectionScreen(
     watchedEpisodes: Int,
     playbackSequence: PlaybackSequenceOption,
     onDismissRequest: () -> Unit,
-    onStreamSelected: (stream: AnimeMediaStream, episodeNumber: Int, episodeTitle: String, source: AnimeSourceType, translationTitle: String) -> Unit,
+    onStreamSelected: (
+        stream: AnimeMediaStream,
+        episodeNumber: Int,
+        episodeTitle: String,
+        source: AnimeSourceType,
+        translationTitle: String,
+        episodes: List<AnimeEpisode>,
+        translations: List<FlatTranslation>,
+        currentTranslationId: String
+    ) -> Unit,
     onSaveWatchedEpisode: (Int) -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -104,7 +113,7 @@ fun AnimePlaybackSelectionScreen(
                 isResolvingStream = false
                 if (stream != null) {
                     onSaveWatchedEpisode(epNum)
-                    onStreamSelected(stream, epNum, "Серия $epNum", src, tr.title)
+                    onStreamSelected(stream, epNum, "Серия $epNum", src, tr.title, tr.episodes, allTranslations, tr.translationId)
                     onDismissRequest()
                 } else {
                     errorMessage = "Не удалось получить видеопоток для серии $epNum"

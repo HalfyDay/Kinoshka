@@ -17,6 +17,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import hd.kinoshka.app.R
+import hd.kinoshka.app.data.model.AnimeEpisode
+import hd.kinoshka.app.data.model.FlatTranslation
 import app.marlboroadvance.mpvex.preferences.AudioPreferences
 import app.marlboroadvance.mpvex.preferences.GesturePreferences
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
@@ -135,6 +137,34 @@ class PlayerViewModel(
 
   private val _selectedEpisode = MutableStateFlow<app.marlboroadvance.mpvex.repository.wyzie.WyzieEpisode?>(null)
   val selectedEpisode: StateFlow<app.marlboroadvance.mpvex.repository.wyzie.WyzieEpisode?> = _selectedEpisode.asStateFlow()
+
+  // Anime-specific state
+  private val _animeEpisodes = MutableStateFlow<List<AnimeEpisode>>(emptyList())
+  val animeEpisodes: StateFlow<List<AnimeEpisode>> = _animeEpisodes.asStateFlow()
+
+  private val _animeTranslations = MutableStateFlow<List<FlatTranslation>>(emptyList())
+  val animeTranslations: StateFlow<List<FlatTranslation>> = _animeTranslations.asStateFlow()
+
+  private val _currentAnimeEpisodeNumber = MutableStateFlow<Int?>(null)
+  val currentAnimeEpisodeNumber: StateFlow<Int?> = _currentAnimeEpisodeNumber.asStateFlow()
+
+  private val _currentAnimeTranslationId = MutableStateFlow<String?>(null)
+  val currentAnimeTranslationId: StateFlow<String?> = _currentAnimeTranslationId.asStateFlow()
+
+  var onAnimeEpisodeSelected: ((Int) -> Unit)? = null
+  var onAnimeTranslationSelected: ((String) -> Unit)? = null
+
+  fun setAnimeData(
+    episodes: List<AnimeEpisode>,
+    translations: List<FlatTranslation>,
+    currentEpisode: Int?,
+    currentTranslationId: String?
+  ) {
+    _animeEpisodes.value = episodes
+    _animeTranslations.value = translations
+    _currentAnimeEpisodeNumber.value = currentEpisode
+    _currentAnimeTranslationId.value = currentTranslationId
+  }
 
   fun toggleOnlineSection() {
       _isOnlineSectionExpanded.value = !_isOnlineSectionExpanded.value

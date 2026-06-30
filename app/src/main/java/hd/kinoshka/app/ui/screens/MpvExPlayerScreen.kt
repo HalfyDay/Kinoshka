@@ -7,6 +7,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import app.marlboroadvance.mpvex.ui.player.PlayerActivity
+import hd.kinoshka.app.data.model.AnimeEpisode
+import hd.kinoshka.app.data.model.FlatTranslation
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 @Composable
 fun MpvExPlayerScreen(
@@ -16,6 +20,11 @@ fun MpvExPlayerScreen(
     animeTitle: String,
     episodeNumber: Int,
     episodeTitle: String,
+    shikimoriId: Int = 0,
+    sourceType: String = "KODIK",
+    episodes: List<AnimeEpisode> = emptyList(),
+    translations: List<FlatTranslation> = emptyList(),
+    currentTranslationId: String? = null,
     onBack: () -> Unit,
     onNextEpisode: (() -> Unit)? = null,
     onPrevEpisode: (() -> Unit)? = null
@@ -49,6 +58,19 @@ fun MpvExPlayerScreen(
                 }
             }
             putExtra("headers", headersArray.toTypedArray())
+
+            putExtra("anime_shikimori_id", shikimoriId)
+            putExtra("anime_title", animeTitle)
+            putExtra("anime_source_type", sourceType)
+            putExtra("anime_current_episode", episodeNumber)
+            putExtra("anime_current_translation_id", currentTranslationId)
+
+            if (episodes.isNotEmpty()) {
+                putExtra("anime_episodes", Json.encodeToString(episodes))
+            }
+            if (translations.isNotEmpty()) {
+                putExtra("anime_translations", Json.encodeToString(translations))
+            }
             
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }

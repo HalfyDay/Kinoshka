@@ -206,7 +206,19 @@ fun DetailsScreen(
     onOpenFilm: (Int) -> Unit,
     onBack: () -> Unit,
     onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null,
-    onOpenNativePlayer: ((streamUrl: String, headers: Map<String, String>, qualities: Map<String, String>, animeTitle: String, episodeNumber: Int, episodeTitle: String) -> Unit)? = null,
+    onOpenNativePlayer: ((
+        streamUrl: String,
+        headers: Map<String, String>,
+        qualities: Map<String, String>,
+        animeTitle: String,
+        episodeNumber: Int,
+        episodeTitle: String,
+        shikimoriId: Int,
+        sourceType: String,
+        episodes: List<hd.kinoshka.app.data.model.AnimeEpisode>,
+        translations: List<hd.kinoshka.app.data.model.FlatTranslation>,
+        currentTranslationId: String
+    ) -> Unit)? = null,
     playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES
 ) {
     val context = LocalContext.current
@@ -327,9 +339,21 @@ fun DetailsScreen(
                             watchedEpisodes = state.userProfile?.watchedEpisodes ?: 0,
                             playbackSequence = playbackSequence,
                             onDismissRequest = { activePlaybackSelection = false },
-                            onStreamSelected = { stream, epNum, epTitle, _, _ ->
+                            onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
                                 if (stream.url.startsWith("http", ignoreCase = true)) {
-                                    onOpenNativePlayer?.invoke(stream.url, stream.headers, stream.qualities, item.nameRu ?: item.nameOriginal ?: "Аниме", epNum, epTitle)
+                                    onOpenNativePlayer?.invoke(
+                                        stream.url,
+                                        stream.headers,
+                                        stream.qualities,
+                                        item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                        epNum,
+                                        epTitle,
+                                        shikimoriId,
+                                        source.name,
+                                        episodes,
+                                        translations,
+                                        trId
+                                    )
                                 } else {
                                     onOpenUrl(stream.url)
                                 }

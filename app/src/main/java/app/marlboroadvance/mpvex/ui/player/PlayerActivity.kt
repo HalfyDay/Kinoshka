@@ -54,10 +54,13 @@ import com.github.k1rakishou.fsaf.FileManager
 import `is`.xyz.mpv.MPVLib
 import `is`.xyz.mpv.MPVNode
 import `is`.xyz.mpv.Utils
-import kotlinx.coroutines.Dispatchers
+import hd.kinoshka.app.data.model.AnimeEpisode
+import hd.kinoshka.app.data.model.AnimeSourceType
+import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.source.AnimeStreamResolver
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import org.koin.android.ext.android.inject
 import java.io.File
 
@@ -341,6 +344,8 @@ class PlayerActivity :
     setupPlayerControls()
     setupPipHelper()
     setupMediaSession()
+
+    setAnimeExtras(intent.extras)
 
     playlistId = intent.getIntExtra("playlist_id", -1).takeIf { it != -1 }
     playlistIndex = intent.getIntExtra("playlist_index", 0)
@@ -1084,6 +1089,74 @@ class PlayerActivity :
 
     addSubtitlesFromExtras(extras)
     setHttpHeadersFromExtras(extras)
+  }
+
+  private fun setAnimeExtras(extras: Bundle?) {
+    if (extras == null) return
+    val episodesJson = extras.getString("anime_episodes")
+    val translationsJson = extras.getString("anime_translations")
+    val currentEp = extras.getInt("anime_current_episode", -1).takeIf { it != -1 }
+    val currentTr = extras.getString("anime_current_translation_id")
+
+    val episodes = if (!episodesJson.isNullOrEmpty()) {
+      try { Json.decodeFromString<List<AnimeEpisode>>(episodesJson) } catch (e: Exception) { emptyList() }
+    } else emptyList()
+
+    val translations = if (!translationsJson.isNullOrEmpty()) {
+      try { Json.decodeFromString<List<FlatTranslation>>(translationsJson) } catch (e: Exception) { emptyList() }
+    } else emptyList()
+
+    if (episodes.isNotEmpty() || translations.isNotEmpty()) {
+      viewModel.setAnimeData(episodes, translations, currentEp, currentTr)
+
+      viewModel.onAnimeEpisodeSelected = { epNum ->
+        val shikimoriId = extras.getInt("anime_shikimori_id", 0)
+        val animeTitle = extras.getString("anime_title", "")
+        val srcTypeStr = extras.getString("anime_source_type")
+        val srcType = try { AnimeSourceType.valueOf(srcTypeStr ?: "") } catch (e: Exception) { AnimeSourceType.KODIK }
+        val trId = viewModel.currentAnimeTranslationId.value ?: currentTr ?: ""
+
+        lifecycleScope.launch(Dispatchers.IO) {
+          val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+          if (stream != null) {
+            withContext(Dispatchers.Main) {
+              viewModel.setAnimeData(episodes, translations, epNum, trId)
+              MPVLib.command("loadfile", stream.url)
+              MPVLib.setPropertyString("media-title", "$animeTitle • Серия $epNum")
+              if (stream.headers.isNotEmpty()) {
+                val headersArray = mutableListOf<String>()
+                stream.headers.forEach { (k, v) -> headersArray.add(k); headersArray.add(v) }
+                MPVLib.setOptionString("http-header-fields", headersArray.joinToString(","))
+              }
+            }
+          }
+        }
+      }
+
+      viewModel.onAnimeTranslationSelected = { trId ->
+        val shikimoriId = extras.getInt("anime_shikimori_id", 0)
+        val animeTitle = extras.getString("anime_title", "")
+        val srcTypeStr = extras.getString("anime_source_type")
+        val srcType = try { AnimeSourceType.valueOf(srcTypeStr ?: "") } catch (e: Exception) { AnimeSourceType.KODIK }
+        val epNum = viewModel.currentAnimeEpisodeNumber.value ?: currentEp ?: 1
+
+        lifecycleScope.launch(Dispatchers.IO) {
+          val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+          if (stream != null) {
+            withContext(Dispatchers.Main) {
+              viewModel.setAnimeData(episodes, translations, epNum, trId)
+              MPVLib.command("loadfile", stream.url)
+              MPVLib.setPropertyString("media-title", "$animeTitle • Серия $epNum")
+              if (stream.headers.isNotEmpty()) {
+                val headersArray = mutableListOf<String>()
+                stream.headers.forEach { (k, v) -> headersArray.add(k); headersArray.add(v) }
+                MPVLib.setOptionString("http-header-fields", headersArray.joinToString(","))
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   /**

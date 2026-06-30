@@ -185,15 +185,18 @@ fun RenderPlayerButton(
               overflow = TextOverflow.Clip,
             )
           }
-          Text(
-            text = mediaTitle ?: "",
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.bodyMedium,
-            fontFamily = FontFamily.Monospace,
-            color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f, fill = false),
-          )
+          val isLink = mediaTitle?.startsWith("http") == true
+          if (!isLink) {
+              Text(
+                text = mediaTitle ?: "",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace,
+                color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f, fill = false),
+              )
+          }
         }
       }
     }
