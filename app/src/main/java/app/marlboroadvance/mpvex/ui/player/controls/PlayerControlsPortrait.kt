@@ -19,8 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,6 +33,9 @@ import app.marlboroadvance.mpvex.ui.player.PlayerActivity
 import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.player.Sheets
 import app.marlboroadvance.mpvex.ui.player.VideoAspect
+import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeEpisodeDropdown
+import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeShaderControl
+import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeTranslationDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsGroup
 import app.marlboroadvance.mpvex.ui.theme.controlColor
@@ -51,96 +53,134 @@ fun TopPlayerControlsPortrait(
   val playlistModeEnabled = viewModel.hasPlaylistSupport()
   val clickEvent = LocalPlayerButtonsClickEvent.current
 
+  val animeEpisodes by viewModel.animeEpisodes.collectAsState()
+  val animeTranslations by viewModel.animeTranslations.collectAsState()
+  val currentEpisode by viewModel.currentAnimeEpisodeNumber.collectAsState()
+  val currentTranslationId by viewModel.currentAnimeTranslationId.collectAsState()
+
   Column {
     Row(
       modifier = Modifier.fillMaxWidth(),
       verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween
     ) {
-      ControlsGroup {
+      Row(verticalAlignment = Alignment.CenterVertically) {
         ControlsButton(
           icon = Icons.AutoMirrored.Default.ArrowBack,
           onClick = onBackPress,
           color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
         )
 
-        val titleInteractionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+        if (animeEpisodes.isEmpty()) {
+            val titleInteractionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
 
-        androidx.compose.foundation.layout.Box(
-          modifier =
-            Modifier
-              .clip(RoundedCornerShape(50))
-              .clickable(
-                enabled = playlistModeEnabled,
-                onClick = {
-                  clickEvent()
-                  onOpenSheet(Sheets.Playlist)
-                },
-              ),
-        ) {
-          Surface(
-            shape = RoundedCornerShape(50),
-            color =
-              if (hideBackground) {
-                Color.Transparent
-              } else {
-                MaterialTheme.colorScheme.surfaceContainer.copy(
-                  alpha = 0.55f,
-                )
-              },
-            contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-            border =
-              if (hideBackground) {
-                null
-              } else {
-                BorderStroke(
-                  1.dp,
-                  MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                )
-              },
-          ) {
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),
+            androidx.compose.foundation.layout.Box(
               modifier =
-                Modifier.padding(
-                  horizontal = MaterialTheme.spacing.medium,
-                  vertical = MaterialTheme.spacing.small,
-                ),
+                Modifier
+                  .clip(RoundedCornerShape(50))
+                  .clickable(
+                    enabled = playlistModeEnabled,
+                    onClick = {
+                      clickEvent()
+                      onOpenSheet(Sheets.Playlist)
+                    },
+                  ),
             ) {
-              viewModel.getPlaylistInfo()?.let { playlistInfo ->
-                Text(
-                  text = playlistInfo,
-                  textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                  style = MaterialTheme.typography.bodyMedium,
-                  maxLines = 1,
-                  overflow = TextOverflow.Visible,
-                  fontFamily = FontFamily.Monospace,
-                  color = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                  text = Typography.bullet.toString(),
-                  textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                  style = MaterialTheme.typography.bodyMedium,
-                  maxLines = 1,
-                  color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-                  overflow = TextOverflow.Clip,
-                )
+              Surface(
+                shape = RoundedCornerShape(50),
+                color =
+                  if (hideBackground) {
+                    Color.Transparent
+                  } else {
+                    MaterialTheme.colorScheme.surfaceContainer.copy(
+                      alpha = 0.55f,
+                    )
+                  },
+                contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
+                border =
+                  if (hideBackground) {
+                    null
+                  } else {
+                    BorderStroke(
+                      1.dp,
+                      MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    )
+                  },
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),
+                  modifier =
+                    Modifier.padding(
+                      horizontal = MaterialTheme.spacing.medium,
+                      vertical = MaterialTheme.spacing.small,
+                    ),
+                ) {
+                  viewModel.getPlaylistInfo()?.let { playlistInfo ->
+                    Text(
+                      text = playlistInfo,
+                      textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                      style = MaterialTheme.typography.bodyMedium,
+                      maxLines = 1,
+                      overflow = TextOverflow.Visible,
+                      fontFamily = FontFamily.Monospace,
+                      color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                      text = Typography.bullet.toString(),
+                      textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                      style = MaterialTheme.typography.bodyMedium,
+                      maxLines = 1,
+                      color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+                      overflow = TextOverflow.Clip,
+                    )
+                  }
+                  
+                  val isLink = mediaTitle?.startsWith("http") == true
+                  if (!isLink) {
+                      Text(
+                        text = mediaTitle ?: "",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f, fill = false),
+                      )
+                  }
+                }
               }
-              Text(
-                text = mediaTitle ?: "",
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyMedium,
-                fontFamily = FontFamily.Monospace,
-                color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f, fill = false),
-              )
             }
-          }
         }
       }
+      
+      AnimeShaderControl(hideBackground = hideBackground)
+    }
+    
+    if (animeEpisodes.isNotEmpty() || animeTranslations.isNotEmpty()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = MaterialTheme.spacing.medium, vertical = MaterialTheme.spacing.extraSmall),
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)
+        ) {
+            if (animeEpisodes.isNotEmpty()) {
+                AnimeEpisodeDropdown(
+                    episodes = animeEpisodes,
+                    currentEpisode = currentEpisode,
+                    hideBackground = hideBackground,
+                    onEpisodeSelected = { viewModel.onAnimeEpisodeSelected?.invoke(it) }
+                )
+            }
+            if (animeTranslations.isNotEmpty()) {
+                AnimeTranslationDropdown(
+                    translations = animeTranslations,
+                    currentTranslationId = currentTranslationId,
+                    hideBackground = hideBackground,
+                    onTranslationSelected = { viewModel.onAnimeTranslationSelected?.invoke(it) }
+                )
+            }
+        }
     }
   }
 }

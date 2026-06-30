@@ -56,6 +56,8 @@ import hd.kinoshka.app.ui.screens.ProfileScreen
 import hd.kinoshka.app.ui.screens.SettingsScreen
 import hd.kinoshka.app.ui.components.DebugPerformanceOverlay
 import hd.kinoshka.app.ui.theme.KinoTheme
+import hd.kinoshka.app.data.model.AnimeEpisode
+import hd.kinoshka.app.data.model.FlatTranslation
 import kotlinx.coroutines.launch
 
 data class NativePlayerArgs(
@@ -64,7 +66,12 @@ data class NativePlayerArgs(
     val qualities: Map<String, String>,
     val animeTitle: String,
     val episodeNumber: Int,
-    val episodeTitle: String
+    val episodeTitle: String,
+    val shikimoriId: Int = 0,
+    val sourceType: String = "KODIK",
+    val episodes: List<AnimeEpisode> = emptyList(),
+    val translations: List<FlatTranslation> = emptyList(),
+    val currentTranslationId: String? = null
 )
 
 @Composable
@@ -344,8 +351,8 @@ fun KinoApp() {
                                 vm.searchGenre(genreName, isAnime)
                                 navController.popBackStack("home", false)
                             },
-                            onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle ->
-                                activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle)
+                            onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId ->
+                                activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId)
                             },
                             playbackSequence = vm.uiState.playbackSequence
                         )
@@ -436,6 +443,11 @@ fun KinoApp() {
                         animeTitle = args.animeTitle,
                         episodeNumber = args.episodeNumber,
                         episodeTitle = args.episodeTitle,
+                        shikimoriId = args.shikimoriId,
+                        sourceType = args.sourceType,
+                        episodes = args.episodes,
+                        translations = args.translations,
+                        currentTranslationId = args.currentTranslationId,
                         onBack = { activeNativePlayerArgs = null }
                     )
                 }

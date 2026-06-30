@@ -1,17 +1,22 @@
 package hd.kinoshka.app.data.model
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 enum class AnimeSourceType(val displayName: String, val description: String) {
     KODIK("Kodik", "Большой каталог озвучек и субтитров"),
     ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p"),
     ANILIB("AniLib", "Каталог серий AniLib с выбором команды перевода")
 }
 
+@Serializable
 data class AnimeSource(
     val type: AnimeSourceType,
     val isAvailable: Boolean = true,
     val episodesCount: Int? = null
 )
 
+@Serializable
 data class AnimeTranslation(
     val id: String,
     val title: String,
@@ -19,6 +24,7 @@ data class AnimeTranslation(
     val episodesCount: Int = 0
 )
 
+@Serializable
 data class AnimeEpisode(
     val number: Int,
     val title: String? = null,
@@ -26,6 +32,7 @@ data class AnimeEpisode(
     val id: Int? = null
 )
 
+@Serializable
 data class AnimeMediaStream(
     val url: String,
     val qualities: Map<String, String> = emptyMap(),
@@ -34,12 +41,14 @@ data class AnimeMediaStream(
     val title: String = ""
 )
 
+@Serializable
 enum class SelectionStep {
     SOURCE,
     TRANSLATION,
     EPISODE
 }
 
+@Serializable
 enum class PlaybackSequenceOption(val displayName: String, val steps: List<SelectionStep>) {
     EPISODES_TRANSLATIONS_SOURCES("Серии -> Озвучка -> Источники", listOf(SelectionStep.EPISODE, SelectionStep.TRANSLATION, SelectionStep.SOURCE)),
     TRANSLATIONS_EPISODES_SOURCES("Озвучка -> Серии -> Источники", listOf(SelectionStep.TRANSLATION, SelectionStep.EPISODE, SelectionStep.SOURCE)),
@@ -51,6 +60,7 @@ enum class PlaybackSequenceOption(val displayName: String, val steps: List<Selec
     fun toUiLabel(): String = displayName
 }
 
+@Serializable
 data class FlatTranslation(
     val source: AnimeSourceType,
     val translationId: String,
@@ -58,4 +68,3 @@ data class FlatTranslation(
     val type: String = "voice",
     val episodes: List<AnimeEpisode> = emptyList()
 )
-
