@@ -179,20 +179,21 @@ object AnimeStreamResolver {
 
             val deferredAniLib = async {
                 runCatching {
-                    val release = findAniLibRelease(shikimoriId, animeTitle)
-                    if (release != null) {
+                    val releases = findAniLibReleases(shikimoriId, animeTitle)
+                    releases.mapNotNull { release ->
                         val episodes = parseAniLibReleaseEpisodes(release) ?: emptyList()
-                        val title = release.optString("name").ifBlank { "AniLib" }
-                        listOf(
-                            FlatTranslation(
-                                source = AnimeSourceType.ANILIB,
-                                translationId = "default",
-                                title = title,
-                                type = "voice",
-                                episodes = episodes
-                            )
+                        val name = release.optString("name")
+                        val teamName = Regex("""\[([^\]]+)\]""").find(name)?.groupValues?.getOrNull(1) ?: name
+                        val url = release.optString("page_url")
+                        if (url.isBlank()) return@mapNotNull null
+                        FlatTranslation(
+                            source = AnimeSourceType.ANILIB,
+                            translationId = url,
+                            title = teamName,
+                            type = if (name.contains("sub", ignoreCase = true) || name.contains("субтитры", ignoreCase = true)) "subtitles" else "voice",
+                            episodes = episodes
                         )
-                    } else emptyList()
+                    }
                 }.getOrElse { emptyList() }
             }
 
@@ -221,7 +222,7 @@ object AnimeStreamResolver {
         when (sourceType) {
             AnimeSourceType.KODIK -> fetchKodikEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle, translationId)
-            AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle)
+            AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle, translationId)
         }
     }
 
@@ -430,22 +431,61 @@ object AnimeStreamResolver {
         )
     }
 
-    private suspend fun fetchAniLibTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> = withContext(Dispatchers.IO) {
-        val release = findAniLibRelease(shikimoriId, animeTitle) ?: return@withContext emptyList()
-        val episodes = parseAniLibReleaseEpisodes(release) ?: return@withContext emptyList()
-        val title = release.optString("name").ifBlank { release.optString("alias").ifBlank { "AniLib" } }
-        listOf(
-            AnimeTranslation(
-                id = release.optString("alias").ifBlank { title },
-                title = title,
-                type = "voice",
-                episodesCount = episodes.size
-            )
-        )
+    private suspend fun findAniLibReleases(shikimoriId: Int, animeTitle: String): List<JSONObject> {
+        val candidateQueries = buildAnimeSearchQueries(animeTitle)
+        val releases = mutableListOf<JSONObject>()
+        val visitedUrls = mutableSetOf<String>()
+        for (base in ANILIB_API) {
+            for (query in candidateQueries) {
+                if (!base.contains("api.anilib.moe")) continue
+                val searchBody = post(
+                    "$base/public/search.php",
+                    mapOf("search" to query, "small" to "1"),
+                    referer = "https://api.anilib.moe/"
+                ) ?: continue
+                val html = runCatching { JSONObject(searchBody).optString("mes").ifBlank { searchBody } }.getOrDefault(searchBody)
+                val matches = Regex("""href=['"]([^'"]+/release/[^'"]+)['"]""").findAll(html)
+                for (match in matches) {
+                    val href = match.groupValues[1]
+                    val releaseUrl = absoluteUrl("$base/", href)
+                    if (visitedUrls.add(releaseUrl)) {
+                        val releaseBody = get(releaseUrl, referer = "https://api.anilib.moe/") ?: continue
+                        val release = parseAniLibReleasePage(releaseBody, releaseUrl)
+                        if (release != null) {
+                            releases.add(release)
+                        }
+                    }
+                }
+                if (releases.isNotEmpty()) {
+                    return releases
+                }
+            }
+        }
+        return releases
     }
 
-    private suspend fun fetchAniLibEpisodes(shikimoriId: Int, animeTitle: String): List<AnimeEpisode> = withContext(Dispatchers.IO) {
-        val release = findAniLibRelease(shikimoriId, animeTitle) ?: return@withContext emptyList()
+    private suspend fun fetchAniLibTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> = withContext(Dispatchers.IO) {
+        val releases = findAniLibReleases(shikimoriId, animeTitle)
+        releases.map { release ->
+            val name = release.optString("name")
+            val teamName = Regex("""\[([^\]]+)\]""").find(name)?.groupValues?.getOrNull(1) ?: name
+            val episodes = parseAniLibReleaseEpisodes(release) ?: emptyList()
+            AnimeTranslation(
+                id = release.optString("page_url"),
+                title = teamName,
+                type = if (name.contains("sub", ignoreCase = true) || name.contains("субтитры", ignoreCase = true)) "subtitles" else "voice",
+                episodesCount = episodes.size
+            )
+        }
+    }
+
+    private suspend fun fetchAniLibEpisodes(shikimoriId: Int, animeTitle: String, translationId: String): List<AnimeEpisode> = withContext(Dispatchers.IO) {
+        val release = if (translationId.startsWith("http")) {
+            val releaseBody = get(translationId, referer = "https://api.anilib.moe/") ?: return@withContext emptyList()
+            parseAniLibReleasePage(releaseBody, translationId)
+        } else {
+            findAniLibRelease(shikimoriId, animeTitle)
+        } ?: return@withContext emptyList()
         parseAniLibReleaseEpisodes(release) ?: emptyList()
     }
 
@@ -455,7 +495,12 @@ object AnimeStreamResolver {
         translationId: String,
         episodeNumber: Int
     ): AnimeMediaStream? = withContext(Dispatchers.IO) {
-        val release = findAniLibRelease(shikimoriId, animeTitle) ?: return@withContext null
+        val release = if (translationId.startsWith("http")) {
+            val releaseBody = get(translationId, referer = "https://api.anilib.moe/") ?: return@withContext null
+            parseAniLibReleasePage(releaseBody, translationId)
+        } else {
+            findAniLibRelease(shikimoriId, animeTitle)
+        } ?: return@withContext null
         val episodes = parseAniLibReleaseEpisodes(release) ?: return@withContext null
         val episode = episodes.firstOrNull { it.number == episodeNumber } ?: return@withContext null
         val qualities = parseAniLibQualities(episode.link ?: return@withContext null)
