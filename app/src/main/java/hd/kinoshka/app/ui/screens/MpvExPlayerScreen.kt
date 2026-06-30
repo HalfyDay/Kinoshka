@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import app.marlboroadvance.mpvex.ui.player.PlayerActivity
+import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
 import kotlinx.serialization.encodeToString
@@ -30,12 +31,21 @@ fun MpvExPlayerScreen(
     onPrevEpisode: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val userStateStore = UserStateStore(context)
 
     LaunchedEffect(streamUrl) {
         val intent = Intent(context, PlayerActivity::class.java).apply {
             action = Intent.ACTION_VIEW
-            data = Uri.parse(streamUrl)
-            putExtra("uri", streamUrl)
+            
+            val preferredQuality = userStateStore.getPreferredQuality()
+            val effectiveUrl = if (qualities.containsKey(preferredQuality)) {
+                qualities[preferredQuality] ?: streamUrl
+            } else {
+                streamUrl
+            }
+
+            data = Uri.parse(effectiveUrl)
+            putExtra("uri", effectiveUrl)
             
             val displayTitle = if (episodeTitle.isNotEmpty()) {
                 "$animeTitle • Серия $episodeNumber ($episodeTitle)"
@@ -70,6 +80,10 @@ fun MpvExPlayerScreen(
             }
             if (translations.isNotEmpty()) {
                 putExtra("anime_translations", Json.encodeToString(translations))
+            }
+            if (qualities.isNotEmpty()) {
+                putExtra("anime_qualities", Json.encodeToString(qualities))
+                putExtra("anime_current_quality", if (qualities.containsKey(preferredQuality)) preferredQuality else "Auto")
             }
             
             flags = Intent.FLAG_ACTIVITY_NEW_TASK

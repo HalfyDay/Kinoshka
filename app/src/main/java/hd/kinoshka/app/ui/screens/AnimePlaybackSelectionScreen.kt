@@ -51,8 +51,7 @@ fun AnimePlaybackSelectionScreen(
         episodes: List<AnimeEpisode>,
         translations: List<FlatTranslation>,
         currentTranslationId: String
-    ) -> Unit,
-    onSaveWatchedEpisode: (Int) -> Unit
+    ) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var isLoading by remember { mutableStateOf(true) }
@@ -112,7 +111,6 @@ fun AnimePlaybackSelectionScreen(
                 val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, src, tr.translationId, epNum)
                 isResolvingStream = false
                 if (stream != null) {
-                    onSaveWatchedEpisode(epNum)
                     onStreamSelected(stream, epNum, "Серия $epNum", src, tr.title, tr.episodes, allTranslations, tr.translationId)
                     onDismissRequest()
                 } else {

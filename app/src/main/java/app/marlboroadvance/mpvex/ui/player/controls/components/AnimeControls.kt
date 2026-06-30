@@ -1,28 +1,37 @@
 package app.marlboroadvance.mpvex.ui.player.controls.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.BlurOn
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.*
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import hd.kinoshka.app.data.model.AnimeSourceType
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.unit.sp
 import app.marlboroadvance.mpvex.domain.anime4k.Anime4KManager
 import app.marlboroadvance.mpvex.preferences.DecoderPreferences
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
+import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.theme.controlColor
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
@@ -36,15 +45,21 @@ fun AnimeEpisodeDropdown(
     episodes: List<AnimeEpisode>,
     currentEpisode: Int?,
     hideBackground: Boolean,
+    viewModel: PlayerViewModel,
     onEpisodeSelected: (Int) -> Unit
 ) {
     var showDialog by remember { mutableStateOf(false) }
+    val watchedEpisodesCount by viewModel.watchedEpisodesCount.collectAsState()
+
+    LaunchedEffect(showDialog) {
+        viewModel.setAnimeModalOpen(showDialog)
+    }
 
     Surface(
         shape = RoundedCornerShape(50),
         color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
         contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-        border = if (hideBackground) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+        border = null,
         modifier = Modifier
             .height(45.dp)
             .clickable { showDialog = true }
@@ -56,7 +71,7 @@ fun AnimeEpisodeDropdown(
         ) {
             Icon(Icons.Default.FormatListNumbered, contentDescription = null, modifier = Modifier.size(18.dp))
             Text(
-                text = if (currentEpisode != null) "Серия $currentEpisode" else "Выбор серии",
+                text = if (currentEpisode != null) "Эп. $currentEpisode" else "Серия",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -65,35 +80,87 @@ fun AnimeEpisodeDropdown(
     }
 
     if (showDialog) {
-        Dialog(onDismissRequest = { showDialog = false }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.fillMaxWidth().fillMaxHeight(0.8f)
+        Dialog(
+            onDismissRequest = { showDialog = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = true
+            )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { showDialog = false }
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "Выберите серию",
-                        style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(episodes) { ep ->
-                            val isSelected = ep.number == currentEpisode
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.fillMaxWidth().clickable {
-                                    onEpisodeSelected(ep.number)
-                                    showDialog = false
+                Surface(
+                    shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(360.dp)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+                        Text(
+                            "Выберите серию",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            items(episodes) { ep ->
+                                val isSelected = ep.number == currentEpisode
+                                val isWatched = ep.number <= watchedEpisodesCount
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        onEpisodeSelected(ep.number)
+                                        showDialog = false
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = ep.title ?: "Серия ${ep.number}",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = if (ep.title != null) "Серия ${ep.number}" else "Смотреть серию",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Выбрано",
+                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        } else if (isWatched) {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = "Просмотрено",
+                                                tint = Color(0xFF4CAF50),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
                                 }
-                            ) {
-                                Text(
-                                    text = "Серия ${ep.number}${if (!ep.title.isNullOrBlank()) " - ${ep.title}" else ""}",
-                                    modifier = Modifier.padding(12.dp),
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                )
                             }
                         }
                     }
@@ -108,16 +175,25 @@ fun AnimeTranslationDropdown(
     translations: List<FlatTranslation>,
     currentTranslationId: String?,
     hideBackground: Boolean,
+    viewModel: PlayerViewModel,
     onTranslationSelected: (String) -> Unit
 ) {
     var showDialog by remember { mutableStateOf(false) }
     val currentTr = translations.find { it.translationId == currentTranslationId }
+    var selectedSourceFilter by remember { mutableStateOf<AnimeSourceType?>(null) }
+
+    LaunchedEffect(showDialog) {
+        viewModel.setAnimeModalOpen(showDialog)
+        if (!showDialog) {
+            selectedSourceFilter = null
+        }
+    }
 
     Surface(
         shape = RoundedCornerShape(50),
         color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
         contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-        border = if (hideBackground) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+        border = null,
         modifier = Modifier
             .height(45.dp)
             .clickable { showDialog = true }
@@ -129,52 +205,124 @@ fun AnimeTranslationDropdown(
         ) {
             Icon(Icons.Default.ClosedCaption, contentDescription = null, modifier = Modifier.size(18.dp))
             Text(
-                text = currentTr?.title ?: "Озвучка/Субтитры",
+                text = currentTr?.title ?: "Озвучка",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 120.dp)
+                modifier = Modifier.widthIn(max = 100.dp)
             )
             Icon(Icons.Default.ArrowDropDown, contentDescription = null)
         }
     }
 
     if (showDialog) {
-        Dialog(onDismissRequest = { showDialog = false }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.fillMaxWidth().fillMaxHeight(0.8f)
+        Dialog(
+            onDismissRequest = { showDialog = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = true
+            )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { showDialog = false }
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "Выберите озвучку / субтитры",
-                        style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(translations) { tr ->
-                            val isSelected = tr.translationId == currentTranslationId
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.fillMaxWidth().clickable {
-                                    onTranslationSelected(tr.translationId)
-                                    showDialog = false
+                Surface(
+                    shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(360.dp)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+                        Text(
+                            "Варианты озвучки",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+
+                        // Source filter row
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Источник:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            
+                            val availableSources = translations.map { it.source }.distinct()
+                            val filters = listOf(null) + availableSources
+                            
+                            filters.forEach { src ->
+                                val label = src?.displayName ?: "Все"
+                                val isSelected = selectedSourceFilter == src
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                    contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.clickable { selectedSourceFilter = src }
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
                                 }
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        text = tr.title,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                    Text(
-                                        text = "${tr.source.displayName} • ${if (tr.type == "voice") "Озвучка" else "Субтитры"}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                            }
+                        }
+
+                        val filteredTranslations = remember(translations, selectedSourceFilter) {
+                            if (selectedSourceFilter == null) translations else translations.filter { it.source == selectedSourceFilter }
+                        }
+
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            items(filteredTranslations) { tr ->
+                                val isSelected = tr.translationId == currentTranslationId
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        onTranslationSelected(tr.translationId)
+                                        showDialog = false
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = tr.title,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "${tr.source.displayName} • ${if (tr.type == "voice") "Озвучка" else "Субтитры"}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Выбрано",
+                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -186,8 +334,81 @@ fun AnimeTranslationDropdown(
 }
 
 @Composable
+fun AnimeQualityDropdown(
+    qualities: Map<String, String>,
+    currentQualityId: String?,
+    hideBackground: Boolean,
+    viewModel: PlayerViewModel,
+    onQualitySelected: (String) -> Unit
+) {
+    var showDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showDialog) {
+        viewModel.setAnimeModalOpen(showDialog)
+    }
+
+    Box {
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+            contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+            border = null,
+            modifier = Modifier
+                .height(45.dp)
+                .clickable { showDialog = true }
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(Icons.Default.HighQuality, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text(
+                    text = currentQualityId ?: qualities.keys.firstOrNull() ?: "Auto",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            }
+        }
+
+        val qList = if (qualities.isEmpty()) listOf("Auto") else qualities.keys.toList()
+        val selectedQ = currentQualityId ?: qualities.keys.firstOrNull() ?: "Auto"
+
+        DropdownMenu(
+            expanded = showDialog,
+            onDismissRequest = { showDialog = false },
+            modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh)
+        ) {
+            qList.forEach { q ->
+                val isSelected = q == selectedQ
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = q,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    onClick = {
+                        if (qualities.isNotEmpty()) {
+                            onQualitySelected(q)
+                        }
+                        showDialog = false
+                    },
+                    leadingIcon = if (isSelected) {
+                        { Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                    } else null
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun AnimeShaderControl(
-    hideBackground: Boolean
+    hideBackground: Boolean,
+    viewModel: PlayerViewModel
 ) {
     val decoderPreferences = koinInject<DecoderPreferences>()
     val anime4kManager = koinInject<Anime4KManager>()
@@ -200,112 +421,129 @@ fun AnimeShaderControl(
     
     val isOff = anime4kMode == "OFF"
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    LaunchedEffect(showDialog) {
+        viewModel.setAnimeModalOpen(showDialog)
+    }
+
+    Surface(
+        shape = CircleShape,
+        color = if (hideBackground) Color.Transparent else if (!isOff) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+        contentColor = if (!isOff) MaterialTheme.colorScheme.onPrimary else (if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface),
+        border = null,
+        modifier = Modifier
+            .size(45.dp)
+            .clickable { showDialog = true }
     ) {
-        // Toggle Button
-        Surface(
-            shape = CircleShape,
-            color = if (hideBackground) Color.Transparent else if (!isOff) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-            contentColor = if (!isOff) MaterialTheme.colorScheme.onPrimary else (if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface),
-            border = if (hideBackground) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-            modifier = Modifier
-                .size(45.dp)
-                .clickable {
-                    val newMode = if (isOff) "RESTORE_SOFT" else "OFF"
-                    decoderPreferences.anime4kMode.set(newMode)
-                    applyShaders(newMode, anime4kQuality, anime4kManager, scope)
-                }
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = if (!isOff) Icons.Default.BlurOn else Icons.Outlined.BlurOn,
-                    contentDescription = "Anime4K Shader",
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-        
-        // Mode Selection Button
-        if (!isOff) {
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-                contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-                border = if (hideBackground) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                modifier = Modifier
-                    .height(45.dp)
-                    .clickable { showDialog = true }
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = anime4kMode.replace("RESTORE_", "").replace("UPSCALE_", ""),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp))
-                }
-            }
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = if (!isOff) Icons.Default.AutoFixHigh else Icons.Default.AutoFixNormal,
+                contentDescription = "Anime4K Shader",
+                modifier = Modifier.size(24.dp)
+            )
         }
     }
 
     if (showDialog) {
-        Dialog(onDismissRequest = { showDialog = false }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.fillMaxWidth().wrapContentHeight()
+        Dialog(
+            onDismissRequest = { showDialog = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = true
+            )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { showDialog = false }
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Anime4K Mode", style = MaterialTheme.typography.titleMedium)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
-                        items(Anime4KManager.Mode.entries) { mode ->
-                            val isSelected = anime4kMode == mode.name
-                            Surface(
-                                modifier = Modifier.fillMaxWidth().clickable {
-                                    decoderPreferences.anime4kMode.set(mode.name)
-                                    applyShaders(mode.name, anime4kQuality, anime4kManager, scope)
-                                    showDialog = false
-                                },
-                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    mode.name,
-                                    modifier = Modifier.padding(12.dp),
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                )
+                Surface(
+                    shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(380.dp)
+                        .align(Alignment.CenterEnd)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "Anime4K Улучшение",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            
+                            // Compact quality selector
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Anime4KManager.Quality.entries.forEach { q ->
+                                    val isSelected = anime4kQuality == q.name
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                        contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.clickable {
+                                            decoderPreferences.anime4kQuality.set(q.name)
+                                            applyShaders(anime4kMode, q.name, anime4kManager, scope)
+                                        }
+                                    ) {
+                                        Text(
+                                            text = q.name,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
-                    }
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Quality", style = MaterialTheme.typography.titleMedium)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Anime4KManager.Quality.entries.forEach { q ->
-                            val isSelected = anime4kQuality == q.name
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = {
-                                    decoderPreferences.anime4kQuality.set(q.name)
-                                    applyShaders(anime4kMode, q.name, anime4kManager, scope)
-                                },
-                                label = { Text(q.name) }
-                            )
+
+                        Text("Режим (Preset)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        
+                        val modes = listOf(
+                            ShaderModeInfo("OFF", "Выключено", "Оригинальное изображение"),
+                            ShaderModeInfo("A", "Mode A (Fast)", "Оптимизировано для большинства аниме"),
+                            ShaderModeInfo("B", "Mode B (Restore)", "Для старых аниме с артефактами"),
+                            ShaderModeInfo("C", "Mode C (Sharp)", "Для современных аниме, фокус на четкости"),
+                            ShaderModeInfo("A_PLUS", "Mode A+", "Улучшенное восстановление деталей"),
+                            ShaderModeInfo("B_PLUS", "Mode B+", "Глубокое восстановление мягких линий"),
+                            ShaderModeInfo("C_PLUS", "Mode C+", "Максимальная четкость и контуры")
+                        )
+
+                        LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(modes) { mode ->
+                                val isSelected = anime4kMode == mode.id
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        decoderPreferences.anime4kMode.set(mode.id)
+                                        applyShaders(mode.id, anime4kQuality, anime4kManager, scope)
+                                    },
+                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Text(mode.title, fontWeight = FontWeight.Bold)
+                                        Text(mode.description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
                         }
+                        Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
             }
         }
     }
 }
+
+private data class ShaderModeInfo(val id: String, val title: String, val description: String)
 
 private fun applyShaders(modeStr: String, qualityStr: String, manager: Anime4KManager, scope: kotlinx.coroutines.CoroutineScope) {
     scope.launch(Dispatchers.IO) {

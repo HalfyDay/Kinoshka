@@ -4,6 +4,7 @@ import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
+import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
@@ -101,8 +102,17 @@ class UserStateStore(context: Context) {
     private val libraryTileSizeKey = "library_tile_size"
     private val showFpsCounterKey = "show_fps_counter"
     private val playbackSequenceKey = "playback_sequence"
+    private val preferredQualityKey = "preferred_quality"
 
     private val prettyGson: Gson = GsonBuilder().setPrettyPrinting().create()
+
+    fun getPreferredQuality(): String {
+        return prefs.getString(preferredQualityKey, "Auto") ?: "Auto"
+    }
+
+    fun setPreferredQuality(quality: String) {
+        prefs.edit().putString(preferredQualityKey, quality).apply()
+    }
 
     fun getPlaybackSequence(): PlaybackSequenceOption {
         return readEnum(playbackSequenceKey, PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES)
@@ -303,6 +313,35 @@ class UserStateStore(context: Context) {
         val subtitle = item.year?.toString()
         val ratingText = item.ratingKinopoisk?.let { "★ %.1f".format(Locale.US, it) }
         val isRussian = item.isRussianContent()
+
+        val existing = getProfile(item.kinopoiskId)
+        val finalTotalEpisodes = totalEpisodes ?: existing?.totalEpisodes
+        val finalTotalSeasons = totalSeasons ?: existing?.totalSeasons
+
+        val finalWatchedEpisodes = if (status == UserFilmStatus.COMPLETED) {
+            finalTotalEpisodes?.coerceAtLeast(watchedEpisodes ?: 0) ?: (watchedEpisodes ?: 1)
+        } else {
+            watchedEpisodes
+        }
+
+        val finalWatchedSeasons = if (status == UserFilmStatus.COMPLETED) {
+            // For series, COMPLETED means all seasons watched. 
+            // However, we don't want to force it if it's being used as "Repeats" in UI or if not applicable.
+            if (watchedSeasons != null && watchedSeasons > 0) {
+                finalTotalSeasons?.coerceAtLeast(watchedSeasons) ?: watchedSeasons
+            } else {
+                // If it's a TV series and NOT anime (where watchedSeasons is "Repeats"), set it.
+                val isAnime = item.kinopoiskId >= ANIME_ID_OFFSET
+                if (item.type == "TV_SERIES" && !isAnime) {
+                    finalTotalSeasons?.coerceAtLeast(1) ?: watchedSeasons
+                } else {
+                    watchedSeasons
+                }
+            }
+        } else {
+            watchedSeasons
+        }
+
         val profile = UserFilmProfile(
             kinopoiskId = item.kinopoiskId,
             title = title,
@@ -314,15 +353,69 @@ class UserStateStore(context: Context) {
             status = status,
             userRating = userRating,
             note = note?.trim().takeUnless { it.isNullOrBlank() },
-            watchedSeasons = watchedSeasons,
-            watchedEpisodes = watchedEpisodes,
+            watchedSeasons = finalWatchedSeasons,
+            watchedEpisodes = finalWatchedEpisodes,
             totalEpisodesInSeason = totalEpisodesInSeason?.coerceAtLeast(0),
-            totalSeasons = totalSeasons?.coerceAtLeast(0),
-            totalEpisodes = totalEpisodes?.coerceAtLeast(0),
+            totalSeasons = finalTotalSeasons?.coerceAtLeast(0),
+            totalEpisodes = finalTotalEpisodes?.coerceAtLeast(0),
             updatedAt = System.currentTimeMillis()
         )
         upsertProfile(profile)
         return profile
+    }
+
+    fun updateWatchedEpisode(
+        shikimoriId: Int,
+        animeTitle: String,
+        episodeNum: Int,
+        totalEpisodes: Int
+    ) {
+        val kinopoiskId = shikimoriId + ANIME_ID_OFFSET
+        val current = readProfiles().toMutableList()
+        val index = current.indexOfFirst { it.kinopoiskId == kinopoiskId }
+        val existing = if (index >= 0) current[index] else null
+
+        val currentStatus = existing?.status
+        val newStatus = if (currentStatus == UserFilmStatus.REWATCHING || currentStatus == UserFilmStatus.COMPLETED) {
+            currentStatus
+        } else {
+            UserFilmStatus.WATCHING
+        }
+
+        val updated = if (existing != null) {
+            existing.copy(
+                watchedEpisodes = episodeNum,
+                totalEpisodes = totalEpisodes.takeIf { it > 0 } ?: existing.totalEpisodes,
+                status = newStatus,
+                updatedAt = System.currentTimeMillis()
+            )
+        } else {
+            UserFilmProfile(
+                kinopoiskId = kinopoiskId,
+                title = animeTitle,
+                subtitle = null,
+                posterUrl = null,
+                ratingText = null,
+                type = "ANIME",
+                isRussian = false,
+                status = newStatus,
+                userRating = null,
+                note = null,
+                watchedSeasons = null,
+                watchedEpisodes = episodeNum,
+                totalEpisodesInSeason = null,
+                totalSeasons = null,
+                totalEpisodes = totalEpisodes.takeIf { it > 0 },
+                updatedAt = System.currentTimeMillis()
+            )
+        }
+
+        if (index >= 0) {
+            current[index] = updated
+        } else {
+            current.add(0, updated)
+        }
+        writeProfiles(current.take(500))
     }
 
     private fun upsert(newValue: HistoryRecord) {

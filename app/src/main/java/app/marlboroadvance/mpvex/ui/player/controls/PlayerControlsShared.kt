@@ -220,10 +220,7 @@ fun RenderPlayerButton(
           contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
           tonalElevation = 0.dp,
           shadowElevation = 0.dp,
-          border = if (hideBackground) null else BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-          ),
+          border = null,
           modifier = Modifier
             .height(buttonSize)
             .clip(CircleShape)
@@ -350,7 +347,7 @@ fun RenderPlayerButton(
           Surface(
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-            border = if (hideBackground) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+            border = null,
             modifier = Modifier.height(buttonSize),
           ) {
             Row(
@@ -469,10 +466,7 @@ fun RenderPlayerButton(
           contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
           tonalElevation = 0.dp,
           shadowElevation = 0.dp,
-          border = if (hideBackground) null else BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-          ),
+          border = null,
           modifier = Modifier
             .height(buttonSize)
             .clip(CircleShape)
@@ -689,7 +683,7 @@ fun RenderPlayerButton(
         shape = CircleShape,
         color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
         contentColor = vFlipColor,
-        border = if (hideBackground) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+        border = null,
         modifier = Modifier
           .size(buttonSize)
           .clip(CircleShape)
@@ -727,7 +721,7 @@ fun RenderPlayerButton(
           Surface(
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-            border = if (hideBackground) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+            border = null,
             modifier = Modifier.height(buttonSize),
           ) {
             Row(
@@ -814,7 +808,7 @@ fun RenderPlayerButton(
           Surface(
             shape = CircleShape,
             color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-            border = if (hideBackground) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+            border = null,
             modifier = Modifier
               .size(buttonSize)
               .clip(CircleShape)
