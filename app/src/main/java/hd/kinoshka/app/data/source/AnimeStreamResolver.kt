@@ -42,12 +42,6 @@ object AnimeStreamResolver {
         "https://api.anilibria.tv"
     )
 
-    private val ANILIB_API = listOf(
-        "https://api.anilib.moe",
-        "https://anilib.me",
-        "https://anilib.top"
-    )
-
     private const val USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 
@@ -89,8 +83,7 @@ object AnimeStreamResolver {
     suspend fun fetchAvailableSources(shikimoriId: Int, animeTitle: String = ""): List<AnimeSource> = withContext(Dispatchers.IO) {
         listOf(
             AnimeSource(AnimeSourceType.KODIK, isAvailable = true),
-            AnimeSource(AnimeSourceType.ANILIBERTY, isAvailable = true),
-            AnimeSource(AnimeSourceType.ANILIB, isAvailable = true)
+            AnimeSource(AnimeSourceType.ANILIBERTY, isAvailable = true)
         )
     }
 
@@ -177,27 +170,7 @@ object AnimeStreamResolver {
                 }.getOrElse { emptyList() }
             }
 
-            val deferredAniLib = async {
-                runCatching {
-                    val releases = findAniLibReleases(shikimoriId, animeTitle)
-                    releases.mapNotNull { release ->
-                        val episodes = parseAniLibReleaseEpisodes(release) ?: emptyList()
-                        val name = release.optString("name")
-                        val teamName = Regex("""\[([^\]]+)\]""").find(name)?.groupValues?.getOrNull(1) ?: name
-                        val url = release.optString("page_url")
-                        if (url.isBlank()) return@mapNotNull null
-                        FlatTranslation(
-                            source = AnimeSourceType.ANILIB,
-                            translationId = url,
-                            title = teamName,
-                            type = if (name.contains("sub", ignoreCase = true) || name.contains("субтитры", ignoreCase = true)) "subtitles" else "voice",
-                            episodes = episodes
-                        )
-                    }
-                }.getOrElse { emptyList() }
-            }
-
-            deferredKodik.await() + deferredAniLiberty.await() + deferredAniLib.await()
+            deferredKodik.await() + deferredAniLiberty.await()
         }
     }
 
@@ -209,7 +182,6 @@ object AnimeStreamResolver {
         when (sourceType) {
             AnimeSourceType.KODIK -> fetchKodikTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyTranslations(shikimoriId, animeTitle)
-            AnimeSourceType.ANILIB -> fetchAniLibTranslations(shikimoriId, animeTitle)
         }
     }
 
@@ -222,7 +194,6 @@ object AnimeStreamResolver {
         when (sourceType) {
             AnimeSourceType.KODIK -> fetchKodikEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle, translationId)
-            AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle, translationId)
         }
     }
 
@@ -259,7 +230,6 @@ object AnimeStreamResolver {
         when (sourceType) {
             AnimeSourceType.KODIK -> resolveKodikStream(shikimoriId, animeTitle, translationId, episodeNumber)
             AnimeSourceType.ANILIBERTY -> resolveAniLibertyStream(shikimoriId, animeTitle, episodeNumber, translationId)
-            AnimeSourceType.ANILIB -> resolveAniLibStream(shikimoriId, animeTitle, translationId, episodeNumber)
         }
     }
 
@@ -396,26 +366,21 @@ object AnimeStreamResolver {
         val qualities = if (direct.isNotEmpty()) {
             direct
         } else {
-            val fileArrayText = Regex("""file:\s*(\[[\s\S]*?\])""")
-                .find(html)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?: return@withContext null
-            val items = JSONArray(fileArrayText)
-            val map = linkedMapOf<String, String>()
-            for (i in 0 until items.length()) {
-                val item = items.optJSONObject(i) ?: continue
-                val file = item.optString("file")
-                if (file.isNotBlank()) {
-                    val parsed = parseAniLibQualities(file)
-                    if (parsed.isNotEmpty()) {
-                        parsed.forEach { (quality, url) -> map[quality] = url }
-                    } else {
+            // Check for file: "[...]" pattern
+            val fileArrayMatch = Regex("""file:\s*(\[[\s\S]*?\])""").find(html)
+            if (fileArrayMatch != null) {
+                val fileArrayText = fileArrayMatch.groupValues[1]
+                val items = JSONArray(fileArrayText)
+                val map = linkedMapOf<String, String>()
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    val file = item.optString("file")
+                    if (file.isNotBlank()) {
                         map[item.optString("title").ifBlank { "Auto" }] = file
                     }
                 }
-            }
-            map
+                map
+            } else emptyMap()
         }
 
         val url = qualities["1080p"] ?: qualities["720p"] ?: qualities["480p"] ?: qualities.values.firstOrNull() ?: return@withContext null
@@ -429,95 +394,6 @@ object AnimeStreamResolver {
                 "Origin" to originFrom(resolvedUrl)
             )
         )
-    }
-
-    private suspend fun findAniLibReleases(shikimoriId: Int, animeTitle: String): List<JSONObject> {
-        val candidateQueries = buildAnimeSearchQueries(animeTitle)
-        val releases = mutableListOf<JSONObject>()
-        val visitedUrls = mutableSetOf<String>()
-        for (base in ANILIB_API) {
-            for (query in candidateQueries) {
-                if (!base.contains("api.anilib.moe")) continue
-                val searchBody = post(
-                    "$base/public/search.php",
-                    mapOf("search" to query, "small" to "1"),
-                    referer = "https://api.anilib.moe/"
-                ) ?: continue
-                val html = runCatching { JSONObject(searchBody).optString("mes").ifBlank { searchBody } }.getOrDefault(searchBody)
-                val matches = Regex("""href=['"]([^'"]+/release/[^'"]+)['"]""").findAll(html)
-                for (match in matches) {
-                    val href = match.groupValues[1]
-                    val releaseUrl = absoluteUrl("$base/", href)
-                    if (visitedUrls.add(releaseUrl)) {
-                        val releaseBody = get(releaseUrl, referer = "https://api.anilib.moe/") ?: continue
-                        val release = parseAniLibReleasePage(releaseBody, releaseUrl)
-                        if (release != null) {
-                            releases.add(release)
-                        }
-                    }
-                }
-                if (releases.isNotEmpty()) {
-                    return releases
-                }
-            }
-        }
-        return releases
-    }
-
-    private suspend fun fetchAniLibTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> = withContext(Dispatchers.IO) {
-        val releases = findAniLibReleases(shikimoriId, animeTitle)
-        releases.map { release ->
-            val name = release.optString("name")
-            val teamName = Regex("""\[([^\]]+)\]""").find(name)?.groupValues?.getOrNull(1) ?: name
-            val episodes = parseAniLibReleaseEpisodes(release) ?: emptyList()
-            AnimeTranslation(
-                id = release.optString("page_url"),
-                title = teamName,
-                type = if (name.contains("sub", ignoreCase = true) || name.contains("субтитры", ignoreCase = true)) "subtitles" else "voice",
-                episodesCount = episodes.size
-            )
-        }
-    }
-
-    private suspend fun fetchAniLibEpisodes(shikimoriId: Int, animeTitle: String, translationId: String): List<AnimeEpisode> = withContext(Dispatchers.IO) {
-        val release = if (translationId.startsWith("http")) {
-            val releaseBody = get(translationId, referer = "https://api.anilib.moe/") ?: return@withContext emptyList()
-            parseAniLibReleasePage(releaseBody, translationId)
-        } else {
-            findAniLibRelease(shikimoriId, animeTitle)
-        } ?: return@withContext emptyList()
-        parseAniLibReleaseEpisodes(release) ?: emptyList()
-    }
-
-    private suspend fun resolveAniLibStream(
-        shikimoriId: Int,
-        animeTitle: String,
-        translationId: String,
-        episodeNumber: Int
-    ): AnimeMediaStream? = withContext(Dispatchers.IO) {
-        val release = if (translationId.startsWith("http")) {
-            val releaseBody = get(translationId, referer = "https://api.anilib.moe/") ?: return@withContext null
-            parseAniLibReleasePage(releaseBody, translationId)
-        } else {
-            findAniLibRelease(shikimoriId, animeTitle)
-        } ?: return@withContext null
-        val episodes = parseAniLibReleaseEpisodes(release) ?: return@withContext null
-        val episode = episodes.firstOrNull { it.number == episodeNumber } ?: return@withContext null
-        val qualities = parseAniLibQualities(episode.link ?: return@withContext null)
-        val url = qualities["1080p"] ?: qualities["720p"] ?: qualities["480p"] ?: qualities.values.firstOrNull()
-        val referer = release.optString("page_url").ifBlank { "https://api.anilib.moe/" }
-        url?.let {
-            AnimeMediaStream(
-                url = it,
-                qualities = qualities,
-                quality = qualities.entries.firstOrNull { entry -> entry.value == it }?.key ?: "Auto",
-                headers = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to referer,
-                    "Origin" to originFrom(referer)
-                )
-            )
-        }
     }
 
     private suspend fun kodikSearch(shikimoriId: Int, animeTitle: String, translationId: String?): List<JSONObject> {
@@ -587,7 +463,9 @@ object AnimeStreamResolver {
         val first = value.substring(0, half).reversed()
         val second = value.substring(half).reversed()
         val decoder = Base64.getDecoder()
-        return decoder.decode(first).toString(Charsets.UTF_8) + decoder.decode(second).toString(Charsets.UTF_8)
+        return runCatching {
+            decoder.decode(first).toString(Charsets.UTF_8) + decoder.decode(second).toString(Charsets.UTF_8)
+        }.getOrDefault("")
     }
 
     private fun kodikSearchUrl(
@@ -859,53 +737,6 @@ object AnimeStreamResolver {
         }.getOrNull()
     }
 
-    private fun parseAniLibReleaseEpisodes(release: JSONObject): List<AnimeEpisode>? {
-        val episodes = release.optJSONArray("episodes") ?: return null
-        return episodes.asSequenceObjects().mapNotNull { episode ->
-            val number = episode.optInt("ordinal").takeIf { it > 0 }
-                ?: episode.optInt("sort_order").takeIf { it > 0 }
-                ?: episode.optInt("id").takeIf { it > 0 }
-                ?: return@mapNotNull null
-            val file = episode.optString("file")
-                .ifBlank { episode.optString("link") }
-                .ifBlank { episode.optString("url") }
-            val title = episode.optString("title").ifBlank { "Серия $number" }
-            AnimeEpisode(number = number, id = episode.optInt("id").takeIf { it > 0 }, title = title, link = file)
-        }.sortedBy { it.number }.toList()
-    }
-
-    private fun parseAniLibQualities(fileValue: String): Map<String, String> {
-        val qualities = linkedMapOf<String, String>()
-        val normalized = fileValue.replace("\\/", "/")
-        Regex("""\[(\d{3,4})p\]\s*(https?://[^,\s"']+)""").findAll(normalized).forEach { match ->
-            val quality = "${match.groupValues[1]}p"
-            qualities[quality] = match.groupValues[2].trimEnd('"', '\'')
-        }
-        if (qualities.isNotEmpty()) return qualities
-        extractM3u8Links(normalized).forEach { (k, v) -> qualities[k] = v }
-        return qualities
-    }
-
-    private suspend fun findAniLibRelease(shikimoriId: Int, animeTitle: String): JSONObject? {
-        val candidateQueries = buildAnimeSearchQueries(animeTitle)
-        for (base in ANILIB_API) {
-            for (query in candidateQueries) {
-                if (!base.contains("api.anilib.moe")) continue
-                val searchBody = post(
-                    "$base/public/search.php",
-                    mapOf("search" to query, "small" to "1"),
-                    referer = "https://api.anilib.moe/"
-                ) ?: continue
-                val href = parseAniLibSearchHref(searchBody) ?: continue
-                val releaseUrl = absoluteUrl("$base/", href)
-                val releaseBody = get(releaseUrl, referer = "https://api.anilib.moe/") ?: continue
-                val release = parseAniLibReleasePage(releaseBody, releaseUrl)
-                if (release != null) return release
-            }
-        }
-        return null
-    }
-
     private fun buildAnimeSearchQueries(animeTitle: String): List<String> {
         val raw = animeTitle.trim()
         if (raw.isBlank()) return emptyList()
@@ -956,59 +787,6 @@ object AnimeStreamResolver {
 
         // Filter out any short query to avoid broad searches
         return queries.distinct().filter { it.length >= 3 }
-    }
-
-    private fun parseAniLibSearchHref(body: String): String? {
-        val html = runCatching { JSONObject(body).optString("mes").ifBlank { body } }.getOrDefault(body)
-        return Regex("""href='([^']+/release/[^']+)'\s*>""")
-            .find(html)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: Regex("""href="([^"]+/release/[^"]+)"""")
-                .find(html)
-                ?.groupValues
-                ?.getOrNull(1)
-    }
-
-    private fun parseAniLibReleasePage(body: String, pageUrl: String? = null): JSONObject? {
-        return runCatching {
-            val fileArrayText = Regex("""new\s+Playerjs\(\{.*?file:\s*(\[[\s\S]*?\])\s*\}\);""")
-                .find(body)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?: Regex("""file:\s*(\[[\s\S]*?\])\s*\}""")
-                    .find(body)
-                    ?.groupValues
-                    ?.getOrNull(1)
-                ?: return@runCatching null
-            val releaseName = Regex("""new\s+Playerjs\(\{.*?title:\s*"([^"]+)"""")
-                .find(body)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?: "AniLib"
-            val episodes = JSONArray(fileArrayText).asSequenceObjects().mapIndexedNotNull { index, item ->
-                val title = item.optString("title").ifBlank { "Серия ${index + 1}" }
-                val file = item.optString("file")
-                val ordinal = item.optString("id").removePrefix("s").toIntOrNull()
-                    ?: Regex("""\d+""").find(title)?.value?.toIntOrNull()
-                    ?: index + 1
-                if (file.isBlank()) return@mapIndexedNotNull null
-                JSONObject().apply {
-                    put("id", ordinal)
-                    put("ordinal", ordinal)
-                    put("title", title)
-                    put("file", file)
-                }
-            }.toList()
-
-            JSONObject().apply {
-                put("name", releaseName)
-                put("alias", slugifyAnimeTitle(releaseName))
-                put("episodes", JSONArray(episodes))
-                put("episodes_total", episodes.size)
-                pageUrl?.takeIf { it.isNotBlank() }?.let { put("page_url", it) }
-            }
-        }.getOrNull()
     }
 
     private suspend fun get(url: String, referer: String? = null): String? = runCatching {
@@ -1095,27 +873,6 @@ object AnimeStreamResolver {
             .toList()
     }
 
-    private fun findJsStringValue(text: String, key: String): String? {
-        val scripts = Regex("""<script[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
-            .findAll(text)
-            .map { matchResult -> matchResult.groupValues[1] }
-            .toList()
-        val textToSearch = if (scripts.isNotEmpty()) scripts.joinToString("\n") else text
-
-        val patterns = listOf(
-            """"$key"\s*:\s*"([^"]+)"""",
-            """'$key'\s*:\s*'([^']+)'""",
-            """\bvar\s+$key\s*=\s*"([^"]+)"""",
-            """\bvar\s+$key\s*=\s*'([^']+)'""",
-            """\b$key\s*:\s*"([^"]+)"""",
-            """\b$key\s*:\s*'([^']+)'"""
-        )
-        for (pattern in patterns) {
-            Regex(pattern).find(textToSearch)?.groupValues?.getOrNull(1)?.let { return it.replace("\\/", "/") }
-        }
-        return null
-    }
-
     private fun decodeKodikUrl(value: String): String {
         val clean = value.replace("\\/", "/")
         if (clean.endsWith(".m3u8")) {
@@ -1140,12 +897,6 @@ object AnimeStreamResolver {
             }
         }
         return sb.toString()
-    }
-
-    private fun anilibriaUrl(host: String, value: String): String {
-        if (value.startsWith("http")) return value
-        val normalizedHost = if (host.startsWith("http")) host.trimEnd('/') else "https://${host.trimEnd('/')}"
-        return normalizedHost + if (value.startsWith("/")) value else "/$value"
     }
 
     private fun absoluteKodikUrl(value: String): String = when {

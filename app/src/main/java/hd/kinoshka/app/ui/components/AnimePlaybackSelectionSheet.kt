@@ -47,7 +47,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -79,13 +81,17 @@ enum class SelectionStep {
 fun AnimePlaybackSelectionSheet(
     shikimoriId: Int,
     animeTitle: String,
+    playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
     onDismissRequest: () -> Unit,
     onStreamSelected: (stream: AnimeMediaStream, episodeNumber: Int, episodeTitle: String, source: AnimeSourceType, translationTitle: String) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
 
-    var currentStep by remember { mutableStateOf(SelectionStep.SOURCE) }
+    var currentStepIndex by remember { mutableIntStateOf(0) }
+    val currentStep = remember(currentStepIndex, playbackSequence) {
+        playbackSequence.steps.getOrNull(currentStepIndex) ?: SelectionStep.SOURCE
+    }
 
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -101,96 +107,81 @@ fun AnimePlaybackSelectionSheet(
 
     var isResolvingStream by remember { mutableStateOf(false) }
 
-    // Load available sources on start
+    // Load everything needed
     LaunchedEffect(shikimoriId) {
         isLoading = true
         errorMessage = null
         try {
-            val res = AnimeStreamResolver.fetchAvailableSources(shikimoriId, animeTitle)
-            sources = res
+            sources = AnimeStreamResolver.fetchAvailableSources(shikimoriId, animeTitle)
             isLoading = false
         } catch (e: Exception) {
-            errorMessage = "Ошибка загрузки источников: ${e.localizedMessage}"
+            errorMessage = "Ошибка загрузки: ${e.localizedMessage}"
             isLoading = false
         }
     }
 
-    // Load translations when source is selected
+    // Navigation and selection logic
+    fun nextStep() {
+        if (currentStepIndex < playbackSequence.steps.lastIndex) {
+            currentStepIndex++
+        }
+    }
+
     fun onSelectSource(source: AnimeSource) {
         if (!source.isAvailable) return
         selectedSource = source
-        currentStep = SelectionStep.TRANSLATION
         isLoading = true
-        errorMessage = null
         scope.launch {
             try {
                 val list = AnimeStreamResolver.fetchTranslations(shikimoriId, animeTitle, source.type)
-                if (list.isEmpty()) {
-                    throw IllegalStateException("Источник ${source.type.displayName} не вернул доступных озвучек.")
-                }
                 translations = list
                 isLoading = false
-                if (list.size == 1) {
-                    // Auto-select if only 1 translation
-                    selectedTranslation = list.first()
-                    currentStep = SelectionStep.EPISODE
-                    isLoading = true
-                    val epList = AnimeStreamResolver.fetchEpisodes(shikimoriId, animeTitle, source.type, list.first().id)
-                    if (epList.isEmpty()) {
-                        throw IllegalStateException("Не удалось загрузить серии для озвучки ${list.first().title}")
-                    }
-                    episodes = epList
-                    isLoading = false
-                }
+                nextStep()
             } catch (e: Exception) {
-                errorMessage = e.localizedMessage ?: "Ошибка загрузки озвучек"
+                errorMessage = e.localizedMessage
                 isLoading = false
             }
         }
     }
 
-    // Load episodes when translation is selected
     fun onSelectTranslation(tr: AnimeTranslation) {
         selectedTranslation = tr
-        currentStep = SelectionStep.EPISODE
         isLoading = true
-        errorMessage = null
         scope.launch {
             try {
                 val src = selectedSource?.type ?: AnimeSourceType.KODIK
-                val epList = AnimeStreamResolver.fetchEpisodes(shikimoriId, animeTitle, src, tr.id)
-                if (epList.isEmpty()) {
-                    throw IllegalStateException("Не удалось загрузить серии для озвучки ${tr.title}")
-                }
-                episodes = epList
+                episodes = AnimeStreamResolver.fetchEpisodes(shikimoriId, animeTitle, src, tr.id)
                 isLoading = false
+                nextStep()
             } catch (e: Exception) {
-                errorMessage = e.localizedMessage ?: "Ошибка загрузки серий"
+                errorMessage = e.localizedMessage
                 isLoading = false
             }
         }
     }
 
-    // Start playback when episode is selected
     fun onSelectEpisode(ep: AnimeEpisode) {
         selectedEpisode = ep
-        val src = selectedSource?.type ?: return
-        val tr = selectedTranslation ?: return
-        isResolvingStream = true
-        scope.launch {
-            try {
-                val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, src, tr.id, ep.number)
-                isResolvingStream = false
-                if (stream != null) {
-                    onStreamSelected(stream, ep.number, ep.title ?: "Серия ${ep.number}", src, tr.title)
-                    onDismissRequest()
-                } else {
-                    errorMessage = "Не удалось получить видеопоток для серии ${ep.number}"
+        val src = selectedSource?.type
+        val tr = selectedTranslation
+        
+        if (src != null && tr != null) {
+            isResolvingStream = true
+            scope.launch {
+                try {
+                    val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, src, tr.id, ep.number)
+                    isResolvingStream = false
+                    if (stream != null) {
+                        onStreamSelected(stream, ep.number, ep.title ?: "Серия ${ep.number}", src, tr.title)
+                        onDismissRequest()
+                    }
+                } catch (e: Exception) {
+                    isResolvingStream = false
+                    errorMessage = e.localizedMessage
                 }
-            } catch (e: Exception) {
-                isResolvingStream = false
-                errorMessage = "Ошибка получения потока: ${e.localizedMessage}"
             }
+        } else {
+            nextStep()
         }
     }
 
@@ -212,20 +203,16 @@ fun AnimePlaybackSelectionSheet(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (currentStep != SelectionStep.SOURCE) {
+                    if (currentStepIndex > 0) {
                         IconButton(
                             onClick = {
-                                if (currentStep == SelectionStep.EPISODE && translations.size > 1) {
-                                    currentStep = SelectionStep.TRANSLATION
-                                } else {
-                                    currentStep = SelectionStep.SOURCE
-                                }
+                                currentStepIndex--
                             }
                         ) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
                         }
                     }
-                    Column(modifier = Modifier.padding(start = if (currentStep != SelectionStep.SOURCE) 0.dp else 8.dp)) {
+                    Column(modifier = Modifier.padding(start = if (currentStepIndex > 0) 0.dp else 8.dp)) {
                         Text(
                             text = animeTitle,
                             style = MaterialTheme.typography.titleMedium,
@@ -235,9 +222,10 @@ fun AnimePlaybackSelectionSheet(
                         )
                         Text(
                             text = when (currentStep) {
-                                SelectionStep.SOURCE -> "Шаг 1 из 3: Выбор источника"
-                                SelectionStep.TRANSLATION -> "Шаг 2 из 3: Выбор озвучки"
-                                SelectionStep.EPISODE -> "Шаг 3 из 3: Выбор серии"
+                                SelectionStep.SOURCE -> "Выбор источника"
+                                SelectionStep.TRANSLATION -> "Выбор озвучки"
+                                SelectionStep.EPISODE -> "Выбор серии"
+                                else -> "Выбор"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -290,7 +278,7 @@ fun AnimePlaybackSelectionSheet(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(onClick = {
-                            currentStep = SelectionStep.SOURCE
+                            currentStepIndex = 0
                             isLoading = true
                             errorMessage = null
                             scope.launch {

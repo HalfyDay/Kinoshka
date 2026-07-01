@@ -232,7 +232,7 @@ fun DetailsScreen(
         translations: List<hd.kinoshka.app.data.model.FlatTranslation>,
         currentTranslationId: String
     ) -> Unit)? = null,
-    playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES
+    playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
