@@ -24,6 +24,7 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -296,9 +297,11 @@ private const val HIDE_WEB_TOP_BAR_JS = """
   try {
     var style = document.createElement('style');
     style.innerHTML = `
+      * { -webkit-overflow-scrolling: none !important; }
+      html, body { overflow: hidden !important; position: fixed !important; width: 100% !important; height: 100% !important; }
       header, footer, .header, .footer, .sidebar, .ads, .navigation, .top-menu, .footer-menu, 
       .kinopoisk-header, .kinopoisk-footer, #header, #footer, .bottom-menu { display: none !important; }
-      body { background: black !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }
+      body { background: black !important; margin: 0 !important; padding: 0 !important; }
       #player, .player-container, .kinobox_section, [id*="player"], [class*="player"] { 
         position: fixed !important; top: 0 !important; left: 0 !important; 
         width: 100vw !important; height: 100vh !important; 
@@ -334,6 +337,7 @@ fun InAppWebScreen(
     var isLoadingPlayers by remember { mutableStateOf(false) }
     var selectedPlayer by remember { mutableStateOf<DdbbPlayer?>(null) }
     var webViewError by remember { mutableStateOf<String?>(null) }
+    var isPageLoading by remember { mutableStateOf(true) }
     var autoRetryCount by remember { mutableStateOf(0) }
     var retryTrigger by remember { mutableStateOf(0) }
 
@@ -541,12 +545,14 @@ fun InAppWebScreen(
                                 view?.postDelayed({ view.reload() }, 1500L)
                             } else {
                                 webViewError = description
+                                isPageLoading = false
                             }
                         }
                     }
 
                     override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                         super.onPageStarted(view, url, favicon)
+                        isPageLoading = true
                         if (webViewError != null) webViewError = null
                     }
 
@@ -559,6 +565,8 @@ fun InAppWebScreen(
                         if (host.contains("ddbb.lol")) {
                             view?.evaluateJavascript(IFRAME_PIP_PATCH_JS, null)
                         }
+                        // Hide loading screen after a small delay to ensure CSS applies
+                        view?.postDelayed({ isPageLoading = false }, 300L)
                     }
                 }
 
@@ -583,6 +591,32 @@ fun InAppWebScreen(
                 PlayerPipState.setActiveWebView(webView)
             }
         )
+
+        // Loading Overlay to hide website rendering
+        AnimatedVisibility(
+            visible = isPageLoading,
+            enter = fadeIn(),
+            exit = fadeOut(tween(400))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(androidx.compose.ui.graphics.Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        text = "Подготовка плеера...",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f)
+                    )
+                }
+            }
+        }
 
         // Floating top-left back button to exit player
         AnimatedVisibility(
