@@ -16,6 +16,7 @@ import android.webkit.CookieManager
 import android.webkit.SslErrorHandler
 import android.net.http.SslError
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -25,6 +26,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -74,6 +76,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
@@ -127,40 +130,46 @@ private val KODIK_TOKENS = listOf(
 
 // Fetch anime episode data from Kodik API natively (SSL-bypassed)
 private suspend fun fetchKodikEmbedUrl(shikimoriId: Int): String? = withContext(Dispatchers.IO) {
-    for (token in KODIK_TOKENS) {
-        try {
-            // Query Kodik API
-            val apiUrl = "https://kodikapi.com/search" +
-                    "?token=$token" +
-                    "&shikimori_id=$shikimoriId" +
-                    "&with_episodes=true" +
-                    "&limit=1"
-            val request = Request.Builder()
-                .url(apiUrl)
-                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .addHeader("Referer", "https://shikimori.io/")
-                .build()
+    for (attempt in 0..1) {
+        for (token in KODIK_TOKENS) {
+            try {
+                // Query Kodik API
+                val apiUrl = "https://kodikapi.com/search" +
+                        "?token=$token" +
+                        "&shikimori_id=$shikimoriId" +
+                        "&with_episodes=true" +
+                        "&limit=1"
+                val request = Request.Builder()
+                    .url(apiUrl)
+                    .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .addHeader("Referer", "https://shikimori.io/")
+                    .build()
 
-            val response = sslBypassClient.newCall(request).execute()
-            if (!response.isSuccessful) continue
-            val body = response.body?.string() ?: continue
+                val response = sslBypassClient.newCall(request).execute()
+                if (!response.isSuccessful) {
+                    response.close()
+                    continue
+                }
+                val body = response.body?.string() ?: continue
 
-            val json = JSONObject(body)
-            val results = json.optJSONArray("results") ?: continue
-            if (results.length() == 0) continue
+                val json = JSONObject(body)
+                val results = json.optJSONArray("results") ?: continue
+                if (results.length() == 0) continue
 
-            val first = results.optJSONObject(0) ?: continue
-            var link = first.optString("link", "") ?: continue
-            if (link.isBlank()) continue
+                val first = results.optJSONObject(0) ?: continue
+                var link = first.optString("link", "") ?: continue
+                if (link.isBlank()) continue
 
-            // Normalize URL: //aniqit.com/... → https://aniqit.com/...
-            if (link.startsWith("//")) link = "https:$link"
-            if (!link.startsWith("http")) link = "https://$link"
+                // Normalize URL: //aniqit.com/... → https://aniqit.com/...
+                if (link.startsWith("//")) link = "https:$link"
+                if (!link.startsWith("http")) link = "https://$link"
 
-            return@withContext link
-        } catch (e: Exception) {
-            continue
+                return@withContext link
+            } catch (e: Exception) {
+                continue
+            }
         }
+        if (attempt == 0) delay(2000)
     }
 
     // Fallback: try scraping kodik.cc find-player page directly
@@ -203,16 +212,24 @@ private suspend fun fetchKodikEmbedFromPage(shikimoriId: Int): String? = withCon
 }
 
 private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withContext(Dispatchers.IO) {
-    try {
-        val req = Request.Builder()
-            .url("https://p2.ddbb.lol/api/players?kinopoisk=$kinopoiskId")
-            .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .addHeader("Origin", "https://ddbb.lol")
-            .addHeader("Referer", "https://ddbb.lol/")
-            .build()
+    for (attempt in 0..2) {
+        try {
+            val req = Request.Builder()
+                .url("https://p2.ddbb.lol/api/players?kinopoisk=$kinopoiskId")
+                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .addHeader("Origin", "https://ddbb.lol")
+                .addHeader("Referer", "https://ddbb.lol/")
+                .build()
 
-        httpClient.newCall(req).execute().use { response ->
-            if (!response.isSuccessful) return@withContext emptyList()
+            val response = httpClient.newCall(req).execute()
+            if (!response.isSuccessful) {
+                response.close()
+                if (attempt < 2) {
+                    delay(2000L * (attempt + 1))
+                    continue
+                }
+                return@withContext emptyList()
+            }
             val body = response.body?.string() ?: return@withContext emptyList()
             val arr = JSONObject(body).optJSONArray("data") ?: return@withContext emptyList()
             val players = mutableListOf<DdbbPlayer>()
@@ -227,14 +244,51 @@ private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withC
                     defaultUrl
                 }
                 if (resolvedUrl.isNotBlank()) {
-                    players.add(DdbbPlayer(id = type.lowercase(), name = type, iframeUrl = resolvedUrl))
+                    players.add(DdbbPlayer(id = "${type.lowercase()}_$i", name = type, iframeUrl = resolvedUrl))
                 }
             }
-            players
+            if (players.isNotEmpty()) return@withContext players
+        } catch (e: Exception) {
+            if (attempt < 2) {
+                delay(2000L * (attempt + 1))
+                continue
+            }
         }
-    } catch (e: Exception) {
-        emptyList()
     }
+    emptyList()
+}
+
+private suspend fun fetchKinoboxPlayers(kinopoiskId: Int): List<DdbbPlayer> = withContext(Dispatchers.IO) {
+    for (attempt in 0..1) {
+        try {
+            val req = Request.Builder()
+                .url("https://kinobox.tv/api/players?kinopoisk=$kinopoiskId")
+                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .build()
+
+            val response = httpClient.newCall(req).execute()
+            if (!response.isSuccessful) {
+                response.close()
+                if (attempt == 0) delay(1500)
+                continue
+            }
+            val body = response.body?.string() ?: continue
+            val jsonArr = JSONArray(body)
+            val players = mutableListOf<DdbbPlayer>()
+            for (i in 0 until jsonArr.length()) {
+                val obj = jsonArr.optJSONObject(i) ?: continue
+                val source = obj.optString("source", "Источник ${i + 1}")
+                val iframeUrl = obj.optString("iframeUrl", "")
+                if (iframeUrl.isNotBlank()) {
+                    players.add(DdbbPlayer(id = "kinobox_${source.lowercase()}", name = "Kinobox: $source", iframeUrl = iframeUrl))
+                }
+            }
+            if (players.isNotEmpty()) return@withContext players
+        } catch (e: Exception) {
+            if (attempt == 0) delay(1500)
+        }
+    }
+    emptyList()
 }
 
 private const val HIDE_WEB_TOP_BAR_JS = """
@@ -242,8 +296,16 @@ private const val HIDE_WEB_TOP_BAR_JS = """
   try {
     var style = document.createElement('style');
     style.innerHTML = `
-      .kinobox_section { padding-top: 0 !important; }
-      .kbt_select, .kbt_button, select.kbt_select, .kbt_list, .kbt_grid { display: none !important; }
+      header, footer, .header, .footer, .sidebar, .ads, .navigation, .top-menu, .footer-menu, 
+      .kinopoisk-header, .kinopoisk-footer, #header, #footer, .bottom-menu { display: none !important; }
+      body { background: black !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }
+      #player, .player-container, .kinobox_section, [id*="player"], [class*="player"] { 
+        position: fixed !important; top: 0 !important; left: 0 !important; 
+        width: 100vw !important; height: 100vh !important; 
+        z-index: 999999 !important; padding: 0 !important; margin: 0 !important;
+        background: black !important;
+      }
+      .kbt_select, .kbt_button, select.kbt_select, .kbt_list, .kbt_grid, .kinobox-controls { display: none !important; }
     `;
     document.head.appendChild(style);
   } catch (e) {}
@@ -271,9 +333,12 @@ fun InAppWebScreen(
     var ddbbPlayers by remember { mutableStateOf<List<DdbbPlayer>>(emptyList()) }
     var isLoadingPlayers by remember { mutableStateOf(false) }
     var selectedPlayer by remember { mutableStateOf<DdbbPlayer?>(null) }
+    var webViewError by remember { mutableStateOf<String?>(null) }
+    var autoRetryCount by remember { mutableStateOf(0) }
+    var retryTrigger by remember { mutableStateOf(0) }
 
     // Fetch players on launch
-    LaunchedEffect(url) {
+    LaunchedEffect(url, retryTrigger) {
         if (shikimoriId != null) {
             isLoadingPlayers = true
             // Try fetching real Kodik embed URL natively (bypasses SSL issues)
@@ -294,12 +359,27 @@ fun InAppWebScreen(
             isLoadingPlayers = false
         } else if (kinopoiskId != null) {
             isLoadingPlayers = true
-            val players = fetchDdbbPlayers(kinopoiskId)
-            ddbbPlayers = players
-            if (selectedPlayer == null && players.isNotEmpty()) {
-                selectedPlayer = players.first()
+            val ddbbList = fetchDdbbPlayers(kinopoiskId)
+            val kboxList = fetchKinoboxPlayers(kinopoiskId)
+            val combined = (kboxList + ddbbList).distinctBy { it.iframeUrl }
+            ddbbPlayers = combined
+            if (selectedPlayer == null && combined.isNotEmpty()) {
+                selectedPlayer = combined.first()
             }
             isLoadingPlayers = false
+        }
+    }
+
+    // Auto-switch to direct player if mirror was loading
+    LaunchedEffect(selectedPlayer) {
+        val sel = selectedPlayer
+        val wv = webViewRef
+        if (sel != null && wv != null) {
+            val currentUrl = wv.url ?: ""
+            // Only auto-switch if we are on the mirror site or it's an initial blank
+            if (currentUrl.contains("kinopoisk.cx") || currentUrl.isEmpty() || currentUrl == "about:blank") {
+                wv.loadUrl(sel.iframeUrl)
+            }
         }
     }
 
@@ -452,8 +532,28 @@ fun InAppWebScreen(
                         handler?.proceed()
                     }
 
+                    override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                        if (request?.isForMainFrame == true) {
+                            val description = error?.description?.toString() ?: "Unknown error"
+                            // Auto-retry once on connection issues
+                            if (autoRetryCount < 2) {
+                                autoRetryCount++
+                                view?.postDelayed({ view.reload() }, 1500L)
+                            } else {
+                                webViewError = description
+                            }
+                        }
+                    }
+
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                        super.onPageStarted(view, url, favicon)
+                        if (webViewError != null) webViewError = null
+                    }
+
                     override fun onPageFinished(view: WebView?, loadedUrl: String?) {
                         super.onPageFinished(view, loadedUrl)
+                        autoRetryCount = 0
+                        webViewError = null
                         view?.evaluateJavascript(HIDE_WEB_TOP_BAR_JS, null)
                         val host = runCatching { Uri.parse(loadedUrl).host.orEmpty() }.getOrDefault("")
                         if (host.contains("ddbb.lol")) {
@@ -468,7 +568,7 @@ fun InAppWebScreen(
                     val target = when {
                         sel != null -> sel.iframeUrl
                         shikimoriId != null -> "https://aniqit.com/find-player?shikimori_id=$shikimoriId"
-                        kinopoiskId != null -> "https://ddbb.lol?id=$kinopoiskId&n=0"
+                        kinopoiskId != null -> url // Fallback to mirror site immediately
                         else -> url
                     }
                     webView.loadUrl(target)
@@ -564,6 +664,49 @@ fun InAppWebScreen(
                         color = androidx.compose.ui.graphics.Color.White,
                         fontSize = 12.sp
                     )
+                }
+            }
+        }
+
+        if (webViewError != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.85f))
+                    .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = "Ошибка подключения",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = androidx.compose.ui.graphics.Color.White
+                    )
+                    Text(
+                        text = webViewError ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f)
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        onClick = {
+                            webViewError = null
+                            autoRetryCount = 0
+                            retryTrigger++
+                            webViewRef?.reload()
+                        }
+                    ) {
+                        Text(
+                            text = "Повторить",
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
                 }
             }
         }
