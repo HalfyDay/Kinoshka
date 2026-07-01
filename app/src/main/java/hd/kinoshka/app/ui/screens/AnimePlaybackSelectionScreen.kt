@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,14 +39,8 @@ import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
 import kotlinx.coroutines.launch
 
-private enum class SelectionState {
-    SELECT_SOURCE,
-    SELECT_TRANSLATION,
-    SELECT_EPISODE
-}
 
 private enum class FilterMode {
-    ALL,
     VOICE,
     SUBTITLES
 }
@@ -63,7 +58,7 @@ fun AnimePlaybackSelectionScreen(
     shikimoriId: Int,
     animeTitle: String,
     watchedEpisodes: Int,
-    playbackSequence: PlaybackSequenceOption, // Ignored, kept for signature compatibility
+    playbackSequence: PlaybackSequenceOption,
     onDismissRequest: () -> Unit,
     onStreamSelected: (
         stream: AnimeMediaStream,
@@ -80,9 +75,15 @@ fun AnimePlaybackSelectionScreen(
     val scope = rememberCoroutineScope()
     val userStateStore = remember { UserStateStore(context) }
 
-    var currentSelectionState by remember { mutableStateOf(SelectionState.SELECT_SOURCE) }
+    var currentStepIndex by remember { mutableIntStateOf(0) }
+    val currentStep = remember(currentStepIndex, playbackSequence) {
+        playbackSequence.steps.getOrNull(currentStepIndex) ?: SelectionStep.SOURCE
+    }
+
     var selectedSourceType by remember { mutableStateOf<AnimeSourceType?>(null) }
+    var filterSourceType by remember { mutableStateOf<AnimeSourceType?>(null) }
     var selectedTranslation by remember { mutableStateOf<FlatTranslation?>(null) }
+    var selectedEpisode by remember { mutableStateOf<AnimeEpisode?>(null) }
 
     var isLoading by remember { mutableStateOf(true) }
     var isResolvingStream by remember { mutableStateOf(false) }
@@ -166,21 +167,24 @@ fun AnimePlaybackSelectionScreen(
     }
 
     fun handleBack() {
-        when (currentSelectionState) {
-            SelectionState.SELECT_SOURCE -> onDismissRequest()
-            SelectionState.SELECT_TRANSLATION -> {
-                currentSelectionState = SelectionState.SELECT_SOURCE
-                selectedSourceType = null
-            }
-            SelectionState.SELECT_EPISODE -> {
-                if (selectedSourceType == AnimeSourceType.KODIK || selectedSourceType == AnimeSourceType.ANILIB) {
-                    currentSelectionState = SelectionState.SELECT_TRANSLATION
-                    selectedTranslation = null
-                } else {
-                    currentSelectionState = SelectionState.SELECT_SOURCE
+        if (currentStepIndex > 0) {
+            currentStepIndex--
+            // Reset selections when going back
+            val prevStep = playbackSequence.steps[currentStepIndex]
+            when (prevStep) {
+                SelectionStep.SOURCE -> {
                     selectedSourceType = null
+                    selectedTranslation = null
+                }
+                SelectionStep.TRANSLATION -> {
+                    selectedTranslation = null
+                }
+                SelectionStep.EPISODE -> {
+                    selectedEpisode = null
                 }
             }
+        } else {
+            onDismissRequest()
         }
     }
 
@@ -223,10 +227,10 @@ fun AnimePlaybackSelectionScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        val subtitleText = when (currentSelectionState) {
-                            SelectionState.SELECT_SOURCE -> "Выбор источника видео"
-                            SelectionState.SELECT_TRANSLATION -> "Выбор озвучки • ${selectedSourceType?.displayName}"
-                            SelectionState.SELECT_EPISODE -> "${selectedTranslation?.title} • ${selectedSourceType?.displayName}"
+                        val subtitleText = when (currentStep) {
+                            SelectionStep.SOURCE -> "Выбор озвучки и источника"
+                            SelectionStep.TRANSLATION -> "Выбор озвучки ${selectedSourceType?.let { "• ${it.displayName}" } ?: ""}"
+                            SelectionStep.EPISODE -> if (selectedTranslation != null) "${selectedTranslation?.title} • ${selectedSourceType?.displayName}" else "Выбор серии"
                         }
                         Text(
                             text = subtitleText,
@@ -295,9 +299,10 @@ fun AnimePlaybackSelectionScreen(
                                     onClick = {
                                         isLoading = true
                                         errorMessage = null
-                                        currentSelectionState = SelectionState.SELECT_SOURCE
+                                        currentStepIndex = 0
                                         selectedSourceType = null
                                         selectedTranslation = null
+                                        selectedEpisode = null
                                         scope.launch {
                                             try {
                                                 allTranslations = AnimeStreamResolver.prefetchAllMedia(shikimoriId, animeTitle)
@@ -319,30 +324,38 @@ fun AnimePlaybackSelectionScreen(
                         }
                         else -> {
                             AnimatedContent(
-                                targetState = currentSelectionState,
+                                targetState = currentStep,
                                 transitionSpec = { fadeIn() togetherWith fadeOut() },
                                 label = "watchStateAnimation"
-                            ) { state ->
-                                when (state) {
-                                    SelectionState.SELECT_SOURCE -> {
-                                        SelectSourceStep(
+                            ) { step ->
+                                when (step) {
+                                    SelectionStep.SOURCE -> {
+                                        SelectTranslationStep(
+                                            selectedSource = filterSourceType,
+                                            onSourceSelected = { filterSourceType = it },
+                                            selectedEpisode = selectedEpisode,
                                             allTranslations = allTranslations,
-                                            lastPlayback = lastPlayback,
-                                            onSourceSelected = { src ->
-                                                selectedSourceType = src
-                                                // If AniLiberty has only one translation, jump straight to episode selection
-                                                if (src == AnimeSourceType.ANILIBERTY) {
-                                                    val tr = allTranslations.firstOrNull { it.source == src }
-                                                    if (tr != null) {
-                                                        selectedTranslation = tr
-                                                        currentSelectionState = SelectionState.SELECT_EPISODE
-                                                    } else {
-                                                        Toast.makeText(context, "Раздел пуст", Toast.LENGTH_SHORT).show()
-                                                    }
+                                            onTranslationSelected = { tr ->
+                                                selectedTranslation = tr
+                                                selectedSourceType = tr.source
+                                                
+                                                // Skip redundant TRANSLATION step if it follows
+                                                var nextIdx = currentStepIndex + 1
+                                                while (nextIdx < playbackSequence.steps.size && 
+                                                    playbackSequence.steps[nextIdx] == SelectionStep.TRANSLATION) {
+                                                    nextIdx++
+                                                }
+                                                
+                                                if (nextIdx < playbackSequence.steps.size) {
+                                                    currentStepIndex = nextIdx
                                                 } else {
-                                                    currentSelectionState = SelectionState.SELECT_TRANSLATION
+                                                    val ep = selectedEpisode ?: tr.episodes.firstOrNull()
+                                                    if (ep != null) {
+                                                        resolveAndPlay(ep, tr, tr.source)
+                                                    }
                                                 }
                                             },
+                                            lastPlayback = if (currentStepIndex == 0) lastPlayback else null,
                                             onQuickContinue = { playbackInfo ->
                                                 val tr = allTranslations.firstOrNull {
                                                     it.source.name == playbackInfo.source &&
@@ -352,35 +365,75 @@ fun AnimePlaybackSelectionScreen(
                                                 if (tr != null && ep != null) {
                                                     resolveAndPlay(ep, tr, tr.source)
                                                 } else {
-                                                    Toast.makeText(context, "Не удалось продолжить воспроизведение", Toast.LENGTH_SHORT).show()
+                                                    Toast.makeText(context, "Не удалось продолжить просмотр", Toast.LENGTH_SHORT).show()
                                                 }
                                             }
                                         )
                                     }
-                                    SelectionState.SELECT_TRANSLATION -> {
+                                    SelectionStep.TRANSLATION -> {
                                         SelectTranslationStep(
-                                            selectedSource = selectedSourceType ?: AnimeSourceType.KODIK,
+                                            selectedSource = selectedSourceType ?: filterSourceType,
+                                            onSourceSelected = { selectedSourceType = it },
+                                            selectedEpisode = selectedEpisode,
                                             allTranslations = allTranslations,
                                             onTranslationSelected = { tr ->
                                                 selectedTranslation = tr
-                                                currentSelectionState = SelectionState.SELECT_EPISODE
+                                                selectedSourceType = tr.source
+
+                                                // Skip redundant steps if we already have both source and translation
+                                                var nextIdx = currentStepIndex + 1
+                                                while (nextIdx < playbackSequence.steps.size && 
+                                                    (playbackSequence.steps[nextIdx] == SelectionStep.SOURCE || 
+                                                     playbackSequence.steps[nextIdx] == SelectionStep.TRANSLATION)) {
+                                                    nextIdx++
+                                                }
+
+                                                if (nextIdx < playbackSequence.steps.size) {
+                                                    currentStepIndex = nextIdx
+                                                } else {
+                                                    val ep = selectedEpisode ?: tr.episodes.firstOrNull()
+                                                    if (ep != null) {
+                                                        resolveAndPlay(ep, tr, tr.source)
+                                                    }
+                                                }
                                             }
                                         )
                                     }
-                                    SelectionState.SELECT_EPISODE -> {
+                                    SelectionStep.EPISODE -> {
+                                        val episodesSource = when {
+                                            selectedTranslation != null -> selectedTranslation!!.episodes
+                                            selectedSourceType != null -> allTranslations.filter { it.source == selectedSourceType }.flatMap { it.episodes }.distinctBy { it.number }
+                                            else -> allTranslations.flatMap { it.episodes }.distinctBy { it.number }
+                                        }
+
                                         SelectEpisodeStep(
                                             shikimoriId = shikimoriId,
                                             animeTitle = animeTitle,
-                                            translation = selectedTranslation ?: FlatTranslation(
-                                                source = AnimeSourceType.KODIK,
-                                                translationId = "",
-                                                title = "",
-                                                type = "voice"
-                                            ),
+                                            episodes = episodesSource,
+                                            allTranslations = allTranslations,
                                             watchedEpisodes = watchedEpisodesState,
                                             userStateStore = userStateStore,
+                                            lastPlayback = if (currentStepIndex == 0) lastPlayback else null,
+                                            onQuickContinue = { playbackInfo ->
+                                                val tr = allTranslations.firstOrNull {
+                                                    it.source.name == playbackInfo.source &&
+                                                    (it.translationId == playbackInfo.translationId || it.title == playbackInfo.translationTitle)
+                                                }
+                                                val ep = tr?.episodes?.firstOrNull { it.number == playbackInfo.episodeNum }
+                                                if (tr != null && ep != null) {
+                                                    resolveAndPlay(ep, tr, tr.source)
+                                                } else {
+                                                    Toast.makeText(context, "Не удалось продолжить просмотр", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
                                             onEpisodeSelected = { ep ->
-                                                resolveAndPlay(ep, selectedTranslation ?: return@SelectEpisodeStep, selectedSourceType ?: return@SelectEpisodeStep)
+                                                selectedEpisode = ep
+                                                if (currentStepIndex < playbackSequence.steps.lastIndex) {
+                                                    currentStepIndex++
+                                                } else {
+                                                    val tr = selectedTranslation ?: return@SelectEpisodeStep
+                                                    resolveAndPlay(ep, tr, selectedSourceType ?: tr.source)
+                                                }
                                             },
                                             onWatchedEpisodesChanged = { newCount ->
                                                 watchedEpisodesState = newCount
@@ -404,249 +457,136 @@ private fun SelectSourceStep(
     onSourceSelected: (AnimeSourceType) -> Unit,
     onQuickContinue: (LastPlaybackInfo) -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // Quick Continue watched history card if available
-        if (lastPlayback != null) {
-            val matchingTr = allTranslations.firstOrNull {
-                it.source.name == lastPlayback.source &&
-                (it.translationId == lastPlayback.translationId || it.title == lastPlayback.translationTitle)
-            }
-            if (matchingTr != null) {
-                item {
-                    Text(
-                        text = "История просмотра",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    Card(
-                        onClick = { onQuickContinue(lastPlayback) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Продолжить просмотр",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                                Text(
-                                    text = "Серия ${lastPlayback.episodeNum} • ${lastPlayback.translationTitle} (${matchingTr.source.displayName})",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Text(
-                text = "Доступные источники",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 4.dp)
-            )
-        }
-
-        items(AnimeSourceType.values()) { src ->
-            val count = allTranslations.count { it.source == src }
-            val isEnabled = count > 0
-
-            Surface(
-                onClick = { if (isEnabled) onSourceSelected(src) },
-                shape = RoundedCornerShape(16.dp),
-                color = if (isEnabled) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceContainerLowest,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(
-                        width = 1.dp,
-                        color = if (isEnabled) MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f) else Color.Transparent,
-                        shape = RoundedCornerShape(16.dp)
-                    ),
-                enabled = isEnabled
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 18.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (isEnabled) MaterialTheme.colorScheme.secondaryContainer 
-                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        val icon = when (src) {
-                            AnimeSourceType.KODIK -> Icons.Default.PlayArrow
-                            AnimeSourceType.ANILIBERTY -> Icons.Default.Star
-                            AnimeSourceType.ANILIB -> Icons.Default.Favorite
-                        }
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            tint = if (isEnabled) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = src.displayName,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isEnabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                        )
-                        Text(
-                            text = if (isEnabled) src.description else "Ничего не найдено",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (isEnabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                        )
-                    }
-                    if (isEnabled) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            val detailText = when (src) {
-                                AnimeSourceType.KODIK -> "$count озв."
-                                AnimeSourceType.ANILIBERTY -> {
-                                    val episodesCount = allTranslations.firstOrNull { it.source == src }?.episodes?.size ?: 0
-                                    "$episodesCount сер."
-                                }
-                                AnimeSourceType.ANILIB -> "$count озв."
-                            }
-                            Text(
-                                text = detailText,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // This step is now merged into SelectTranslationStep
 }
 
 @Composable
 private fun SelectTranslationStep(
-    selectedSource: AnimeSourceType,
+    selectedSource: AnimeSourceType?,
+    onSourceSelected: (AnimeSourceType?) -> Unit,
+    selectedEpisode: AnimeEpisode?,
     allTranslations: List<FlatTranslation>,
+    lastPlayback: LastPlaybackInfo? = null,
+    onQuickContinue: ((LastPlaybackInfo) -> Unit)? = null,
     onTranslationSelected: (FlatTranslation) -> Unit
 ) {
-    val sourceTranslations = remember(allTranslations, selectedSource) {
-        allTranslations.filter { it.source == selectedSource }
+    val sourceTranslations = remember(allTranslations, selectedSource, selectedEpisode) {
+        var list = allTranslations
+        if (selectedSource != null) {
+            list = list.filter { it.source == selectedSource }
+        }
+        if (selectedEpisode != null) {
+            list = list.filter { tr -> tr.episodes.any { it.number == selectedEpisode.number } }
+        }
+        list
     }
 
-    var filterMode by remember { mutableStateOf(FilterMode.ALL) }
+    var filterMode by remember { mutableStateOf(FilterMode.VOICE) }
 
     val filteredList = remember(sourceTranslations, filterMode) {
         when (filterMode) {
-            FilterMode.ALL -> sourceTranslations
             FilterMode.VOICE -> sourceTranslations.filter { it.type != "sub" && it.type != "subtitles" }
             FilterMode.SUBTITLES -> sourceTranslations.filter { it.type == "sub" || it.type == "subtitles" }
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Translation tabs chips (only for sources with lots of translators, e.g. Kodik)
-        if (selectedSource == AnimeSourceType.KODIK) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 16.dp)
+    ) {
+        item {
+            // Translation tabs (Voice / Subtitles)
+            val filterOptions = listOf(FilterMode.VOICE, FilterMode.SUBTITLES)
+            TabRow(
+                selectedTabIndex = filterOptions.indexOf(filterMode),
+                containerColor = Color.Transparent,
+                indicator = { tabPositions ->
+                    val idx = filterOptions.indexOf(filterMode)
+                    if (idx < tabPositions.size) {
+                        TabRowDefaults.SecondaryIndicator(
+                            Modifier.tabIndicatorOffset(tabPositions[idx]),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                },
+                divider = {},
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp)
+            ) {
+                filterOptions.forEach { mode ->
+                    val isSelected = filterMode == mode
+                    Tab(
+                        selected = isSelected,
+                        onClick = { filterMode = mode },
+                        text = {
+                            Text(
+                                text = when (mode) {
+                                    FilterMode.VOICE -> "Озвучка"
+                                    FilterMode.SUBTITLES -> "Субтитры"
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            )
+                        },
+                        selectedContentColor = MaterialTheme.colorScheme.primary,
+                        unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        item {
+            // Source chips (previous style)
+            val sources = remember(allTranslations) {
+                listOf<AnimeSourceType?>(null) + AnimeSourceType.entries.filter { src ->
+                    allTranslations.any { it.source == src }
+                }
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                FilterChip(
-                    selected = filterMode == FilterMode.ALL,
-                    onClick = { filterMode = FilterMode.ALL },
-                    label = { Text("Все") }
-                )
-                FilterChip(
-                    selected = filterMode == FilterMode.VOICE,
-                    onClick = { filterMode = FilterMode.VOICE },
-                    label = { Text("Озвучка") }
-                )
-                FilterChip(
-                    selected = filterMode == FilterMode.SUBTITLES,
-                    onClick = { filterMode = FilterMode.SUBTITLES },
-                    label = { Text("Субтитры") }
-                )
+                sources.forEach { src ->
+                    FilterChip(
+                        selected = selectedSource == src,
+                        onClick = { onSourceSelected(src) },
+                        label = { Text(src?.displayName ?: "Все") }
+                    )
+                }
             }
         }
 
         if (filteredList.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Нет доступных вариантов перевода",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 64.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Нет доступных вариантов",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(filteredList) { tr ->
+            val grouped = filteredList.groupBy { it.source }
+            grouped.forEach { (source, translations) ->
+                item {
+                    Text(
+                        text = source.displayName,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp, start = 20.dp)
+                    )
+                }
+                items(translations) { tr ->
                     val isSub = tr.type == "sub" || tr.type == "subtitles"
                     Surface(
                         onClick = { onTranslationSelected(tr) },
@@ -654,6 +594,7 @@ private fun SelectTranslationStep(
                         color = MaterialTheme.colorScheme.surfaceContainerLow,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp)
                             .border(
                                 width = 0.5.dp,
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
@@ -663,7 +604,7 @@ private fun SelectTranslationStep(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(16.dp),
+                                .padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
@@ -686,8 +627,8 @@ private fun SelectTranslationStep(
                             Spacer(modifier = Modifier.width(14.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = tr.title,
-                                    style = MaterialTheme.typography.titleMedium,
+                                    text = if (tr.source == AnimeSourceType.ANILIBERTY) "AniLiberty" else tr.title,
+                                    style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 val subText = if (isSub) "Субтитры" else "Голосовая озвучка"
@@ -717,174 +658,264 @@ private fun SelectTranslationStep(
 private fun SelectEpisodeStep(
     shikimoriId: Int,
     animeTitle: String,
-    translation: FlatTranslation,
+    episodes: List<AnimeEpisode>,
+    allTranslations: List<FlatTranslation> = emptyList(),
     watchedEpisodes: Int,
     userStateStore: UserStateStore,
+    lastPlayback: LastPlaybackInfo? = null,
+    onQuickContinue: ((LastPlaybackInfo) -> Unit)? = null,
     onEpisodeSelected: (AnimeEpisode) -> Unit,
     onWatchedEpisodesChanged: (Int) -> Unit
 ) {
     var isSortAscending by remember { mutableStateOf(true) }
 
-    val sortedEpisodes = remember(translation, isSortAscending) {
-        val eps = translation.episodes
-        if (isSortAscending) eps.sortedBy { it.number } else eps.sortedByDescending { it.number }
+    val sortedEpisodes = remember(episodes, isSortAscending) {
+        if (isSortAscending) episodes.sortedBy { it.number } else episodes.sortedByDescending { it.number }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Actions row (Sort options)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = "Всего серий: ${translation.episodes.size}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Medium
-            )
-
-            TextButton(
-                onClick = { isSortAscending = !isSortAscending },
-                contentPadding = PaddingValues(horizontal = 8.dp)
-            ) {
-                Icon(
-                    imageVector = if (isSortAscending) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = if (isSortAscending) "По порядку" else "Сначала новые",
-                    style = MaterialTheme.typography.labelLarge
-                )
-            }
-        }
-
-        if (sortedEpisodes.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Список серий пуст", style = MaterialTheme.typography.bodyMedium)
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(sortedEpisodes) { ep ->
-                    val isWatched = ep.number <= watchedEpisodes
-
-                    Surface(
-                        onClick = { onEpisodeSelected(ep) },
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 24.dp)
+    ) {
+        // ... (Quick Continue block)
+        // Quick Continue watched history card if available
+        if (lastPlayback != null && onQuickContinue != null) {
+            item {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(
+                        text = "История просмотра",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Card(
+                        onClick = { onQuickContinue(lastPlayback) },
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(
-                                width = 0.5.dp,
-                                color = if (isWatched) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                shape = RoundedCornerShape(16.dp)
-                            )
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                        )
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                                .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(32.dp)
                                     .clip(CircleShape)
-                                    .background(
-                                        if (isWatched) Color(0xFF4CAF50).copy(alpha = 0.15f) 
-                                        else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                                    ),
+                                    .background(MaterialTheme.colorScheme.primary),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = if (isWatched) Icons.Filled.Check else Icons.Filled.PlayArrow,
+                                    imageVector = Icons.Default.PlayArrow,
                                     contentDescription = null,
-                                    tint = if (isWatched) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
-                            Spacer(modifier = Modifier.width(14.dp))
+                            Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Серия ${lastPlayback.episodeNum} • ${lastPlayback.translationTitle}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    text = lastPlayback.source,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            // Actions row (Sort options)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Всего серий: ${episodes.size}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium
+                )
+
+                TextButton(
+                    onClick = { isSortAscending = !isSortAscending },
+                    contentPadding = PaddingValues(horizontal = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isSortAscending) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (isSortAscending) "По порядку" else "Сначала новые",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+        }
+
+        if (sortedEpisodes.isEmpty()) {
+            item {
+                Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text("Список серий пуст", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        } else {
+            items(sortedEpisodes) { ep ->
+                val isWatched = ep.number <= watchedEpisodes
+
+                Surface(
+                    onClick = { onEpisodeSelected(ep) },
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .border(
+                            width = 0.5.dp,
+                            color = if (isWatched) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isWatched) Color(0xFF4CAF50).copy(alpha = 0.15f) 
+                                    else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isWatched) Icons.Filled.Check else Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                tint = if (isWatched) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     text = "Серия ${ep.number}",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (isWatched) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurface
                                 )
-                                if (!ep.title.isNullOrBlank() && ep.title != "Серия ${ep.number}") {
-                                    Text(
-                                        text = ep.title,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                
+                                val trCount = remember(allTranslations, ep.number) {
+                                    allTranslations.count { tr -> tr.episodes.any { it.number == ep.number } }
+                                }
+                                if (trCount > 1) {
+                                    Surface(
+                                        modifier = Modifier.padding(start = 8.dp),
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                                    ) {
+                                        Text(
+                                            text = "$trCount озв.",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
                             }
+                            if (!ep.title.isNullOrBlank() && ep.title != "Серия ${ep.number}") {
+                                Text(
+                                    text = ep.title,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
 
-                            // Quick progress manager buttons
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                if (isWatched) {
-                                    // Watched status indicator + minus/delete progress button
-                                    Text(
-                                        text = "Просмотрено",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFF4CAF50),
-                                        fontWeight = FontWeight.Bold
+                        // Quick progress manager buttons
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (isWatched) {
+                                // Watched status indicator + minus/delete progress button
+                                Text(
+                                    text = "Просмотрено",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF4CAF50),
+                                    fontWeight = FontWeight.Bold
+                                )
+                                IconButton(
+                                    onClick = {
+                                        val newCount = ep.number - 1
+                                        onWatchedEpisodesChanged(newCount)
+                                        userStateStore.updateWatchedEpisode(
+                                            shikimoriId,
+                                            animeTitle,
+                                            newCount,
+                                            episodes.size
+                                        )
+                                    },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Удалить отметку",
+                                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                                        modifier = Modifier.size(18.dp)
                                     )
-                                    IconButton(
-                                        onClick = {
-                                            val newCount = ep.number - 1
-                                            onWatchedEpisodesChanged(newCount)
-                                            userStateStore.updateWatchedEpisode(
-                                                shikimoriId,
-                                                animeTitle,
-                                                newCount,
-                                                translation.episodes.size
-                                            )
-                                        },
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Удалить отметку",
-                                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
-                                            modifier = Modifier.size(18.dp)
+                                }
+                            } else {
+                                // Mark as watched button (plus icon / check circle outline)
+                                IconButton(
+                                    onClick = {
+                                        val newCount = ep.number
+                                        onWatchedEpisodesChanged(newCount)
+                                        userStateStore.updateWatchedEpisode(
+                                            shikimoriId,
+                                            animeTitle,
+                                            newCount,
+                                            episodes.size
                                         )
-                                    }
-                                } else {
-                                    // Mark as watched button (plus icon / check circle outline)
-                                    IconButton(
-                                        onClick = {
-                                            val newCount = ep.number
-                                            onWatchedEpisodesChanged(newCount)
-                                            userStateStore.updateWatchedEpisode(
-                                                shikimoriId,
-                                                animeTitle,
-                                                newCount,
-                                                translation.episodes.size
-                                            )
-                                        },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.CheckCircle,
-                                            contentDescription = "Отметить просмотренной",
-                                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.CheckCircle,
+                                        contentDescription = "Отметить просмотренной",
+                                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
+                                        modifier = Modifier.size(20.dp)
+                                    )
                                 }
                             }
                         }

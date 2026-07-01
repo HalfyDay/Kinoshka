@@ -142,7 +142,7 @@ data class HomeUiState(
     val topics: List<hd.kinoshka.app.data.model.ShikimoriTopic> = emptyList(),
     val calendarLoading: Boolean = false,
     val topicsLoading: Boolean = false,
-    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES
+    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST
 )
 
 data class DetailsUiState(

@@ -46,7 +46,7 @@ data class UserPreferences(
     val libraryTileSize: FilmTileSize? = null,
     val showFpsCounter: Boolean = false,
     val contentType: hd.kinoshka.app.ui.screens.ContentType = hd.kinoshka.app.ui.screens.ContentType.FILMS,
-    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES
+    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST
 )
 
 data class HistoryRecord(
@@ -115,7 +115,7 @@ class UserStateStore(context: Context) {
     }
 
     fun getPlaybackSequence(): PlaybackSequenceOption {
-        return readEnum(playbackSequenceKey, PlaybackSequenceOption.EPISODES_TRANSLATIONS_SOURCES)
+        return readEnum(playbackSequenceKey, PlaybackSequenceOption.SOURCES_FIRST)
     }
 
     fun setPlaybackSequence(option: PlaybackSequenceOption) {

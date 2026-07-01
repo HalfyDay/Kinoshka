@@ -5,8 +5,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class AnimeSourceType(val displayName: String, val description: String) {
     KODIK("Kodik", "Большой каталог озвучек и субтитров"),
-    ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p"),
-    ANILIB("AniLib", "Каталог серий AniLib с выбором команды перевода")
+    ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p")
 }
 
 @Serializable
@@ -50,12 +49,8 @@ enum class SelectionStep {
 
 @Serializable
 enum class PlaybackSequenceOption(val displayName: String, val steps: List<SelectionStep>) {
-    EPISODES_TRANSLATIONS_SOURCES("Серии -> Озвучка -> Источники", listOf(SelectionStep.EPISODE, SelectionStep.TRANSLATION, SelectionStep.SOURCE)),
-    TRANSLATIONS_EPISODES_SOURCES("Озвучка -> Серии -> Источники", listOf(SelectionStep.TRANSLATION, SelectionStep.EPISODE, SelectionStep.SOURCE)),
-    SOURCES_TRANSLATIONS_EPISODES("Источники -> Озвучка -> Серии", listOf(SelectionStep.SOURCE, SelectionStep.TRANSLATION, SelectionStep.EPISODE)),
-    SOURCES_EPISODES_TRANSLATIONS("Источники -> Серии -> Озвучка", listOf(SelectionStep.SOURCE, SelectionStep.EPISODE, SelectionStep.TRANSLATION)),
-    EPISODES_SOURCES_TRANSLATIONS("Серии -> Источники -> Озвучка", listOf(SelectionStep.EPISODE, SelectionStep.SOURCE, SelectionStep.TRANSLATION)),
-    TRANSLATIONS_SOURCES_EPISODES("Озвучка -> Источники -> Серии", listOf(SelectionStep.TRANSLATION, SelectionStep.SOURCE, SelectionStep.EPISODE));
+    EPISODES_FIRST("Сначала серии", listOf(SelectionStep.EPISODE, SelectionStep.SOURCE, SelectionStep.TRANSLATION)),
+    SOURCES_FIRST("Сначала озвучки", listOf(SelectionStep.SOURCE, SelectionStep.TRANSLATION, SelectionStep.EPISODE));
 
     fun toUiLabel(): String = displayName
 }
