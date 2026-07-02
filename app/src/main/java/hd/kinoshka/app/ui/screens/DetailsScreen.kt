@@ -217,6 +217,7 @@ fun DetailsScreen(
     ) -> Unit,
     onOpenUrl: (String) -> Unit,
     onOpenFilm: (Int) -> Unit,
+    onUpdateAnimeProgress: (shikimoriId: Int, episode: Int, totalEpisodes: Int?) -> Unit = { _, _, _ -> },
     onBack: () -> Unit,
     onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null,
     onOpenNativePlayer: ((
@@ -358,6 +359,9 @@ fun DetailsScreen(
                             watchedEpisodes = state.userProfile?.watchedEpisodes ?: 0,
                             playbackSequence = playbackSequence,
                             onDismissRequest = { activePlaybackSelection = false },
+                            onWatchedEpisodesChanged = { newCount ->
+                                onUpdateAnimeProgress(shikimoriId, newCount, state.animeDetails?.episodes)
+                            },
                             onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
                                 var normalizedUrl = stream.url
                                 if (normalizedUrl.startsWith("//")) {
