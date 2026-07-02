@@ -69,7 +69,8 @@ fun AnimePlaybackSelectionScreen(
         episodes: List<AnimeEpisode>,
         translations: List<FlatTranslation>,
         currentTranslationId: String
-    ) -> Unit
+    ) -> Unit,
+    onWatchedEpisodesChanged: (Int) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -437,6 +438,7 @@ fun AnimePlaybackSelectionScreen(
                                             },
                                             onWatchedEpisodesChanged = { newCount ->
                                                 watchedEpisodesState = newCount
+                                                onWatchedEpisodesChanged(newCount)
                                             }
                                         )
                                     }

@@ -344,6 +344,7 @@ fun KinoApp() {
                             load = vm::loadDetails,
                             onWatch = vm::onWatch,
                             onSaveUserProfile = vm::saveUserProfile,
+                            onUpdateAnimeProgress = vm::updateAnimeProgress,
                             onOpenUrl = { rawUrl -> navController.navigate("web?url=${Uri.encode(rawUrl)}") },
                             onOpenFilm = { targetId -> navController.navigate(detailsRoute(targetId)) },
                             onBack = { navController.popBackStack() },

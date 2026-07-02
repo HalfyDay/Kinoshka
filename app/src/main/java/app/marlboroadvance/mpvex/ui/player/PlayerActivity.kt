@@ -55,6 +55,8 @@ import `is`.xyz.mpv.MPVLib
 import `is`.xyz.mpv.MPVNode
 import `is`.xyz.mpv.Utils
 import hd.kinoshka.app.BuildConfig
+import hd.kinoshka.app.data.api.ApiClient
+import hd.kinoshka.app.data.local.ShikimoriAuthStore
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeSourceType
@@ -2188,6 +2190,29 @@ class PlayerActivity :
                     totalEpisodes = totalEps
                   )
                   viewModel.setWatchedEpisodesCount(currentEp)
+
+                  // Shikimori sync
+                  val authStore = ShikimoriAuthStore(this@PlayerActivity)
+                  val authState = authStore.getAuthState()
+                  if (authState.isLoggedIn && authState.accessToken != null) {
+                    lifecycleScope.launch(Dispatchers.IO) {
+                      val api = ApiClient.shikimoriApi(this@PlayerActivity)
+                      val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
+                      val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
+                      val newStatus = if (currentEp >= totalEps && totalEps > 0) "completed" else "watching"
+                      val authHeader = if (authState.accessToken.startsWith("Bearer ")) authState.accessToken else "Bearer ${authState.accessToken}"
+                      
+                      if (existingRate != null) {
+                        runCatching { 
+                          api.updateUserRate(authHeader, existingRate.id, status = newStatus, episodes = currentEp)
+                        }
+                      } else {
+                        runCatching {
+                          api.createUserRate(authHeader, authState.userId, shikimoriId, status = newStatus, episodes = currentEp)
+                        }
+                      }
+                    }
+                  }
                 }
               }
               finalWatchedState

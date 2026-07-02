@@ -435,6 +435,76 @@ class FilmsViewModel(
             savingProfile = false
         )
         refreshLibraryAndAvatar()
+
+        // Sync with Shikimori if it's an anime
+        if (details.kinopoiskId >= ANIME_ID_OFFSET) {
+            val shikimoriId = details.kinopoiskId - ANIME_ID_OFFSET
+            val authState = uiState.shikimoriAuthState
+            if (authState.isLoggedIn && authState.accessToken != null) {
+                viewModelScope.launch {
+                    val shikiStatus = when (status) {
+                        UserFilmStatus.WATCHING -> "watching"
+                        UserFilmStatus.PLANNED -> "planned"
+                        UserFilmStatus.COMPLETED -> "completed"
+                        UserFilmStatus.REWATCHING -> "rewatching"
+                        UserFilmStatus.ON_HOLD -> "on_hold"
+                        UserFilmStatus.DROPPED -> "dropped"
+                        else -> null
+                    }
+                    if (shikiStatus != null) {
+                        val existingRate = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
+                        if (existingRate != null) {
+                            animeRepository.updateUserRate(
+                                token = authState.accessToken,
+                                rateId = existingRate.id,
+                                status = shikiStatus,
+                                episodes = safeEpisodes,
+                                score = safeRating
+                            )
+                        } else {
+                            animeRepository.createUserRate(
+                                token = authState.accessToken,
+                                userId = authState.userId,
+                                targetId = shikimoriId,
+                                status = shikiStatus,
+                                episodes = safeEpisodes ?: 0,
+                                score = safeRating ?: 0
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun updateAnimeProgress(shikimoriId: Int, episode: Int, totalEpisodes: Int? = null) {
+        val animeTitle = detailsState.animeDetails?.russian ?: detailsState.animeDetails?.name ?: "Аниме"
+        userStateStore.updateWatchedEpisode(shikimoriId, animeTitle, episode, totalEpisodes ?: 0)
+        refreshLibraryAndAvatar()
+
+        val authState = uiState.shikimoriAuthState
+        if (authState.isLoggedIn && authState.accessToken != null) {
+            viewModelScope.launch {
+                val existingRate = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
+                val newStatus = if (totalEpisodes != null && totalEpisodes > 0 && episode >= totalEpisodes) "completed" else "watching"
+                if (existingRate != null) {
+                    animeRepository.updateUserRate(
+                        token = authState.accessToken,
+                        rateId = existingRate.id,
+                        status = newStatus,
+                        episodes = episode
+                    )
+                } else {
+                    animeRepository.createUserRate(
+                        token = authState.accessToken,
+                        userId = authState.userId,
+                        targetId = shikimoriId,
+                        status = newStatus,
+                        episodes = episode
+                    )
+                }
+            }
+        }
     }
 
     fun setProfileAvatar(avatar: String) {
@@ -969,13 +1039,14 @@ private fun HistoryRecord.toLibraryUiItem(
     profile: UserFilmProfile?,
     format: DateFormat
 ): LibraryUiItem {
+    val actualType = if (kinopoiskId >= ANIME_ID_OFFSET) "ANIME" else profile?.type
     return LibraryUiItem(
         kinopoiskId = kinopoiskId,
         title = profile?.title ?: title,
         subtitle = profile?.subtitle ?: subtitle,
         posterUrl = profile?.posterUrl ?: posterUrl,
         ratingText = profile?.ratingText ?: ratingText,
-        type = profile?.type,
+        type = actualType,
         isRussian = profile?.isRussian ?: (isRussian == true),
         viewedAtMillis = viewedAt,
         viewedAtLabel = format.format(Date(viewedAt)),
@@ -998,7 +1069,7 @@ private fun UserFilmProfile.toLibraryUiItem(): LibraryUiItem {
         subtitle = subtitle,
         posterUrl = posterUrl,
         ratingText = ratingText,
-        type = type,
+        type = if (kinopoiskId >= ANIME_ID_OFFSET) "ANIME" else type,
         isRussian = isRussian == true,
         viewedAtMillis = null,
         viewedAtLabel = null,
