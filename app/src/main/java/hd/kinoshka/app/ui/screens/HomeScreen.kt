@@ -206,7 +206,7 @@ fun HomeScreen(
             .toMap()
     }
 
-    var section by rememberSaveable {
+    var section by remember(state.tab) {
         mutableStateOf(
             when (state.tab) {
                 HomeTab.HISTORY -> MainSection.LIBRARY
@@ -214,13 +214,6 @@ fun HomeScreen(
                 else -> MainSection.DISCOVER
             }
         )
-    }
-    LaunchedEffect(state.tab) {
-        section = when (state.tab) {
-            HomeTab.HISTORY -> MainSection.LIBRARY
-            HomeTab.MORE -> MainSection.MORE
-            else -> MainSection.DISCOVER
-        }
     }
     var libraryQuery by rememberSaveable { mutableStateOf("") }
     var discoverQuery by rememberSaveable { mutableStateOf("") }

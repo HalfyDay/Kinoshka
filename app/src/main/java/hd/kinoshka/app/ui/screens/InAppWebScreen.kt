@@ -101,6 +101,32 @@ private val httpClient by lazy {
         .build()
 }
 
+// Max response body size to prevent OOM (256KB)
+private const val MAX_RESPONSE_BODY_BYTES = 256L * 1024
+
+private fun readBodyLimited(response: okhttp3.Response, maxBytes: Long = MAX_RESPONSE_BODY_BYTES): String? {
+    val source = response.body?.source() ?: return null
+    return try {
+        val buffer = okio.Buffer()
+        var totalBytes = 0L
+        val readBuffer = okio.Buffer()
+        while (true) {
+            val read = source.read(readBuffer, 65536)
+            if (read == -1L) break
+            totalBytes += read
+            if (totalBytes > maxBytes) {
+                response.close()
+                return null
+            }
+            buffer.write(readBuffer, read)
+        }
+        buffer.readUtf8()
+    } catch (_: Exception) {
+        response.close()
+        null
+    }
+}
+
 // SSL-bypass HTTP client for Kodik and other Russian CDNs with untrusted certificates
 private val sslBypassClient by lazy {
     try {
@@ -151,7 +177,7 @@ private suspend fun fetchKodikEmbedUrl(shikimoriId: Int): String? = withContext(
                     response.close()
                     continue
                 }
-                val body = response.body?.string() ?: continue
+                val body = readBodyLimited(response) ?: continue
 
                 val json = JSONObject(body)
                 val results = json.optJSONArray("results") ?: continue
@@ -193,7 +219,7 @@ private suspend fun fetchKodikEmbedFromPage(shikimoriId: Int): String? = withCon
                 .build()
             val response = sslBypassClient.newCall(request).execute()
             if (!response.isSuccessful) continue
-            val html = response.body?.string() ?: continue
+            val html = readBodyLimited(response, 512L * 1024) ?: continue
 
             // Parse iframe src
             val iframeRegex = Regex("""<iframe[^>]+src=["']((?:https?:)?//[^"']+)["']""", RegexOption.IGNORE_CASE)
@@ -231,7 +257,7 @@ private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withC
                 }
                 return@withContext emptyList()
             }
-            val body = response.body?.string() ?: return@withContext emptyList()
+            val body = readBodyLimited(response) ?: return@withContext emptyList()
             val arr = JSONObject(body).optJSONArray("data") ?: return@withContext emptyList()
             val players = mutableListOf<DdbbPlayer>()
             for (i in 0 until arr.length()) {
@@ -273,7 +299,7 @@ private suspend fun fetchKinoboxPlayers(kinopoiskId: Int): List<DdbbPlayer> = wi
                 if (attempt == 0) delay(1500)
                 continue
             }
-            val body = response.body?.string() ?: continue
+            val body = readBodyLimited(response) ?: continue
             val jsonArr = JSONArray(body)
             val players = mutableListOf<DdbbPlayer>()
             for (i in 0 until jsonArr.length()) {
@@ -419,6 +445,11 @@ fun InAppWebScreen(
             val currentWebView = webViewRef
             if (currentWebView != null) {
                 savedWebViewState = Bundle().also { currentWebView.saveState(it) }
+                // Clear WebView memory to prevent OOM
+                currentWebView.loadUrl("about:blank")
+                currentWebView.clearHistory()
+                currentWebView.clearCache(true)
+                currentWebView.removeAllViews()
             }
             insetsController?.show(WindowInsetsCompat.Type.systemBars())
             if (window != null) {
@@ -487,6 +518,11 @@ fun InAppWebScreen(
                 webView.settings.allowFileAccess = true
                 webView.settings.allowContentAccess = true
                 webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+                webView.settings.setGeolocationEnabled(false)
+                webView.settings.defaultTextEncodingName = "UTF-8"
+                // Limit WebView memory usage
+                webView.settings.setSupportZoom(false)
+                webView.settings.builtInZoomControls = false
                 webView.settings.userAgentString = webView.settings.userAgentString
                     .replace("; wv", "")
                     .replace("Version/4.0 ", "")
