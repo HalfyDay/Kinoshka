@@ -38,6 +38,11 @@ enum class UserFilmStatus {
     DROPPED
 }
 
+enum class PlayerMode(val displayName: String) {
+    DDBB("Источники (ddbb)"),
+    SITE("Зеркало сайта (kinopoisk.ws)")
+}
+
 data class UserPreferences(
     val themeMode: AppThemeMode = AppThemeMode.CURRENT,
     val hideRussianContent: Boolean = false,
@@ -46,7 +51,8 @@ data class UserPreferences(
     val libraryTileSize: FilmTileSize? = null,
     val showFpsCounter: Boolean = false,
     val contentType: hd.kinoshka.app.ui.screens.ContentType = hd.kinoshka.app.ui.screens.ContentType.FILMS,
-    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST
+    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
+    val playerMode: PlayerMode = PlayerMode.DDBB
 )
 
 data class HistoryRecord(
@@ -120,6 +126,16 @@ class UserStateStore(context: Context) {
 
     fun setPlaybackSequence(option: PlaybackSequenceOption) {
         prefs.edit().putString(playbackSequenceKey, option.name).apply()
+    }
+
+    private val playerModeKey = "player_mode"
+
+    fun getPlayerMode(): PlayerMode {
+        return readEnum(playerModeKey, PlayerMode.DDBB)
+    }
+
+    fun setPlayerMode(mode: PlayerMode) {
+        prefs.edit().putString(playerModeKey, mode.name).apply()
     }
 
     fun getViewMode(): SavedViewMode {
@@ -198,7 +214,8 @@ class UserStateStore(context: Context) {
             libraryTileSize = getLibraryTileSize(),
             showFpsCounter = isFpsCounterEnabled(),
             contentType = getSavedContentType(),
-            playbackSequence = getPlaybackSequence()
+            playbackSequence = getPlaybackSequence(),
+            playerMode = getPlayerMode()
         )
     }
 
