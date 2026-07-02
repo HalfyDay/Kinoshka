@@ -37,7 +37,8 @@ enum class ContentType {
 
 enum class HomeTab {
     CATALOG,
-    HISTORY
+    HISTORY,
+    MORE
 }
 
 enum class DiscoverCategory(val title: String, val apiType: String) {

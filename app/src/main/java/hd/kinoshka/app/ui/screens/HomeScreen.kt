@@ -208,11 +208,19 @@ fun HomeScreen(
 
     var section by rememberSaveable {
         mutableStateOf(
-            if (state.tab == HomeTab.HISTORY) MainSection.LIBRARY else MainSection.DISCOVER
+            when (state.tab) {
+                HomeTab.HISTORY -> MainSection.LIBRARY
+                HomeTab.MORE -> MainSection.MORE
+                else -> MainSection.DISCOVER
+            }
         )
     }
     LaunchedEffect(state.tab) {
-        section = if (state.tab == HomeTab.HISTORY) MainSection.LIBRARY else MainSection.DISCOVER
+        section = when (state.tab) {
+            HomeTab.HISTORY -> MainSection.LIBRARY
+            HomeTab.MORE -> MainSection.MORE
+            else -> MainSection.DISCOVER
+        }
     }
     var libraryQuery by rememberSaveable { mutableStateOf("") }
     var discoverQuery by rememberSaveable { mutableStateOf("") }
@@ -279,6 +287,7 @@ fun HomeScreen(
                         MainSection.MORE -> {
                             moreQuery = ""
                             onQueryChange("")
+                            onTabSelected(HomeTab.MORE)
                         }
                     }
                 }
