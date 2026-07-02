@@ -453,6 +453,8 @@ fun SettingsScreen(
     selectedShowFpsCounter: Boolean,
     selectedPlaybackSequence: PlaybackSequenceOption,
     onPlaybackSequenceSelected: (PlaybackSequenceOption) -> Unit,
+    selectedPlayerMode: hd.kinoshka.app.data.local.PlayerMode,
+    onPlayerModeSelected: (hd.kinoshka.app.data.local.PlayerMode) -> Unit,
     onThemeModeSelected: (AppThemeMode) -> Unit,
     onHideRussianChanged: (Boolean) -> Unit,
     onDiscoverTileSizeSelected: (FilmTileSize) -> Unit,
@@ -466,6 +468,7 @@ fun SettingsScreen(
     var showDiscoverTileSizePicker by remember { mutableStateOf(false) }
     var showLibraryTileSizePicker by remember { mutableStateOf(false) }
     var showPlaybackSequencePicker by remember { mutableStateOf(false) }
+    var showPlayerModePicker by remember { mutableStateOf(false) }
     val createExportFile = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
@@ -534,6 +537,11 @@ fun SettingsScreen(
                         title = "Порядок выбора в плеере",
                         value = selectedPlaybackSequence.toUiLabel(),
                         onClick = { showPlaybackSequencePicker = true }
+                    )
+                    SettingsSelectRow(
+                        title = "Плеер фильмов",
+                        value = selectedPlayerMode.displayName,
+                        onClick = { showPlayerModePicker = true }
                     )
 
                     Row(
@@ -658,6 +666,17 @@ fun SettingsScreen(
             optionLabel = { it.toUiLabel() },
             onSelect = onPlaybackSequenceSelected,
             onDismiss = { showPlaybackSequencePicker = false }
+        )
+    }
+
+    if (showPlayerModePicker) {
+        SelectBottomSheet(
+            title = "Плеер фильмов",
+            options = hd.kinoshka.app.data.local.PlayerMode.entries.toList(),
+            selected = selectedPlayerMode,
+            optionLabel = { it.displayName },
+            onSelect = onPlayerModeSelected,
+            onDismiss = { showPlayerModePicker = false }
         )
     }
 }

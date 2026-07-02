@@ -143,7 +143,8 @@ data class HomeUiState(
     val topics: List<hd.kinoshka.app.data.model.ShikimoriTopic> = emptyList(),
     val calendarLoading: Boolean = false,
     val topicsLoading: Boolean = false,
-    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST
+    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
+    val playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.DDBB
 )
 
 data class DetailsUiState(
@@ -543,6 +544,11 @@ class FilmsViewModel(
         uiState = uiState.copy(playbackSequence = option)
     }
 
+    fun setPlayerMode(mode: hd.kinoshka.app.data.local.PlayerMode) {
+        userStateStore.setPlayerMode(mode)
+        uiState = uiState.copy(playerMode = mode)
+    }
+
     fun exportLibraryJson(): String = userStateStore.exportLibraryJson()
 
     fun importLibraryJson(rawJson: String): Result<Unit> {
@@ -883,7 +889,8 @@ class FilmsViewModel(
             libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
             showFpsCounter = preferences.showFpsCounter,
             contentType = preferences.contentType,
-            playbackSequence = preferences.playbackSequence
+            playbackSequence = preferences.playbackSequence,
+            playerMode = preferences.playerMode
         )
     }
 

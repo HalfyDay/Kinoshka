@@ -262,7 +262,7 @@ private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withC
             val players = mutableListOf<DdbbPlayer>()
             for (i in 0 until arr.length()) {
                 val obj = arr.optJSONObject(i) ?: continue
-                val type = obj.optString("type", "Сервер ${i + 1}")
+                val type = obj.optString("type", "Источник ${i + 1}")
                 val defaultUrl = obj.optString("iframeUrl", "")
                 val transArr = obj.optJSONArray("translations")
                 val resolvedUrl = if (transArr != null && transArr.length() > 0) {
@@ -285,38 +285,6 @@ private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withC
     emptyList()
 }
 
-private suspend fun fetchKinoboxPlayers(kinopoiskId: Int): List<DdbbPlayer> = withContext(Dispatchers.IO) {
-    for (attempt in 0..1) {
-        try {
-            val req = Request.Builder()
-                .url("https://kinobox.tv/api/players?kinopoisk=$kinopoiskId")
-                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                .build()
-
-            val response = httpClient.newCall(req).execute()
-            if (!response.isSuccessful) {
-                response.close()
-                if (attempt == 0) delay(1500)
-                continue
-            }
-            val body = readBodyLimited(response) ?: continue
-            val jsonArr = JSONArray(body)
-            val players = mutableListOf<DdbbPlayer>()
-            for (i in 0 until jsonArr.length()) {
-                val obj = jsonArr.optJSONObject(i) ?: continue
-                val source = obj.optString("source", "Источник ${i + 1}")
-                val iframeUrl = obj.optString("iframeUrl", "")
-                if (iframeUrl.isNotBlank()) {
-                    players.add(DdbbPlayer(id = "kinobox_${source.lowercase()}", name = "Kinobox: $source", iframeUrl = iframeUrl))
-                }
-            }
-            if (players.isNotEmpty()) return@withContext players
-        } catch (e: Exception) {
-            if (attempt == 0) delay(1500)
-        }
-    }
-    emptyList()
-}
 
 private const val HIDE_WEB_TOP_BAR_JS = """
 (function () {
@@ -328,13 +296,26 @@ private const val HIDE_WEB_TOP_BAR_JS = """
       header, footer, .header, .footer, .sidebar, .ads, .navigation, .top-menu, .footer-menu, 
       .kinopoisk-header, .kinopoisk-footer, #header, #footer, .bottom-menu { display: none !important; }
       body { background: black !important; margin: 0 !important; padding: 0 !important; }
-      #player, .player-container, .kinobox_section, [id*="player"], [class*="player"] { 
+      #player, .player-container, [id*="player"], [class*="player"] { 
         position: fixed !important; top: 0 !important; left: 0 !important; 
         width: 100vw !important; height: 100vh !important; 
         z-index: 999999 !important; padding: 0 !important; margin: 0 !important;
         background: black !important;
       }
-      .kbt_select, .kbt_button, select.kbt_select, .kbt_list, .kbt_grid, .kinobox-controls { display: none !important; }
+      html, body, .video-container, .player-wrapper, .embed-responsive,
+      .video-js, video {
+        height: 100vh !important; max-height: 100vh !important; overflow: hidden !important;
+      }
+      iframe { max-height: 100vh !important; }
+      [class*="ad"], [id*="ad"], [class*="banner"], [id*="banner"],
+      [class*="popup"], [id*="popup"], [class*="overlay"],
+      iframe[src*="doubleclick"], iframe[src*="googlesyndication"],
+      iframe[src*="adnxs"], iframe[src*="propeller"], iframe[src*="clickadu"],
+      iframe[src*="buzzoola"], iframe[src*="bidderstack"],
+      iframe[src*="timing-js"], iframe[src*="targetads"], iframe[src*="adriver"],
+      iframe[src*="traffaret"], iframe[src*="adtec"], iframe[src*="video-mech"],
+      iframe[src*="moe.video"], iframe[src*="mail.ru/vast"],
+      .preloader-overlay, .ad-block, .adblock, .ads-block { display: none !important; }
     `;
     document.head.appendChild(style);
   } catch (e) {}
@@ -346,7 +327,14 @@ private const val HIDE_WEB_TOP_BAR_JS = """
 fun InAppWebScreen(
     url: String
 ) {
-    val activity = LocalContext.current.findActivity()
+    val context = LocalContext.current
+    val activity = context.findActivity()
+    val playerMode = remember {
+        val prefs = context.getSharedPreferences("kino_user_state", android.content.Context.MODE_PRIVATE)
+        val modeName = prefs.getString("player_mode", null) ?: "DDBB"
+        runCatching { hd.kinoshka.app.data.local.PlayerMode.valueOf(modeName) }
+            .getOrDefault(hd.kinoshka.app.data.local.PlayerMode.DDBB)
+    }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var inVideoFullscreen by remember { mutableStateOf(false) }
     var savedWebViewState by rememberSaveable(url) { mutableStateOf<Bundle?>(null) }
@@ -389,25 +377,32 @@ fun InAppWebScreen(
             isLoadingPlayers = false
         } else if (kinopoiskId != null) {
             isLoadingPlayers = true
-            val ddbbList = fetchDdbbPlayers(kinopoiskId)
-            val kboxList = fetchKinoboxPlayers(kinopoiskId)
-            val combined = (kboxList + ddbbList).distinctBy { it.iframeUrl }
-            ddbbPlayers = combined
-            if (selectedPlayer == null && combined.isNotEmpty()) {
-                selectedPlayer = combined.first()
+            if (playerMode == hd.kinoshka.app.data.local.PlayerMode.SITE) {
+                // Load mirror site directly — it hosts all players
+                val mirrorUrl = buildMirrorUrl(url, kinopoiskId)
+                val mirrorPlayer = DdbbPlayer("mirror", "Зеркало (kinopoisk.ws)", mirrorUrl)
+                ddbbPlayers = listOf(mirrorPlayer)
+                selectedPlayer = mirrorPlayer
+            } else {
+                // Fetch ddbb — Collaps first (most reliable)
+                val ddbbList = fetchDdbbPlayers(kinopoiskId).sortedByDescending { it.id.contains("collaps") }
+                ddbbPlayers = ddbbList
+                if (selectedPlayer == null && ddbbList.isNotEmpty()) {
+                    selectedPlayer = ddbbList.first()
+                }
             }
             isLoadingPlayers = false
         }
     }
 
-    // Auto-switch to direct player if mirror was loading
+    // When user picks a different source from the sheet, load its URL
     LaunchedEffect(selectedPlayer) {
         val sel = selectedPlayer
         val wv = webViewRef
         if (sel != null && wv != null) {
             val currentUrl = wv.url ?: ""
-            // Only auto-switch if we are on the mirror site or it's an initial blank
-            if (currentUrl.contains("kinopoisk.cx") || currentUrl.isEmpty() || currentUrl == "about:blank") {
+            // Don't reload if already on this URL
+            if (sel.iframeUrl != currentUrl) {
                 wv.loadUrl(sel.iframeUrl)
             }
         }
@@ -418,6 +413,16 @@ fun InAppWebScreen(
         if (showControls) {
             delay(4000)
             showControls = false
+        }
+    }
+
+    // Safety timeout — mirror site can be slow behind protection
+    LaunchedEffect(isPageLoading, retryTrigger) {
+        if (isPageLoading) {
+            delay(30_000)
+            if (isPageLoading && webViewError == null) {
+                isPageLoading = false
+            }
         }
     }
 
@@ -464,13 +469,9 @@ fun InAppWebScreen(
         }
     }
 
-    BackHandler(enabled = inVideoFullscreen || webViewRef?.canGoBack() == true) {
-        val webView = webViewRef
-        if (inVideoFullscreen && webView != null) {
-            webView.webChromeClient?.onHideCustomView()
-        } else {
-            webView?.goBack()
-        }
+    // Only intercept back when in fullscreen video — otherwise let NavHost popBackStack
+    BackHandler(enabled = inVideoFullscreen) {
+        webViewRef?.webChromeClient?.onHideCustomView()
     }
 
     Box(
@@ -567,23 +568,28 @@ fun InAppWebScreen(
                 webView.webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
 
-                    // Bypass all SSL errors — needed for Kodik/Russian CDN certificates
+                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): android.webkit.WebResourceResponse? {
+                        val url = request?.url?.toString() ?: return null
+                        if (isAdUrl(url)) {
+                            return android.webkit.WebResourceResponse("text/plain", "UTF-8", "".byteInputStream())
+                        }
+                        return null
+                    }
+
                     override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
                         handler?.proceed()
                     }
 
+                    // Don't treat HTTP errors as fatal — pages often handle redirects via JS
+                    override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: android.webkit.WebResourceResponse?) {
+                        if (request?.isForMainFrame != true) return
+                    }
+
+                    // Don't reload on errors — let JS redirects and page logic handle recovery.
+                    // Only show error after a long timeout if nothing loads.
                     override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
-                        if (request?.isForMainFrame == true) {
-                            val description = error?.description?.toString() ?: "Unknown error"
-                            // Auto-retry once on connection issues
-                            if (autoRetryCount < 2) {
-                                autoRetryCount++
-                                view?.postDelayed({ view.reload() }, 1500L)
-                            } else {
-                                webViewError = description
-                                isPageLoading = false
-                            }
-                        }
+                        if (request?.isForMainFrame != true) return
+                        android.util.Log.w("InAppWeb", "WebView error: ${error?.errorCode} ${error?.description} for ${request.url}")
                     }
 
                     override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
@@ -596,23 +602,29 @@ fun InAppWebScreen(
                         super.onPageFinished(view, loadedUrl)
                         autoRetryCount = 0
                         webViewError = null
-                        view?.evaluateJavascript(HIDE_WEB_TOP_BAR_JS, null)
                         val host = runCatching { Uri.parse(loadedUrl).host.orEmpty() }.getOrDefault("")
+                        if (host.contains("peq.pkvbn.xyz")) {
+                            // Mirror site — hide everything except the player
+                            view?.evaluateJavascript(PEQ_MIRROR_CSS_JS, null)
+                            view?.postDelayed({ isPageLoading = false }, 1000L)
+                        } else {
+                            if (!host.contains("kinopoisk.ws")) {
+                                view?.evaluateJavascript(HIDE_WEB_TOP_BAR_JS, null)
+                            }
+                            view?.evaluateJavascript(REMOVE_ADS_JS, null)
+                            view?.postDelayed({ isPageLoading = false }, 1500L)
+                        }
                         if (host.contains("ddbb.lol")) {
                             view?.evaluateJavascript(IFRAME_PIP_PATCH_JS, null)
                         }
-                        // Hide loading screen after a small delay to ensure CSS applies
-                        view?.postDelayed({ isPageLoading = false }, 300L)
                     }
                 }
 
                 // Load initial URL — always use direct loadUrl (not HTML wrapper)
                 if (savedWebViewState == null) {
-                    val sel = selectedPlayer
                     val target = when {
-                        sel != null -> sel.iframeUrl
                         shikimoriId != null -> "https://aniqit.com/find-player?shikimori_id=$shikimoriId"
-                        kinopoiskId != null -> url // Fallback to mirror site immediately
+                        kinopoiskId != null && playerMode == hd.kinoshka.app.data.local.PlayerMode.SITE -> buildMirrorUrl(url, kinopoiskId)
                         else -> url
                     }
                     webView.loadUrl(target)
@@ -628,69 +640,20 @@ fun InAppWebScreen(
             }
         )
 
-        // Loading Overlay to hide website rendering
+        // Loading Overlay
         AnimatedVisibility(
             visible = isPageLoading,
             enter = fadeIn(),
-            exit = fadeOut(tween(400))
+            exit = fadeOut(tween(200))
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(androidx.compose.ui.graphics.Color.Black),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                    Text(
-                        text = "Подготовка плеера...",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f)
-                    )
-                }
-            }
+                    .background(androidx.compose.ui.graphics.Color.Black)
+            )
         }
 
-        // Floating top-left back button to exit player
-        AnimatedVisibility(
-            visible = showControls,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(16.dp)
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.65f),
-                contentColor = androidx.compose.ui.graphics.Color.White,
-                onClick = {
-                    val webView = webViewRef
-                    if (inVideoFullscreen && webView != null) {
-                        webView.webChromeClient?.onHideCustomView()
-                    } else {
-                        (activity as? androidx.activity.ComponentActivity)?.onBackPressedDispatcher?.onBackPressed() ?: activity?.finish()
-                    }
-                }
-            ) {
-                Box(
-                    modifier = Modifier.size(40.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Назад",
-                        tint = androidx.compose.ui.graphics.Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-        }
-
-        // Floating server selector button — auto-hides, tap screen to show again
+        // Floating source selector button — auto-hides, tap screen to show again
         AnimatedVisibility(
             visible = showControls,
             enter = fadeIn(),
@@ -722,13 +685,13 @@ fun InAppWebScreen(
                     } else {
                         Icon(
                             imageVector = Icons.Default.List,
-                            contentDescription = "Серверы",
+                            contentDescription = "Источники",
                             tint = androidx.compose.ui.graphics.Color.White,
                             modifier = Modifier.size(16.dp)
                         )
                     }
                     Text(
-                        text = selectedPlayer?.name ?: "Серверы",
+                        text = selectedPlayer?.name ?: "Источники",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = androidx.compose.ui.graphics.Color.White,
@@ -805,7 +768,7 @@ fun InAppWebScreen(
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
                     } else if (ddbbPlayers.isEmpty()) {
                         Text(
-                            text = "Не удалось загрузить список серверов",
+                            text = "Не удалось загрузить список источников",
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodyMedium
                         )
@@ -863,6 +826,18 @@ private fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
+// Convert kinopoisk.ru URL to kinopoisk.ws mirror
+// https://www.kinopoisk.ru/series/460586/ → https://kinopoisk.ws/series/460586/
+private fun buildMirrorUrl(originalUrl: String, kinopoiskId: Int): String {
+    val uri = runCatching { Uri.parse(originalUrl) }.getOrNull()
+    val type = uri?.pathSegments?.firstOrNull()
+    return if (type == "film" || type == "series") {
+        "https://kinopoisk.ws/$type/$kinopoiskId/"
+    } else {
+        "https://kinopoisk.ws/film/$kinopoiskId/"
+    }
+}
+
 private fun extractKinopoiskId(url: String): Int? {
     val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
     val segments = uri.pathSegments
@@ -880,6 +855,103 @@ private fun extractShikimoriId(url: String): Int? {
     val last = segments.lastOrNull()?.toIntOrNull()
     return if (url.contains("shikimori")) last else null
 }
+
+// Known ad/tracking domains to block in WebView
+private val AD_DOMAINS = listOf(
+    "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+    "ads.", "ad.", "analytics.", "tracking.", "pixel.", "beacon.",
+    "popunder.", "popads.", "adnxs.com", "adskeeper.",
+    "propellerads.", "clickadu.", "hilltopads.", "exoclick.",
+    "juicyads.", "trafficjunky.", "eroadvertising.",
+    "adbrite.", "advertising.com", "adroll.com",
+    "mc.yandex.ru", "an.yandex.ru",
+    "connect.vk.ru", "vk.com/rtrg",
+    "ssp.io", "adfox.", "bannerbook.", "rnet.plus",
+    "tns-counter.ru", "mediascope.net",
+    "preroll", "midroll", "postroll",
+    "imasdk.googleapis.com", "pubmatic.com", "rubiconproject.com",
+    "sharethrough.com", "outbrain.com", "taboola.com",
+    "criteo.com", "casalemedia.com", "indexexchange.com",
+    "smartadserver.com", "adform.net", "serving-sys.com",
+    "track-us.ru", "5775.info", "winline", "spix.agl011.art",
+    "buzzoola.com", "bidderstack.com",
+    "stun.fastscr.cc", "turn.zcvh.net",
+    // New domains from logs
+    "timing-js-menu.xyz", "targetads.io", "adriver.ru",
+    "otm-r.com", "betweendigital.com", "traffaret.com",
+    "adtec.ru", "video-mech.ru", "ad.mail.ru", "ad.moe.video"
+)
+
+private fun isAdUrl(url: String): Boolean {
+    val lower = url.lowercase()
+    return AD_DOMAINS.any { lower.contains(it) }
+}
+
+private const val REMOVE_ADS_JS = """
+(function () {
+  try {
+    // Remove iframes that look like ads
+    var frames = document.querySelectorAll('iframe');
+    for (var i = frames.length - 1; i >= 0; i--) {
+      var src = (frames[i].src || '').toLowerCase();
+      if (src.includes('doubleclick') || src.includes('googlesyndication') ||
+          src.includes('adnxs') || src.includes('propeller') ||
+          src.includes('clickadu') || src.includes('popunder') ||
+          src.includes('exoclick') || src.includes('advertising') ||
+          src.includes('ads.') || src.includes('/ads/') ||
+          src.includes('buzzoola') ||
+          src.includes('bidderstack') || src.includes('timing-js') ||
+          src.includes('targetads') || src.includes('adriver') ||
+          src.includes('traffaret') || src.includes('adtec') ||
+          src.includes('video-mech') || src.includes('moe.video') ||
+          src.includes('ad.mail.ru')) {
+        frames[i].remove();
+      }
+    }
+    // Remove overlay/popup/preloader elements
+    var selectors = '[class*="ad"], [id*="ad"], [class*="banner"], [id*="banner"], ' +
+      '[class*="popup"], [class*="overlay"], [id*="popup"], ' +
+      '[class*="preloader-overlay"], [class*="ad-block"], [class*="ads-block"], ' +
+      '[class*="preroll"], [class*="midroll"], [class*="postroll"], ' +
+      '[class*="commercial"], [class*="promo"]';
+    document.querySelectorAll(selectors).forEach(function(el) { el.remove(); });
+    // Force body/html to fit viewport — prevents scrolling
+    document.documentElement.style.height = '100vh';
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.height = '100vh';
+    document.body.style.overflow = 'hidden';
+  } catch (e) {}
+})();
+"""
+
+
+private const val PEQ_MIRROR_CSS_JS = """
+(function () {
+  try {
+    var style = document.createElement('style');
+    style.id = 'kino-app-mirror';
+    style.textContent = `
+      /* Hide header, title, poster, footer, ads, disclaimer */
+      .site-header, .h2, .footer, .disclaimer, .social,
+      #film > img, .spacer-md,
+      .player-block__label,
+      /* Ad iframes/scripts */
+      iframe[src*="moviead"], iframe[src*="vak345"],
+      script[src*="vak345"], script[src*="moviead"],
+      /* Offline banner, liveinternet counter */
+      #offline-banner,
+      div[id^="iDaZY"],
+      /* Anything with ad/tracking classes */
+      [class*="ad"], [id*="ad-"], [class*="banner"] {
+        display: none !important;
+      }
+      /* Hide background images */
+      body { background: #111 !important; }
+    `;
+    document.head.appendChild(style);
+  } catch (e) {}
+})();
+"""
 
 private const val IFRAME_PIP_PATCH_JS = """
 (function () {

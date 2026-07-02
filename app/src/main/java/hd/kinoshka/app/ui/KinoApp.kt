@@ -399,6 +399,8 @@ fun KinoApp() {
                                 selectedShowFpsCounter = vm.uiState.showFpsCounter,
                                 selectedPlaybackSequence = vm.uiState.playbackSequence,
                                 onPlaybackSequenceSelected = vm::setPlaybackSequence,
+                                selectedPlayerMode = vm.uiState.playerMode,
+                                onPlayerModeSelected = vm::setPlayerMode,
                                 onThemeModeSelected = vm::setThemeMode,
                                 onHideRussianChanged = vm::setHideRussianContent,
                                 onDiscoverTileSizeSelected = vm::setDiscoverTileSize,

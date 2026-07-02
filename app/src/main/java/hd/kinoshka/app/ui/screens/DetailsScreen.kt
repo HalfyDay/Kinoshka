@@ -243,6 +243,7 @@ fun DetailsScreen(
     var showProfileEditor by remember(filmId) { mutableStateOf(false) }
     var selectedCharacterId by remember(filmId) { mutableStateOf<Int?>(null) }
     var adGuardDnsActive by remember { mutableStateOf(isAdGuardDnsActive(context)) }
+    var showDnsSheet by remember { mutableStateOf(false) }
     var isInteractive by remember { mutableStateOf(true) }
     var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
 
@@ -442,8 +443,7 @@ fun DetailsScreen(
                                     onOpenEditor = { showProfileEditor = true },
                                     showDisableAdsButton = !adGuardDnsActive,
                                     onDisableAds = {
-                                        openPrivateDnsWithAdGuard(context)
-                                        adGuardDnsActive = isAdGuardDnsActive(context)
+                                        showDnsSheet = true
                                     }
                                 )
                             }
@@ -601,6 +601,70 @@ fun DetailsScreen(
                     showProfileEditor = false
                 }
             )
+        }
+
+        if (showDnsSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showDnsSheet = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = MaterialTheme.colorScheme.surface
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = "Отключение рекламы",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Для блокировки рекламы в плеерах включите Private DNS с сервером AdGuard.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text(
+                                text = "Инструкция:",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text("1. Нажмите кнопку ниже", style = MaterialTheme.typography.bodySmall)
+                            Text("2. В поле \"Имя хоста\" вставьте: dns.adguard.com", style = MaterialTheme.typography.bodySmall)
+                            Text("3. Нажмите Сохранить", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        onClick = {
+                            openPrivateDnsWithAdGuard(context)
+                            showDnsSheet = false
+                            adGuardDnsActive = isAdGuardDnsActive(context)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Перейти к настройкам",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 14.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+            }
         }
 
         selectedCharacterId?.let { charId ->
