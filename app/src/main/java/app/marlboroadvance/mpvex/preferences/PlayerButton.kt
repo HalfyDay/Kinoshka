@@ -57,6 +57,7 @@ enum class PlayerButton(
   AB_LOOP(Icons.Outlined.Autorenew),
   CUSTOM_SKIP(Icons.Outlined.FastForward),
   BACKGROUND_PLAYBACK(Icons.Outlined.Headset),
+  MORE_EXPANDABLE(Icons.Outlined.MoreVert),
   NONE(Icons.Outlined.Bookmarks),
 }
 
@@ -100,5 +101,6 @@ fun getPlayerButtonLabel(button: PlayerButton): String =
     PlayerButton.AB_LOOP -> "A-B Loop"
     PlayerButton.CUSTOM_SKIP -> "Custom Skip"
     PlayerButton.BACKGROUND_PLAYBACK -> "Background Playback"
+    PlayerButton.MORE_EXPANDABLE -> "Expandable Menu"
     PlayerButton.NONE -> "None"
   }

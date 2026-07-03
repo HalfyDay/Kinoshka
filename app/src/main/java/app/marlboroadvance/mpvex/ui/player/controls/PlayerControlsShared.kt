@@ -840,6 +840,90 @@ fun RenderPlayerButton(
       )
     }
 
+    PlayerButton.MORE_EXPANDABLE -> {
+      val isExpanded by viewModel.isMoreExpanded.collectAsState()
+      val subButtons = listOf(
+        PlayerButton.DECODER,
+        PlayerButton.BACKGROUND_PLAYBACK,
+        PlayerButton.VIDEO_ZOOM,
+        PlayerButton.ASPECT_RATIO,
+      )
+
+      Box {
+        AnimatedContent(
+          targetState = isExpanded,
+          transitionSpec = {
+            (fadeIn(animationSpec = tween(200)) + expandHorizontally(animationSpec = tween(250)))
+              .togetherWith(fadeOut(animationSpec = tween(200)) + shrinkHorizontally(animationSpec = tween(250)))
+              .using(SizeTransform(clip = false))
+          },
+          label = "MoreExpandCollapse",
+        ) { expanded ->
+          if (expanded) {
+            Surface(
+              shape = MaterialTheme.shapes.extraLarge,
+              color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+              border = null,
+              modifier = Modifier.height(buttonSize),
+            ) {
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 4.dp),
+              ) {
+                subButtons.forEach { subBtn ->
+                  RenderPlayerButton(
+                    button = subBtn,
+                    chapters = chapters,
+                    currentChapter = currentChapter,
+                    isPortrait = isPortrait,
+                    isSpeedNonOne = isSpeedNonOne,
+                    currentZoom = currentZoom,
+                    aspect = aspect,
+                    mediaTitle = mediaTitle,
+                    hideBackground = true,
+                    decoder = decoder,
+                    playbackSpeed = playbackSpeed,
+                    onBackPress = onBackPress,
+                    onOpenSheet = onOpenSheet,
+                    onOpenPanel = onOpenPanel,
+                    viewModel = viewModel,
+                    activity = activity,
+                    buttonSize = buttonSize - 4.dp,
+                  )
+                }
+                Surface(
+                  shape = CircleShape,
+                  color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                  modifier = Modifier
+                    .size(buttonSize - 4.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = { viewModel.toggleMoreExpanded() }),
+                ) {
+                  Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                      imageVector = Icons.Default.Close,
+                      contentDescription = "Close",
+                      tint = MaterialTheme.colorScheme.onSurface,
+                      modifier = Modifier.size(16.dp),
+                    )
+                  }
+                }
+              }
+            }
+          } else {
+            ControlsButton(
+              icon = Icons.Default.MoreVert,
+              onClick = { viewModel.toggleMoreExpanded() },
+              color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+              modifier = Modifier.size(buttonSize),
+            )
+          }
+        }
+      }
+    }
+
     PlayerButton.NONE -> { /* Do nothing */
     }
   }
