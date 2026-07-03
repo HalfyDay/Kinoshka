@@ -1,5 +1,6 @@
 package hd.kinoshka.app.data.source
 
+import android.util.Log
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.AnimeSource
@@ -24,6 +25,8 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
 object AnimeStreamResolver {
+
+    private const val TAG = "AnimeStreamResolver"
 
     private val KODIK_TOKEN_FALLBACKS = listOf(
         "56a768d08f43091901c44b54fe970049",
@@ -70,6 +73,9 @@ object AnimeStreamResolver {
 
     @Volatile
     private var lastWorkingKodikToken: String? = null
+
+    @Volatile
+    private var lastWorkingRotStep: Int? = null
 
     private data class CacheEntry<T>(val data: T, val timestamp: Long)
 
@@ -119,11 +125,14 @@ object AnimeStreamResolver {
     }
 
     private suspend fun prefetchAllMediaInternal(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        Log.i(TAG, "=== prefetchAllMedia === id=$shikimoriId, title=\"$animeTitle\"")
         kotlinx.coroutines.coroutineScope {
             val deferredKodik = async {
                 runCatching {
+                    Log.i(TAG, "[Kodik] Starting search...")
                     val results = kodikSearch(shikimoriId, animeTitle, null)
-                    results.mapNotNull { result ->
+                    Log.i(TAG, "[Kodik] Search returned ${results.size} results")
+                    val translations = results.mapNotNull { result ->
                         val translation = result.optJSONObject("translation")
                         if (translation != null) {
                             val id = translation.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -148,15 +157,22 @@ object AnimeStreamResolver {
                             )
                         } else null
                     }
-                }.getOrElse { emptyList() }
+                    Log.i(TAG, "[Kodik] Parsed ${translations.size} translations: ${translations.joinToString { "${it.title} (${it.episodes.size} ep)" }}")
+                    translations
+                }.getOrElse { e ->
+                    Log.e(TAG, "[Kodik] Search failed: ${e.message}", e)
+                    emptyList()
+                }
             }
 
             val deferredAniLiberty = async {
                 runCatching {
+                    Log.i(TAG, "[Aniliberty] Starting search...")
                     val release = findAniLibertyRelease(shikimoriId, animeTitle)
                     if (release != null) {
                         val episodes = parseAniLibertyEpisodes(release)
                         val title = getAniLibertyTitle(release)
+                        Log.i(TAG, "[Aniliberty] Found: \"$title\" (${episodes.size} episodes), alias=${release.optString("alias")}, type=${release.optString("type")}")
                         listOf(
                             FlatTranslation(
                                 source = AnimeSourceType.ANILIBERTY,
@@ -166,11 +182,20 @@ object AnimeStreamResolver {
                                 episodes = episodes
                             )
                         )
-                    } else emptyList()
-                }.getOrElse { emptyList() }
+                    } else {
+                        Log.w(TAG, "[Aniliberty] No release found for \"$animeTitle\"")
+                        emptyList()
+                    }
+                }.getOrElse { e ->
+                    Log.e(TAG, "[Aniliberty] Search failed: ${e.message}", e)
+                    emptyList()
+                }
             }
 
-            deferredKodik.await() + deferredAniLiberty.await()
+            val kodikResult = deferredKodik.await()
+            val anilibertyResult = deferredAniLiberty.await()
+            Log.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodikResult.size} translations, Aniliberty: ${anilibertyResult.size} translations")
+            kodikResult + anilibertyResult
         }
     }
 
@@ -269,11 +294,26 @@ object AnimeStreamResolver {
         translationId: String,
         episodeNumber: Int
     ): AnimeMediaStream? = withContext(Dispatchers.IO) {
+        Log.i(TAG, "[Kodik] resolveStream: id=$shikimoriId, ep=$episodeNumber, tr=$translationId")
         val episode = fetchKodikEpisodes(shikimoriId, animeTitle, translationId).firstOrNull { it.number == episodeNumber }
-            ?: return@withContext null
-        val episodeLink = episode.link?.takeIf { it.isNotBlank() } ?: return@withContext null
+        if (episode == null) {
+            Log.w(TAG, "[Kodik] Episode $episodeNumber not found")
+            return@withContext null
+        }
+        val episodeLink = episode.link?.takeIf { it.isNotBlank() }
+        if (episodeLink == null) {
+            Log.w(TAG, "[Kodik] Episode $episodeNumber has no link")
+            return@withContext null
+        }
+        Log.d(TAG, "[Kodik] Episode link: ${absoluteKodikUrl(episodeLink)}")
         val qualities = resolveKodikHls(absoluteKodikUrl(episodeLink))
+        Log.i(TAG, "[Kodik] HLS qualities: ${qualities.keys}")
         val url = qualities["720p"] ?: qualities["480p"] ?: qualities["360p"] ?: qualities.values.firstOrNull()
+        if (url != null) {
+            Log.i(TAG, "[Kodik] Stream URL selected: ${url.take(100)}...")
+        } else {
+            Log.e(TAG, "[Kodik] No stream URL found in qualities: $qualities")
+        }
         url?.let {
             AnimeMediaStream(
                 url = it,
@@ -306,11 +346,26 @@ object AnimeStreamResolver {
     }
 
     private suspend fun resolveAniLibertyStream(shikimoriId: Int, animeTitle: String, episodeNumber: Int, translationId: String = "default"): AnimeMediaStream? = withContext(Dispatchers.IO) {
-        val release = findAniLibertyRelease(shikimoriId, animeTitle, translationId) ?: return@withContext null
-        val episodes = release.optJSONArray("episodes") ?: return@withContext null
+        Log.i(TAG, "[Aniliberty] resolveStream: id=$shikimoriId, ep=$episodeNumber, title=\"$animeTitle\"")
+        val release = findAniLibertyRelease(shikimoriId, animeTitle, translationId)
+        if (release == null) {
+            Log.w(TAG, "[Aniliberty] resolveStream: release not found")
+            return@withContext null
+        }
+        Log.d(TAG, "[Aniliberty] resolveStream: release title=${getAniLibertyTitle(release)}, alias=${release.optString("alias")}")
+        val episodes = release.optJSONArray("episodes")
+        if (episodes == null) {
+            Log.w(TAG, "[Aniliberty] resolveStream: no episodes array in release")
+            return@withContext null
+        }
         val episode = episodes.asSequenceObjects().firstOrNull { ep ->
             ep.optInt("ordinal") == episodeNumber || ep.optInt("sort_order") == episodeNumber
-        } ?: return@withContext null
+        }
+        if (episode == null) {
+            Log.w(TAG, "[Aniliberty] resolveStream: episode $episodeNumber not found (episodes count=${episodes.length()})")
+            return@withContext null
+        }
+        Log.d(TAG, "[Aniliberty] resolveStream: found episode, ordinal=${episode.optInt("ordinal")}, sort_order=${episode.optInt("sort_order")}")
 
         val qualities = linkedMapOf<String, String>()
         episode.optString("hls_1080").takeIf { it.isNotBlank() }?.let { qualities["1080p"] = it }
@@ -318,14 +373,18 @@ object AnimeStreamResolver {
         episode.optString("hls_480").takeIf { it.isNotBlank() }?.let { qualities["480p"] = it }
 
         if (qualities.isEmpty()) {
+            Log.d(TAG, "[Aniliberty] resolveStream: no direct HLS, checking external_player...")
             val fallbackUrl = episode.optString("external_player")
                 .ifBlank { episode.optString("player_url") }
                 .ifBlank { release.optString("external_player") }
                 .ifBlank { release.optString("player_url") }
                 .ifBlank { release.optString("playerUrl") }
             if (fallbackUrl.isNotBlank()) {
+                Log.d(TAG, "[Aniliberty] resolveStream: external_player=$fallbackUrl")
                 return@withContext resolveAniLibertyExternalPlayer(fallbackUrl)
             }
+        } else {
+            Log.i(TAG, "[Aniliberty] resolveStream: direct HLS qualities: ${qualities.keys}")
         }
 
         val url = qualities["1080p"] ?: qualities["720p"] ?: qualities["480p"] ?: return@withContext null
@@ -399,6 +458,7 @@ object AnimeStreamResolver {
     private suspend fun kodikSearch(shikimoriId: Int, animeTitle: String, translationId: String?): List<JSONObject> {
         val limit = if (translationId == null) 100 else 10
         val tokens = loadKodikTokens()
+        Log.i(TAG, "[Kodik] tokens loaded: ${tokens.size}, translationId=$translationId, limit=$limit")
         val orderedTokens = lastWorkingKodikToken?.let { working ->
             listOf(working) + tokens.filter { it != working }
         } ?: tokens
@@ -407,22 +467,30 @@ object AnimeStreamResolver {
             for (base in KODIK_API_BASES) {
                 if (shikimoriId > 0) {
                     val shikimoriUrl = kodikSearchUrl(base, token, "shikimori_id", shikimoriId.toString(), translationId, limit)
+                    Log.d(TAG, "[Kodik] Trying shikimori_id=$shikimoriId on $base (token=${token.take(8)}...)")
                     val body = get(shikimoriUrl, referer = "https://kodik.info/")
                     if (body != null) {
                         val results = runCatching { JSONObject(body).optJSONArray("results") }.getOrNull()
                         if (results != null && results.length() > 0) {
+                            Log.i(TAG, "[Kodik] FOUND by shikimori_id: ${results.length()} results on $base")
                             lastWorkingKodikToken = token
                             return (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+                        } else {
+                            Log.d(TAG, "[Kodik] shikimori_id=$shikimoriId: no results on $base")
                         }
+                    } else {
+                        Log.d(TAG, "[Kodik] shikimori_id=$shikimoriId: request failed on $base")
                     }
                 }
 
                 val titleQueries = buildAnimeSearchQueries(animeTitle)
                 for (query in titleQueries) {
                     val titleUrl = kodikSearchUrl(base, token, "title", query, translationId, limit)
+                    Log.d(TAG, "[Kodik] Trying title=\"$query\" on $base")
                     val tBody = get(titleUrl, referer = "https://kodik.info/") ?: continue
                     val results = runCatching { JSONObject(tBody).optJSONArray("results") }.getOrNull() ?: continue
                     if (results.length() > 0) {
+                        Log.i(TAG, "[Kodik] FOUND by title \"$query\": ${results.length()} results on $base")
                         lastWorkingKodikToken = token
                         return (0 until results.length()).mapNotNull { results.optJSONObject(it) }
                     }
@@ -430,8 +498,14 @@ object AnimeStreamResolver {
             }
         }
         if (shikimoriId > 0) {
-            fetchKodikFromFindPlayer(shikimoriId)?.let { return listOf(it) }
+            Log.d(TAG, "[Kodik] Trying findPlayer fallback for shikimoriId=$shikimoriId")
+            fetchKodikFromFindPlayer(shikimoriId)?.let {
+                Log.i(TAG, "[Kodik] findPlayer fallback SUCCESS")
+                return listOf(it)
+            }
+            Log.w(TAG, "[Kodik] findPlayer fallback also failed")
         }
+        Log.w(TAG, "[Kodik] All search methods exhausted for id=$shikimoriId, title=\"$animeTitle\"")
         return emptyList()
     }
 
@@ -553,26 +627,46 @@ object AnimeStreamResolver {
     }
 
     private suspend fun resolveKodikHls(episodeUrl: String): Map<String, String> {
+        Log.d(TAG, "[Kodik] resolveHls: $episodeUrl")
         val outerResult = fetchHtmlWithDomainFallbacks(episodeUrl, referer = "https://shikimori.one/")
-            ?: return emptyMap()
+            ?: run {
+                Log.e(TAG, "[Kodik] resolveHls: HTML fetch failed for all domains")
+                return emptyMap()
+            }
         var html = outerResult.first
         var workingUrl = outerResult.second
+        Log.d(TAG, "[Kodik] resolveHls: working domain=$workingUrl, html length=${html.length}")
 
         val iframeSrc = Regex("""<iframe[^>]+src=["']((?:https?:)?//[^"']+)["']""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)
         if (!iframeSrc.isNullOrBlank()) {
             val absIframe = absoluteUrl(workingUrl, iframeSrc)
+            Log.d(TAG, "[Kodik] resolveHls: found iframe, loading $absIframe")
             val iframeResult = fetchHtmlWithDomainFallbacks(absIframe, referer = workingUrl)
             if (iframeResult != null) {
                 html = iframeResult.first
                 workingUrl = iframeResult.second
+                Log.d(TAG, "[Kodik] resolveHls: iframe loaded from $workingUrl, html length=${html.length}")
+            } else {
+                Log.w(TAG, "[Kodik] resolveHls: iframe fetch failed")
             }
+        } else {
+            Log.d(TAG, "[Kodik] resolveHls: no iframe found, checking direct m3u8")
         }
 
         val direct = extractM3u8Links(html)
-        if (direct.isNotEmpty()) return direct
+        if (direct.isNotEmpty()) {
+            Log.i(TAG, "[Kodik] resolveHls: found ${direct.size} direct m3u8 links: ${direct.keys}")
+            return direct
+        }
 
-        val payload = extractKodikPayload(html) ?: return emptyMap()
+        Log.d(TAG, "[Kodik] resolveHls: no direct m3u8, extracting payload...")
+        val payload = extractKodikPayload(html)
+        if (payload == null) {
+            Log.e(TAG, "[Kodik] resolveHls: payload extraction failed")
+            return emptyMap()
+        }
+        Log.d(TAG, "[Kodik] resolveHls: payload keys=${payload.keys}, id=${payload["id"]}, type=${payload["type"]}")
 
         val scriptUrl = Regex("""<script[^>]+src=["']([^"']*assets/js[^"']*)["']""")
             .find(html)?.groupValues?.getOrNull(1)
@@ -580,9 +674,11 @@ object AnimeStreamResolver {
 
         var dynamicApiPath: String? = null
         if (scriptUrl != null) {
+            Log.d(TAG, "[Kodik] resolveHls: fetching JS from $scriptUrl")
             val js = get(scriptUrl, referer = workingUrl)
             if (js != null) {
                 dynamicApiPath = extractKodikApiEndpoint(js)
+                Log.d(TAG, "[Kodik] resolveHls: dynamic API path = $dynamicApiPath")
             }
         }
 
@@ -597,12 +693,22 @@ object AnimeStreamResolver {
             add(absoluteUrl(workingUrl, "/ftor/video-links"))
             add(absoluteUrl(workingUrl, "/video-links"))
         }.distinct()
+        Log.d(TAG, "[Kodik] resolveHls: trying ${candidateEndpoints.size} endpoints")
 
         for (endpoint in candidateEndpoints) {
-            val body = post(endpoint, payload, referer = workingUrl) ?: continue
+            Log.d(TAG, "[Kodik] resolveHls: POST $endpoint")
+            val body = post(endpoint, payload, referer = workingUrl) ?: run {
+                Log.d(TAG, "[Kodik] resolveHls: POST returned null for $endpoint")
+                continue
+            }
+            Log.d(TAG, "[Kodik] resolveHls: POST response length=${body.length}, first 200 chars=${body.take(200)}")
             val links = parseKodikLinks(body)
-            if (links.isNotEmpty()) return links
+            if (links.isNotEmpty()) {
+                Log.i(TAG, "[Kodik] resolveHls: GOT ${links.size} links from $endpoint: ${links.keys}")
+                return links
+            }
         }
+        Log.e(TAG, "[Kodik] resolveHls: all endpoints failed")
         return emptyMap()
     }
 
@@ -665,12 +771,18 @@ object AnimeStreamResolver {
     }
 
     private suspend fun findAniLibertyRelease(shikimoriId: Int, animeTitle: String, knownIdOrAlias: String? = null): JSONObject? {
+        Log.i(TAG, "[Aniliberty] findRelease: id=$shikimoriId, title=\"$animeTitle\", knownId=$knownIdOrAlias")
         val cacheKey = if (!knownIdOrAlias.isNullOrBlank() && knownIdOrAlias != "default") knownIdOrAlias else "$shikimoriId:$animeTitle"
-        aniLibertyReleaseCache[cacheKey]?.let { return it }
+        aniLibertyReleaseCache[cacheKey]?.let {
+            Log.d(TAG, "[Aniliberty] findRelease: cache hit for $cacheKey")
+            return it
+        }
 
         if (!knownIdOrAlias.isNullOrBlank() && knownIdOrAlias != "default") {
             for (base in ANILIBERTY_API) {
+                Log.d(TAG, "[Aniliberty] findRelease: trying knownId=$knownIdOrAlias on $base")
                 fetchAniLibertyReleaseDetail(base, knownIdOrAlias)?.let {
+                    Log.i(TAG, "[Aniliberty] findRelease: found by knownId on $base")
                     aniLibertyReleaseCache[cacheKey] = it
                     return it
                 }
@@ -685,27 +797,39 @@ object AnimeStreamResolver {
                 )
             }
             .distinct()
+        Log.d(TAG, "[Aniliberty] findRelease: ${candidateAliases.size} candidate aliases: ${candidateAliases.take(5)}")
         for (base in ANILIBERTY_API) {
             for (alias in candidateAliases) {
+                Log.d(TAG, "[Aniliberty] findRelease: trying alias=\"$alias\" on $base")
                 val summary = get("$base/api/v1/anime/releases/list?aliases=${enc(alias)}", referer = "https://anilibria.top/")
-                    ?.let { parseAniLibertyRelease(it, alias) } ?: continue
+                    ?.let { parseAniLibertyRelease(it, alias, animeTitle) } ?: run {
+                    Log.d(TAG, "[Aniliberty] findRelease: no results for alias=\"$alias\" on $base")
+                    continue
+                }
                 val detail = fetchAniLibertyReleaseDetail(base, summary.optString("alias").ifBlank { summary.optInt("id").toString() })
                 if (detail != null) {
+                    Log.i(TAG, "[Aniliberty] findRelease: FOUND by alias=\"$alias\" on $base, title=${getAniLibertyTitle(detail)}")
                     aniLibertyReleaseCache[cacheKey] = detail
                     return detail
                 }
             }
 
             if (animeTitle.isNotBlank()) {
+                Log.d(TAG, "[Aniliberty] findRelease: free-text search \"$animeTitle\" on $base")
                 val summary = get("$base/api/v1/app/search/releases?query=${enc(animeTitle)}", referer = "https://anilibria.top/")
-                    ?.let { parseAniLibertyRelease(it, slugifyAnimeTitle(animeTitle)) } ?: continue
+                    ?.let { parseAniLibertyRelease(it, slugifyAnimeTitle(animeTitle), animeTitle) } ?: run {
+                    Log.d(TAG, "[Aniliberty] findRelease: free-text search returned nothing on $base")
+                    continue
+                }
                 val detail = fetchAniLibertyReleaseDetail(base, summary.optString("alias").ifBlank { summary.optInt("id").toString() })
                 if (detail != null) {
+                    Log.i(TAG, "[Aniliberty] findRelease: FOUND by free-text on $base, title=${getAniLibertyTitle(detail)}")
                     aniLibertyReleaseCache[cacheKey] = detail
                     return detail
                 }
             }
         }
+        Log.w(TAG, "[Aniliberty] findRelease: no release found for id=$shikimoriId, title=\"$animeTitle\"")
         return null
     }
 
@@ -717,12 +841,12 @@ object AnimeStreamResolver {
         }.getOrNull()
     }
 
-    private fun parseAniLibertyRelease(body: String, preferredAlias: String? = null): JSONObject? {
+    private fun parseAniLibertyRelease(body: String, preferredAlias: String? = null, expectedTitle: String? = null): JSONObject? {
         if (body.isBlank() || body == "null") return null
         val trimmed = body.trim()
         return runCatching {
             when {
-                trimmed.startsWith("[") -> firstReleaseMatchingAlias(JSONArray(trimmed), preferredAlias)
+                trimmed.startsWith("[") -> firstReleaseMatchingAlias(JSONArray(trimmed), preferredAlias, expectedTitle)
                 else -> {
                     val json = JSONObject(trimmed)
                     val data = json.optJSONArray("data")
@@ -731,7 +855,7 @@ object AnimeStreamResolver {
                         ?: json.optJSONArray("items")
                         ?: json.optJSONArray("results")
                         ?: return@runCatching if (json.has("episodes")) json else null
-                    firstReleaseMatchingAlias(data, preferredAlias)
+                    firstReleaseMatchingAlias(data, preferredAlias, expectedTitle)
                 }
             }
         }.getOrNull()
@@ -876,27 +1000,50 @@ object AnimeStreamResolver {
     private fun decodeKodikUrl(value: String): String {
         val clean = value.replace("\\/", "/")
         if (clean.endsWith(".m3u8")) {
+            Log.d(TAG, "[Kodik] decodeUrl: already m3u8, returning as-is")
             return if (clean.startsWith("http")) clean else if (clean.startsWith("//")) "https:$clean" else clean
         }
-        return runCatching {
-            val rot = decryptRot18(clean)
-            val padded = if (rot.endsWith("==") || rot.endsWith("=")) rot else "$rot=="
-            val decodedBytes = Base64.getDecoder().decode(padded)
-            val decoded = String(decodedBytes, Charsets.UTF_8)
-            if (decoded.startsWith("http")) decoded else if (decoded.startsWith("//")) "https:$decoded" else decoded
-        }.getOrDefault(clean)
-    }
-
-    private fun decryptRot18(encoded: String): String {
-        val sb = StringBuilder()
-        for (ch in encoded) {
-            when {
-                ch in 'A'..'Z' -> sb.append(((ch.code - 65 + 18) % 26 + 65).toChar())
-                ch in 'a'..'z' -> sb.append(((ch.code - 97 + 18) % 26 + 97).toChar())
-                else -> sb.append(ch)
+        Log.d(TAG, "[Kodik] decodeUrl: input (${clean.length} chars) = ${clean.take(80)}...")
+        val cachedStep = lastWorkingRotStep
+        if (cachedStep != null) {
+            val result = tryRotDecode(clean, cachedStep)
+            if (result != null) {
+                Log.d(TAG, "[Kodik] decodeUrl: decoded with cached ROT=$cachedStep -> ${result.take(80)}...")
+                return result
+            }
+            Log.d(TAG, "[Kodik] decodeUrl: cached ROT=$cachedStep failed, trying all...")
+        }
+        for (rot in 0 until 26) {
+            val result = tryRotDecode(clean, rot)
+            if (result != null) {
+                lastWorkingRotStep = rot
+                Log.i(TAG, "[Kodik] decodeUrl: decoded with ROT=$rot -> ${result.take(80)}...")
+                return result
             }
         }
-        return sb.toString()
+        Log.w(TAG, "[Kodik] decodeUrl: ALL ROT values failed, returning raw input")
+        return clean
+    }
+
+    private fun tryRotDecode(encoded: String, rot: Int): String? {
+        return runCatching {
+            val shifted = String(encoded.map { ch ->
+                when {
+                    ch in 'A'..'Z' -> ((ch.code - 65 + rot) % 26 + 65).toChar()
+                    ch in 'a'..'z' -> ((ch.code - 97 + rot) % 26 + 97).toChar()
+                    else -> ch
+                }
+            }.toCharArray())
+            val padding = (4 - (shifted.length % 4)) % 4
+            val padded = shifted + "=".repeat(padding)
+            val decodedBytes = Base64.getDecoder().decode(padded)
+            val decoded = String(decodedBytes, Charsets.UTF_8)
+            if (decoded.startsWith("http") || decoded.startsWith("//")) {
+                if (decoded.startsWith("http")) decoded else "https:$decoded"
+            } else if (decoded.contains("mp4") || decoded.contains(".m3u8")) {
+                decoded
+            } else null
+        }.getOrNull()
     }
 
     private fun absoluteKodikUrl(value: String): String = when {
@@ -945,15 +1092,43 @@ object AnimeStreamResolver {
             .trim('-')
     }
 
+    private fun titlesMatch(expected: String, actual: String): Boolean {
+        val normalize = { s: String ->
+            s.lowercase().replace(Regex("""[^\p{L}\p{Nd}]+"""), " ").trim()
+        }
+        val nExpected = normalize(expected)
+        val nActual = normalize(actual)
+        return nExpected == nActual ||
+            nExpected.contains(nActual) ||
+            nActual.contains(nExpected)
+    }
+
+    private fun isAnimeRelease(release: JSONObject): Boolean {
+        val type = release.optString("type").lowercase().trim()
+        return type.contains("anime") || type.contains("serial")
+    }
+
     private fun JSONArray.asSequenceObjects(): Sequence<JSONObject> = sequence {
         for (i in 0 until length()) {
             optJSONObject(i)?.let { yield(it) }
         }
     }
 
-    private fun firstReleaseMatchingAlias(data: JSONArray, preferredAlias: String?): JSONObject? {
-        if (data.length() == 0) return null
+    private fun firstReleaseMatchingAlias(data: JSONArray, preferredAlias: String?, expectedTitle: String? = null): JSONObject? {
+        if (data.length() == 0) {
+            Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: empty data")
+            return null
+        }
         val items = data.asSequenceObjects().toList()
+        Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: ${items.size} items, alias=$preferredAlias, expectedTitle=$expectedTitle")
+        items.forEachIndexed { i, item ->
+            val t = getAniLibertyTitle(item, false)
+            val te = getAniLibertyTitle(item, true)
+            val al = item.optString("alias")
+            val tp = item.optString("type")
+            Log.d(TAG, "  [$i] alias=$al, type=$tp, title=\"$t\", english=\"$te\"")
+        }
+
         preferredAlias?.takeIf { it.isNotBlank() }?.let { alias ->
             items.firstOrNull { item ->
                 item.optString("alias").equals(alias, ignoreCase = true) ||
@@ -961,9 +1136,41 @@ object AnimeStreamResolver {
                     getAniLibertyTitle(item, true).equals(alias, ignoreCase = true) ||
                     slugifyAnimeTitle(getAniLibertyTitle(item, false)).equals(alias, ignoreCase = true) ||
                     slugifyAnimeTitle(getAniLibertyTitle(item, true)).equals(alias, ignoreCase = true)
-            }?.let { return it }
+            }?.let {
+                Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: matched by alias=$alias -> ${getAniLibertyTitle(it)}")
+                return it
+            }
         }
-        return items.firstOrNull()
+
+        if (!expectedTitle.isNullOrBlank()) {
+            val byType = items.firstOrNull { item ->
+                isAnimeRelease(item) && (
+                    titlesMatch(expectedTitle, getAniLibertyTitle(item, false)) ||
+                    titlesMatch(expectedTitle, getAniLibertyTitle(item, true))
+                )
+            }
+            if (byType != null) {
+                Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: matched by title+type -> ${getAniLibertyTitle(byType)}")
+                return byType
+            }
+
+            val byTitle = items.firstOrNull { item ->
+                titlesMatch(expectedTitle, getAniLibertyTitle(item, false)) ||
+                titlesMatch(expectedTitle, getAniLibertyTitle(item, true))
+            }
+            if (byTitle != null) {
+                Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: matched by title only -> ${getAniLibertyTitle(byTitle)}")
+                return byTitle
+            }
+        }
+
+        if (!expectedTitle.isNullOrBlank()) {
+            Log.w(TAG, "[Aniliberty] firstReleaseMatchingAlias: no title match for expectedTitle=\"$expectedTitle\", refusing fallback")
+            return null
+        }
+
+        Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: falling back to first item -> ${getAniLibertyTitle(items.first())}")
+        return items.first()
     }
 
     private fun getAniLibertyTitle(release: JSONObject, useEnglish: Boolean = false): String {
