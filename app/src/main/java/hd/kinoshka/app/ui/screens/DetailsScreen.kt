@@ -394,12 +394,8 @@ fun DetailsScreen(
                         AnimePlaybackSelectionScreen(
                             shikimoriId = shikimoriId,
                             animeTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
-                            watchedEpisodes = state.userProfile?.watchedEpisodes ?: 0,
                             playbackSequence = playbackSequence,
                             onDismissRequest = { activePlaybackSelection = false },
-                            onWatchedEpisodesChanged = { newCount ->
-                                onUpdateAnimeProgress(shikimoriId, newCount, state.animeDetails?.episodes)
-                            },
                             onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
                                 var normalizedUrl = stream.url
                                 if (normalizedUrl.startsWith("//")) {

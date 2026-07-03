@@ -6,7 +6,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,28 +15,26 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.*
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 
 private enum class FilterMode {
@@ -57,7 +54,6 @@ private data class LastPlaybackInfo(
 fun AnimePlaybackSelectionScreen(
     shikimoriId: Int,
     animeTitle: String,
-    watchedEpisodes: Int,
     playbackSequence: PlaybackSequenceOption,
     onDismissRequest: () -> Unit,
     onStreamSelected: (
@@ -69,12 +65,10 @@ fun AnimePlaybackSelectionScreen(
         episodes: List<AnimeEpisode>,
         translations: List<FlatTranslation>,
         currentTranslationId: String
-    ) -> Unit,
-    onWatchedEpisodesChanged: (Int) -> Unit = {}
+    ) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val userStateStore = remember { UserStateStore(context) }
 
     var currentStepIndex by remember { mutableIntStateOf(0) }
     val currentStep = remember(currentStepIndex, playbackSequence) {
@@ -91,7 +85,6 @@ fun AnimePlaybackSelectionScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     var allTranslations by remember { mutableStateOf<List<FlatTranslation>>(emptyList()) }
-    var watchedEpisodesState by remember { mutableIntStateOf(watchedEpisodes) }
 
     // Load available media on start
     LaunchedEffect(shikimoriId) {
@@ -109,17 +102,48 @@ fun AnimePlaybackSelectionScreen(
         }
     }
 
-    // SharedPreferences to save/load last watched info
-    val lastPlayback = remember(shikimoriId, allTranslations) {
-        val prefs = context.getSharedPreferences("anime_playback_prefs", Context.MODE_PRIVATE)
-        val src = prefs.getString("last_source_$shikimoriId", null)
-        val trId = prefs.getString("last_translation_id_$shikimoriId", null)
-        val trTitle = prefs.getString("last_translation_title_$shikimoriId", null)
-        val epNum = prefs.getInt("last_episode_num_$shikimoriId", -1)
+    // Pre-compute derived data once when translations load
+    val episodeTranslationCountMap = remember(allTranslations) {
+        buildMap {
+            for (tr in allTranslations) {
+                for (ep in tr.episodes) {
+                    merge(ep.number, 1, Int::plus)
+                }
+            }
+        }
+    }
 
-        if (src != null && trId != null && trTitle != null && epNum != -1) {
-            LastPlaybackInfo(src, trId, trTitle, epNum)
-        } else null
+    val mergedEpisodes = remember(allTranslations) {
+        allTranslations
+            .flatMap { it.episodes }
+            .distinctBy { it.number }
+            .sortedBy { it.number }
+    }
+
+    val mergedEpisodesBySource = remember(allTranslations) {
+        allTranslations
+            .groupBy { it.source }
+            .mapValues { (_, translations) ->
+                translations
+                    .flatMap { it.episodes }
+                    .distinctBy { it.number }
+                    .sortedBy { it.number }
+            }
+    }
+
+    // SharedPreferences to save/load last watched info (async to avoid blocking composition)
+    var lastPlayback by remember { mutableStateOf<LastPlaybackInfo?>(null) }
+    LaunchedEffect(shikimoriId, allTranslations) {
+        lastPlayback = withContext(Dispatchers.IO) {
+            val prefs = context.getSharedPreferences("anime_playback_prefs", Context.MODE_PRIVATE)
+            val src = prefs.getString("last_source_$shikimoriId", null)
+            val trId = prefs.getString("last_translation_id_$shikimoriId", null)
+            val trTitle = prefs.getString("last_translation_title_$shikimoriId", null)
+            val epNum = prefs.getInt("last_episode_num_$shikimoriId", -1)
+            if (src != null && trId != null && trTitle != null && epNum != -1) {
+                LastPlaybackInfo(src, trId, trTitle, epNum)
+            } else null
+        }
     }
 
     // Helper to resolve HLS stream and launch player
@@ -403,17 +427,13 @@ fun AnimePlaybackSelectionScreen(
                                     SelectionStep.EPISODE -> {
                                         val episodesSource = when {
                                             selectedTranslation != null -> selectedTranslation!!.episodes
-                                            selectedSourceType != null -> allTranslations.filter { it.source == selectedSourceType }.flatMap { it.episodes }.distinctBy { it.number }
-                                            else -> allTranslations.flatMap { it.episodes }.distinctBy { it.number }
+                                            selectedSourceType != null -> mergedEpisodesBySource[selectedSourceType!!] ?: mergedEpisodes
+                                            else -> mergedEpisodes
                                         }
 
                                         SelectEpisodeStep(
-                                            shikimoriId = shikimoriId,
-                                            animeTitle = animeTitle,
                                             episodes = episodesSource,
-                                            allTranslations = allTranslations,
-                                            watchedEpisodes = watchedEpisodesState,
-                                            userStateStore = userStateStore,
+                                            episodeTranslationCountMap = episodeTranslationCountMap,
                                             lastPlayback = if (currentStepIndex == 0) lastPlayback else null,
                                             onQuickContinue = { playbackInfo ->
                                                 val tr = allTranslations.firstOrNull {
@@ -435,10 +455,6 @@ fun AnimePlaybackSelectionScreen(
                                                     val tr = selectedTranslation ?: return@SelectEpisodeStep
                                                     resolveAndPlay(ep, tr, selectedSourceType ?: tr.source)
                                                 }
-                                            },
-                                            onWatchedEpisodesChanged = { newCount ->
-                                                watchedEpisodesState = newCount
-                                                onWatchedEpisodesChanged(newCount)
                                             }
                                         )
                                     }
@@ -588,7 +604,7 @@ private fun SelectTranslationStep(
                         modifier = Modifier.padding(top = 12.dp, bottom = 4.dp, start = 20.dp)
                     )
                 }
-                items(translations) { tr ->
+                items(translations, key = { it.translationId }) { tr ->
                     val isSub = tr.type == "sub" || tr.type == "subtitles"
                     Surface(
                         onClick = { onTranslationSelected(tr) },
@@ -658,16 +674,11 @@ private fun SelectTranslationStep(
 
 @Composable
 private fun SelectEpisodeStep(
-    shikimoriId: Int,
-    animeTitle: String,
     episodes: List<AnimeEpisode>,
-    allTranslations: List<FlatTranslation> = emptyList(),
-    watchedEpisodes: Int,
-    userStateStore: UserStateStore,
+    episodeTranslationCountMap: Map<Int, Int> = emptyMap(),
     lastPlayback: LastPlaybackInfo? = null,
     onQuickContinue: ((LastPlaybackInfo) -> Unit)? = null,
-    onEpisodeSelected: (AnimeEpisode) -> Unit,
-    onWatchedEpisodesChanged: (Int) -> Unit
+    onEpisodeSelected: (AnimeEpisode) -> Unit
 ) {
     var isSortAscending by remember { mutableStateOf(true) }
 
@@ -785,9 +796,7 @@ private fun SelectEpisodeStep(
                 }
             }
         } else {
-            items(sortedEpisodes) { ep ->
-                val isWatched = ep.number <= watchedEpisodes
-
+            items(sortedEpisodes, key = { it.number }) { ep ->
                 Surface(
                     onClick = { onEpisodeSelected(ep) },
                     shape = RoundedCornerShape(16.dp),
@@ -797,7 +806,7 @@ private fun SelectEpisodeStep(
                         .padding(horizontal = 16.dp, vertical = 4.dp)
                         .border(
                             width = 0.5.dp,
-                            color = if (isWatched) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
                             shape = RoundedCornerShape(16.dp)
                         )
                 ) {
@@ -811,16 +820,13 @@ private fun SelectEpisodeStep(
                             modifier = Modifier
                                 .size(32.dp)
                                 .clip(CircleShape)
-                                .background(
-                                    if (isWatched) Color(0xFF4CAF50).copy(alpha = 0.15f) 
-                                    else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                                ),
+                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = if (isWatched) Icons.Filled.Check else Icons.Filled.PlayArrow,
+                                imageVector = Icons.Filled.PlayArrow,
                                 contentDescription = null,
-                                tint = if (isWatched) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary,
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -830,13 +836,10 @@ private fun SelectEpisodeStep(
                                 Text(
                                     text = "Серия ${ep.number}",
                                     style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isWatched) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurface
+                                    fontWeight = FontWeight.SemiBold
                                 )
-                                
-                                val trCount = remember(allTranslations, ep.number) {
-                                    allTranslations.count { tr -> tr.episodes.any { it.number == ep.number } }
-                                }
+
+                                val trCount = episodeTranslationCountMap[ep.number] ?: 0
                                 if (trCount > 1) {
                                     Surface(
                                         modifier = Modifier.padding(start = 8.dp),
@@ -861,64 +864,6 @@ private fun SelectEpisodeStep(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                            }
-                        }
-
-                        // Quick progress manager buttons
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (isWatched) {
-                                // Watched status indicator + minus/delete progress button
-                                Text(
-                                    text = "Просмотрено",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF4CAF50),
-                                    fontWeight = FontWeight.Bold
-                                )
-                                IconButton(
-                                    onClick = {
-                                        val newCount = ep.number - 1
-                                        onWatchedEpisodesChanged(newCount)
-                                        userStateStore.updateWatchedEpisode(
-                                            shikimoriId,
-                                            animeTitle,
-                                            newCount,
-                                            episodes.size
-                                        )
-                                    },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Удалить отметку",
-                                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            } else {
-                                // Mark as watched button (plus icon / check circle outline)
-                                IconButton(
-                                    onClick = {
-                                        val newCount = ep.number
-                                        onWatchedEpisodesChanged(newCount)
-                                        userStateStore.updateWatchedEpisode(
-                                            shikimoriId,
-                                            animeTitle,
-                                            newCount,
-                                            episodes.size
-                                        )
-                                    },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.CheckCircle,
-                                        contentDescription = "Отметить просмотренной",
-                                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
                             }
                         }
                     }
