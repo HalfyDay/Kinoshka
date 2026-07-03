@@ -105,7 +105,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -1535,7 +1535,7 @@ private fun RatingChip(
         modifier = modifier
     ) {
         Icon(
-            imageVector = Icons.Default.Star,
+            imageVector = Icons.Rounded.Star,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(14.dp)
