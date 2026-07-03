@@ -366,6 +366,10 @@ class PlayerViewModel(
   private val _isABLoopExpanded = MutableStateFlow(false)
   val isABLoopExpanded: StateFlow<Boolean> = _isABLoopExpanded.asStateFlow()
 
+  // More expandable menu state
+  private val _isMoreExpanded = MutableStateFlow(false)
+  val isMoreExpanded: StateFlow<Boolean> = _isMoreExpanded.asStateFlow()
+
   // Mirroring state
   private val _isMirrored = MutableStateFlow(false)
   val isMirrored: StateFlow<Boolean> = _isMirrored.asStateFlow()
@@ -1872,6 +1876,10 @@ class PlayerViewModel(
 
   fun toggleABLoopExpanded() {
     _isABLoopExpanded.update { !it }
+  }
+
+  fun toggleMoreExpanded() {
+    _isMoreExpanded.update { !it }
   }
 
   fun setLoopA() {

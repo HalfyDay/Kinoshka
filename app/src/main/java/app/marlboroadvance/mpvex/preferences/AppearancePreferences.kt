@@ -39,25 +39,25 @@ class AppearancePreferences(
   val topRightControls =
     preferenceStore.getString(
       "top_right_controls",
-      "CURRENT_CHAPTER,DECODER,AUDIO_TRACK,SUBTITLES,MORE_OPTIONS",
+      "CURRENT_CHAPTER,MORE_EXPANDABLE",
     )
 
   val bottomRightControls =
     preferenceStore.getString(
       "bottom_right_controls",
-      "FRAME_NAVIGATION,VIDEO_ZOOM,PICTURE_IN_PICTURE,ASPECT_RATIO",
+      "MORE_EXPANDABLE,PICTURE_IN_PICTURE",
     )
 
   val bottomLeftControls =
     preferenceStore.getString(
       "bottom_left_controls",
-      "BACKGROUND_PLAYBACK,LOCK_CONTROLS,SCREEN_ROTATION,PLAYBACK_SPEED,REPEAT_MODE,SHUFFLE,AB_LOOP",
+      "LOCK_CONTROLS,PLAYBACK_SPEED",
     )
 
   val portraitBottomControls =
     preferenceStore.getString(
       "portrait_bottom_controls",
-      "SCREEN_ROTATION,DECODER,AUDIO_TRACK,SUBTITLES,BOOKMARKS_CHAPTERS,PLAYBACK_SPEED,BACKGROUND_PLAYBACK,REPEAT_MODE,SHUFFLE,VIDEO_ZOOM,FRAME_NAVIGATION,ASPECT_RATIO,PICTURE_IN_PICTURE,LOCK_CONTROLS,MORE_OPTIONS",
+      "MORE_EXPANDABLE,PLAYBACK_SPEED,LOCK_CONTROLS,PICTURE_IN_PICTURE",
     )
 
   fun parseButtons(
