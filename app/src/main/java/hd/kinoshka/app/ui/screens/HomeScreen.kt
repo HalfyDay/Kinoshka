@@ -65,6 +65,8 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.rememberScrollState
@@ -190,7 +192,8 @@ fun HomeScreen(
     onUpdateFilters: (SearchFilterState) -> Unit = {},
     onToggleFilterSheet: (Boolean) -> Unit = {},
     onOpenCalendar: () -> Unit = {},
-    onOpenFeed: () -> Unit = {}
+    onOpenFeed: () -> Unit = {},
+    onLibrarySortSelected: (hd.kinoshka.app.data.local.LibrarySortType) -> Unit = {}
 ) {
     val focusManager = LocalFocusManager.current
     val libraryMetrics = state.libraryTileSize.toGridMetrics()
@@ -225,6 +228,7 @@ fun HomeScreen(
     }
     var libraryTab by rememberSaveable { mutableStateOf(LibraryTab.WATCHING) }
     var libraryFilter by rememberSaveable { mutableStateOf(LibraryFilterType.ALL) }
+    var librarySort by rememberSaveable { mutableStateOf(hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED) }
     val searchRowHeight = SearchChromeHeight
     val searchRowAlpha = 1f
     val normalizedQuery = state.query.trim()
@@ -323,6 +327,11 @@ fun HomeScreen(
                         onContentTypeSelected = onContentTypeSelected,
                         libraryFilter = libraryFilter,
                         onLibraryFilterSelected = { libraryFilter = it },
+                        librarySort = librarySort,
+                        onLibrarySortSelected = { sortType ->
+                            librarySort = sortType
+                            onLibrarySortSelected(sortType)
+                        },
                         isFilterActive = state.filterState.isActive,
                         onFilterClick = { onToggleFilterSheet(true) },
                         onQueryChange = { value ->
@@ -460,6 +469,8 @@ private fun SearchRow(
     onContentTypeSelected: ((ContentType) -> Unit)? = null,
     libraryFilter: LibraryFilterType = LibraryFilterType.ALL,
     onLibraryFilterSelected: ((LibraryFilterType) -> Unit)? = null,
+    librarySort: hd.kinoshka.app.data.local.LibrarySortType = hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED,
+    onLibrarySortSelected: ((hd.kinoshka.app.data.local.LibrarySortType) -> Unit)? = null,
     isFilterActive: Boolean = false,
     onFilterClick: (() -> Unit)? = null
 ) {
@@ -578,6 +589,7 @@ private fun SearchRow(
             Spacer(modifier = Modifier.width(6.dp))
 
             // Library filter switcher [Все] [Кино] [Аниме] (No Emojis)!
+            var showSortMenu by remember { mutableStateOf(false) }
             val libBgColor by animateColorAsState(
                 when (libraryFilter) {
                     LibraryFilterType.ALL -> MaterialTheme.colorScheme.surfaceContainerHigh
@@ -622,6 +634,63 @@ private fun SearchRow(
                             text = targetFilter.label,
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                             color = libTextColor
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // Sort selector button
+            val sortBgColor by animateColorAsState(
+                targetValue = MaterialTheme.colorScheme.surfaceContainerHigh,
+                animationSpec = tween(280), label = "sortBg"
+            )
+            Box {
+                Surface(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .clickable { showSortMenu = true },
+                    shape = CircleShape,
+                    color = sortBgColor
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.List,
+                            contentDescription = "Сортировка",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                DropdownMenu(
+                    expanded = showSortMenu,
+                    onDismissRequest = { showSortMenu = false }
+                ) {
+                    hd.kinoshka.app.data.local.LibrarySortType.entries.forEach { sortType ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = sortType.label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (librarySort == sortType) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            leadingIcon = {
+                                if (librarySort == sortType) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            },
+                            onClick = {
+                                onLibrarySortSelected?.invoke(sortType)
+                                showSortMenu = false
+                            }
                         )
                     }
                 }

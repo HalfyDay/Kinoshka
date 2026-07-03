@@ -92,6 +92,29 @@ data class LibraryBackup(
     val profiles: List<UserFilmProfile>? = null
 )
 
+data class ShikimoriAnimeCache(
+    val shikimoriId: Int,
+    val name: String?,
+    val russian: String?,
+    val posterUrl: String?,
+    val episodes: Int?,
+    val episodesAired: Int?,
+    val kind: String?,
+    val score: String?,
+    val status: String?,
+    val savedAtMs: Long = System.currentTimeMillis()
+) {
+    val displayTitle: String get() = russian?.takeIf { it.isNotBlank() } ?: name ?: "Аниме #$shikimoriId"
+}
+
+enum class LibrarySortType(val label: String) {
+    LAST_VIEWED("По последнему просмотру"),
+    DATE_ADDED("По дате добавления"),
+    ALPHABETICAL("По алфавиту"),
+    RATING("По рейтингу"),
+    RELEASE_DATE("По дате выхода")
+}
+
 class UserStateStore(context: Context) {
     private val prefs = context.applicationContext
         .getSharedPreferences("kino_user_state", Context.MODE_PRIVATE)
@@ -109,6 +132,8 @@ class UserStateStore(context: Context) {
     private val showFpsCounterKey = "show_fps_counter"
     private val playbackSequenceKey = "playback_sequence"
     private val preferredQualityKey = "preferred_quality"
+    private val shikimoriAnimeCacheKey = "shikimori_anime_cache"
+    private val librarySortKey = "library_sort_type"
 
     private val prettyGson: Gson = GsonBuilder().setPrettyPrinting().create()
 
@@ -118,6 +143,43 @@ class UserStateStore(context: Context) {
 
     fun setPreferredQuality(quality: String) {
         prefs.edit().putString(preferredQualityKey, quality).apply()
+    }
+
+    // Shikimori anime cache methods
+    fun getShikimoriAnimeCache(): Map<Int, ShikimoriAnimeCache> {
+        val raw = prefs.getString(shikimoriAnimeCacheKey, null) ?: return emptyMap()
+        val type = object : TypeToken<Map<Int, ShikimoriAnimeCache>>() {}.type
+        return runCatching {
+            gson.fromJson<Map<Int, ShikimoriAnimeCache>>(raw, type).orEmpty()
+        }.getOrDefault(emptyMap())
+    }
+
+    fun saveShikimoriAnimeCache(cache: Map<Int, ShikimoriAnimeCache>) {
+        prefs.edit().putString(shikimoriAnimeCacheKey, gson.toJson(cache)).apply()
+    }
+
+    fun getShikimoriAnimeInfo(shikimoriId: Int): ShikimoriAnimeCache? {
+        return getShikimoriAnimeCache()[shikimoriId]
+    }
+
+    fun saveShikimoriAnimeInfo(info: ShikimoriAnimeCache) {
+        val cache = getShikimoriAnimeCache().toMutableMap()
+        cache[info.shikimoriId] = info
+        // Keep only last 500 entries
+        if (cache.size > 500) {
+            val sorted = cache.entries.sortedBy { it.value.savedAtMs }
+            val toRemove = sorted.take(cache.size - 500).map { it.key }
+            toRemove.forEach { cache.remove(it) }
+        }
+        saveShikimoriAnimeCache(cache)
+    }
+
+    fun getLibrarySortType(): LibrarySortType {
+        return readEnum(librarySortKey, LibrarySortType.LAST_VIEWED)
+    }
+
+    fun setLibrarySortType(sortType: LibrarySortType) {
+        prefs.edit().putString(librarySortKey, sortType.name).apply()
     }
 
     fun getPlaybackSequence(): PlaybackSequenceOption {

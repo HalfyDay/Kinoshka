@@ -4,14 +4,20 @@ import hd.kinoshka.app.data.model.ShikimoriAnimeDetails
 import hd.kinoshka.app.data.model.ShikimoriAnimeItem
 import hd.kinoshka.app.data.model.ShikimoriCalendarItem
 import hd.kinoshka.app.data.model.ShikimoriScreenshot
+import hd.kinoshka.app.data.model.ShikimoriTokenResponse
 import hd.kinoshka.app.data.model.ShikimoriTopic
 import hd.kinoshka.app.data.model.ShikimoriUserRate
 import hd.kinoshka.app.data.model.ShikimoriWhoami
+import hd.kinoshka.app.data.model.UserRateRequest
+import hd.kinoshka.app.data.model.UserRateUpdateRequest
+import retrofit2.http.Body
 import retrofit2.http.DELETE
+import retrofit2.http.Field
+import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
 import retrofit2.http.Header
+import retrofit2.http.PATCH
 import retrofit2.http.POST
-import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -82,21 +88,14 @@ interface ShikimoriApi {
     @POST("api/v2/user_rates")
     suspend fun createUserRate(
         @Header("Authorization") token: String,
-        @Query("user_rate[user_id]") userId: Int,
-        @Query("user_rate[target_id]") targetId: Int,
-        @Query("user_rate[target_type]") targetType: String = "Anime",
-        @Query("user_rate[status]") status: String,
-        @Query("user_rate[episodes]") episodes: Int = 0,
-        @Query("user_rate[score]") score: Int = 0
+        @Body userRate: UserRateRequest
     ): ShikimoriUserRate
 
-    @PUT("api/v2/user_rates/{id}")
+    @PATCH("api/v2/user_rates/{id}")
     suspend fun updateUserRate(
         @Header("Authorization") token: String,
         @Path("id") rateId: Int,
-        @Query("user_rate[status]") status: String? = null,
-        @Query("user_rate[episodes]") episodes: Int? = null,
-        @Query("user_rate[score]") score: Int? = null
+        @Body userRate: UserRateUpdateRequest
     ): ShikimoriUserRate
 
     @DELETE("api/v2/user_rates/{id}")
@@ -113,4 +112,23 @@ interface ShikimoriApi {
         @Query("forum") forum: String = "news",
         @Query("limit") limit: Int = 30
     ): List<ShikimoriTopic>
+
+    @FormUrlEncoded
+    @POST("oauth/token")
+    suspend fun refreshToken(
+        @Field("grant_type") grantType: String = "refresh_token",
+        @Field("client_id") clientId: String,
+        @Field("client_secret") clientSecret: String,
+        @Field("refresh_token") refreshToken: String
+    ): ShikimoriTokenResponse
+
+    @FormUrlEncoded
+    @POST("oauth/token")
+    suspend fun exchangeCodeForToken(
+        @Field("grant_type") grantType: String = "authorization_code",
+        @Field("client_id") clientId: String,
+        @Field("client_secret") clientSecret: String,
+        @Field("code") code: String,
+        @Field("redirect_uri") redirectUri: String = "urn:ietf:wg:oauth:2.0:oob"
+    ): ShikimoriTokenResponse
 }

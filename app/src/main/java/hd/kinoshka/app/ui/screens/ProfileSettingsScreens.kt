@@ -46,6 +46,7 @@ import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.material.icons.filled.Close
@@ -141,8 +142,10 @@ fun ProfileScreen(
     if (showWebLoginDialog) {
         ShikimoriWebLoginDialog(
             onDismiss = { showWebLoginDialog = false },
-            onSuccess = { token, userId, nickname, avatarUrl ->
-                onSaveShikimoriSession(token, userId, nickname, avatarUrl)
+            onSuccess = { code, userId, nickname, avatarUrl ->
+                // With OAuth2 flow, 'code' is actually the authorization code
+                // Call the proper handler to exchange it for tokens
+                onSaveShikimoriToken(code)
             }
         )
     }
@@ -1423,6 +1426,8 @@ private fun ShikimoriWebLoginDialog(
     onSuccess: (token: String, userId: Int, nickname: String, avatarUrl: String?) -> Unit
 ) {
     var isLoading by remember { mutableStateOf(true) }
+    val clientId = hd.kinoshka.app.BuildConfig.SHIKIMORI_CLIENT_ID
+    val oauthUrl = "https://shikimori.io/oauth/authorize?client_id=$clientId&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code&scope="
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -1444,7 +1449,7 @@ private fun ShikimoriWebLoginDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Вход на сайт Shikimori",
+                        text = "Вход через Shikimori (OAuth2)",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -1463,11 +1468,7 @@ private fun ShikimoriWebLoginDialog(
                             )
                             webView.settings.javaScriptEnabled = true
                             webView.settings.domStorageEnabled = true
-                            webView.settings.userAgentString = "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 KinoshkaApp"
-
-                            val cookieManager = CookieManager.getInstance()
-                            cookieManager.setAcceptCookie(true)
-                            cookieManager.setAcceptThirdPartyCookies(webView, true)
+                            webView.settings.userAgentString = "KinoshkaApp"
 
                             webView.webViewClient = object : WebViewClient() {
                                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -1476,42 +1477,59 @@ private fun ShikimoriWebLoginDialog(
 
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     isLoading = false
+                                    // With OOB redirect, the code is displayed as text on the page
+                                    // Try to extract it using JavaScript
                                     view?.evaluateJavascript(
-                                        "(function() { fetch('/api/users/whoami').then(r => r.json()).then(d => { if(d && d.id) { console.log('SHIKI_USER:' + JSON.stringify(d)); } }).catch(e => {}); })();",
+                                        """
+                                        (function() {
+                                            var body = document.body.innerText;
+                                            var match = body.match(/Код авторизации[:\s]*([a-zA-Z0-9_-]+)/i) || body.match(/Authorization code[:\s]*([a-zA-Z0-9_-]+)/i);
+                                            if (match && match[1]) {
+                                                console.log('AUTH_CODE:' + match[1]);
+                                            }
+                                        })();
+                                        """.trimIndent(),
                                         null
                                     )
+                                }
+
+                                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                    val url = request?.url?.toString() ?: return false
+                                    // Check if the URL contains the authorization code
+                                    if (url.contains("code=")) {
+                                        val code = url.substringAfter("code=").substringBefore("&")
+                                        if (code.isNotBlank()) {
+                                            onSuccess(code, 0, "", null)
+                                            onDismiss()
+                                            return true
+                                        }
+                                    }
+                                    return false
                                 }
                             }
                             webView.webChromeClient = object : WebChromeClient() {
                                 override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                                     val msg = consoleMessage?.message() ?: ""
-                                    if (msg.startsWith("SHIKI_USER:")) {
-                                        val jsonStr = msg.removePrefix("SHIKI_USER:")
-                                        runCatching {
-                                            val json = JSONObject(jsonStr)
-                                            val id = json.optInt("id")
-                                            val nick = json.optString("nickname")
-                                            val avatar = json.optString("avatar")
-                                            if (id > 0 && nick.isNotBlank()) {
-                                                val cookies = CookieManager.getInstance().getCookie("https://shikimori.io")
-                                                onSuccess(cookies ?: "session", id, nick, avatar)
-                                                onDismiss()
-                                            }
+                                    if (msg.startsWith("AUTH_CODE:")) {
+                                        val code = msg.removePrefix("AUTH_CODE:").trim()
+                                        if (code.isNotBlank()) {
+                                            onSuccess(code, 0, "", null)
+                                            onDismiss()
                                         }
                                     }
                                     return super.onConsoleMessage(consoleMessage)
                                 }
                             }
-                            webView.loadUrl("https://shikimori.io/users/sign_in")
+                            webView.loadUrl(oauthUrl)
                             webView
                         },
                         modifier = Modifier.fillMaxSize()
-                        )
-                        if (isLoading) {
-                            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                        }
+                    )
+                    if (isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                     }
                 }
             }
         }
     }
+}
