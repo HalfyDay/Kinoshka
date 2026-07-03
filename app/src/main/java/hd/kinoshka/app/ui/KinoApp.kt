@@ -6,10 +6,14 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -332,17 +336,16 @@ fun KinoApp() {
                             route = "details/{id}",
                             arguments = listOf(navArgument("id") { type = NavType.IntType }),
                             enterTransition = {
-                                fadeIn(animationSpec = tween(200)) +
-                                scaleIn(initialScale = 0.92f, animationSpec = tween(200))
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
                             },
                             exitTransition = {
-                                fadeOut(animationSpec = tween(150))
+                                fadeOut(animationSpec = tween(160))
                             },
                             popEnterTransition = {
-                                fadeIn(animationSpec = tween(180))
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
                             },
                             popExitTransition = {
-                                fadeOut(animationSpec = tween(150))
+                                fadeOut(animationSpec = tween(160))
                             }
                         ) { backStackEntry ->
                             val id = backStackEntry.arguments?.getInt("id") ?: return@composable

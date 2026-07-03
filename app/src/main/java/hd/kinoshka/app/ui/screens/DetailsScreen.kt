@@ -91,6 +91,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -141,6 +142,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.ui.unit.Dp
@@ -195,6 +197,7 @@ import hd.kinoshka.app.data.model.FilmLinkItem
 import hd.kinoshka.app.data.model.SeasonItem
 import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
+import hd.kinoshka.app.ui.components.shimmerEffect
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -289,12 +292,23 @@ fun DetailsScreen(
     LaunchedEffect(state.loading, filmId) {
         if (state.loading) {
             showLoadingIndicator = false
-            delay(380)
+            delay(200)
             if (state.loading) {
                 showLoadingIndicator = true
             }
         } else {
             showLoadingIndicator = false
+        }
+    }
+
+    var contentVisible by remember(filmId) { mutableStateOf(false) }
+    LaunchedEffect(state.item, filmId) {
+        if (state.item != null) {
+            contentVisible = false
+            delay(50)
+            contentVisible = true
+        } else {
+            contentVisible = false
         }
     }
 
@@ -316,28 +330,42 @@ fun DetailsScreen(
             }
 
             state.error != null -> {
-                ElevatedCard(
+                Column(
                     modifier = Modifier
-                        .padding(16.dp)
-                        .fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp)
+                        .fillMaxSize()
+                        .padding(horizontal = 32.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "Не удалось загрузить карточку",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold
+                    Icon(
+                        imageVector = Icons.Default.WifiOff,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(64.dp)
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        text = "Нет подключения",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Проверьте соединение с интернетом и попробуйте снова",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(28.dp))
+                    Button(onClick = { load(filmId) }) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
                         )
-                        Text(
-                            text = state.error,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        Button(onClick = { load(filmId) }) {
-                            Text("Повторить")
-                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Повторить")
                     }
                 }
             }
@@ -346,7 +374,16 @@ fun DetailsScreen(
                 val item = state.item
                 val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.any { it.genre?.lowercase() == "аниме" }
                 val scrollState = rememberLazyListState()
-                Box(modifier = Modifier.fillMaxSize()) {
+                val contentAlpha by animateFloatAsState(
+                    targetValue = if (contentVisible) 1f else 0f,
+                    animationSpec = tween(300, easing = FastOutSlowInEasing),
+                    label = "contentAlpha"
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = contentAlpha }
+                ) {
                     if (isAnime) {
                     if (activePlaybackSelection) {
                         val shikimoriId = if (item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
@@ -460,15 +497,13 @@ fun DetailsScreen(
                         }
 
                         // Screenshots / Frames (Immediately after description)
-                        if (state.images.isNotEmpty()) {
-                            item {
-                                ImagesCard(
-                                    images = state.images,
-                                    onPreview = { index ->
-                                        imageViewerStartIndex = index
-                                    }
-                                )
-                            }
+                        item {
+                            ImagesCard(
+                                images = state.images,
+                                onPreview = { index ->
+                                    imageViewerStartIndex = index
+                                }
+                            )
                         }
 
                         // Genres horizontal row
@@ -706,15 +741,15 @@ private fun HeroHeader(
         isLoaded = true
     }
 
-    val posterScale by animateFloatAsState(
-        targetValue = if (isLoaded) 1f else 0.76f,
-        animationSpec = tween(380, easing = FastOutSlowInEasing),
-        label = "heroPosterScale"
-    )
-    val posterAlpha by animateFloatAsState(
+    val coverAlpha by animateFloatAsState(
         targetValue = if (isLoaded) 1f else 0f,
-        animationSpec = tween(300),
-        label = "heroPosterAlpha"
+        animationSpec = tween(480, easing = FastOutSlowInEasing),
+        label = "heroCoverAlpha"
+    )
+    val infoAlpha by animateFloatAsState(
+        targetValue = if (isLoaded) 1f else 0f,
+        animationSpec = tween(360, delayMillis = 200, easing = FastOutSlowInEasing),
+        label = "heroInfoAlpha"
     )
 
     Box(
@@ -729,6 +764,13 @@ private fun HeroHeader(
             filterQuality = FilterQuality.High,
             useOriginalSize = true,
             modifier = Modifier.fillMaxSize()
+        )
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = 1f - coverAlpha }
+                .background(Color.Black)
         )
 
         Box(
@@ -750,18 +792,14 @@ private fun HeroHeader(
         Row(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(horizontal = 12.dp, vertical = 14.dp),
+                .padding(horizontal = 12.dp, vertical = 14.dp)
+                .graphicsLayer { alpha = infoAlpha },
             verticalAlignment = Alignment.Bottom
         ) {
             Surface(
                 modifier = Modifier
                     .width(114.dp)
                     .aspectRatio(posterAspectRatio.coerceIn(0.52f, 0.95f))
-                    .graphicsLayer {
-                        scaleX = posterScale
-                        scaleY = posterScale
-                        alpha = posterAlpha
-                    }
                     .onGloballyPositioned { coords ->
                         posterBounds = coords.boundsInWindow()
                     }
@@ -1603,20 +1641,23 @@ private fun MovieExpandableDescription(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val bgColor = MaterialTheme.colorScheme.background
+    var lineCount by remember { mutableIntStateOf(0) }
+    val needsCollapse = lineCount > 3
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .animateContentSize()
-            .clickable { expanded = !expanded }
+            .then(if (needsCollapse) Modifier.animateContentSize() else Modifier)
+            .then(if (needsCollapse) Modifier.clickable { expanded = !expanded } else Modifier)
     ) {
         Text(
             text = description,
             style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-            maxLines = if (expanded) Int.MAX_VALUE else 4,
-            overflow = TextOverflow.Ellipsis
+            maxLines = if (expanded || !needsCollapse) Int.MAX_VALUE else 4,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { layoutResult -> lineCount = layoutResult.lineCount }
         )
-        if (!expanded) {
+        if (!expanded && needsCollapse) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
@@ -1871,7 +1912,6 @@ private fun ImagesCard(
     images: List<FilmImageItem>,
     onPreview: (Int) -> Unit
 ) {
-    if (images.isEmpty()) return
     val listState = rememberLazyListState()
     val snapFling = rememberSnapFlingBehavior(lazyListState = listState)
 
@@ -1886,32 +1926,49 @@ private fun ImagesCard(
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
-        LazyRow(
-            state = listState,
-            flingBehavior = snapFling,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(
-                items = images.take(24),
-                key = { it.previewUrl ?: it.imageUrl.orEmpty() }
-            ) { image ->
-                val previewIndex = images.indexOf(image).takeIf { it >= 0 } ?: 0
-                ElevatedCard(
-                    modifier = Modifier
-                        .width(220.dp)
-                        .clickable {
-                            onPreview(previewIndex)
-                        },
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    KinoshkaAsyncImage(
-                        model = image.previewUrl ?: image.imageUrl,
-                        contentDescription = "Кадр",
-                        contentScale = ContentScale.Crop,
+        if (images.isEmpty()) {
+            LazyRow(
+                state = listState,
+                flingBehavior = snapFling,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(6) {
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .width(220.dp)
                             .aspectRatio(16f / 9f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .shimmerEffect()
                     )
+                }
+            }
+        } else {
+            LazyRow(
+                state = listState,
+                flingBehavior = snapFling,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(
+                    items = images.take(24),
+                    key = { it.previewUrl ?: it.imageUrl.orEmpty() }
+                ) { image ->
+                    val previewIndex = images.indexOf(image).takeIf { it >= 0 } ?: 0
+                    ElevatedCard(
+                        modifier = Modifier
+                            .width(220.dp)
+                            .clickable { onPreview(previewIndex) },
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        KinoshkaAsyncImage(
+                            model = image.previewUrl ?: image.imageUrl,
+                            contentDescription = "Кадр",
+                            contentScale = ContentScale.Crop,
+                            fadeDurationMs = 1200,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(16f / 9f)
+                        )
+                    }
                 }
             }
         }
@@ -2315,6 +2372,20 @@ private fun AnimeDetailsLayout(
     } else "—"
     val ageRatingStr = anime?.rating?.uppercase()?.replace("R_17", "R-17")?.replace("PG_13", "PG-13")?.replace("R_PLUS", "R+") ?: "—"
 
+    var animeCoverLoaded by remember(item.kinopoiskId) { mutableStateOf(false) }
+    LaunchedEffect(item.kinopoiskId) { animeCoverLoaded = true }
+
+    val animeCoverAlpha by animateFloatAsState(
+        targetValue = if (animeCoverLoaded) 1f else 0f,
+        animationSpec = tween(480, easing = FastOutSlowInEasing),
+        label = "animeCoverAlpha"
+    )
+    val animeInfoAlpha by animateFloatAsState(
+        targetValue = if (animeCoverLoaded) 1f else 0f,
+        animationSpec = tween(360, delayMillis = 200, easing = FastOutSlowInEasing),
+        label = "animeInfoAlpha"
+    )
+
     LazyColumn(
         state = scrollState,
         modifier = Modifier.fillMaxSize(),
@@ -2341,6 +2412,12 @@ private fun AnimeDetailsLayout(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        .graphicsLayer { alpha = 1f - animeCoverAlpha }
+                        .background(Color.Black)
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
                                 colors = listOf(
@@ -2356,7 +2433,8 @@ private fun AnimeDetailsLayout(
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .graphicsLayer { alpha = animeInfoAlpha },
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     item.ratingKinopoisk?.let { r ->
@@ -2441,13 +2519,11 @@ private fun AnimeDetailsLayout(
         }
 
         // Screenshots / Frames Section (Immediately after description)
-        if (state.images.isNotEmpty()) {
-            item {
-                ImagesCard(
-                    images = state.images,
-                    onPreview = onPreviewImage
-                )
-            }
+        item {
+            ImagesCard(
+                images = state.images,
+                onPreview = onPreviewImage
+            )
         }
 
         // Genres horizontally separated buttons
@@ -2558,6 +2634,8 @@ private fun AnimeExpandableDescription(
     var expanded by remember { mutableStateOf(false) }
     val bgColor = MaterialTheme.colorScheme.background
     val primaryColor = MaterialTheme.colorScheme.primary
+    var lineCount by remember { mutableIntStateOf(0) }
+    val needsCollapse = lineCount > 3
 
     val annotatedText = remember(description, primaryColor) {
         parseShikimoriBbCode(description, primaryColor)
@@ -2566,13 +2644,13 @@ private fun AnimeExpandableDescription(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .animateContentSize()
-            .clickable { expanded = !expanded }
+            .then(if (needsCollapse) Modifier.animateContentSize() else Modifier)
+            .then(if (needsCollapse) Modifier.clickable { expanded = !expanded } else Modifier)
     ) {
         ClickableText(
             text = annotatedText,
             style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-            maxLines = if (expanded) Int.MAX_VALUE else 4,
+            maxLines = if (expanded || !needsCollapse) Int.MAX_VALUE else 4,
             overflow = TextOverflow.Ellipsis,
             onClick = { offset ->
                 val charAnnotations = annotatedText.getStringAnnotations("character_id", offset, offset)
@@ -2588,11 +2666,14 @@ private fun AnimeExpandableDescription(
                     charId != null -> onOpenCharacter(charId)
                     animeId != null -> onOpenFilm(animeId)
                     !targetUrl.isNullOrBlank() -> onOpenUrl(targetUrl)
-                    else -> expanded = !expanded
+                    else -> {
+                        if (needsCollapse) expanded = !expanded
+                    }
                 }
-            }
+            },
+            onTextLayout = { layoutResult -> lineCount = layoutResult.lineCount }
         )
-        if (!expanded) {
+        if (!expanded && needsCollapse) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
