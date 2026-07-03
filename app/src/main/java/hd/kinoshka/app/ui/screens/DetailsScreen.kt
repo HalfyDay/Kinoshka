@@ -2465,19 +2465,19 @@ private fun AnimeDetailsLayout(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text("Тип", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Тип", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = MaterialTheme.colorScheme.primary)
                             Text("$kindStr · $statusStr", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium))
                         }
                         Column {
-                            Text("Сезон", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Сезон", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = MaterialTheme.colorScheme.primary)
                             Text(seasonStr, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium))
                         }
                         Column {
-                            Text("Эпизоды", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Эпизоды", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = MaterialTheme.colorScheme.primary)
                             Text(epStr, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium))
                         }
                         Column {
-                            Text("Рейтинг", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Рейтинг", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = MaterialTheme.colorScheme.primary)
                             Text(ageRatingStr, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium))
                         }
                     }
