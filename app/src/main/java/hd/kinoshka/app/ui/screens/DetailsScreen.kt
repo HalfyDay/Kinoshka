@@ -76,6 +76,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.activity.compose.BackHandler
@@ -104,6 +105,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
@@ -133,9 +135,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
+import androidx.compose.ui.graphics.vector.VectorPainter
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Share
@@ -200,6 +203,7 @@ import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.ui.components.shimmerEffect
 import java.util.Locale
 import kotlin.math.roundToInt
+import androidx.compose.ui.platform.LocalLocale
 
 @Composable
 fun DetailsScreen(
@@ -524,7 +528,7 @@ fun DetailsScreen(
                                                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                                                 ) {
                                                     Text(
-                                                        text = genreName.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
+                                                        text = genreName.replaceFirstChar { if (it.isLowerCase()) it.titlecase(LocalLocale.current.platformLocale) else it.toString() },
                                                         style = MaterialTheme.typography.labelLarge,
                                                         fontWeight = FontWeight.Bold,
                                                         color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -861,13 +865,12 @@ private fun HeroHeader(
                         item.ratingKinopoisk?.let { r ->
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Star,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
+                                StarRatingIndicator(
+                                    rating = r,
+                                    starSize = 14.dp,
+                                    starColor = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
                                     text = "%.1f".format(Locale.US, r),
@@ -1084,7 +1087,7 @@ private fun ActionPanel(
     val statusIcon = when (status) {
         UserFilmStatus.COMPLETED -> Icons.Default.Check
         UserFilmStatus.WATCHING -> null
-        UserFilmStatus.PLANNED -> Icons.Default.Star
+        UserFilmStatus.PLANNED -> Icons.Rounded.Star
         UserFilmStatus.REWATCHING -> Icons.Default.Refresh
         UserFilmStatus.ON_HOLD -> Icons.Default.KeyboardArrowDown
         UserFilmStatus.DROPPED -> Icons.Default.Close
@@ -2344,7 +2347,6 @@ private fun AnimeDetailsLayout(
     val context = LocalContext.current
     var showCharactersSheet by remember { mutableStateOf(false) }
     var showChronologySheet by remember { mutableStateOf(false) }
-    var posterBounds by remember { mutableStateOf<Rect?>(null) }
 
     val kindStr = when (anime?.kind?.lowercase()) {
         "tv" -> "ТВ"
@@ -2394,10 +2396,11 @@ private fun AnimeDetailsLayout(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(520.dp)
-                    .onGloballyPositioned { coords ->
-                        posterBounds = coords.boundsInWindow()
+                    .pointerInput(Unit) {
+                        detectTapGestures { offset ->
+                            onPosterClick(offset)
+                        }
                     }
-                    .clickable { onPosterClick(posterBounds?.center ?: Offset.Zero) }
             ) {
                 KinoshkaAsyncImage(
                     model = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview,
@@ -2436,13 +2439,12 @@ private fun AnimeDetailsLayout(
                     item.ratingKinopoisk?.let { r ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Star,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
+                            StarRatingIndicator(
+                                rating = r,
+                                starSize = 18.dp,
+                                starColor = MaterialTheme.colorScheme.primary
                             )
                             Text(
                                 text = "%.1f".format(Locale.US, r),
@@ -3654,16 +3656,16 @@ private fun DetailsTopBar(
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
-    
+
     val thresholdPx = with(density) { (if (isAnime) 380.dp else 200.dp).toPx() }
     val fadeRangePx = with(density) { 40.dp.toPx() }
-    
+
     val currentScroll = if (scrollState.firstVisibleItemIndex > 0) {
         thresholdPx + fadeRangePx
     } else {
         scrollState.firstVisibleItemScrollOffset.toFloat()
     }
-    
+
     val alpha = ((currentScroll - thresholdPx) / fadeRangePx).coerceIn(0f, 1f)
 
     val backgroundColor = MaterialTheme.colorScheme.background
@@ -3699,7 +3701,7 @@ private fun DetailsTopBar(
                         tint = MaterialTheme.colorScheme.onSurface
                     )
                 }
-                
+
                 Text(
                     text = item.nameRu ?: item.nameOriginal ?: "Без названия",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -3712,7 +3714,7 @@ private fun DetailsTopBar(
                         .graphicsLayer { this.alpha = alpha },
                     textAlign = TextAlign.Center
                 )
-                
+
                 IconButton(
                     onClick = {
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
@@ -3735,6 +3737,62 @@ private fun DetailsTopBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StarRatingIndicator(
+    rating: Double,
+    modifier: Modifier = Modifier,
+    starSize: Dp = 16.dp,
+    starColor: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.primary
+) {
+    val scaledRating = (rating / 2).coerceIn(0.0, 5.0)
+    val spacing = 2.dp
+
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(spacing)) {
+        for (i in 1..5) {
+            val fraction = when {
+                scaledRating >= i -> 1.0f
+                scaledRating >= i - 1 -> (scaledRating - (i - 1)).toFloat()
+                else -> 0.0f
+            }
+            StarShape(starSize, fraction, starColor)
+        }
+    }
+}
+
+@Composable
+private fun StarShape(size: Dp, fraction: Float, color: androidx.compose.ui.graphics.Color) {
+    Box(modifier = Modifier.size(size)) {
+        Icon(
+            imageVector = Icons.Rounded.Star,
+            contentDescription = null,
+            tint = color.copy(alpha = 0.2f),
+            modifier = Modifier.fillMaxSize()
+        )
+        if (fraction > 0f) {
+            Icon(
+                imageVector = Icons.Rounded.Star,
+                contentDescription = null,
+                tint = color,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(FractionalClipShape(fraction))
+            )
+        }
+    }
+}
+
+private class FractionalClipShape(private val fraction: Float) : androidx.compose.ui.graphics.Shape {
+    override fun createOutline(
+        size: androidx.compose.ui.geometry.Size,
+        layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+        density: androidx.compose.ui.unit.Density
+    ): androidx.compose.ui.graphics.Outline {
+        return androidx.compose.ui.graphics.Outline.Rectangle(
+            androidx.compose.ui.geometry.Rect(0f, 0f, size.width * fraction, size.height)
+        )
     }
 }
 
