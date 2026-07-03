@@ -103,8 +103,10 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -132,6 +134,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
@@ -588,60 +591,8 @@ private fun SearchRow(
         } else if (section == MainSection.LIBRARY) {
             Spacer(modifier = Modifier.width(6.dp))
 
-            // Library filter switcher [Все] [Кино] [Аниме] (No Emojis)!
-            var showSortMenu by remember { mutableStateOf(false) }
-            val libBgColor by animateColorAsState(
-                when (libraryFilter) {
-                    LibraryFilterType.ALL -> MaterialTheme.colorScheme.surfaceContainerHigh
-                    LibraryFilterType.FILMS -> MaterialTheme.colorScheme.primaryContainer
-                    LibraryFilterType.ANIME -> MaterialTheme.colorScheme.tertiaryContainer
-                },
-                animationSpec = tween(280), label = "libBg"
-            )
-            val libTextColor by animateColorAsState(
-                when (libraryFilter) {
-                    LibraryFilterType.ALL -> MaterialTheme.colorScheme.onSurface
-                    LibraryFilterType.FILMS -> MaterialTheme.colorScheme.onPrimaryContainer
-                    LibraryFilterType.ANIME -> MaterialTheme.colorScheme.onTertiaryContainer
-                },
-                animationSpec = tween(280), label = "libText"
-            )
-            Surface(
-                modifier = Modifier
-                    .height(48.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .clickable {
-                        val next = when (libraryFilter) {
-                            LibraryFilterType.ALL -> LibraryFilterType.FILMS
-                            LibraryFilterType.FILMS -> LibraryFilterType.ANIME
-                            LibraryFilterType.ANIME -> LibraryFilterType.ALL
-                        }
-                        onLibraryFilterSelected?.invoke(next)
-                    },
-                shape = RoundedCornerShape(24.dp),
-                color = libBgColor
-            ) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
-                    AnimatedContent(
-                        targetState = libraryFilter,
-                        transitionSpec = {
-                            (fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.88f, animationSpec = tween(220))) togetherWith
-                            (fadeOut(animationSpec = tween(180)) + scaleOut(targetScale = 0.88f, animationSpec = tween(180)))
-                        },
-                        label = "libFilterAnim"
-                    ) { targetFilter ->
-                        Text(
-                            text = targetFilter.label,
-                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                            color = libTextColor
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.width(6.dp))
-
             // Sort selector button
+            var showSortMenu by remember { mutableStateOf(false) }
             val sortBgColor by animateColorAsState(
                 targetValue = MaterialTheme.colorScheme.surfaceContainerHigh,
                 animationSpec = tween(280), label = "sortBg"
@@ -691,6 +642,58 @@ private fun SearchRow(
                                 onLibrarySortSelected?.invoke(sortType)
                                 showSortMenu = false
                             }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // Library filter switcher [Все] [Кино] [Аниме]
+            val libBgColor by animateColorAsState(
+                when (libraryFilter) {
+                    LibraryFilterType.ALL -> MaterialTheme.colorScheme.surfaceContainerHigh
+                    LibraryFilterType.FILMS -> MaterialTheme.colorScheme.primaryContainer
+                    LibraryFilterType.ANIME -> MaterialTheme.colorScheme.tertiaryContainer
+                },
+                animationSpec = tween(280), label = "libBg"
+            )
+            val libTextColor by animateColorAsState(
+                when (libraryFilter) {
+                    LibraryFilterType.ALL -> MaterialTheme.colorScheme.onSurface
+                    LibraryFilterType.FILMS -> MaterialTheme.colorScheme.onPrimaryContainer
+                    LibraryFilterType.ANIME -> MaterialTheme.colorScheme.onTertiaryContainer
+                },
+                animationSpec = tween(280), label = "libText"
+            )
+            Surface(
+                modifier = Modifier
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .clickable {
+                        val next = when (libraryFilter) {
+                            LibraryFilterType.ALL -> LibraryFilterType.FILMS
+                            LibraryFilterType.FILMS -> LibraryFilterType.ANIME
+                            LibraryFilterType.ANIME -> LibraryFilterType.ALL
+                        }
+                        onLibraryFilterSelected?.invoke(next)
+                    },
+                shape = RoundedCornerShape(24.dp),
+                color = libBgColor
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
+                    AnimatedContent(
+                        targetState = libraryFilter,
+                        transitionSpec = {
+                            (fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.88f, animationSpec = tween(220))) togetherWith
+                            (fadeOut(animationSpec = tween(180)) + scaleOut(targetScale = 0.88f, animationSpec = tween(180)))
+                        },
+                        label = "libFilterAnim"
+                    ) { targetFilter ->
+                        Text(
+                            text = targetFilter.label,
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = libTextColor
                         )
                     }
                 }
@@ -1846,24 +1849,42 @@ private fun ErrorCard(
     message: String,
     onRetry: () -> Unit
 ) {
-    ElevatedCard(shape = RoundedCornerShape(24.dp)) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = "Не удалось загрузить данные",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 32.dp, vertical = 48.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = Icons.Default.WifiOff,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+            modifier = Modifier.size(64.dp)
+        )
+        Spacer(modifier = Modifier.height(20.dp))
+        Text(
+            text = "Нет подключения",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Проверьте соединение с интернетом и попробуйте снова",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(28.dp))
+        Button(onClick = onRetry) {
+            Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
             )
-            Text(
-                text = message,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Button(onClick = onRetry) {
-                Text("Повторить")
-            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Повторить")
         }
     }
 }

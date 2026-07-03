@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
@@ -43,6 +44,7 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
@@ -92,6 +94,7 @@ fun KinoshkaAsyncImage(
     filterQuality: FilterQuality = FilterQuality.Medium,
     /** When true, requests the full-resolution image (no Coil downsampling). Use on large/detail views. */
     useOriginalSize: Boolean = false,
+    fadeDurationMs: Int = 520,
     onSuccess: ((AsyncImagePainter.State.Success) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -152,13 +155,16 @@ fun KinoshkaAsyncImage(
             LaunchedEffect(state.painter) {
                 visible = true
             }
-            val alpha by animateFloatAsState(
+            val fadeProgress by animateFloatAsState(
                 targetValue = if (visible) 1f else 0f,
-                animationSpec = tween(durationMillis = 300, easing = LinearOutSlowInEasing),
+                animationSpec = tween(
+                    durationMillis = fadeDurationMs,
+                    easing = CubicBezierEasing(0.2f, 0.0f, 0.0f, 1.0f)
+                ),
                 label = "imageFadeIn"
             )
             SubcomposeAsyncImageContent(
-                modifier = Modifier.graphicsLayer { this.alpha = alpha }
+                modifier = Modifier.graphicsLayer { alpha = fadeProgress }
             )
         },
         error = {
@@ -288,6 +294,133 @@ fun SkeletonGridLoading(
     ) {
         items(columns * 4) {
             SkeletonGridCard(compactText = columns >= 3)
+        }
+    }
+}
+
+@Composable
+fun DetailsScreenSkeleton(modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(0.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(340.dp)
+                .shimmerEffect()
+        )
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(114.dp)
+                        .aspectRatio(2f / 3f)
+                        .clip(RoundedCornerShape(16.dp))
+                        .shimmerEffect()
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(0.9f)
+                            .height(22.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .shimmerEffect()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(0.6f)
+                            .height(14.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .shimmerEffect()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .width(60.dp)
+                                .height(18.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .shimmerEffect()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .width(70.dp)
+                                .height(18.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .shimmerEffect()
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(0.75f)
+                            .height(12.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .shimmerEffect()
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .shimmerEffect()
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .shimmerEffect()
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .shimmerEffect()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    modifier = Modifier
+                        .width(72.dp)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .shimmerEffect()
+                )
+                Box(
+                    modifier = Modifier
+                        .width(56.dp)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .shimmerEffect()
+                )
+                Box(
+                    modifier = Modifier
+                        .width(80.dp)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .shimmerEffect()
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .shimmerEffect()
+            )
         }
     }
 }
