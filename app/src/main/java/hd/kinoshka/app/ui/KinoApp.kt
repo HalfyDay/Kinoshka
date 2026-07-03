@@ -296,7 +296,8 @@ fun KinoApp() {
                                 onUpdateFilters = vm::updateFilters,
                                 onToggleFilterSheet = vm::setShowFilterSheet,
                                 onOpenCalendar = { navController.navigate("anime_calendar") },
-                                onOpenFeed = { navController.navigate("anime_feed") }
+                                onOpenFeed = { navController.navigate("anime_feed") },
+                                onLibrarySortSelected = vm::setLibrarySortType
                             )
                         }
                         composable(

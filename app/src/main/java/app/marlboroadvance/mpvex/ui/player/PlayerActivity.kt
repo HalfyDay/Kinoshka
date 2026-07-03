@@ -2197,20 +2197,35 @@ class PlayerActivity :
                   if (authState.isLoggedIn && authState.accessToken != null) {
                     lifecycleScope.launch(Dispatchers.IO) {
                       val api = ApiClient.shikimoriApi(this@PlayerActivity)
-                      val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
-                      val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
-                      val newStatus = if (currentEp >= totalEps && totalEps > 0) "completed" else "watching"
-                      val authHeader = if (authState.accessToken.startsWith("Bearer ")) authState.accessToken else "Bearer ${authState.accessToken}"
-                      
-                      if (existingRate != null) {
-                        runCatching { 
-                          api.updateUserRate(authHeader, existingRate.id, status = newStatus, episodes = currentEp)
-                        }
-                      } else {
-                        runCatching {
-                          api.createUserRate(authHeader, authState.userId, shikimoriId, status = newStatus, episodes = currentEp)
-                        }
-                      }
+                       val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
+                       val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
+                       val newStatus = if (currentEp >= totalEps && totalEps > 0) "completed" else "watching"
+                       val authHeader = if (authState.accessToken.startsWith("Bearer ")) authState.accessToken else "Bearer ${authState.accessToken}"
+
+                       if (existingRate != null) {
+                         runCatching {
+                           val updateRequest = hd.kinoshka.app.data.model.UserRateUpdateRequest(
+                             userRate = hd.kinoshka.app.data.model.UserRateUpdateData(
+                               status = newStatus,
+                               episodes = currentEp
+                             )
+                           )
+                           api.updateUserRate(authHeader, existingRate.id, updateRequest)
+                         }
+                       } else {
+                         runCatching {
+                           val createRequest = hd.kinoshka.app.data.model.UserRateRequest(
+                             userRate = hd.kinoshka.app.data.model.UserRateData(
+                               userId = authState.userId,
+                               targetId = shikimoriId,
+                               targetType = "Anime",
+                               status = newStatus,
+                               episodes = currentEp
+                             )
+                           )
+                           api.createUserRate(authHeader, createRequest)
+                         }
+                       }
                     }
                   }
                 }

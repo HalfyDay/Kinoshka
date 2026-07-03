@@ -398,3 +398,30 @@ data class ShikimoriCharacterDetails(
     val displayTitle: String get() = russian?.takeIf { it.isNotBlank() } ?: name ?: "Персонаж"
     val imageUrl: String? get() = image?.getFullOriginalUrl() ?: image?.getFullPreviewUrl()
 }
+
+data class UserRateRequest(
+    @SerializedName("user_rate") val userRate: UserRateData
+)
+
+data class UserRateData(
+    @SerializedName("user_id") val userId: Int,
+    @SerializedName("target_id") val targetId: Int,
+    @SerializedName("target_type") val targetType: String = "Anime",
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("episodes") val episodes: Int? = null,
+    @SerializedName("score") val score: Int? = null,
+    @SerializedName("text") val text: String? = null,
+    @SerializedName("rewatches") val rewatches: Int? = null
+)
+
+data class UserRateUpdateRequest(
+    @SerializedName("user_rate") val userRate: UserRateUpdateData
+)
+
+data class UserRateUpdateData(
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("episodes") val episodes: Int? = null,
+    @SerializedName("score") val score: Int? = null,
+    @SerializedName("text") val text: String? = null,
+    @SerializedName("rewatches") val rewatches: Int? = null
+)

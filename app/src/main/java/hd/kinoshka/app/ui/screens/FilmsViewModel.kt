@@ -1,5 +1,6 @@
 package hd.kinoshka.app.ui.screens
 
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -193,12 +194,35 @@ class FilmsViewModel(
             if (state.isLoggedIn && state.userId > 0) {
                 viewModelScope.launch {
                     val rates = animeRepository.getUserRates(state.userId)
-                    cachedShikimoriRates = rates
+                    // First, populate from local cache
+                    val localCache = userStateStore.getShikimoriAnimeCache()
+                    val ratesWithLocalCache = rates.map { rate ->
+                        if (rate.anime == null && rate.targetId > 0) {
+                            val cached = localCache[rate.targetId]
+                            if (cached != null) {
+                                val animeItem = hd.kinoshka.app.data.model.ShikimoriAnimeItem(
+                                    id = cached.shikimoriId,
+                                    name = cached.name,
+                                    russian = cached.russian,
+                                    image = null,
+                                    url = null,
+                                    kind = cached.kind,
+                                    score = cached.score,
+                                    status = cached.status,
+                                    episodes = cached.episodes,
+                                    episodesAired = cached.episodesAired
+                                )
+                                rate.copy(anime = animeItem)
+                            } else rate
+                        } else rate
+                    }
+                    cachedShikimoriRates = ratesWithLocalCache
                     uiState = uiState.copy(library = buildLibraryItems())
 
-                    val missingDetailsRates = rates.filter { it.anime == null && it.targetId > 0 }
+                    // Fetch missing details from API
+                    val missingDetailsRates = ratesWithLocalCache.filter { it.anime == null && it.targetId > 0 }
                     if (missingDetailsRates.isNotEmpty()) {
-                        val updatedRates = rates.toMutableList()
+                        val updatedRates = ratesWithLocalCache.toMutableList()
                         missingDetailsRates.take(40).forEach { rate ->
                             runCatching {
                                 val details = animeRepository.details(rate.targetId)
@@ -218,6 +242,20 @@ class FilmsViewModel(
                                 if (idx >= 0) {
                                     updatedRates[idx] = updatedRates[idx].copy(anime = animeItem)
                                 }
+                                // Save to local cache
+                                userStateStore.saveShikimoriAnimeInfo(
+                                    hd.kinoshka.app.data.local.ShikimoriAnimeCache(
+                                        shikimoriId = details.id,
+                                        name = details.name,
+                                        russian = details.russian,
+                                        posterUrl = animeItem.posterUrl,
+                                        episodes = details.episodes,
+                                        episodesAired = details.episodesAired,
+                                        kind = details.kind,
+                                        score = details.score,
+                                        status = details.status
+                                    )
+                                )
                             }
                         }
                         cachedShikimoriRates = updatedRates
@@ -247,23 +285,43 @@ class FilmsViewModel(
         }
     }
 
-    fun saveShikimoriToken(token: String) {
+    fun saveShikimoriToken(code: String) {
         viewModelScope.launch {
-            val whoami = animeRepository.whoami(token)
-            if (whoami != null) {
-                val rawAvatar = whoami.avatar ?: whoami.image?.original
-                val fullAvatar = if (rawAvatar?.startsWith("/") == true) "https://shikimori.io$rawAvatar" else rawAvatar
-                shikimoriAuthStore?.saveSession(
-                    token = token,
-                    refresh = null,
-                    userId = whoami.id,
-                    nickname = whoami.nickname,
-                    avatarUrl = fullAvatar
-                )
-                if (!fullAvatar.isNullOrBlank()) {
-                    setProfileAvatar(fullAvatar)
+            Log.d("ShikimoriSync", "=== Starting OAuth token exchange ===")
+            Log.d("ShikimoriSync", "Authorization code: ${code.take(10)}...")
+            Log.d("ShikimoriSync", "Client ID configured: ${hd.kinoshka.app.BuildConfig.SHIKIMORI_CLIENT_ID.isNotBlank()}")
+            Log.d("ShikimoriSync", "Client Secret configured: ${hd.kinoshka.app.BuildConfig.SHIKIMORI_CLIENT_SECRET.isNotBlank()}")
+
+            val tokenResponse = animeRepository.exchangeCodeForToken(code)
+            if (tokenResponse != null) {
+                Log.d("ShikimoriSync", "Token exchange SUCCESS!")
+                Log.d("ShikimoriSync", "Access token: ${tokenResponse.accessToken.take(10)}...")
+                Log.d("ShikimoriSync", "Refresh token: ${tokenResponse.refreshToken?.take(10)}...")
+
+                Log.d("ShikimoriSync", "Fetching user info with new token...")
+                val whoami = animeRepository.whoami(tokenResponse.accessToken)
+                if (whoami != null) {
+                    Log.d("ShikimoriSync", "User info fetched: id=${whoami.id}, nickname=${whoami.nickname}")
+                    val rawAvatar = whoami.avatar ?: whoami.image?.original
+                    val fullAvatar = if (rawAvatar?.startsWith("/") == true) "https://shikimori.io$rawAvatar" else rawAvatar
+                    shikimoriAuthStore?.saveSession(
+                        token = tokenResponse.accessToken,
+                        refresh = tokenResponse.refreshToken,
+                        userId = whoami.id,
+                        nickname = whoami.nickname,
+                        avatarUrl = fullAvatar
+                    )
+                    if (!fullAvatar.isNullOrBlank()) {
+                        setProfileAvatar(fullAvatar)
+                    }
+                    refreshShikimoriAuth()
+                    Log.d("ShikimoriSync", "=== OAuth login successful! ===")
+                } else {
+                    Log.e("ShikimoriSync", "Failed to fetch user info")
                 }
-                refreshShikimoriAuth()
+            } else {
+                Log.e("ShikimoriSync", "=== Token exchange FAILED ===")
+                Log.e("ShikimoriSync", "Check if SHIKIMORI_CLIENT_ID and SHIKIMORI_CLIENT_SECRET are configured in local.properties")
             }
         }
     }
@@ -442,6 +500,7 @@ class FilmsViewModel(
         if (details.kinopoiskId >= ANIME_ID_OFFSET) {
             val shikimoriId = details.kinopoiskId - ANIME_ID_OFFSET
             val authState = uiState.shikimoriAuthState
+            Log.d("ShikimoriSync", "saveUserProfile: kinopoiskId=${details.kinopoiskId}, shikimoriId=$shikimoriId, isLoggedIn=${authState.isLoggedIn}")
             if (authState.isLoggedIn && authState.accessToken != null) {
                 viewModelScope.launch {
                     val shikiStatus = when (status) {
@@ -453,28 +512,79 @@ class FilmsViewModel(
                         UserFilmStatus.DROPPED -> "dropped"
                         else -> null
                     }
+                    Log.d("ShikimoriSync", "shikiStatus=$shikiStatus, existingRate=${cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }?.id}")
                     if (shikiStatus != null) {
+                        var token = authState.accessToken
                         val existingRate = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
+                        var success = false
+
+                        // Try with current token first
                         if (existingRate != null) {
-                            animeRepository.updateUserRate(
-                                token = authState.accessToken,
+                            Log.d("ShikimoriSync", "Updating existing rate id=${existingRate.id}")
+                            val result = animeRepository.updateUserRate(
+                                token = token,
                                 rateId = existingRate.id,
                                 status = shikiStatus,
                                 episodes = safeEpisodes,
                                 score = safeRating
                             )
+                            success = result != null
                         } else {
-                            animeRepository.createUserRate(
-                                token = authState.accessToken,
+                            Log.d("ShikimoriSync", "Creating new rate for targetId=$shikimoriId")
+                            val result = animeRepository.createUserRate(
+                                token = token,
                                 userId = authState.userId,
                                 targetId = shikimoriId,
                                 status = shikiStatus,
                                 episodes = safeEpisodes ?: 0,
                                 score = safeRating ?: 0
                             )
+                            success = result != null
+                        }
+
+                        // If failed with 401, try refreshing token
+                        if (!success && authState.refreshToken != null) {
+                            Log.d("ShikimoriSync", "Token expired, attempting refresh...")
+                            val newTokenResponse = animeRepository.refreshToken(authState.refreshToken)
+                            if (newTokenResponse != null) {
+                                // Save new tokens
+                                shikimoriAuthStore?.saveSession(
+                                    token = newTokenResponse.accessToken,
+                                    refresh = newTokenResponse.refreshToken,
+                                    userId = authState.userId,
+                                    nickname = authState.nickname,
+                                    avatarUrl = authState.avatarUrl
+                                )
+                                token = newTokenResponse.accessToken
+                                Log.d("ShikimoriSync", "Token refreshed, retrying...")
+
+                                // Retry with new token
+                                if (existingRate != null) {
+                                    animeRepository.updateUserRate(
+                                        token = token,
+                                        rateId = existingRate.id,
+                                        status = shikiStatus,
+                                        episodes = safeEpisodes,
+                                        score = safeRating
+                                    )
+                                } else {
+                                    animeRepository.createUserRate(
+                                        token = token,
+                                        userId = authState.userId,
+                                        targetId = shikimoriId,
+                                        status = shikiStatus,
+                                        episodes = safeEpisodes ?: 0,
+                                        score = safeRating ?: 0
+                                    )
+                                }
+                            } else {
+                                Log.e("ShikimoriSync", "Failed to refresh token, user needs to re-login")
+                            }
                         }
                     }
                 }
+            } else {
+                Log.w("ShikimoriSync", "Not logged in or no access token")
             }
         }
     }
@@ -532,6 +642,11 @@ class FilmsViewModel(
     fun setLibraryTileSize(size: FilmTileSize) {
         userStateStore.setLibraryTileSize(size)
         uiState = uiState.copy(libraryTileSize = size)
+    }
+
+    fun setLibrarySortType(sortType: hd.kinoshka.app.data.local.LibrarySortType) {
+        userStateStore.setLibrarySortType(sortType)
+        uiState = uiState.copy(library = buildLibraryItems())
     }
 
     fun setShowFpsCounter(enabled: Boolean) {
@@ -921,6 +1036,7 @@ class FilmsViewModel(
         val profileMap = userStateStore.getProfiles()
             .associateBy { it.kinopoiskId }
             .toMutableMap()
+        val localAnimeCache = userStateStore.getShikimoriAnimeCache()
 
         val format = DateFormat.getDateTimeInstance(
             DateFormat.SHORT,
@@ -928,26 +1044,64 @@ class FilmsViewModel(
             Locale("ru")
         )
         val result = mutableListOf<LibraryUiItem>()
+        val addedIds = mutableSetOf<Int>()
 
+        // First: history records (highest priority for display)
         historyRecords.forEach { history ->
             val profile = profileMap.remove(history.kinopoiskId)
-            result += history.toLibraryUiItem(profile, format)
-        }
-
-        profileMap.values.forEach { profile ->
-            result += profile.toLibraryUiItem()
-        }
-
-        val existingIds = result.map { it.kinopoiskId }.toSet()
-        (cachedShikimoriRates ?: emptyList()).forEach { rate ->
-            val item = rate.toLibraryUiItem() ?: return@forEach
-            if (!existingIds.contains(item.kinopoiskId)) {
-                result.add(item)
+            val item = history.toLibraryUiItem(profile, format)
+            if (addedIds.add(item.kinopoiskId)) {
+                result += item
             }
         }
 
-        // Sort globally: newest recent items on top, oldest at bottom
-        return result.sortedByDescending { it.viewedAtMillis ?: it.updatedAt }
+        // Second: remaining profiles (not in history)
+        profileMap.values.forEach { profile ->
+            val item = profile.toLibraryUiItem()
+            if (addedIds.add(item.kinopoiskId)) {
+                result += item
+            }
+        }
+
+        // Third: Shikimori rates (only if not already added from local sources)
+        // Also merge with local cache to ensure poster/title data is available
+        (cachedShikimoriRates ?: emptyList()).forEach { rate ->
+            val item = rate.toLibraryUiItemWithCache(localAnimeCache) ?: return@forEach
+            if (addedIds.add(item.kinopoiskId)) {
+                result.add(item)
+            } else {
+                // Item already exists, try to enrich it with Shikimori data
+                val existingIdx = result.indexOfFirst { it.kinopoiskId == item.kinopoiskId }
+                if (existingIdx >= 0) {
+                    val existing = result[existingIdx]
+                    // Update poster if missing
+                    if (existing.posterUrl == null && item.posterUrl != null) {
+                        result[existingIdx] = existing.copy(posterUrl = item.posterUrl)
+                    }
+                    // Update total episodes if missing
+                    if (existing.totalEpisodes == null && item.totalEpisodes != null) {
+                        result[existingIdx] = existing.copy(totalEpisodes = item.totalEpisodes)
+                    }
+                }
+            }
+        }
+
+        // Sort based on user preference
+        val sortType = userStateStore.getLibrarySortType()
+        return when (sortType) {
+            hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED ->
+                result.sortedByDescending { it.viewedAtMillis ?: it.updatedAt }
+            hd.kinoshka.app.data.local.LibrarySortType.DATE_ADDED ->
+                result.sortedByDescending { it.updatedAt }
+            hd.kinoshka.app.data.local.LibrarySortType.ALPHABETICAL ->
+                result.sortedBy { it.title.lowercase(Locale("ru")) }
+            hd.kinoshka.app.data.local.LibrarySortType.RATING ->
+                result.sortedByDescending {
+                    it.ratingText?.replace(Regex("[^0-9.]"), "")?.toDoubleOrNull() ?: 0.0
+                }
+            hd.kinoshka.app.data.local.LibrarySortType.RELEASE_DATE ->
+                result.sortedByDescending { it.updatedAt } // Fallback, actual release date would need extra data
+        }
     }
 
     private fun getUserProfileForFilm(id: Int): UserFilmProfile? {
@@ -1027,6 +1181,54 @@ private fun hd.kinoshka.app.data.model.ShikimoriUserRate.toLibraryUiItem(): Libr
         totalEpisodesInSeason = null,
         totalSeasons = null,
         totalEpisodes = animeItem?.episodes,
+        updatedAt = rateTime
+    )
+}
+
+private fun hd.kinoshka.app.data.model.ShikimoriUserRate.toLibraryUiItemWithCache(
+    localCache: Map<Int, hd.kinoshka.app.data.local.ShikimoriAnimeCache>
+): LibraryUiItem? {
+    val animeItem = anime
+    val actualTargetId = if (animeItem != null) animeItem.id else targetId
+    if (actualTargetId <= 0) return null
+
+    // Try to get cached info if anime data is missing
+    val cachedInfo = if (animeItem == null) localCache[actualTargetId] else null
+
+    val appFilmId = actualTargetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+    val appTitle = animeItem?.displayTitle ?: cachedInfo?.displayTitle ?: "Аниме #$actualTargetId"
+    val appPoster = animeItem?.posterUrl ?: cachedInfo?.posterUrl ?: "https://smarthard.net/static/animes/$actualTargetId.jpeg"
+    val appEpisodes = animeItem?.episodes ?: cachedInfo?.episodes
+    val appScore = animeItem?.score ?: cachedInfo?.score
+
+    val filmStatus = when (status.lowercase()) {
+        "watching" -> UserFilmStatus.WATCHING
+        "planned" -> UserFilmStatus.PLANNED
+        "completed" -> UserFilmStatus.COMPLETED
+        "rewatching" -> UserFilmStatus.REWATCHING
+        "on_hold" -> UserFilmStatus.ON_HOLD
+        "dropped" -> UserFilmStatus.DROPPED
+        else -> UserFilmStatus.WATCHING
+    }
+    val rateTime = getUpdatedEpochMillis().takeIf { it > 0 } ?: System.currentTimeMillis()
+    return LibraryUiItem(
+        kinopoiskId = appFilmId,
+        title = appTitle,
+        subtitle = animeItem?.name ?: cachedInfo?.name,
+        posterUrl = appPoster,
+        ratingText = appScore ?: if (score > 0) score.toString() else null,
+        type = "ANIME",
+        isRussian = false,
+        viewedAtMillis = rateTime,
+        viewedAtLabel = null,
+        status = filmStatus,
+        userRating = if (score > 0) score else null,
+        note = text,
+        watchedSeasons = null,
+        watchedEpisodes = if (episodes > 0) episodes else null,
+        totalEpisodesInSeason = null,
+        totalSeasons = null,
+        totalEpisodes = appEpisodes,
         updatedAt = rateTime
     )
 }

@@ -46,6 +46,11 @@ android {
         buildConfigField("boolean", "ENABLE_UPDATE_FEATURE", "false")
         buildConfigField("boolean", "SCOPED_STORAGE_ONLY", "false")
         buildConfigField("String", "GIT_SHA", "\"unknown\"")
+
+        val shikimoriClientId = (localProps.getProperty("SHIKIMORI_CLIENT_ID") ?: "").trim().removeSurrounding("\"").removeSurrounding("'")
+        val shikimoriClientSecret = (localProps.getProperty("SHIKIMORI_CLIENT_SECRET") ?: "").trim().removeSurrounding("\"").removeSurrounding("'")
+        buildConfigField("String", "SHIKIMORI_CLIENT_ID", "\"$shikimoriClientId\"")
+        buildConfigField("String", "SHIKIMORI_CLIENT_SECRET", "\"$shikimoriClientSecret\"")
     }
 
     buildTypes {
