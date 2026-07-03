@@ -108,7 +108,7 @@ object AnimeStreamResolver {
     }
 
     suspend fun prefetchAllMedia(shikimoriId: Int, animeTitle: String): List<FlatTranslation> {
-        val cacheKey = "$shikimoriId:$animeTitle"
+        val cacheKey = "$shikimoriId:${animeTitle.trim().lowercase()}"
         prefetchAllMediaCache[cacheKey]?.let { entry ->
             if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) {
                 return entry.data
