@@ -4,6 +4,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +64,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -93,6 +97,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.ripple
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.runtime.rememberCoroutineScope
@@ -1716,8 +1721,8 @@ private fun BottomSectionBar(
             modifier = Modifier.widthIn(min = 260.dp, max = 300.dp),
             shape = CircleShape,
             color = containerColor,
-            tonalElevation = 2.dp,
-            shadowElevation = 4.dp
+            tonalElevation = 3.dp,
+            shadowElevation = 8.dp
         ) {
             Row(
                 modifier = Modifier
@@ -1773,17 +1778,41 @@ private fun BottomSectionBar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BottomSectionButton(
     selected: Boolean,
     onClick: () -> Unit,
     icon: @Composable (Boolean) -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (isPressed) 0.88f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessHigh
+        ),
+        label = "press_scale"
+    )
+
     Box(
         modifier = Modifier
+            .size(60.dp)
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+            }
             .clip(CircleShape)
-            .clickable(onClick = onClick)
-            .size(60.dp),
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(
+                    bounded = true,
+                    radius = 28.dp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                ),
+                onClick = onClick
+            ),
         contentAlignment = Alignment.Center
     ) {
         NavItemGlyph(
@@ -1800,22 +1829,34 @@ private fun NavItemGlyph(
 ) {
     val bg by animateColorAsState(
         targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-        animationSpec = tween(220),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
         label = "nav_bg"
     )
     val tint by animateColorAsState(
         targetValue = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = tween(220),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
         label = "nav_tint"
     )
     val scale by animateFloatAsState(
-        targetValue = if (selected) 1f else 0.9f,
-        animationSpec = tween(220),
+        targetValue = if (selected) 1f else 0.85f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
         label = "nav_scale"
     )
     val glyphSize by animateDpAsState(
-        targetValue = if (selected) 50.dp else 46.dp,
-        animationSpec = tween(220),
+        targetValue = if (selected) 50.dp else 44.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
         label = "nav_glyph_size"
     )
     Surface(
