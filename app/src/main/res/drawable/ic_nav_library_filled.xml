@@ -1,0 +1,42 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 3 books standing, filled individually, no background -->
+    <!-- Book 1 (left) -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M5,18 L5,5 C5,4.5 5.3,4 6,4 L8,4 C8.7,4 9,4.5 9,5 L9,18 Z" />
+    <!-- Book 2 (middle, taller) -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M10.5,18 L10.5,3 C10.5,2.5 10.8,2 11.5,2 L13.5,2 C14.2,2 14.5,2.5 14.5,3 L14.5,18 Z" />
+    <!-- Book 3 (right) -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M16,18 L16,6 C16,5.5 16.3,5 17,5 L18.5,5 C19.2,5 19.5,5.5 19.5,6 L19.5,18 Z" />
+    <!-- Shelf line -->
+    <path
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M3.5,18.5 L20.5,18.5" />
+    <!-- Spine detail lines (subtle) -->
+    <path
+        android:strokeColor="#888888"
+        android:strokeWidth="0.7"
+        android:fillColor="#00000000"
+        android:pathData="M6.5,7 L8,7 M6.5,9.5 L8,9.5" />
+    <path
+        android:strokeColor="#888888"
+        android:strokeWidth="0.7"
+        android:fillColor="#00000000"
+        android:pathData="M12,5.5 L13.5,5.5 M12,8 L13.5,8" />
+    <path
+        android:strokeColor="#888888"
+        android:strokeWidth="0.7"
+        android:fillColor="#00000000"
+        android:pathData="M17.5,8 L19,8 M17.5,10.5 L19,10.5" />
+</vector>
