@@ -43,7 +43,7 @@ android {
             .removeSurrounding("'")
         buildConfigField("String", "KP_API_KEY", "\"$apiKey\"")
         buildConfigField("String", "GITHUB_RELEASES_URL", "\"$githubReleasesUrl\"")
-        buildConfigField("boolean", "ENABLE_UPDATE_FEATURE", "false")
+        buildConfigField("boolean", "ENABLE_UPDATE_FEATURE", "true")
         buildConfigField("boolean", "SCOPED_STORAGE_ONLY", "false")
         buildConfigField("String", "GIT_SHA", "\"unknown\"")
 
