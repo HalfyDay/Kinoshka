@@ -84,7 +84,8 @@ class AppUpdateManager(private val appContext: Context) {
                         tagName = latestTag,
                         apkName = apkAsset.name,
                         apkDownloadUrl = apkAsset.downloadUrl,
-                        htmlUrl = releasePageUrl
+                        htmlUrl = releasePageUrl,
+                        body = payload.optString("body").orEmpty()
                     )
                 )
             }
@@ -276,7 +277,8 @@ data class AppRelease(
     val tagName: String,
     val apkName: String,
     val apkDownloadUrl: String,
-    val htmlUrl: String
+    val htmlUrl: String,
+    val body: String
 )
 
 sealed interface UpdateCheckResult {

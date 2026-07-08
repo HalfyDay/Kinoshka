@@ -47,6 +47,7 @@ import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.data.update.AppUpdateManager
+import hd.kinoshka.app.data.update.AppRelease
 import hd.kinoshka.app.data.update.UpdateCheckResult
 import hd.kinoshka.app.ui.screens.AboutScreen
 import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
@@ -60,6 +61,7 @@ import hd.kinoshka.app.ui.screens.MpvExPlayerScreen
 import hd.kinoshka.app.ui.screens.ProfileScreen
 import hd.kinoshka.app.ui.screens.SettingsScreen
 import hd.kinoshka.app.ui.components.DebugPerformanceOverlay
+import hd.kinoshka.app.ui.components.UpdateAvailableSheet
 import hd.kinoshka.app.ui.theme.KinoTheme
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
@@ -96,6 +98,9 @@ fun KinoApp() {
         val scope = rememberCoroutineScope()
         var isUpdateFlowRunning by remember { mutableStateOf(false) }
         var activeNativePlayerArgs by remember { mutableStateOf<NativePlayerArgs?>(null) }
+        var showUpdateSheet by remember { mutableStateOf(false) }
+        var availableRelease by remember { mutableStateOf<AppRelease?>(null) }
+        var isDownloading by remember { mutableStateOf(false) }
         var updateStatusText by remember(updatePrefs) {
             mutableStateOf(
                 updatePrefs.getString(KEY_LAST_UPDATE_STATUS, "Проверка версии...")
@@ -194,11 +199,8 @@ fun KinoApp() {
                             is UpdateCheckResult.UpdateAvailable -> {
                                 setUpdateStatus("Доступна новая версия ${checkResult.release.tagName}.")
                                 if (!installIfAvailable) {
-                                    Toast.makeText(
-                                        appContext,
-                                        "Доступна версия ${checkResult.release.tagName}. Откройте «О приложении».",
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                                    availableRelease = checkResult.release
+                                    showUpdateSheet = true
                                     return@launch
                                 }
 
@@ -469,6 +471,57 @@ fun KinoApp() {
                             translations = args.translations,
                             currentTranslationId = args.currentTranslationId,
                             onBack = { activeNativePlayerArgs = null }
+                        )
+                    }
+
+                    if (showUpdateSheet && availableRelease != null) {
+                        val release = availableRelease!!
+                        UpdateAvailableSheet(
+                            release = release,
+                            isDownloading = isDownloading,
+                            currentVersion = BuildConfig.VERSION_NAME,
+                            onDismiss = {
+                                showUpdateSheet = false
+                                availableRelease = null
+                                isDownloading = false
+                            },
+                            onUpdate = {
+                                scope.launch {
+                                    isDownloading = true
+                                    val downloadResult = updateManager.downloadApk(release)
+                                    downloadResult.fold(
+                                        onSuccess = { apkFile ->
+                                            isDownloading = false
+                                            showUpdateSheet = false
+                                            availableRelease = null
+                                            if (!updateManager.canInstallPackages()) {
+                                                setUpdateStatus("APK скачан. Разрешите установку из этого источника.")
+                                                updateManager.openUnknownSourcesSettings()
+                                                return@launch
+                                            }
+                                            val installResult = updateManager.launchApkInstaller(apkFile)
+                                            if (installResult.isFailure) {
+                                                setUpdateStatus("Не удалось запустить установку APK.")
+                                                openInBrowser(release.htmlUrl)
+                                            } else {
+                                                setUpdateStatus("Установка версии ${release.tagName} запущена.")
+                                            }
+                                        },
+                                        onFailure = { error ->
+                                            isDownloading = false
+                                            showUpdateSheet = false
+                                            availableRelease = null
+                                            setUpdateStatus("Не удалось скачать APK.")
+                                            Toast.makeText(
+                                                appContext,
+                                                error.message ?: "Не удалось скачать APK.",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                            openInBrowser(release.htmlUrl)
+                                        }
+                                    )
+                                }
+                            }
                         )
                     }
                 }
