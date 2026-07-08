@@ -102,7 +102,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.rounded.Star
@@ -1714,7 +1713,7 @@ private fun BottomSectionBar(
         contentAlignment = Alignment.BottomCenter
     ) {
         Surface(
-            modifier = Modifier.widthIn(min = 240.dp, max = 280.dp),
+            modifier = Modifier.widthIn(min = 260.dp, max = 300.dp),
             shape = CircleShape,
             color = containerColor,
             tonalElevation = 2.dp,
@@ -1730,33 +1729,42 @@ private fun BottomSectionBar(
                 BottomSectionButton(
                     selected = librarySelected,
                     onClick = { onSectionSelected(MainSection.LIBRARY) },
-                    icon = {
+                    icon = { selected ->
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.List,
+                            painter = painterResource(
+                                if (selected) hd.kinoshka.app.R.drawable.ic_nav_library_filled
+                                else hd.kinoshka.app.R.drawable.ic_nav_library_outlined
+                            ),
                             contentDescription = "Библиотека",
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(28.dp)
                         )
                     }
                 )
                 BottomSectionButton(
                     selected = discoverSelected,
                     onClick = { onSectionSelected(MainSection.DISCOVER) },
-                    icon = {
+                    icon = { selected ->
                         Icon(
-                            imageVector = Icons.Filled.Search,
+                            painter = painterResource(
+                                if (selected) hd.kinoshka.app.R.drawable.ic_nav_discover_filled
+                                else hd.kinoshka.app.R.drawable.ic_nav_discover_outlined
+                            ),
                             contentDescription = "Обзор",
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(28.dp)
                         )
                     }
                 )
                 BottomSectionButton(
                     selected = moreSelected,
                     onClick = { onSectionSelected(MainSection.MORE) },
-                    icon = {
+                    icon = { selected ->
                         Icon(
-                            imageVector = Icons.Filled.MoreVert,
+                            painter = painterResource(
+                                if (selected) hd.kinoshka.app.R.drawable.ic_nav_more_filled
+                                else hd.kinoshka.app.R.drawable.ic_nav_more_outlined
+                            ),
                             contentDescription = "Ещё",
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(28.dp)
                         )
                     }
                 )
@@ -1769,17 +1777,17 @@ private fun BottomSectionBar(
 private fun BottomSectionButton(
     selected: Boolean,
     onClick: () -> Unit,
-    icon: @Composable () -> Unit
+    icon: @Composable (Boolean) -> Unit
 ) {
     Box(
         modifier = Modifier
             .clip(CircleShape)
             .clickable(onClick = onClick)
-            .size(56.dp),
+            .size(60.dp),
         contentAlignment = Alignment.Center
     ) {
         NavItemGlyph(
-            icon = icon,
+            icon = { icon(selected) },
             selected = selected
         )
     }
@@ -1806,7 +1814,7 @@ private fun NavItemGlyph(
         label = "nav_scale"
     )
     val glyphSize by animateDpAsState(
-        targetValue = if (selected) 46.dp else 42.dp,
+        targetValue = if (selected) 50.dp else 46.dp,
         animationSpec = tween(220),
         label = "nav_glyph_size"
     )
