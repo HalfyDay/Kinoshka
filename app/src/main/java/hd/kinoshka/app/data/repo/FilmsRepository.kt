@@ -7,28 +7,25 @@ import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.FilmLinkItem
 import hd.kinoshka.app.data.model.FiltersResponse
 import hd.kinoshka.app.data.model.SeasonItem
-import java.util.concurrent.ConcurrentHashMap
 
 class FilmsRepository(private val api: KinopoiskApi) {
-    private val ttlMs = 3 * 24 * 60 * 60 * 1000L
-
-    private val popularCache = ConcurrentHashMap<String, CacheEntry<List<FilmItem>>>()
-    private val searchCache = ConcurrentHashMap<String, CacheEntry<List<FilmItem>>>()
-    private val detailsCache = ConcurrentHashMap<Int, CacheEntry<FilmDetails>>()
-    private val seasonsCache = ConcurrentHashMap<Int, CacheEntry<List<SeasonItem>>>()
-    private val similarsCache = ConcurrentHashMap<Int, CacheEntry<List<FilmLinkItem>>>()
-    private val relationsCache = ConcurrentHashMap<Int, CacheEntry<List<FilmLinkItem>>>()
-    private val imagesCache = ConcurrentHashMap<String, CacheEntry<List<FilmImageItem>>>()
-    private var cachedFilters: CacheEntry<FiltersResponse>? = null
+    private val popularCache = BoundedCache<String, List<FilmItem>>()
+    private val searchCache = BoundedCache<String, List<FilmItem>>()
+    private val detailsCache = BoundedCache<Int, FilmDetails>()
+    private val seasonsCache = BoundedCache<Int, List<SeasonItem>>()
+    private val similarsCache = BoundedCache<Int, List<FilmLinkItem>>()
+    private val relationsCache = BoundedCache<Int, List<FilmLinkItem>>()
+    private val imagesCache = BoundedCache<String, List<FilmImageItem>>()
+    private val filtersCache = BoundedCache<String, FiltersResponse>()
 
     suspend fun popular(
         collectionType: String = "TOP_POPULAR_ALL",
         page: Int = 1
     ): List<FilmItem> {
         val key = "$collectionType:$page"
-        getIfFresh(popularCache[key])?.let { return it }
+        popularCache.get(key)?.let { return it }
         val loaded = api.popular(type = collectionType, page = page).items
-        popularCache[key] = CacheEntry(loaded, System.currentTimeMillis())
+        popularCache.put(key, loaded)
         return loaded
     }
 
@@ -46,7 +43,7 @@ class FilmsRepository(private val api: KinopoiskApi) {
     ): List<FilmItem> {
         val cleanQuery = query?.trim()?.takeIf { it.isNotBlank() }
         val key = "$cleanQuery:$countryId:$genreId:$order:$type:$ratingFrom:$ratingTo:$yearFrom:$yearTo:$page"
-        getIfFresh(searchCache[key])?.let { return it }
+        searchCache.get(key)?.let { return it }
         val loaded = api.search(
             keyword = cleanQuery,
             countries = countryId,
@@ -59,62 +56,50 @@ class FilmsRepository(private val api: KinopoiskApi) {
             yearTo = yearTo,
             page = page
         ).items
-        searchCache[key] = CacheEntry(loaded, System.currentTimeMillis())
+        searchCache.put(key, loaded)
         return loaded
     }
 
     suspend fun filters(): FiltersResponse {
-        getIfFresh(cachedFilters)?.let { return it }
+        filtersCache.get("filters")?.let { return it }
         val loaded = api.filters()
-        cachedFilters = CacheEntry(loaded, System.currentTimeMillis())
+        filtersCache.put("filters", loaded)
         return loaded
     }
 
     suspend fun details(id: Int): FilmDetails {
-        getIfFresh(detailsCache[id])?.let { return it }
+        detailsCache.get(id)?.let { return it }
         val loaded = api.details(id)
-        detailsCache[id] = CacheEntry(loaded, System.currentTimeMillis())
+        detailsCache.put(id, loaded)
         return loaded
     }
 
     suspend fun seasons(id: Int): List<SeasonItem> {
-        getIfFresh(seasonsCache[id])?.let { return it }
+        seasonsCache.get(id)?.let { return it }
         val loaded = api.seasons(id).items
-        seasonsCache[id] = CacheEntry(loaded, System.currentTimeMillis())
+        seasonsCache.put(id, loaded)
         return loaded
     }
 
     suspend fun similars(id: Int): List<FilmLinkItem> {
-        getIfFresh(similarsCache[id])?.let { return it }
+        similarsCache.get(id)?.let { return it }
         val loaded = api.similars(id).items
-        similarsCache[id] = CacheEntry(loaded, System.currentTimeMillis())
+        similarsCache.put(id, loaded)
         return loaded
     }
 
     suspend fun relations(id: Int): List<FilmLinkItem> {
-        getIfFresh(relationsCache[id])?.let { return it }
+        relationsCache.get(id)?.let { return it }
         val loaded = api.relations(id).items
-        relationsCache[id] = CacheEntry(loaded, System.currentTimeMillis())
+        relationsCache.put(id, loaded)
         return loaded
     }
 
     suspend fun images(id: Int, page: Int = 1): List<FilmImageItem> {
         val key = "$id:$page"
-        getIfFresh(imagesCache[key])?.let { return it }
+        imagesCache.get(key)?.let { return it }
         val loaded = api.images(id = id, page = page).items
-        imagesCache[key] = CacheEntry(loaded, System.currentTimeMillis())
+        imagesCache.put(key, loaded)
         return loaded
     }
-
-    private fun <T> getIfFresh(entry: CacheEntry<T>?): T? {
-        if (entry == null) return null
-        val age = System.currentTimeMillis() - entry.savedAtMs
-        return if (age in 0..ttlMs) entry.value else null
-    }
 }
-
-private data class CacheEntry<T>(
-    val value: T,
-    val savedAtMs: Long
-)
-

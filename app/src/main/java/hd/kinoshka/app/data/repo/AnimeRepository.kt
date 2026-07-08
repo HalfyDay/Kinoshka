@@ -11,10 +11,14 @@ import hd.kinoshka.app.data.model.UserRateData
 import hd.kinoshka.app.data.model.UserRateRequest
 import hd.kinoshka.app.data.model.UserRateUpdateData
 import hd.kinoshka.app.data.model.UserRateUpdateRequest
-import java.util.concurrent.ConcurrentHashMap
 
 class AnimeRepository(private val api: ShikimoriApi) {
-    private val ttlMs = 3 * 24 * 60 * 60 * 1000L
+    private val searchCache = BoundedCache<String, List<ShikimoriAnimeItem>>()
+    private val detailsCache = BoundedCache<Int, ShikimoriAnimeDetails>()
+    private val screenshotsCache = BoundedCache<Int, List<ShikimoriScreenshot>>()
+    private val relatedCache = BoundedCache<Int, List<hd.kinoshka.app.data.model.ShikimoriRelatedItem>>()
+    private val franchiseCache = BoundedCache<Int, hd.kinoshka.app.data.model.ShikimoriFranchiseResponse>()
+    private val rolesCache = BoundedCache<Int, List<hd.kinoshka.app.data.model.ShikimoriRole>>()
 
     suspend fun refreshToken(refreshToken: String): ShikimoriTokenResponse? {
         val clientId = BuildConfig.SHIKIMORI_CLIENT_ID
@@ -62,14 +66,6 @@ class AnimeRepository(private val api: ShikimoriApi) {
         }.getOrNull()
     }
 
-    private val popularCache = ConcurrentHashMap<Int, AnimeCacheEntry<List<ShikimoriAnimeItem>>>()
-    private val searchCache = ConcurrentHashMap<String, AnimeCacheEntry<List<ShikimoriAnimeItem>>>()
-    private val detailsCache = ConcurrentHashMap<Int, AnimeCacheEntry<ShikimoriAnimeDetails>>()
-    private val screenshotsCache = ConcurrentHashMap<Int, AnimeCacheEntry<List<ShikimoriScreenshot>>>()
-    private val relatedCache = ConcurrentHashMap<Int, AnimeCacheEntry<List<hd.kinoshka.app.data.model.ShikimoriRelatedItem>>>()
-    private val franchiseCache = ConcurrentHashMap<Int, AnimeCacheEntry<hd.kinoshka.app.data.model.ShikimoriFranchiseResponse>>()
-    private val rolesCache = ConcurrentHashMap<Int, AnimeCacheEntry<List<hd.kinoshka.app.data.model.ShikimoriRole>>>()
-
     suspend fun popular(page: Int = 1): List<ShikimoriAnimeItem> {
         return search(order = "popularity", page = page)
     }
@@ -87,7 +83,7 @@ class AnimeRepository(private val api: ShikimoriApi) {
         val cleanQuery = query?.trim()?.ifEmpty { null }
         val genreStr = genreId?.toString()
         val key = "$cleanQuery:$kind:$status:$rating:$genreStr:$order:$scoreFrom:$page"
-        getIfFresh(searchCache[key])?.let { return it }
+        searchCache.get(key)?.let { return it }
         val loaded = api.search(
             search = cleanQuery,
             order = order,
@@ -99,42 +95,42 @@ class AnimeRepository(private val api: ShikimoriApi) {
             limit = 20,
             page = page
         )
-        searchCache[key] = AnimeCacheEntry(loaded, System.currentTimeMillis())
+        searchCache.put(key, loaded)
         return loaded
     }
 
     suspend fun details(shikimoriId: Int): ShikimoriAnimeDetails {
-        getIfFresh(detailsCache[shikimoriId])?.let { return it }
+        detailsCache.get(shikimoriId)?.let { return it }
         val loaded = api.details(shikimoriId)
-        detailsCache[shikimoriId] = AnimeCacheEntry(loaded, System.currentTimeMillis())
+        detailsCache.put(shikimoriId, loaded)
         return loaded
     }
 
     suspend fun screenshots(shikimoriId: Int): List<ShikimoriScreenshot> {
-        getIfFresh(screenshotsCache[shikimoriId])?.let { return it }
+        screenshotsCache.get(shikimoriId)?.let { return it }
         val loaded = api.screenshots(shikimoriId)
-        screenshotsCache[shikimoriId] = AnimeCacheEntry(loaded, System.currentTimeMillis())
+        screenshotsCache.put(shikimoriId, loaded)
         return loaded
     }
 
     suspend fun related(shikimoriId: Int): List<hd.kinoshka.app.data.model.ShikimoriRelatedItem> {
-        getIfFresh(relatedCache[shikimoriId])?.let { return it }
+        relatedCache.get(shikimoriId)?.let { return it }
         val loaded = runCatching { api.related(shikimoriId) }.getOrDefault(emptyList())
-        relatedCache[shikimoriId] = AnimeCacheEntry(loaded, System.currentTimeMillis())
+        relatedCache.put(shikimoriId, loaded)
         return loaded
     }
 
     suspend fun franchise(shikimoriId: Int): hd.kinoshka.app.data.model.ShikimoriFranchiseResponse {
-        getIfFresh(franchiseCache[shikimoriId])?.let { return it }
+        franchiseCache.get(shikimoriId)?.let { return it }
         val loaded = runCatching { api.franchise(shikimoriId) }.getOrDefault(hd.kinoshka.app.data.model.ShikimoriFranchiseResponse())
-        franchiseCache[shikimoriId] = AnimeCacheEntry(loaded, System.currentTimeMillis())
+        franchiseCache.put(shikimoriId, loaded)
         return loaded
     }
 
     suspend fun roles(shikimoriId: Int): List<hd.kinoshka.app.data.model.ShikimoriRole> {
-        getIfFresh(rolesCache[shikimoriId])?.let { return it }
+        rolesCache.get(shikimoriId)?.let { return it }
         val loaded = runCatching { api.roles(shikimoriId) }.getOrDefault(emptyList())
-        rolesCache[shikimoriId] = AnimeCacheEntry(loaded, System.currentTimeMillis())
+        rolesCache.put(shikimoriId, loaded)
         return loaded
     }
 
@@ -205,15 +201,4 @@ class AnimeRepository(private val api: ShikimoriApi) {
         val authHeader = if (token.startsWith("Bearer ")) token else "Bearer $token"
         runCatching { api.deleteUserRate(authHeader, rateId) }
     }
-
-    private fun <T> getIfFresh(entry: AnimeCacheEntry<T>?): T? {
-        if (entry == null) return null
-        val age = System.currentTimeMillis() - entry.savedAtMs
-        return if (age in 0..ttlMs) entry.value else null
-    }
 }
-
-private data class AnimeCacheEntry<T>(
-    val value: T,
-    val savedAtMs: Long
-)

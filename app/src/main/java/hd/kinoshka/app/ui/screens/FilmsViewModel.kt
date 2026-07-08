@@ -219,45 +219,53 @@ class FilmsViewModel(
                     cachedShikimoriRates = ratesWithLocalCache
                     uiState = uiState.copy(library = buildLibraryItems())
 
-                    // Fetch missing details from API
+                    // Fetch missing details from API in parallel
                     val missingDetailsRates = ratesWithLocalCache.filter { it.anime == null && it.targetId > 0 }
                     if (missingDetailsRates.isNotEmpty()) {
                         val updatedRates = ratesWithLocalCache.toMutableList()
-                        missingDetailsRates.take(40).forEach { rate ->
-                            runCatching {
-                                val details = animeRepository.details(rate.targetId)
-                                val animeItem = hd.kinoshka.app.data.model.ShikimoriAnimeItem(
-                                    id = details.id,
-                                    name = details.name,
-                                    russian = details.russian,
-                                    image = details.image,
-                                    url = details.url,
-                                    kind = details.kind,
-                                    score = details.score,
-                                    status = details.status,
-                                    episodes = details.episodes,
-                                    episodesAired = details.episodesAired
-                                )
-                                val idx = updatedRates.indexOfFirst { it.id == rate.id || (it.targetId == rate.targetId && it.targetId > 0) }
-                                if (idx >= 0) {
-                                    updatedRates[idx] = updatedRates[idx].copy(anime = animeItem)
+                        val semaphore = kotlinx.coroutines.sync.Semaphore(5)
+                        val deferreds = missingDetailsRates.take(40).map { rate ->
+                            async {
+                                semaphore.acquire()
+                                try {
+                                    runCatching {
+                                        val details = animeRepository.details(rate.targetId)
+                                        val animeItem = hd.kinoshka.app.data.model.ShikimoriAnimeItem(
+                                            id = details.id,
+                                            name = details.name,
+                                            russian = details.russian,
+                                            image = details.image,
+                                            url = details.url,
+                                            kind = details.kind,
+                                            score = details.score,
+                                            status = details.status,
+                                            episodes = details.episodes,
+                                            episodesAired = details.episodesAired
+                                        )
+                                        val idx = updatedRates.indexOfFirst { it.id == rate.id || (it.targetId == rate.targetId && it.targetId > 0) }
+                                        if (idx >= 0) {
+                                            updatedRates[idx] = updatedRates[idx].copy(anime = animeItem)
+                                        }
+                                        userStateStore.saveShikimoriAnimeInfo(
+                                            hd.kinoshka.app.data.local.ShikimoriAnimeCache(
+                                                shikimoriId = details.id,
+                                                name = details.name,
+                                                russian = details.russian,
+                                                posterUrl = animeItem.posterUrl,
+                                                episodes = details.episodes,
+                                                episodesAired = details.episodesAired,
+                                                kind = details.kind,
+                                                score = details.score,
+                                                status = details.status
+                                            )
+                                        )
+                                    }
+                                } finally {
+                                    semaphore.release()
                                 }
-                                // Save to local cache
-                                userStateStore.saveShikimoriAnimeInfo(
-                                    hd.kinoshka.app.data.local.ShikimoriAnimeCache(
-                                        shikimoriId = details.id,
-                                        name = details.name,
-                                        russian = details.russian,
-                                        posterUrl = animeItem.posterUrl,
-                                        episodes = details.episodes,
-                                        episodesAired = details.episodesAired,
-                                        kind = details.kind,
-                                        score = details.score,
-                                        status = details.status
-                                    )
-                                )
                             }
                         }
+                        deferreds.forEach { it.await() }
                         cachedShikimoriRates = updatedRates
                         uiState = uiState.copy(library = buildLibraryItems())
                     }

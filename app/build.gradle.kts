@@ -55,7 +55,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -152,6 +153,12 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout-compose:1.1.1")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("com.github.marlboro-advance:mediainfoAndroid:v1.0.0-fix")
+
+    // Security - encrypted preferences for tokens
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Unit tests
+    testImplementation("junit:junit:4.13.2")
 
     // Navigation3 for mpvEx
     implementation("androidx.navigation3:navigation3-runtime:1.1.3")

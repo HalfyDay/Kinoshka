@@ -79,12 +79,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 // Data model for player
 data class DdbbPlayer(
@@ -127,26 +122,13 @@ private fun readBodyLimited(response: okhttp3.Response, maxBytes: Long = MAX_RES
     }
 }
 
-// SSL-bypass HTTP client for Kodik and other Russian CDNs with untrusted certificates
-private val sslBypassClient by lazy {
-    try {
-        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
-            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
-            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
-        })
-        val sslContext = SSLContext.getInstance("TLS")
-        sslContext.init(null, trustAllCerts, SecureRandom())
-        OkHttpClient.Builder()
-            .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
-            .hostnameVerifier { _, _ -> true }
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .build()
-    } catch (e: Exception) {
-        httpClient
-    }
+// HTTP client for Kodik API calls
+private val kodikClient by lazy {
+    OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .build()
 }
 
 // Known Kodik API tokens (decoded from AnimeParsers tokens.json using reversed-base64 scheme)
@@ -172,7 +154,7 @@ private suspend fun fetchKodikEmbedUrl(shikimoriId: Int): String? = withContext(
                     .addHeader("Referer", "https://shikimori.io/")
                     .build()
 
-                val response = sslBypassClient.newCall(request).execute()
+                val response = kodikClient.newCall(request).execute()
                 if (!response.isSuccessful) {
                     response.close()
                     continue
@@ -217,7 +199,7 @@ private suspend fun fetchKodikEmbedFromPage(shikimoriId: Int): String? = withCon
                 .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .addHeader("Referer", "https://shikimori.io/animes/$shikimoriId")
                 .build()
-            val response = sslBypassClient.newCall(request).execute()
+            val response = kodikClient.newCall(request).execute()
             if (!response.isSuccessful) continue
             val html = readBodyLimited(response, 512L * 1024) ?: continue
 
