@@ -2,6 +2,8 @@ package hd.kinoshka.app.data.local
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKeys
 
 data class ShikimoriAuthState(
     val isLoggedIn: Boolean = false,
@@ -13,7 +15,23 @@ data class ShikimoriAuthState(
 )
 
 class ShikimoriAuthStore(context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences("shikimori_auth_prefs", Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences = createEncryptedPrefs(context)
+
+    private fun createEncryptedPrefs(context: Context): SharedPreferences {
+        return try {
+            val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+            EncryptedSharedPreferences.create(
+                "shikimori_auth_encrypted_prefs",
+                masterKeyAlias,
+                context,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (e: Exception) {
+            // Fallback to regular SharedPreferences if encryption fails
+            context.getSharedPreferences("shikimori_auth_prefs", Context.MODE_PRIVATE)
+        }
+    }
 
     fun getAuthState(): ShikimoriAuthState {
         val token = prefs.getString("access_token", null)
