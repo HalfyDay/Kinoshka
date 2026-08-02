@@ -42,6 +42,14 @@ object AnimeStreamResolver {
         "https://api.anilibria.tv"
     )
 
+    // AniLib (AniLibria v2 API) — a distinct source mirror set, kept separate from ANILIBERTY
+    // (which uses the v1 API). Surfacing both gives the user a fallback when one is down.
+    private val ANILIB_API = listOf(
+        "https://api.anilibria.tv",
+        "https://api.anilibria.pro",
+        "https://anilibria.top"
+    )
+
     private const val USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 
@@ -69,14 +77,15 @@ object AnimeStreamResolver {
     private val prefetchAllMediaCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<FlatTranslation>>>()
     private val resolveStreamCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<AnimeMediaStream>>()
     private val aniLibertyReleaseCache = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
-    
+
     private const val CACHE_TTL_MS = 10 * 60 * 1000L // 10 minutes cache
 
     @Suppress("UNUSED_PARAMETER")
     suspend fun fetchAvailableSources(shikimoriId: Int, animeTitle: String = ""): List<AnimeSource> = withContext(Dispatchers.IO) {
         listOf(
             AnimeSource(AnimeSourceType.KODIK, isAvailable = true),
-            AnimeSource(AnimeSourceType.ANILIBERTY, isAvailable = true)
+            AnimeSource(AnimeSourceType.ANILIBERTY, isAvailable = true),
+            AnimeSource(AnimeSourceType.ANILIB, isAvailable = true)
         )
     }
 
@@ -179,10 +188,38 @@ object AnimeStreamResolver {
                 }
             }
 
+            val deferredAniLib = async {
+                runCatching {
+                    Log.i(TAG, "[AniLib] Starting search...")
+                    val release = findAniLibRelease(shikimoriId, animeTitle)
+                    if (release != null) {
+                        val episodes = parseAniLibEpisodes(release)
+                        val title = getAniLibTitle(release)
+                        Log.i(TAG, "[AniLib] Found: \"$title\" (${episodes.size} episodes), code=${release.optString("code")}")
+                        listOf(
+                            FlatTranslation(
+                                source = AnimeSourceType.ANILIB,
+                                translationId = "default",
+                                title = title,
+                                type = "voice",
+                                episodes = episodes
+                            )
+                        )
+                    } else {
+                        Log.w(TAG, "[AniLib] No release found for \"$animeTitle\"")
+                        emptyList()
+                    }
+                }.getOrElse { e ->
+                    Log.e(TAG, "[AniLib] Search failed: ${e.message}", e)
+                    emptyList()
+                }
+            }
+
             val kodikResult = deferredKodik.await()
             val anilibertyResult = deferredAniLiberty.await()
-            Log.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodikResult.size} translations, Aniliberty: ${anilibertyResult.size} translations")
-            kodikResult + anilibertyResult
+            val anilibResult = deferredAniLib.await()
+            Log.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodikResult.size}, Aniliberty: ${anilibertyResult.size}, AniLib: ${anilibResult.size}")
+            kodikResult + anilibertyResult + anilibResult
         }
     }
 
@@ -194,6 +231,7 @@ object AnimeStreamResolver {
         when (sourceType) {
             AnimeSourceType.KODIK -> fetchKodikTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyTranslations(shikimoriId, animeTitle)
+            AnimeSourceType.ANILIB -> fetchAniLibTranslations(shikimoriId, animeTitle)
         }
     }
 
@@ -206,6 +244,7 @@ object AnimeStreamResolver {
         when (sourceType) {
             AnimeSourceType.KODIK -> fetchKodikEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle, translationId)
+            AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle, translationId)
         }
     }
 
@@ -242,6 +281,7 @@ object AnimeStreamResolver {
         when (sourceType) {
             AnimeSourceType.KODIK -> resolveKodikStream(shikimoriId, animeTitle, translationId, episodeNumber)
             AnimeSourceType.ANILIBERTY -> resolveAniLibertyStream(shikimoriId, animeTitle, episodeNumber, translationId)
+            AnimeSourceType.ANILIB -> resolveAniLibStream(shikimoriId, animeTitle, episodeNumber, translationId)
         }
     }
 
@@ -1169,5 +1209,354 @@ object AnimeStreamResolver {
             nameObj?.optString("main")
                 ?: release.optString("name").ifBlank { "AniLiberty" }
         }
+    }
+
+    // ============================================================
+    // AniLib (anilib.me) — a distinct source from AniLiberty/AniLibria.
+    // Modeled after ShikiWatch's AniLib integration: search → title (shikiId/id),
+    // getPlaylist(title.id) → episodes, getEpisode(episodeId) → players (teams) with
+    // video[{quality,href}] and a videoHost; stream url = host + href.
+    // ============================================================
+
+    private val anilibReleaseCache = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
+
+    private suspend fun findAniLibRelease(shikimoriId: Int, animeTitle: String): JSONObject? {
+        Log.i(TAG, "[AniLib] findRelease: id=$shikimoriId, title=\"$animeTitle\"")
+        val cacheKey = "$shikimoriId:$animeTitle"
+        anilibReleaseCache[cacheKey]?.let { return it }
+
+        val queries = buildAnimeSearchQueries(animeTitle).ifEmpty { listOf(animeTitle) }
+        for (base in ANILIB_API) {
+            for (query in queries) {
+                val body = get("$base/api/v2/searchTitles?search=${enc(query)}", referer = "https://anilib.me/")
+                    ?: continue
+                val title = pickAniLibTitle(body, shikimoriId, animeTitle) ?: continue
+                // Resolve to a full playlist/release object so callers can read episodes + players.
+                val playlist = get("$base/api/v2/playlist?id=${title.optInt("id")}", referer = "https://anilib.me/")
+                    ?: continue
+                val release = JSONObject().apply {
+                    put("id", title.optInt("id"))
+                    put("shikiId", title.optInt("shikiId", shikimoriId))
+                    put("name", title.optString("name", animeTitle))
+                    put("ruTitle", title.optString("ruTitle", title.optString("name", animeTitle)))
+                    put("base", base)
+                    try { put("playlist", JSONArray(playlist)) } catch (e: Exception) { put("playlistRaw", playlist) }
+                }
+                anilibReleaseCache[cacheKey] = release
+                Log.i(TAG, "[AniLib] found title id=${title.optInt("id")} on $base")
+                return release
+            }
+        }
+        Log.w(TAG, "[AniLib] no release found for id=$shikimoriId, title=\"$animeTitle\"")
+        return null
+    }
+
+    private fun pickAniLibTitle(body: String, shikimoriId: Int, expectedTitle: String): JSONObject? {
+        if (body.isBlank() || body == "null") return null
+        return runCatching {
+            val root = JSONObject(body)
+            val arr = root.optJSONArray("items")
+                ?: root.optJSONArray("data")
+                ?: root.optJSONArray("titles")
+                ?: if (root.has("id")) JSONArray().also { it.put(root) } else JSONArray(body.trim().ifEmpty { "[]" })
+            // Prefer a title whose shikiId matches; else first whose name loosely matches.
+            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.firstOrNull { t ->
+                t.optInt("shikiId", -1) == shikimoriId || t.optInt("shikimoriId", -1) == shikimoriId
+            } ?: (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.firstOrNull { t ->
+                val n = (t.optString("name") + " " + t.optString("ruTitle") + " " + t.optString("enTitle")).lowercase()
+                n.contains(expectedTitle.lowercase().take(5))
+            } ?: arr.optJSONObject(0)
+        }.getOrNull()
+    }
+
+    private fun parseAniLibEpisodes(release: JSONObject): List<AnimeEpisode> {
+        val arr = release.optJSONArray("playlist") ?: return emptyList()
+        val episodes = mutableListOf<AnimeEpisode>()
+        for (i in 0 until arr.length()) {
+            val item = arr.optJSONObject(i) ?: continue
+            val number = item.optInt("episode")
+                .takeIf { it > 0 }
+                ?: item.optInt("episodeNumber", -1).takeIf { it > 0 }
+                ?: item.optInt("number", -1).takeIf { it > 0 }
+                ?: continue
+            val title = item.optString("name").ifBlank { item.optString("title") }.ifBlank { "Серия $number" }
+            val id = item.optInt("id").takeIf { it > 0 } ?: item.optInt("episodeId").takeIf { it > 0 }
+            episodes.add(AnimeEpisode(number = number, title = title, id = id))
+        }
+        return episodes.distinctBy { it.number }.sortedBy { it.number }
+    }
+
+    private fun getAniLibTitle(release: JSONObject): String =
+        release.optString("ruTitle").ifBlank { release.optString("name") }.ifBlank { "AniLib" }
+
+    private suspend fun fetchAniLibTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> {
+        val release = findAniLibRelease(shikimoriId, animeTitle) ?: return emptyList()
+        val episodes = parseAniLibEpisodes(release)
+        return listOf(
+            AnimeTranslation(
+                id = release.optInt("id").toString(),
+                title = getAniLibTitle(release),
+                type = "voice",
+                episodesCount = episodes.size
+            )
+        )
+    }
+
+    private suspend fun fetchAniLibEpisodes(shikimoriId: Int, animeTitle: String, translationId: String): List<AnimeEpisode> {
+        val release = findAniLibRelease(shikimoriId, animeTitle) ?: return emptyList()
+        return parseAniLibEpisodes(release)
+    }
+
+    private suspend fun resolveAniLibStream(shikimoriId: Int, animeTitle: String, episodeNumber: Int, translationId: String): AnimeMediaStream? {
+        Log.i(TAG, "[AniLib] resolveStream: id=$shikimoriId, ep=$episodeNumber")
+        val release = findAniLibRelease(shikimoriId, animeTitle) ?: return null
+        val base = release.optString("base").ifBlank { ANILIB_API.first() }
+        val episodes = parseAniLibEpisodes(release)
+        val ep = episodes.firstOrNull { it.number == episodeNumber } ?: return null
+        val episodeId = ep.id ?: return null
+
+        val epBody = get("$base/api/v2/episode?id=$episodeId", referer = "https://anilib.me/") ?: return null
+        val players = runCatching {
+            val root = JSONObject(epBody)
+            root.optJSONArray("players") ?: root.optJSONObject("data")?.optJSONArray("players") ?: JSONArray()
+        }.getOrNull() ?: return null
+        if (players.length() == 0) return null
+
+        // Pick the first voice player (ShikiWatch picks by team; we take the first voice one).
+        val player = (0 until players.length())
+            .mapNotNull { players.optJSONObject(it) }
+            .firstOrNull { p ->
+                val tt = p.optString("translationType").lowercase()
+                tt == "voice" || tt == "озвучка" || (tt != "sub" && tt != "subtitles")
+            } ?: players.optJSONObject(0) ?: return null
+
+        val host = runCatching {
+            JSONObject(epBody).optString("videoHost").ifBlank { JSONObject(epBody).optJSONObject("data")?.optString("videoHost") ?: "" }
+        }.getOrDefault("")
+        val videoArr = player.optJSONArray("video") ?: return null
+
+        val qualities = linkedMapOf<String, String>()
+        for (i in 0 until videoArr.length()) {
+            val v = videoArr.optJSONObject(i) ?: continue
+            val href = v.optString("href").ifBlank { v.optString("src") }
+            if (href.isBlank()) continue
+            val q = normalizeQuality(v.optString("quality")) ?: when {
+                href.contains("1080", ignoreCase = true) -> "1080p"
+                href.contains("720", ignoreCase = true) -> "720p"
+                href.contains("480", ignoreCase = true) -> "480p"
+                else -> null
+            } ?: continue
+            val url = if (href.startsWith("http")) href else host.trimEnd('/') + "/" + href.trimStart('/')
+            qualities[q] = url
+        }
+        if (qualities.isEmpty()) return null
+        val url = qualities["1080p"] ?: qualities["720p"] ?: qualities["480p"] ?: qualities.values.first()
+        Log.i(TAG, "[AniLib] resolved qualities: ${qualities.keys}")
+        return AnimeMediaStream(
+            url = url,
+            qualities = qualities,
+            quality = qualities.entries.firstOrNull { it.value == url }?.key ?: "Auto",
+            headers = mapOf(
+                "User-Agent" to USER_AGENT,
+                "Referer" to "https://anilib.me/",
+                "Origin" to "https://anilib.me"
+            )
+        )
+    }
+
+    // ============================================================
+    // Torrents (offline download). AniLiberty releases carry a `torrents` array (quality,
+    // seeders/leechers, size, magnet, .torrent url) that we currently discard. This surfaces it
+    // so the details-screen download button can hand a magnet/.torrent to an external client.
+    // No torrent engine is bundled — this only resolves links, it does not download.
+    // ============================================================
+
+    data class TorrentLink(
+        val quality: String,
+        val size: String,
+        val seeders: Int,
+        val leechers: Int,
+        val magnet: String?,
+        val torrentUrl: String?
+    )
+
+    /**
+     * Best-effort film stream resolution for the mpvEx-for-films toggle. Kodik also indexes many
+     * films/series by title, so search Kodik by title and resolve the first result's HLS. Returns
+     * null if nothing is found — the caller falls back to the WebView film player in that case.
+     * This is intentionally best-effort: Kodik's catalog is anime-heavy, so non-anime films often
+     * won't resolve, and that's handled gracefully.
+     */
+    suspend fun resolveFilmStreamByTitle(title: String, kinopoiskId: Int = 0): AnimeMediaStream? = withContext(Dispatchers.IO) {
+        runCatching {
+            val clean = title.trim()
+            var results = if (kinopoiskId > 0) {
+                kodikSearchByKinopoiskId(kinopoiskId)
+            } else emptyList()
+
+            if (results.isEmpty() && clean.isNotBlank()) {
+                results = kodikSearch(shikimoriId = 0, animeTitle = clean, translationId = null)
+            }
+            val first = results.firstOrNull() ?: return@runCatching null
+            // Use the first episode link (films typically have a single "1" entry).
+            val episodes = extractKodikEpisodes(first)
+            val ep = episodes.firstOrNull() ?: return@runCatching null
+            val link = ep.link?.takeIf { it.isNotBlank() } ?: return@runCatching null
+            val qualities = resolveKodikHls(absoluteKodikUrl(link))
+            if (qualities.isEmpty()) return@runCatching null
+            val url = qualities["720p"] ?: qualities["1080p"] ?: qualities["480p"] ?: qualities.values.first()
+            AnimeMediaStream(
+                url = url,
+                qualities = qualities,
+                quality = qualities.entries.firstOrNull { it.value == url }?.key ?: "Auto",
+                headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "https://kodik.info/"
+                )
+            )
+        }.getOrNull()
+    }
+
+    private suspend fun kodikSearchByKinopoiskId(kinopoiskId: Int): List<JSONObject> {
+        val tokens = loadKodikTokens()
+        for (token in tokens) {
+            for (base in KODIK_API_BASES) {
+                val url = kodikSearchUrl(base, token, "kinopoisk_id", kinopoiskId.toString(), null, 10)
+                val body = get(url, referer = "https://kodik.info/") ?: continue
+                val results = runCatching { JSONObject(body).optJSONArray("results") }.getOrNull() ?: continue
+                if (results.length() > 0) {
+                    return (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+                }
+            }
+        }
+        return emptyList()
+    }
+
+    /**
+     * Searches Kodik by kinopoisk_id and returns the embed player URL (iframe link).
+     * Used as a fallback when DDBB API is unreachable.
+     */
+    suspend fun fetchKodikEmbedForKinopoisk(kinopoiskId: Int): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val results = kodikSearchByKinopoiskId(kinopoiskId)
+            val first = results.firstOrNull() ?: return@runCatching null
+            // The result has a "link" field which is the embed iframe URL
+            var link = first.optString("link", "")
+            if (link.isBlank()) link = first.optString("iframe_url", "")
+            if (link.isBlank()) return@runCatching null
+            if (link.startsWith("//")) link = "https:$link"
+            link
+        }.getOrNull()
+    }
+
+    suspend fun fetchTorrents(shikimoriId: Int, animeTitle: String): List<TorrentLink> = withContext(Dispatchers.IO) {
+        runCatching {
+            // findAniLibertyRelease already fetches the full release JSON (which includes torrents).
+            val release = findAniLibertyRelease(shikimoriId, animeTitle) ?: return@runCatching emptyList()
+            // torrents may live at top-level or nested under data.
+            val torrents = release.optJSONArray("torrents")
+                ?: release.optJSONObject("data")?.optJSONArray("torrents")
+                ?: return@runCatching emptyList()
+            (0 until torrents.length()).mapNotNull { i ->
+                val t = torrents.optJSONObject(i) ?: return@mapNotNull null
+                val magnet = t.optString("magnet").ifBlank { t.optString("magnet_link") }.takeIf { it.isNotBlank() }
+                val torrentUrl = t.optString("torrent_url").ifBlank { t.optString("url") }.takeIf { it.isNotBlank() }
+                if (magnet == null && torrentUrl == null) return@mapNotNull null
+
+                // Parse quality string / object (AniLiberty sometimes formats quality as {"value":"720p","description":"720p"})
+                val qObj = t.optJSONObject("quality")
+                val rawQuality = if (qObj != null) {
+                    qObj.optString("description").ifBlank { qObj.optString("value") }
+                } else {
+                    val str = t.optString("quality")
+                    if (str.startsWith("{")) {
+                        runCatching {
+                            val parsed = org.json.JSONObject(str)
+                            parsed.optString("description").ifBlank { parsed.optString("value") }
+                        }.getOrNull() ?: str
+                    } else str
+                }
+                val quality = rawQuality.ifBlank { t.optString("resolution") }.ifBlank { "?" }
+
+                TorrentLink(
+                    quality = quality,
+                    size = t.optString("size").ifBlank { t.optString("total_size") }.ifBlank { "?" },
+                    seeders = t.optInt("seeders", t.optInt("peers", 0)),
+                    leechers = t.optInt("leechers", 0),
+                    magnet = magnet,
+                    torrentUrl = torrentUrl
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun fetchFilmTorrents(title: String, year: String?): List<TorrentLink> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanTitle = title.trim()
+            if (cleanTitle.isBlank()) return@runCatching emptyList()
+            val searchQuery = if (!year.isNullOrBlank()) "$cleanTitle $year" else cleanTitle
+            val encoded = java.net.URLEncoder.encode(searchQuery, "UTF-8")
+            val mirrors = listOf("https://rutor.info", "https://rutor.is")
+            var html = ""
+            var baseUrl = ""
+            for (mirror in mirrors) {
+                runCatching {
+                    val req = Request.Builder()
+                        .url("$mirror/search/0/0/000/0/$encoded")
+                        .header("User-Agent", USER_AGENT)
+                        .build()
+                    client.newCall(req).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            html = resp.body?.string().orEmpty()
+                            baseUrl = mirror
+                        }
+                    }
+                }
+                if (html.isNotBlank()) break
+            }
+            if (html.isBlank()) return@runCatching emptyList()
+
+            val results = mutableListOf<TorrentLink>()
+            val rowRegex = Regex("""<tr class="(?:gai|tum)">.*?</tr>""", RegexOption.DOT_MATCHES_ALL)
+            val magnetRegex = Regex("""href="(magnet:\?[^"]+)"""")
+            val torrentUrlRegex = Regex("""href="(/torrent/[^"]+)"""")
+            val titleRegex = Regex("""<a href="/torrent/[^"]+">([^<]+)</a>""")
+            val sizeRegex = Regex("""<td align="right">([0-9\.\s]+(?:GB|MB|MiB|GiB|TB))</td>""", RegexOption.IGNORE_CASE)
+            val seedsRegex = Regex("""<span class="green">(\d+)</span>""")
+            val leechesRegex = Regex("""<span class="red">(\d+)</span>""")
+
+            rowRegex.findAll(html).take(20).forEach { match ->
+                val row = match.value
+                val magnet = magnetRegex.find(row)?.groupValues?.get(1)
+                val torrentPath = torrentUrlRegex.find(row)?.groupValues?.get(1)
+                val fullTorrentUrl = torrentPath?.let { "$baseUrl$it" }
+                val tTitle = titleRegex.find(row)?.groupValues?.get(1)?.trim() ?: ""
+                if (magnet == null && fullTorrentUrl == null) return@forEach
+
+                val quality = when {
+                    tTitle.contains("2160p", true) || tTitle.contains("4K", true) -> "4K UHD"
+                    tTitle.contains("1080p", true) -> "1080p"
+                    tTitle.contains("720p", true) -> "720p"
+                    tTitle.contains("480p", true) -> "480p"
+                    else -> tTitle.take(35)
+                }
+
+                val size = sizeRegex.find(row)?.groupValues?.get(1)?.trim() ?: "?"
+                val seeders = seedsRegex.find(row)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                val leechers = leechesRegex.find(row)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+
+                results.add(
+                    TorrentLink(
+                        quality = quality,
+                        size = size,
+                        seeders = seeders,
+                        leechers = leechers,
+                        magnet = magnet,
+                        torrentUrl = fullTorrentUrl
+                    )
+                )
+            }
+            results
+        }.getOrDefault(emptyList())
     }
 }

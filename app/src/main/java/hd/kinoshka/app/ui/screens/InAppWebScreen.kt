@@ -322,6 +322,9 @@ fun InAppWebScreen(
     var savedWebViewState by rememberSaveable(url) { mutableStateOf<Bundle?>(null) }
     val shikimoriId = remember(url) { extractShikimoriId(url) }
     val kinopoiskId = remember(url) { extractKinopoiskId(url) }
+    // Tracks whether we've already fallen back from .cx to .ws (one-shot, per url) so a network
+    // failure on the primary mirror retries the alternate mirror exactly once.
+    var wsFallbackAttempted by remember(url) { mutableStateOf(false) }
 
     // Controls visibility - touch anywhere to show/reset, auto-hides after 4s
     var showControls by remember { mutableStateOf(true) }
@@ -366,12 +369,25 @@ fun InAppWebScreen(
                 ddbbPlayers = listOf(mirrorPlayer)
                 selectedPlayer = mirrorPlayer
             } else {
-                // Fetch ddbb — Collaps first (most reliable)
-                val ddbbList = fetchDdbbPlayers(kinopoiskId).sortedByDescending { it.id.contains("collaps") }
-                ddbbPlayers = ddbbList
-                if (selectedPlayer == null && ddbbList.isNotEmpty()) {
-                    selectedPlayer = ddbbList.first()
+                // Fetch ddbb players
+                val fetched = fetchDdbbPlayers(kinopoiskId)
+                val ddbbList = if (fetched.isNotEmpty()) {
+                    fetched.sortedByDescending { it.id.contains("collaps") }
+                } else {
+                    // Fallback — try Kodik embed for this kinopoisk ID, then various players
+                    val kodikEmbed = hd.kinoshka.app.data.source.AnimeStreamResolver.fetchKodikEmbedForKinopoisk(kinopoiskId)
+                    buildList {
+                        if (kodikEmbed != null) {
+                            add(DdbbPlayer("kodik_native", "Kodik (рекомендуется)", kodikEmbed))
+                        }
+                        add(DdbbPlayer("vibix", "Vibix Player", "https://vibix.cc/embed/kinopoisk/$kinopoiskId"))
+                        add(DdbbPlayer("alloha", "Alloha Player", "https://api.alloha.tv/?kp=$kinopoiskId"))
+                        add(DdbbPlayer("cdnmovies", "CDN Movies", "https://cdnmovies.net/serial/$kinopoiskId"))
+                    }
                 }
+                ddbbPlayers = ddbbList
+                val firstPlayer = ddbbList.first()
+                selectedPlayer = firstPlayer
             }
             isLoadingPlayers = false
         }
@@ -503,9 +519,10 @@ fun InAppWebScreen(
                 webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
                 webView.settings.setGeolocationEnabled(false)
                 webView.settings.defaultTextEncodingName = "UTF-8"
-                // Limit WebView memory usage
-                webView.settings.setSupportZoom(false)
-                webView.settings.builtInZoomControls = false
+                val enableZoom = playerMode == hd.kinoshka.app.data.local.PlayerMode.SITE
+                webView.settings.setSupportZoom(enableZoom)
+                webView.settings.builtInZoomControls = enableZoom
+                webView.settings.displayZoomControls = false
                 webView.settings.userAgentString = webView.settings.userAgentString
                     .replace("; wv", "")
                     .replace("Version/4.0 ", "")
@@ -567,11 +584,19 @@ fun InAppWebScreen(
                         if (request?.isForMainFrame != true) return
                     }
 
-                    // Don't reload on errors — let JS redirects and page logic handle recovery.
-                    // Only show error after a long timeout if nothing loads.
+                    // Network-level failures on the .cx main frame: fall back to the .ws mirror once.
+                    // HTTP 404 is NOT a failure here — it's the expected interstitial that JS-redirects to
+                    // the real player page (handled by onReceivedHttpError staying a no-op).
                     override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                         if (request?.isForMainFrame != true) return
                         android.util.Log.w("InAppWeb", "WebView error: ${error?.errorCode} ${error?.description} for ${request.url}")
+                        val failedUrl = request.url?.toString() ?: return
+                        if (!wsFallbackAttempted && failedUrl.contains("kinopoisk.cx")) {
+                            wsFallbackAttempted = true
+                            val wsUrl = failedUrl.replace("www.kinopoisk.cx", KINOPOISK_WS_HOST)
+                            android.util.Log.i("InAppWeb", "Falling back to .ws mirror: $wsUrl")
+                            view?.loadUrl(wsUrl)
+                        }
                     }
 
                     override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
@@ -585,15 +610,23 @@ fun InAppWebScreen(
                         autoRetryCount = 0
                         webViewError = null
                         val host = runCatching { Uri.parse(loadedUrl).host.orEmpty() }.getOrDefault("")
+                        val isKinopoiskMirror = host.contains("kinopoisk.ws") || host.contains("kinopoisk.cx") || host.contains("peq.pkvbn.xyz")
                         if (host.contains("peq.pkvbn.xyz")) {
                             // Mirror site — hide everything except the player
                             view?.evaluateJavascript(PEQ_MIRROR_CSS_JS, null)
                             view?.postDelayed({ isPageLoading = false }, 1000L)
                         } else {
-                            if (!host.contains("kinopoisk.ws")) {
+                            // kinopoisk mirrors (.ws/.cx) host a real player page that redirects in;
+                            // don't force overflow:hidden there (it freezes info/404 interstitials and
+                            // is the root cause of "opens the site but doesn't scroll"). Just strip ads.
+                            if (!isKinopoiskMirror) {
                                 view?.evaluateJavascript(HIDE_WEB_TOP_BAR_JS, null)
                             }
                             view?.evaluateJavascript(REMOVE_ADS_JS, null)
+                            if (isKinopoiskMirror && playerMode != hd.kinoshka.app.data.local.PlayerMode.SITE) {
+                                // Try to isolate the video player on the mirror page for a fullscreen feel.
+                                view?.evaluateJavascript(PEQ_MIRROR_CSS_JS, null)
+                            }
                             view?.postDelayed({ isPageLoading = false }, 1500L)
                         }
                         if (host.contains("ddbb.lol")) {
@@ -607,7 +640,8 @@ fun InAppWebScreen(
                     val target = when {
                         shikimoriId != null -> "https://aniqit.com/find-player?shikimori_id=$shikimoriId"
                         kinopoiskId != null && playerMode == hd.kinoshka.app.data.local.PlayerMode.SITE -> buildMirrorUrl(url, kinopoiskId)
-                        else -> url
+                        kinopoiskId != null && playerMode == hd.kinoshka.app.data.local.PlayerMode.DDBB -> selectedPlayer?.iframeUrl ?: "about:blank"
+                        else -> normalizeKinopoiskUrl(url)
                     }
                     webView.loadUrl(target)
                 } else {
@@ -819,6 +853,24 @@ private fun buildMirrorUrl(originalUrl: String, kinopoiskId: Int): String {
         "https://kinopoisk.ws/film/$kinopoiskId/"
     }
 }
+
+// Rewrite a kinopoisk.ru URL to a mirror the app can actually load (.cx, falling back to .ws).
+// kinopoisk.ru is geo/CDN-blocked for in-WebView playback; kinopoisk.cx returns a 404 page that
+// then redirects (via JS/meta) to the real player page — WebView follows that chain natively
+// because shouldOverrideUrlLoading returns false. Path is preserved so extractKinopoiskId still
+// works. Anything not on kinopoisk.ru is returned unchanged.
+private fun normalizeKinopoiskUrl(url: String): String {
+    val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return url
+    val host = uri.host ?: return url
+    if (!host.endsWith("kinopoisk.ru")) return url
+    val path = uri.path ?: ""
+    val query = uri.query?.let { "?$it" } ?: ""
+    // Prefer .cx (404→player redirect). Caller can fall back to .ws if .cx is unreachable.
+    return "https://www.kinopoisk.cx$path$query"
+}
+
+// The .ws mirror host, used as the 404-fallback target.
+private const val KINOPOISK_WS_HOST = "www.kinopoisk.ws"
 
 private fun extractKinopoiskId(url: String): Int? {
     val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null

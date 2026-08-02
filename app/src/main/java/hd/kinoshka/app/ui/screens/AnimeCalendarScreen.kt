@@ -231,24 +231,25 @@ private fun HorizontalCalendarCard(
 }
 
 private fun groupCalendarItemsByDay(items: List<ShikimoriCalendarItem>): List<DayCalendarGroup> {
-    val utcFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-    }
     val dayKeyFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
     val displayDateFormat = SimpleDateFormat("d MMMM", Locale("ru"))
     val dayOfWeekFormat = SimpleDateFormat("EEEE", Locale("ru"))
 
     val now = Date()
     val todayKey = dayKeyFormat.format(now)
-    val tomorrowKey = dayKeyFormat.format(Date(now.time + 86400000L))
+    // DST-safe "tomorrow": add a calendar day instead of a fixed 24h millis offset, so a 23h/25h
+    // transition day doesn't mislabel the group.
+    val tomorrowCal = java.util.Calendar.getInstance().apply {
+        time = now
+        add(java.util.Calendar.DAY_OF_YEAR, 1)
+    }
+    val tomorrowKey = dayKeyFormat.format(tomorrowCal.time)
 
     val groupedMap = LinkedHashMap<String, MutableList<ShikimoriCalendarItem>>()
 
     for (item in items) {
         val dateStr = item.nextEpisodeAt
-        val date = if (dateStr != null) {
-            runCatching { utcFormat.parse(dateStr) }.getOrNull()
-        } else null
+        val date = if (dateStr != null) parseShikimoriUtc(dateStr) else null
 
         val key = if (date != null) dayKeyFormat.format(date) else "unknown"
         groupedMap.getOrPut(key) { mutableListOf() }.add(item)
@@ -256,23 +257,21 @@ private fun groupCalendarItemsByDay(items: List<ShikimoriCalendarItem>): List<Da
 
     return groupedMap.map { (key, itemList) ->
         val sortedItems = itemList.sortedBy { item ->
-            item.nextEpisodeAt?.let { str ->
-                runCatching { utcFormat.parse(str)?.time }.getOrNull()
-            } ?: Long.MAX_VALUE
+            item.nextEpisodeAt?.let { str -> parseShikimoriUtc(str)?.time } ?: Long.MAX_VALUE
         }
 
         val title = when (key) {
             todayKey -> {
-                val sampleDate = sortedItems.firstOrNull()?.nextEpisodeAt?.let { runCatching { utcFormat.parse(it) }.getOrNull() } ?: now
+                val sampleDate = sortedItems.firstOrNull()?.nextEpisodeAt?.let { parseShikimoriUtc(it) } ?: now
                 "Сегодня, ${displayDateFormat.format(sampleDate)}"
             }
             tomorrowKey -> {
-                val sampleDate = sortedItems.firstOrNull()?.nextEpisodeAt?.let { runCatching { utcFormat.parse(it) }.getOrNull() } ?: Date(now.time + 86400000L)
+                val sampleDate = sortedItems.firstOrNull()?.nextEpisodeAt?.let { parseShikimoriUtc(it) } ?: tomorrowCal.time
                 "Завтра, ${displayDateFormat.format(sampleDate)}"
             }
             "unknown" -> "Скоро в эфире"
             else -> {
-                val sampleDate = sortedItems.firstOrNull()?.nextEpisodeAt?.let { runCatching { utcFormat.parse(it) }.getOrNull() }
+                val sampleDate = sortedItems.firstOrNull()?.nextEpisodeAt?.let { parseShikimoriUtc(it) }
                 if (sampleDate != null) {
                     val dayOfWeek = dayOfWeekFormat.format(sampleDate).replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale("ru")) else it.toString() }
                     "$dayOfWeek, ${displayDateFormat.format(sampleDate)}"
@@ -287,16 +286,30 @@ private fun groupCalendarItemsByDay(items: List<ShikimoriCalendarItem>): List<Da
     }
 }
 
+/**
+ * Parses a Shikimori UTC timestamp into a Date. Tolerates the bare "yyyy-MM-dd'T'HH:mm:ss" form
+ * Shikimori usually sends AND the ".SSSZ"/"+HH:MM" variants, so a format change doesn't silently
+ * null out every time badge. Interprets the value as UTC.
+ */
+private fun parseShikimoriUtc(iso: String): Date? = runCatching {
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        val normalized = iso.trim().let {
+            when {
+                it.endsWith("Z") || it.contains("+") || it.substringAfterLast('T').contains("-") -> it
+                else -> it + "Z"
+            }
+        }
+        Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
+    } else {
+        val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        fmt.timeZone = TimeZone.getTimeZone("UTC")
+        fmt.parse(iso.substringBefore('.'))
+    }
+}.getOrNull()
+
 private fun formatReleaseExactTime(isoDate: String?): String? {
     if (isoDate == null) return null
-    return try {
-        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).apply {
-            timeZone = TimeZone.getTimeZone("UTC")
-        }
-        val date = sdf.parse(isoDate) ?: return null
-        val outFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-        outFormat.format(date)
-    } catch (e: Exception) {
-        null
-    }
+    val date = parseShikimoriUtc(isoDate) ?: return null
+    // Output formatter intentionally leaves timezone unset → device local time (UTC instant → local).
+    return runCatching { SimpleDateFormat("HH:mm", Locale.getDefault()).format(date) }.getOrNull()
 }

@@ -185,15 +185,6 @@ fun TopPlayerControlsPortrait(
                     onTranslationSelected = { viewModel.onAnimeTranslationSelected?.invoke(it) }
                 )
             }
-            if (animeTranslations.isNotEmpty()) {
-                AnimeQualityDropdown(
-                    qualities = animeQualities,
-                    currentQualityId = currentQualityId,
-                    hideBackground = hideBackground,
-                    viewModel = viewModel,
-                    onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
-                )
-            }
         }
     }
   }
@@ -217,34 +208,59 @@ fun BottomPlayerControlsPortrait(
   viewModel: PlayerViewModel,
   activity: PlayerActivity,
 ) {
-  Row(
+  val animeQualities by viewModel.animeQualities.collectAsState()
+  val currentQualityId by viewModel.currentAnimeQualityId.collectAsState()
+  // Quality selector lives at the bottom-right (moved from the top row). Gated on qualities being
+  // available (Auto is always offered, so this shows even when a source has no concrete variants).
+  val showQuality = animeQualities.isNotEmpty() || currentQualityId != null
+  Box(
     modifier = Modifier
       .fillMaxWidth()
-      .padding(bottom = MaterialTheme.spacing.large)
-      .horizontalScroll(rememberScrollState()),
-    horizontalArrangement = Arrangement.Center,
-    verticalAlignment = Alignment.CenterVertically,
+      .padding(bottom = MaterialTheme.spacing.large),
   ) {
-    ControlsGroup {
-      buttons.forEach { button ->
-        RenderPlayerButton(
-          button = button,
-          chapters = chapters,
-          currentChapter = currentChapter,
-          isPortrait = true,
-          isSpeedNonOne = isSpeedNonOne,
-          currentZoom = currentZoom,
-          aspect = aspect,
-          mediaTitle = mediaTitle,
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .horizontalScroll(rememberScrollState()),
+      horizontalArrangement = Arrangement.Center,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      ControlsGroup {
+        buttons.forEach { button ->
+          RenderPlayerButton(
+            button = button,
+            chapters = chapters,
+            currentChapter = currentChapter,
+            isPortrait = true,
+            isSpeedNonOne = isSpeedNonOne,
+            currentZoom = currentZoom,
+            aspect = aspect,
+            mediaTitle = mediaTitle,
+            hideBackground = hideBackground,
+            onBackPress = onBackPress,
+            onOpenSheet = onOpenSheet,
+            onOpenPanel = onOpenPanel,
+            viewModel = viewModel,
+            activity = activity,
+            decoder = decoder,
+            playbackSpeed = playbackSpeed,
+            buttonSize = 48.dp,
+          )
+        }
+      }
+    }
+    if (showQuality) {
+      Box(
+        modifier = Modifier
+          .align(Alignment.BottomEnd)
+          .padding(end = MaterialTheme.spacing.small),
+      ) {
+        AnimeQualityDropdown(
+          qualities = animeQualities,
+          currentQualityId = currentQualityId,
           hideBackground = hideBackground,
-          onBackPress = onBackPress,
-          onOpenSheet = onOpenSheet,
-          onOpenPanel = onOpenPanel,
           viewModel = viewModel,
-          activity = activity,
-          decoder = decoder,
-          playbackSpeed = playbackSpeed,
-          buttonSize = 48.dp,
+          onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
         )
       }
     }

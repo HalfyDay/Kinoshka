@@ -1,6 +1,7 @@
 package app.marlboroadvance.mpvex.domain.anime4k
 
 import android.content.Context
+import `is`.xyz.mpv.MPVLib
 
 import java.io.File
 import java.io.FileOutputStream
@@ -181,5 +182,51 @@ class Anime4KManager(private val context: Context) {
 
   private fun getShaderPath(fileName: String): String {
     return File(shaderDir, fileName).absolutePath
+  }
+}
+
+/**
+ * Applies (or clears) the Anime4K shader chain to a running libmpv instance at runtime.
+ *
+ * libmpv's `glsl-shaders` is a path-list *option*: writing it via the property-string API
+ * (mpv_set_property_string) after a file has loaded does NOT reliably replace the active
+ * shader chain — on most builds it is ignored or deferred to the next file load. The
+ * sanctioned way to change/clear user shaders live is the `glsl-shaders-set` /
+ * `glsl-shaders-clear` commands, which is what this helper uses.
+ *
+ * Returns true if a command was actually dispatched (the caller can use this to decide
+ * whether to refresh UI state).
+ */
+fun Anime4KManager.applyShaderChainRuntime(mode: Anime4KManager.Mode, quality: Anime4KManager.Quality): Boolean {
+  return try {
+    if (mode == Anime4KManager.Mode.OFF) {
+      runCatching { MPVLib.command("change-list", "glsl-shaders", "clr", "") }
+      runCatching { MPVLib.command("glsl-shaders-clear") }
+      runCatching { MPVLib.setPropertyString("glsl-shaders", "") }
+      true
+    } else {
+      val chain = getShaderChain(mode, quality)
+      if (chain.isEmpty()) {
+        runCatching { MPVLib.command("change-list", "glsl-shaders", "clr", "") }
+        runCatching { MPVLib.command("glsl-shaders-clear") }
+        runCatching { MPVLib.setPropertyString("glsl-shaders", "") }
+        true
+      } else {
+        runCatching { MPVLib.setPropertyString("hwdec", "mediacodec-copy") }
+        runCatching { MPVLib.setPropertyString("glsl-shaders", chain) }
+        runCatching { MPVLib.command("change-list", "glsl-shaders", "set", chain) }
+        runCatching { MPVLib.command("glsl-shaders-set", *chain.split(':').toTypedArray()) }
+        true
+      }
+    }
+  } catch (e: Exception) {
+    false
+  }
+}
+
+/** Clears any active user shaders on a running instance. */
+fun Anime4KManager.clearShaderChainRuntime() {
+  try { MPVLib.command("glsl-shaders-clear") } catch (_: Exception) {
+    try { MPVLib.setPropertyString("glsl-shaders", "") } catch (_: Exception) {}
   }
 }

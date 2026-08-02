@@ -279,7 +279,37 @@ class PlayerViewModel(
   val seekBarShown: StateFlow<Boolean> = _seekBarShown.asStateFlow()
 
   private val _areControlsLocked = MutableStateFlow(false)
-  val areControlsLocked: StateFlow<Boolean> = _areControlsLocked.asStateFlow()
+  val areControlsLocked: StateFlow<Boolean> = _areControlsLocked
+
+  private val _thermalWarning = MutableStateFlow<String?>(null)
+  val thermalWarning: StateFlow<String?> = _thermalWarning
+
+  private val _lagWarning = MutableStateFlow<String?>(null)
+  val lagWarning: StateFlow<String?> = _lagWarning
+
+  fun setThermalWarning(message: String?) {
+    _thermalWarning.value = message
+    if (message != null) {
+      viewModelScope.launch {
+        delay(5000)
+        if (_thermalWarning.value == message) {
+          _thermalWarning.value = null
+        }
+      }
+    }
+  }
+
+  fun setLagWarning(message: String?) {
+    _lagWarning.value = message
+    if (message != null) {
+      viewModelScope.launch {
+        delay(5000)
+        if (_lagWarning.value == message) {
+          _lagWarning.value = null
+        }
+      }
+    }
+  }
 
   val playerUpdate = MutableStateFlow<PlayerUpdates>(PlayerUpdates.None)
   val isBrightnessSliderShown = MutableStateFlow(false)

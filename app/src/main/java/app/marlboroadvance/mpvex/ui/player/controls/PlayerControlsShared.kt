@@ -147,15 +147,7 @@ fun RenderPlayerButton(
         contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
-        border =
-          if (hideBackground) {
-            null
-          } else {
-            BorderStroke(
-              1.dp,
-              MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-            )
-          },
+        border = null,
       ) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
@@ -279,15 +271,7 @@ fun RenderPlayerButton(
         contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
-        border =
-          if (hideBackground) {
-            null
-          } else {
-            BorderStroke(
-              1.dp,
-              MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-            )
-          },
+        border = null,
         modifier = Modifier
           .height(buttonSize)
           .clip(CircleShape)
@@ -382,7 +366,6 @@ fun RenderPlayerButton(
                 Surface(
                   shape = CircleShape,
                   color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                   modifier = Modifier.size(buttonSize - 4.dp),
                 ) {
                   Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
@@ -398,7 +381,6 @@ fun RenderPlayerButton(
                 Surface(
                   shape = CircleShape,
                   color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                   modifier = Modifier
                     .size(buttonSize - 4.dp)
                     .clip(CircleShape)
@@ -758,7 +740,6 @@ fun RenderPlayerButton(
               Surface(
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                 modifier = Modifier
                   .size(buttonSize - 4.dp)
                   .clip(CircleShape)
@@ -895,7 +876,6 @@ fun RenderPlayerButton(
                 Surface(
                   shape = CircleShape,
                   color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                   modifier = Modifier
                     .size(buttonSize - 4.dp)
                     .clip(CircleShape)

@@ -287,6 +287,7 @@ fun KinoApp() {
                             HomeScreen(
                                 state = vm.uiState,
                                 onQueryChange = vm::onQueryChange,
+                                onInstantSearch = vm::onSearchQueryChanged,
                                 onSubmitSearch = vm::submitSearch,
                                 onRetry = vm::retryHome,
                                 onTabSelected = vm::onTabSelected,
@@ -303,7 +304,9 @@ fun KinoApp() {
                                 onToggleFilterSheet = vm::setShowFilterSheet,
                                 onOpenCalendar = { navController.navigate("anime_calendar") },
                                 onOpenFeed = { navController.navigate("anime_feed") },
-                                onLibrarySortSelected = vm::setLibrarySortType
+                                onLibrarySortSelected = vm::setLibrarySortType,
+                                onRemoveSearchHistory = vm::removeSearchQueryFromHistory,
+                                onClearSearchHistory = vm::clearSearchHistory
                             )
                         }
                         composable(
@@ -368,7 +371,8 @@ fun KinoApp() {
                                 onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId ->
                                     activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId)
                                 },
-                                playbackSequence = vm.uiState.playbackSequence
+                                playbackSequence = vm.uiState.playbackSequence,
+                                playerMode = vm.uiState.playerMode
                             )
                         }
                         composable(

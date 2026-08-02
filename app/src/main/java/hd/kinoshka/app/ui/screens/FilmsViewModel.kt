@@ -66,7 +66,12 @@ data class LibraryUiItem(
     val totalEpisodesInSeason: Int?,
     val totalSeasons: Int?,
     val totalEpisodes: Int?,
-    val updatedAt: Long
+    val updatedAt: Long,
+    // New-episode detection signals (anime). episodesAired = how many have aired so far for an
+    // ongoing series; the badge shows when episodesAired > watchedEpisodes. nextEpisodeAt = ISO
+    // UTC of the next scheduled episode (for "airs soon"). Null for films / unavailable.
+    val episodesAired: Int? = null,
+    val nextEpisodeAt: String? = null
 )
 
 data class SearchFilterState(
@@ -145,7 +150,9 @@ data class HomeUiState(
     val calendarLoading: Boolean = false,
     val topicsLoading: Boolean = false,
     val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
-    val playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.DDBB
+    val playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.DDBB,
+    val searchHistory: List<hd.kinoshka.app.data.local.SearchHistoryRecord> = emptyList(),
+    val isInstantSearch: Boolean = false
 )
 
 data class DetailsUiState(
@@ -173,6 +180,16 @@ class FilmsViewModel(
 
     private var cachedShikimoriRates: List<hd.kinoshka.app.data.model.ShikimoriUserRate> = emptyList()
 
+    // Snapshot of the Shikimori calendar fetched by loadCalendar(). buildLibraryItems reads this
+    // instead of uiState.calendarItems because the calendar arrives asynchronously and uiState is
+    // still being constructed the first time buildLibraryItems runs (reading uiState then is a
+    // NPE on the not-yet-initialized State delegate).
+    private var cachedShikimoriCalendar: List<hd.kinoshka.app.data.model.ShikimoriCalendarItem> = emptyList()
+
+    // In-flight search job. Cancelled + replaced on every new query so fast typing (instant
+    // search) can't let an older, slower request clobber the newer results.
+    private var searchJob: kotlinx.coroutines.Job? = null
+
     var uiState by mutableStateOf(buildInitialState())
         private set
 
@@ -185,6 +202,46 @@ class FilmsViewModel(
         refreshShikimoriAuth()
         loadCalendar()
         loadTopics()
+        uiState = uiState.copy(searchHistory = userStateStore.getSearchHistory())
+    }
+
+    /** Reloads search history from storage (call after add/remove/clear to refresh the UI). */
+    fun refreshSearchHistory() {
+        uiState = uiState.copy(searchHistory = userStateStore.getSearchHistory())
+    }
+
+    fun addSearchQueryToHistory(query: String) {
+        if (query.trim().isBlank()) return
+        userStateStore.addSearchQuery(query, uiState.contentType.name)
+        refreshSearchHistory()
+    }
+
+    fun removeSearchQueryFromHistory(query: String) {
+        userStateStore.removeSearchQuery(query, uiState.contentType.name)
+        refreshSearchHistory()
+    }
+
+    fun clearSearchHistory() {
+        userStateStore.clearSearchHistory()
+        refreshSearchHistory()
+    }
+
+    /**
+     * Instant search entry point called on every keystroke. Debounced by the caller (Compose
+     * LaunchedEffect) to avoid hammering the API. Cancels any in-flight search first.
+     */
+    fun onSearchQueryChanged(query: String) {
+        uiState = uiState.copy(query = query)
+        val clean = query.trim()
+        if (clean.length < 2) {
+            searchJob?.cancel()
+            // Clear instant results when the query is too short, but don't wipe a discover feed.
+            if (uiState.isInstantSearch) {
+                uiState = uiState.copy(items = emptyList(), isSearchResult = false, isInstantSearch = false, loading = false)
+            }
+            return
+        }
+        loadSearchFirstPage(clean, instant = true)
     }
 
     fun refreshShikimoriAuth() {
@@ -281,7 +338,10 @@ class FilmsViewModel(
         viewModelScope.launch {
             uiState = uiState.copy(calendarLoading = true)
             val items = animeRepository.calendar()
+            cachedShikimoriCalendar = items
             uiState = uiState.copy(calendarItems = items, calendarLoading = false)
+            // Re-enrich the library with the just-arrived next-episode data.
+            refreshLibraryAndAvatar()
         }
     }
 
@@ -879,13 +939,17 @@ class FilmsViewModel(
         }
     }
 
-    private fun loadSearchFirstPage(query: String) {
-        viewModelScope.launch {
+    private fun loadSearchFirstPage(query: String, instant: Boolean = false) {
+        // Cancel any in-flight search so a slow older request can't clobber newer results
+        // (the race that surfaces most with instant/debounced typing).
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
             uiState = uiState.copy(
                 loading = true,
                 loadingMore = false,
                 error = null,
                 isSearchResult = true,
+                isInstantSearch = instant,
                 currentPage = 1,
                 hasMore = true
             )
@@ -933,8 +997,9 @@ class FilmsViewModel(
                         if (fallbackItems.isNotEmpty()) {
                             uiState = uiState.copy(
                                 loading = false,
-                                items = fallbackItems,
+                                items = rankResults(fallbackItems, cleanQuery),
                                 isSearchResult = true,
+                                isInstantSearch = instant,
                                 currentPage = 1,
                                 hasMore = fallbackItems.isNotEmpty()
                             )
@@ -944,18 +1009,39 @@ class FilmsViewModel(
                 }
                 uiState = uiState.copy(
                     loading = false,
-                    items = items,
+                    items = rankResults(items, cleanQuery),
                     isSearchResult = true,
+                    isInstantSearch = instant,
                     currentPage = 1,
                     hasMore = items.isNotEmpty()
                 )
+                // Persist non-blank successful searches to history (only for explicit submits,
+                // not every instant keystroke — instant calls go through onSearchQueryChanged).
+                if (!instant && cleanQuery.isNotBlank() && items.isNotEmpty()) {
+                    addSearchQueryToHistory(cleanQuery)
+                }
             }.onFailure { ex ->
                 uiState = uiState.copy(
                     loading = false,
                     error = ex.toUiMessage(),
-                    isSearchResult = true
+                    isSearchResult = true,
+                    isInstantSearch = instant
                 )
             }
+        }
+    }
+
+    /**
+     * Client-side relevance ranking applied on top of the server order. Only re-ranks when the
+     * user has NOT chosen an explicit order via filters (so a deliberate sort is respected).
+     * Boosts exact/prefix/contains title matches above raw rating order, tie-broken by rating
+     * then year — so the right series surfaces first instead of "as the API returned it".
+     */
+    private fun rankResults(items: List<FilmItem>, query: String): List<FilmItem> {
+        val q = query.trim()
+        if (q.isBlank() || uiState.filterState.isActive) return items
+        return items.sortedByDescending {
+            SearchQueryUtils.relevanceScore(q, it.nameRu, it.nameOriginal, it.ratingKinopoisk, it.year)
         }
     }
 
@@ -1014,6 +1100,9 @@ class FilmsViewModel(
             contentType = preferences.contentType,
             playbackSequence = preferences.playbackSequence,
             playerMode = preferences.playerMode
+            // calendarItems is intentionally left default-empty: uiState is being constructed for
+            // the first time here, and buildLibraryItems reads from cachedShikimoriCalendar (set
+            // by loadCalendar) instead, so there is no read-during-init cycle.
         )
     }
 
@@ -1091,6 +1180,26 @@ class FilmsViewModel(
                         result[existingIdx] = existing.copy(totalEpisodes = item.totalEpisodes)
                     }
                 }
+            }
+        }
+
+        // New-episode detection: join the already-loaded Shikimori calendar to library items by
+        // shikimori id (calendar.anime.id + ANIME_ID_OFFSET == kinopoiskId). The calendar carries
+        // nextEpisode + nextEpisodeAt for every ongoing anime; we also fill episodesAired from it
+        // for items built from history/profiles (the rates path already sets it). We read from
+        // cachedShikimoriCalendar (not uiState.calendarItems) because uiState isn't safely
+        // readable while buildInitialState() is mid-construction.
+        val calendarByKpId = cachedShikimoriCalendar
+            .filter { it.anime?.id != null }
+            .associate { it.anime!!.id + hd.kinoshka.app.data.model.ANIME_ID_OFFSET to it }
+        if (calendarByKpId.isNotEmpty()) {
+            for (i in result.indices) {
+                val cal = calendarByKpId[result[i].kinopoiskId] ?: continue
+                val existing = result[i]
+                result[i] = existing.copy(
+                    nextEpisodeAt = cal.nextEpisodeAt ?: existing.nextEpisodeAt,
+                    episodesAired = existing.episodesAired ?: cal.anime?.episodesAired
+                )
             }
         }
 
@@ -1219,6 +1328,7 @@ private fun hd.kinoshka.app.data.model.ShikimoriUserRate.toLibraryUiItemWithCach
         else -> UserFilmStatus.WATCHING
     }
     val rateTime = getUpdatedEpochMillis().takeIf { it > 0 } ?: System.currentTimeMillis()
+    val appEpisodesAired = animeItem?.episodesAired ?: cachedInfo?.episodesAired
     return LibraryUiItem(
         kinopoiskId = appFilmId,
         title = appTitle,
@@ -1237,7 +1347,8 @@ private fun hd.kinoshka.app.data.model.ShikimoriUserRate.toLibraryUiItemWithCach
         totalEpisodesInSeason = null,
         totalSeasons = null,
         totalEpisodes = appEpisodes,
-        updatedAt = rateTime
+        updatedAt = rateTime,
+        episodesAired = appEpisodesAired
     )
 }
 

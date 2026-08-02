@@ -49,6 +49,23 @@ private data class LastPlaybackInfo(
     val episodeNum: Int
 )
 
+/** True if the episode carries a real (non-synthetic) title, e.g. from AniLiberty. */
+private fun hasRealTitle(ep: AnimeEpisode): Boolean {
+    val t = ep.title ?: return false
+    if (t.isBlank()) return false
+    // Kodik synthesizes "Серия N" / "Сезон X, Серия N" — not real titles.
+    if (t == "Серия ${ep.number}") return false
+    if (t.startsWith("Сезон ") && t.endsWith("Серия ${ep.number}")) return false
+    return true
+}
+
+/** Russian pluralization for "озвучка". */
+private fun pluralDubs(n: Int): String = when {
+    n % 10 == 1 && n % 100 != 11 -> "озвучка"
+    n % 10 in 2..4 && n % 100 !in 12..14 -> "озвучки"
+    else -> "озвучек"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnimePlaybackSelectionScreen(
@@ -65,7 +82,12 @@ fun AnimePlaybackSelectionScreen(
         episodes: List<AnimeEpisode>,
         translations: List<FlatTranslation>,
         currentTranslationId: String
-    ) -> Unit
+    ) -> Unit,
+    /**
+     * Shown when nothing is found. Lets the caller offer an alternative playback path
+     * (e.g. open the WebView player for films that Kodik does not index).
+     */
+    onWebFallback: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -114,9 +136,14 @@ fun AnimePlaybackSelectionScreen(
     }
 
     val mergedEpisodes = remember(allTranslations) {
+        // Prefer a real episode title over the synthetic "Серия N" that Kodik emits. Kodik is
+        // awaited/added before AniLiberty, so plain distinctBy{number} kept Kodik's synthetic
+        // title and dropped AniLiberty's real name — which then got suppressed by the UI guard,
+        // so the merged view showed no titles at all. Keep the entry with a real title per number.
         allTranslations
             .flatMap { it.episodes }
-            .distinctBy { it.number }
+            .groupBy { it.number }
+            .map { (_, eps) -> eps.firstOrNull { hasRealTitle(it) } ?: eps.first() }
             .sortedBy { it.number }
     }
 
@@ -126,13 +153,24 @@ fun AnimePlaybackSelectionScreen(
             .mapValues { (_, translations) ->
                 translations
                     .flatMap { it.episodes }
-                    .distinctBy { it.number }
+                    .groupBy { it.number }
+                    .map { (_, eps) -> eps.firstOrNull { hasRealTitle(it) } ?: eps.first() }
                     .sortedBy { it.number }
             }
     }
 
     // SharedPreferences to save/load last watched info (async to avoid blocking composition)
     var lastPlayback by remember { mutableStateOf<LastPlaybackInfo?>(null) }
+    // High-water-mark watched-episode count (per-anime), used to mark watched episodes in the
+    // picker. Sourced from UserStateStore profiles (written by PlayerActivity on watched threshold).
+    var watchedEpisodes by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(shikimoriId) {
+        watchedEpisodes = withContext(Dispatchers.IO) {
+            hd.kinoshka.app.data.local.UserStateStore(context)
+                .getProfile(shikimoriId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
+                ?.watchedEpisodes
+        }
+    }
     LaunchedEffect(shikimoriId, allTranslations) {
         lastPlayback = withContext(Dispatchers.IO) {
             val prefs = context.getSharedPreferences("anime_playback_prefs", Context.MODE_PRIVATE)
@@ -177,7 +215,7 @@ fun AnimePlaybackSelectionScreen(
                         source,
                         translation.title,
                         translation.episodes,
-                        allTranslations.filter { it.source == source },
+                        allTranslations,
                         translation.translationId
                     )
                     onDismissRequest()
@@ -345,6 +383,14 @@ fun AnimePlaybackSelectionScreen(
                                 ) {
                                     Text("Повторить поиск")
                                 }
+                                if (onWebFallback != null) {
+                                    OutlinedButton(onClick = {
+                                        onWebFallback.invoke()
+                                        onDismissRequest()
+                                    }) {
+                                        Text("Открыть в веб-плеере")
+                                    }
+                                }
                             }
                         }
                         else -> {
@@ -435,6 +481,7 @@ fun AnimePlaybackSelectionScreen(
                                             episodes = episodesSource,
                                             episodeTranslationCountMap = episodeTranslationCountMap,
                                             lastPlayback = if (currentStepIndex == 0) lastPlayback else null,
+                                            watchedEpisodes = watchedEpisodes,
                                             onQuickContinue = { playbackInfo ->
                                                 val tr = allTranslations.firstOrNull {
                                                     it.source.name == playbackInfo.source &&
@@ -593,16 +640,36 @@ private fun SelectTranslationStep(
                 }
             }
         } else {
+            // Group by source, then sort each group by episode count (desc) then title so the
+            // most complete dubs surface first — makes every available dub/source visible rather
+            // than lost in fetch order.
             val grouped = filteredList.groupBy { it.source }
+                .mapValues { (_, translations) ->
+                    translations.sortedWith(
+                        compareByDescending<FlatTranslation> { it.episodes.size }.thenBy { it.title }
+                    )
+                }
             grouped.forEach { (source, translations) ->
                 item {
-                    Text(
-                        text = source.displayName,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp, start = 20.dp)
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp, bottom = 4.dp, start = 20.dp, end = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = source.displayName,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${translations.size} ${pluralDubs(translations.size)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 items(translations, key = { it.translationId }) { tr ->
                     val isSub = tr.type == "sub" || tr.type == "subtitles"
@@ -677,6 +744,7 @@ private fun SelectEpisodeStep(
     episodes: List<AnimeEpisode>,
     episodeTranslationCountMap: Map<Int, Int> = emptyMap(),
     lastPlayback: LastPlaybackInfo? = null,
+    watchedEpisodes: Int? = null,
     onQuickContinue: ((LastPlaybackInfo) -> Unit)? = null,
     onEpisodeSelected: (AnimeEpisode) -> Unit
 ) {
@@ -816,17 +884,21 @@ private fun SelectEpisodeStep(
                             .padding(horizontal = 16.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val isWatched = watchedEpisodes != null && ep.number <= watchedEpisodes!! && ep.number < 10000
                         Box(
                             modifier = Modifier
                                 .size(32.dp)
                                 .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
+                                .background(
+                                    if (isWatched) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Filled.PlayArrow,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
+                                imageVector = if (isWatched) Icons.Filled.Check else Icons.Filled.PlayArrow,
+                                contentDescription = if (isWatched) "Просмотрено" else null,
+                                tint = if (isWatched) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -836,7 +908,9 @@ private fun SelectEpisodeStep(
                                 Text(
                                     text = "Серия ${ep.number}",
                                     style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isWatched) MaterialTheme.colorScheme.onSurfaceVariant
+                                    else MaterialTheme.colorScheme.onSurface
                                 )
 
                                 val trCount = episodeTranslationCountMap[ep.number] ?: 0
@@ -855,10 +929,19 @@ private fun SelectEpisodeStep(
                                         )
                                     }
                                 }
+                                if (isWatched) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "просмотрено",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
                             }
-                            if (!ep.title.isNullOrBlank() && ep.title != "Серия ${ep.number}") {
+                            if (hasRealTitle(ep)) {
                                 Text(
-                                    text = ep.title,
+                                    text = ep.title!!,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,

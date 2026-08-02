@@ -348,7 +348,6 @@ private fun StepSourceContent(
                     enabled = src.isAvailable,
                     shape = RoundedCornerShape(16.dp),
                     color = if (src.isAvailable) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.5f),
-                    border = borderForSelected(false),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -488,7 +487,4 @@ private fun EmptyStepContent(
     }
 }
 
-@Composable
-private fun borderForSelected(selected: Boolean) = if (selected) {
-    androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-} else null
+

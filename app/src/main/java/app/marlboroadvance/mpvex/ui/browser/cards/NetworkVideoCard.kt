@@ -69,6 +69,7 @@ fun NetworkVideoCard(
       modifier =
         Modifier
           .fillMaxWidth()
+          .clip(RoundedCornerShape(12.dp))
           .background(
             if (isSelected) {
               MaterialTheme.colorScheme.tertiary.copy(alpha = 0.3f)

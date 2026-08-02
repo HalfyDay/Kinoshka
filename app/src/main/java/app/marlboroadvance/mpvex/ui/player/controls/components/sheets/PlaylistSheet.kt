@@ -426,9 +426,6 @@ fun PlaylistTrackListItem(
   modifier: Modifier = Modifier,
 ) {
   // Use theme colors dynamically
-  val accentSecondary = MaterialTheme.colorScheme.tertiary
-
-  // Thumbnail state - uses cache to persist across recompositions
   val videoPath = item.path.ifBlank { item.uri.toString() }
   var thumbnail by remember(videoPath) {
     mutableStateOf(thumbnailCache[videoPath])
@@ -444,15 +441,7 @@ fun PlaylistTrackListItem(
     }
   }
 
-  val borderModifier = if (item.isPlaying) {
-    Modifier.border(
-      width = 2.dp,
-      brush = Brush.linearGradient(listOf(accentColor, accentSecondary)),
-      shape = RoundedCornerShape(12.dp),
-    )
-  } else {
-    Modifier
-  }
+  val borderModifier = Modifier
 
   Surface(
     modifier = modifier
@@ -626,7 +615,6 @@ fun PlaylistTrackGridItem(
 ) {
   // Use theme colors dynamically
   val accentColor = MaterialTheme.colorScheme.primary
-  val accentSecondary = MaterialTheme.colorScheme.tertiary
 
   // Thumbnail state - uses cache to persist across recompositions
   val videoPath = item.path.ifBlank { item.uri.toString() }
@@ -644,15 +632,7 @@ fun PlaylistTrackGridItem(
     }
   }
 
-  val borderModifier = if (item.isPlaying) {
-    Modifier.border(
-      width = 2.dp,
-      brush = Brush.linearGradient(listOf(accentColor, accentSecondary)),
-      shape = RoundedCornerShape(12.dp),
-    )
-  } else {
-    Modifier
-  }
+  val borderModifier = Modifier
 
   // YouTube-style vertical card
   Surface(

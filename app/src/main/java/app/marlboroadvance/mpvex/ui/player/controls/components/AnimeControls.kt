@@ -29,13 +29,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.marlboroadvance.mpvex.domain.anime4k.Anime4KManager
+import app.marlboroadvance.mpvex.domain.anime4k.applyShaderChainRuntime
 import app.marlboroadvance.mpvex.preferences.DecoderPreferences
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
 import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.theme.controlColor
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
-import `is`.xyz.mpv.MPVLib
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
@@ -347,59 +347,134 @@ fun AnimeQualityDropdown(
         viewModel.setAnimeModalOpen(showDialog)
     }
 
-    Box {
-        Surface(
-            shape = RoundedCornerShape(50),
-            color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-            contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-            border = null,
-            modifier = Modifier
-                .height(45.dp)
-                .clickable { showDialog = true }
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+        contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+        border = null,
+        modifier = Modifier
+            .height(45.dp)
+            .clickable { showDialog = true }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Icon(Icons.Default.HighQuality, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text(
-                    text = currentQualityId ?: qualities.keys.firstOrNull() ?: "Auto",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-            }
+            Icon(Icons.Default.HighQuality, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(
+                text = currentQualityId ?: qualities.keys.firstOrNull() ?: "Auto",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
         }
+    }
 
-        val qList = if (qualities.isEmpty()) listOf("Auto") else qualities.keys.toList()
-        val selectedQ = currentQualityId ?: qualities.keys.firstOrNull() ?: "Auto"
+    val qList = remember(qualities) {
+        (listOf("Auto") + qualities.keys.toList()).distinct()
+    }
+    val selectedQ = currentQualityId ?: "Auto"
 
-        DropdownMenu(
-            expanded = showDialog,
+    if (showDialog) {
+        Dialog(
             onDismissRequest = { showDialog = false },
-            modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = true
+            )
         ) {
-            qList.forEach { q ->
-                val isSelected = q == selectedQ
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = q,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                        )
-                    },
-                    onClick = {
-                        if (qualities.isNotEmpty()) {
-                            onQualitySelected(q)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { showDialog = false }
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(360.dp)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.HighQuality,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Text(
+                                "Качество видео",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
-                        showDialog = false
-                    },
-                    leadingIcon = if (isSelected) {
-                        { Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
-                    } else null
-                )
+
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            items(qList) { q ->
+                                val isSelected = q == selectedQ
+                                val subtitle = when (q) {
+                                    "Auto" -> "Автоматический выбор лучшего потока"
+                                    "1080p" -> "Full HD · Высочайшая четкость"
+                                    "720p" -> "HD · Оптимальное качество"
+                                    "480p", "360p" -> "SD · Экономия трафика"
+                                    else -> "Вариант качества"
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onQualitySelected(q)
+                                            showDialog = false
+                                        }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = q,
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = subtitle,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Выбрано",
+                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -491,7 +566,7 @@ fun AnimeShaderControl(
                                         contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
                                         modifier = Modifier.clickable {
                                             decoderPreferences.anime4kQuality.set(q.name)
-                                            applyShaders(anime4kMode, q.name, anime4kManager, scope)
+                                            applyShaders(anime4kMode, q.name, anime4kManager, decoderPreferences, scope)
                                         }
                                     ) {
                                         Text(
@@ -523,7 +598,7 @@ fun AnimeShaderControl(
                                 Surface(
                                     modifier = Modifier.fillMaxWidth().clickable {
                                         decoderPreferences.anime4kMode.set(mode.id)
-                                        applyShaders(mode.id, anime4kQuality, anime4kManager, scope)
+                                        applyShaders(mode.id, anime4kQuality, anime4kManager, decoderPreferences, scope)
                                     },
                                     color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                                     shape = RoundedCornerShape(12.dp)
@@ -545,11 +620,20 @@ fun AnimeShaderControl(
 
 private data class ShaderModeInfo(val id: String, val title: String, val description: String)
 
-private fun applyShaders(modeStr: String, qualityStr: String, manager: Anime4KManager, scope: kotlinx.coroutines.CoroutineScope) {
+private fun applyShaders(
+    modeStr: String,
+    qualityStr: String,
+    manager: Anime4KManager,
+    decoderPreferences: DecoderPreferences,
+    scope: kotlinx.coroutines.CoroutineScope
+) {
+    decoderPreferences.enableAnime4K.set(modeStr != "OFF")
     scope.launch(Dispatchers.IO) {
         val mode = try { Anime4KManager.Mode.valueOf(modeStr) } catch(e: Exception) { Anime4KManager.Mode.OFF }
         val quality = try { Anime4KManager.Quality.valueOf(qualityStr) } catch(e: Exception) { Anime4KManager.Quality.BALANCED }
-        val chain = manager.getShaderChain(mode, quality)
-        MPVLib.setPropertyString("glsl-shaders", chain)
+        if (mode != Anime4KManager.Mode.OFF) {
+            runCatching { `is`.xyz.mpv.MPVLib.setPropertyString("hwdec", "mediacodec-copy") }
+        }
+        manager.applyShaderChainRuntime(mode, quality)
     }
 }

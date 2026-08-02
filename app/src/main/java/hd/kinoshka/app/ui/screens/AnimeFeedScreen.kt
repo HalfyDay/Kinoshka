@@ -132,19 +132,39 @@ private fun TopicFeedCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    // Avatar: Shikimori returns a RELATIVE path (e.g. /system/users/...). Prefix it
+                    // with the host so Coil can actually load it (previously it always fell through
+                    // to the error placeholder).
+                    val avatarUrl = topic.user?.avatar?.let { if (it.startsWith("/")) "https://shikimori.io$it" else it }
+                        ?: topic.user?.image?.getUrl(hd.kinoshka.app.data.model.ShikimoriImageQuality.ICON)
                     KinoshkaAsyncImage(
-                        model = topic.user?.avatar,
+                        model = avatarUrl,
                         contentDescription = topic.user?.nickname,
                         modifier = Modifier
                             .size(32.dp)
                             .clip(CircleShape)
                     )
-                    Text(
-                        text = topic.user?.nickname ?: "Shikimori",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    Column {
+                        Text(
+                            text = topic.user?.nickname ?: "Shikimori",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        // Meta line: comment count + created date. Both are already parsed on the
+                        // model; this just surfaces them (previously discarded entirely).
+                        val meta = buildList {
+                            topic.commentsCount.takeIf { it > 0 }?.let { add("$it комм.") }
+                            topic.createdAt?.let { formatDateShort(it) }?.let { add(it) }
+                        }.joinToString(" • ")
+                        if (meta.isNotBlank()) {
+                            Text(
+                                text = meta,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
 
                 Surface(
@@ -170,6 +190,31 @@ private fun TopicFeedCard(
                 overflow = TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurface
             )
+
+            // Body preview + inline hero image. htmlBody carries the real content (text + embedded
+            // screenshots / video links); previously it was fetched and thrown away.
+            val bodyPreview = topic.body?.takeIf { it.isNotBlank() } ?: stripHtml(topic.htmlBody)
+            if (!bodyPreview.isNullOrBlank()) {
+                Text(
+                    text = bodyPreview,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            val heroImage = firstInlineImage(topic.htmlBody)
+            if (heroImage != null) {
+                KinoshkaAsyncImage(
+                    model = heroImage,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp)
+                        .clip(RoundedCornerShape(14.dp)),
+                    contentScale = ContentScale.Crop
+                )
+            }
 
             // Distinct Linked Anime Box
             if (linked != null) {
@@ -225,3 +270,43 @@ private fun TopicFeedCard(
         }
     }
 }
+
+/** Strips HTML/BBCode tags from a Shikimori html_body, returning plain preview text. */
+private fun stripHtml(html: String?): String? {
+    if (html.isNullOrBlank()) return null
+    return html
+        .replace(Regex("<[^>]+>"), " ")
+        .replace(Regex("\\[/?[^]]+]"), " ")
+        .replace(Regex("&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .takeIf { it.isNotBlank() }
+}
+
+/**
+ * Extracts the first inline image URL from a Shikimori html_body. Handles <img src="..."> and
+ * BBCode [img]...[/img]; prefixes relative ('/...') paths with the shikimori host.
+ */
+private fun firstInlineImage(html: String?): String? {
+    if (html.isNullOrBlank()) return null
+    val raw = runCatching {
+        // <img src="/system/..."> or [img]/system/...[/img]
+        Regex("""<img[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
+            ?: Regex("""\[img\]([^\[]+)\[/img\]""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
+    }.getOrNull() ?: return null
+    if (raw.isBlank()) return null
+    return if (raw.startsWith("/")) "https://shikimori.io$raw" else raw
+}
+
+/** Formats a Shikimori ISO created_at (UTC) as a short local date "d MMM". */
+private fun formatDateShort(iso: String): String? = runCatching {
+    val date = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        val normalized = if (iso.endsWith("Z") || iso.contains("+")) iso else iso + "Z"
+        java.util.Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
+    } else {
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+        fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        fmt.parse(iso.substringBefore('.'))
+    } ?: return null
+    java.text.SimpleDateFormat("d MMM", java.util.Locale("ru")).format(date)
+}.getOrNull()

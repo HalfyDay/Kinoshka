@@ -15,6 +15,8 @@ import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.net.Uri
+import android.os.BatteryManager
+import android.os.PowerManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -235,6 +237,64 @@ class PlayerActivity :
   private var wasPlayingBeforePause = false // Track if video was playing before pause
   private var pendingSeekPosition: Double? = null // Track position to seek back to after quality change
 
+  /**
+   * Thermal and performance monitoring
+   */
+  private val thermalStatusListener = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    PowerManager.OnThermalStatusChangedListener { status ->
+      val warning = when (status) {
+        PowerManager.THERMAL_STATUS_MODERATE -> "Устройство нагревается"
+        PowerManager.THERMAL_STATUS_SEVERE -> "Устройство сильно нагрелось"
+        PowerManager.THERMAL_STATUS_CRITICAL -> "Критический перегрев! Снизьте нагрузку"
+        PowerManager.THERMAL_STATUS_EMERGENCY -> "Аварийный перегрев!"
+        PowerManager.THERMAL_STATUS_SHUTDOWN -> "Устройство выключается из-за перегрева!"
+        else -> null
+      }
+      viewModel.setThermalWarning(warning)
+    }
+  } else null
+
+  private var batteryTempJob: Job? = null
+
+  private fun startBatteryTempMonitoring() {
+    if (batteryTempJob != null) return
+    batteryTempJob = lifecycleScope.launch(Dispatchers.IO) {
+      while (isActive) {
+        val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val temp = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+        val celsius = temp / 10f
+        
+        if (celsius >= 45f) {
+          withContext(Dispatchers.Main) {
+            viewModel.setThermalWarning("Батарея перегрета: ${celsius}°C")
+          }
+        }
+        delay(10000) // Every 10 seconds
+      }
+    }
+  }
+
+  private fun stopBatteryTempMonitoring() {
+    batteryTempJob?.cancel()
+    batteryTempJob = null
+  }
+
+  private var lastDropCount = 0L
+  private var lastDropTime = 0L
+
+  private fun checkLag(currentDropCount: Long) {
+    val now = System.currentTimeMillis()
+    if (lastDropTime > 0) {
+      val diff = currentDropCount - lastDropCount
+      val timeDiff = now - lastDropTime
+      if (timeDiff >= 2000 && diff > 15) { // More than 15 frames per 2 seconds dropped
+        viewModel.setLagWarning("Обнаружены задержки (пропущено кадров: $diff)")
+      }
+    }
+    lastDropCount = currentDropCount
+    lastDropTime = now
+  }
+
   // ==================== Background Playback ====================
 
   /**
@@ -419,6 +479,12 @@ class PlayerActivity :
     // Apply persisted shuffle state after playlist is loaded
     viewModel.applyPersistedShuffleState()
 
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+      thermalStatusListener?.let { powerManager.addThermalStatusListener(it) }
+    }
+    startBatteryTempMonitoring()
+
     window.attributes.layoutInDisplayCutoutMode =
       WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
   }
@@ -600,6 +666,12 @@ class PlayerActivity :
       cleanupAudio()
       cleanupReceivers()
       releaseMediaSession()
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val powerManager = getSystemService(POWER_SERVICE) as? PowerManager
+        thermalStatusListener?.let { powerManager?.removeThermalStatusListener(it) }
+      }
+      stopBatteryTempMonitoring()
     }.onFailure { e ->
       Log.e(TAG, "Error during onDestroy", e)
     }
@@ -1216,25 +1288,76 @@ class PlayerActivity :
       }
 
       viewModel.onAnimeQualitySelected = { qId ->
-        val url = viewModel.animeQualities.value[qId]
-        if (url != null) {
-          pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
-          viewModel.setLoadingStream(true)
-          UserStateStore(this).setPreferredQuality(qId)
+        pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
+        viewModel.setLoadingStream(true)
+        UserStateStore(this).setPreferredQuality(qId)
+
+        if (qId == "Auto") {
+          // Auto = the resolver's default (best-available) URL for the current episode/translation.
+          // animeQualities has no "Auto" entry, so re-resolve to obtain stream.url and reload.
+          val shikimoriId = extras.getInt("anime_shikimori_id", 0)
+          val animeTitle = extras.getString("anime_title", "")
+          val srcTypeStr = extras.getString("anime_source_type")
+          val srcType = try { AnimeSourceType.valueOf(srcTypeStr ?: "") } catch (e: Exception) { AnimeSourceType.KODIK }
+          val trId = viewModel.currentAnimeTranslationId.value ?: currentTr ?: ""
+          val epNum = viewModel.currentAnimeEpisodeNumber.value ?: currentEp ?: 1
 
           lifecycleScope.launch(Dispatchers.IO) {
+            val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
             withContext(Dispatchers.Main) {
-              MPVLib.command("loadfile", url)
-              viewModel.setAnimeData(
-                viewModel.animeEpisodes.value,
-                viewModel.animeTranslations.value,
-                viewModel.currentAnimeEpisodeNumber.value,
-                viewModel.currentAnimeTranslationId.value,
-                viewModel.animeQualities.value,
-                qId
-              )
+              if (stream != null) {
+                val url = stream.url
+                fileName = "$animeTitle • Серия $epNum"
+                mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(url), fileName)
+                MPVLib.setPropertyString("media-title", fileName)
+                if (stream.headers.isNotEmpty()) {
+                  val headerMap = mutableMapOf<String, String>()
+                  stream.headers.forEach { (k, v) ->
+                    if (k.equals("user-agent", ignoreCase = true)) {
+                      MPVLib.setPropertyString("user-agent", v)
+                    } else {
+                      headerMap[k] = v
+                    }
+                  }
+                  if (headerMap.isNotEmpty()) {
+                    val headersString = headerMap
+                      .map { "${it.key}: ${it.value.replace(",", "\\,")}" }
+                      .joinToString(",")
+                    MPVLib.setPropertyString("http-header-fields", headersString)
+                  }
+                }
+                MPVLib.command("loadfile", url)
+                viewModel.setAnimeData(
+                  viewModel.animeEpisodes.value,
+                  viewModel.animeTranslations.value,
+                  viewModel.currentAnimeEpisodeNumber.value,
+                  viewModel.currentAnimeTranslationId.value,
+                  stream.qualities,
+                  "Auto"
+                )
+              }
               viewModel.setLoadingStream(false)
             }
+          }
+        } else {
+          val url = viewModel.animeQualities.value[qId]
+          if (url != null) {
+            lifecycleScope.launch(Dispatchers.IO) {
+              withContext(Dispatchers.Main) {
+                MPVLib.command("loadfile", url)
+                viewModel.setAnimeData(
+                  viewModel.animeEpisodes.value,
+                  viewModel.animeTranslations.value,
+                  viewModel.currentAnimeEpisodeNumber.value,
+                  viewModel.currentAnimeTranslationId.value,
+                  viewModel.animeQualities.value,
+                  qId
+                )
+                viewModel.setLoadingStream(false)
+              }
+            }
+          } else {
+            viewModel.setLoadingStream(false)
           }
         }
       }
@@ -1590,8 +1713,15 @@ class PlayerActivity :
           setOrientation()
         }
 
-        // Re-apply Anime4K shaders (check for resolution limit)
-        player.applyAnime4KShaders()
+        // NOTE: Anime4K shaders are NOT re-applied here. Re-issuing glsl-shaders on every
+        // dimension change forces a VO reconfiguration (visible flicker) and the option-string
+        // path used by applyAnime4KShaders() is a no-op once mpv is initialized anyway.
+        // Shaders are applied once at init and only on explicit user mode/quality changes.
+      }
+      "vo-drop-frame-count",
+      "frame-drop-count" -> {
+        if (!mpvInitialized || player.isExiting || isFinishing) return
+        checkLag(value)
       }
     }
   }
@@ -1898,9 +2028,20 @@ class PlayerActivity :
 
     viewModel.unpause()
 
+    // Restore the saved position. Setting time-pos directly on a freshly loaded HLS stream
+    // (before segments are buffered) forces a seek that reads as a visible "skip a few seconds".
+    // Defer it briefly so the demuxer has pulled some data first; use absolute+exact seek for
+    // accuracy. Only applied once per file via pendingSeekPosition being cleared.
     pendingSeekPosition?.let { pos ->
-      MPVLib.setPropertyDouble("time-pos", pos)
       pendingSeekPosition = null
+      if (pos > 0f) {
+        lifecycleScope.launch {
+          kotlinx.coroutines.delay(400)
+          if (mpvInitialized && !player.isExiting && !isFinishing) {
+            MPVLib.command("seek", pos.toString(), "absolute+exact")
+          }
+        }
+      }
     }
 
     if (subtitlesPreferences.autoloadMatchingSubtitles.get()) {
