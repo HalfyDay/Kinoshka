@@ -18,3 +18,4 @@ Thumbs.db
 java_pid*.hprof
 local.properties
 /help/
+.fake
