@@ -40,7 +40,8 @@ enum class UserFilmStatus {
 
 enum class PlayerMode(val displayName: String) {
     DDBB("Источники (ddbb)"),
-    SITE("Зеркало сайта (kinopoisk.ws)")
+    SITE("Зеркало сайта (kinopoisk.ws)"),
+    MPVEX("mpvEx (нативный)")
 }
 
 data class UserPreferences(
@@ -63,6 +64,12 @@ data class HistoryRecord(
     val ratingText: String?,
     val isRussian: Boolean? = null,
     val viewedAt: Long
+)
+
+data class SearchHistoryRecord(
+    val query: String,
+    val contentType: String,
+    val searchedAt: Long
 )
 
 data class UserFilmProfile(
@@ -134,6 +141,7 @@ class UserStateStore(context: Context) {
     private val preferredQualityKey = "preferred_quality"
     private val shikimoriAnimeCacheKey = "shikimori_anime_cache"
     private val librarySortKey = "library_sort_type"
+    private val searchHistoryKey = "search_history_json"
 
     private val prettyGson: Gson = GsonBuilder().setPrettyPrinting().create()
 
@@ -563,6 +571,34 @@ class UserStateStore(context: Context) {
 
     private fun writeProfiles(value: List<UserFilmProfile>) {
         prefs.edit().putString(profileKey, gson.toJson(value)).apply()
+    }
+
+    // ---- Search query history ----
+    fun getSearchHistory(): List<SearchHistoryRecord> {
+        val raw = prefs.getString(searchHistoryKey, null) ?: return emptyList()
+        val type = object : TypeToken<List<SearchHistoryRecord>>() {}.type
+        return runCatching { gson.fromJson<List<SearchHistoryRecord>>(raw, type).orEmpty() }
+            .getOrDefault(emptyList())
+    }
+
+    fun addSearchQuery(query: String, contentType: String) {
+        val clean = query.trim()
+        if (clean.isBlank()) return
+        val current = getSearchHistory().toMutableList()
+        // Dedup by query+contentType, most-recent-first, cap at 20.
+        current.removeAll { it.query.equals(clean, ignoreCase = true) && it.contentType == contentType }
+        current.add(0, SearchHistoryRecord(clean, contentType, System.currentTimeMillis()))
+        prefs.edit().putString(searchHistoryKey, gson.toJson(current.take(20))).apply()
+    }
+
+    fun removeSearchQuery(query: String, contentType: String) {
+        val current = getSearchHistory().toMutableList()
+        current.removeAll { it.query.equals(query, ignoreCase = true) && it.contentType == contentType }
+        prefs.edit().putString(searchHistoryKey, gson.toJson(current)).apply()
+    }
+
+    fun clearSearchHistory() {
+        prefs.edit().remove(searchHistoryKey).apply()
     }
 
     private fun <T : Enum<T>> readEnum(key: String, fallback: T): T {

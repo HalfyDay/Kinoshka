@@ -13,6 +13,8 @@ import androidx.compose.animation.graphics.ExperimentalAnimationGraphicsApi
 import androidx.compose.animation.graphics.res.animatedVectorResource
 import androidx.compose.animation.graphics.res.rememberAnimatedVectorPainter
 import androidx.compose.animation.graphics.vector.AnimatedImageVector
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -49,6 +51,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -304,6 +307,7 @@ fun PlayerControls(
         val playerPauseButton = createRef()
         val seekbar = createRef()
         val (playerUpdates) = createRefs()
+        val (warnings) = createRefs()
 
         val isBrightnessSliderShown by viewModel.isBrightnessSliderShown.collectAsState()
         val isVolumeSliderShown by viewModel.isVolumeSliderShown.collectAsState()
@@ -599,6 +603,39 @@ fun PlayerControls(
             }
 
             else -> {}
+          }
+        }
+
+        val thermalWarning by viewModel.thermalWarning.collectAsState()
+        val lagWarning by viewModel.lagWarning.collectAsState()
+
+        AnimatedVisibility(
+          visible = thermalWarning != null || lagWarning != null,
+          enter = fadeIn() + expandVertically(),
+          exit = fadeOut() + shrinkVertically(),
+          modifier = Modifier.constrainAs(warnings) {
+            top.linkTo(playerUpdates.bottom, 16.dp)
+            start.linkTo(parent.start)
+            end.linkTo(parent.end)
+          }
+        ) {
+          Surface(
+            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.padding(horizontal = 16.dp)
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(18.dp))
+              Text(
+                text = thermalWarning ?: lagWarning ?: "",
+                style = MaterialTheme.typography.labelMedium
+              )
+            }
           }
         }
 

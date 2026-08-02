@@ -93,15 +93,20 @@ class KinoMPVView(
         MPVLib.setOptionString("profile", "fast")
         MPVLib.setOptionString("vo", "gpu")
         
-        // Hardware decoding options
-        val hwdecStr = if (pendingHwdec) "mediacodec,mediacodec-copy,no" else "no"
+        // Hardware decoding options — prefer mediacodec-COPY: direct (non-copy) mediacodec
+        // renders to the SurfaceView and causes black/corrupt frames on HLS segment changes.
+        val hwdecStr = if (pendingHwdec) "mediacodec-copy,mediacodec,no" else "no"
         MPVLib.setOptionString("hwdec", hwdecStr)
         MPVLib.setOptionString("hwdec-codecs", "all")
-        
+
         // Cache configuration for smooth streaming
         val cacheMegs = 64
         MPVLib.setOptionString("demuxer-max-bytes", "${cacheMegs * 1024 * 1024}")
         MPVLib.setOptionString("demuxer-max-back-bytes", "${cacheMegs * 1024 * 1024}")
+        // HLS smoothness: readahead so segment rebuffers don't read as skips/stalls.
+        MPVLib.setOptionString("demuxer-readahead-secs", "12")
+        MPVLib.setOptionString("cache-secs", "10")
+        MPVLib.setOptionString("framedrop", "vo")
         
         MPVLib.setPropertyBoolean("keep-open", true)
         MPVLib.setPropertyBoolean("input-default-bindings", true)
@@ -251,21 +256,29 @@ class KinoMPVView(
         pendingAnime4kMode = mode
         pendingAnime4kQuality = quality
         anime4kManagerInstance = manager
-        
+
         if (isNativeReady) {
             try {
+                // Use the runtime command API (glsl-shaders-set / glsl-shaders-clear). Writing
+                // the glsl-shaders option via the property-string API after playback started is
+                // a no-op on most libmpv builds — that's why toggling modes had no visible effect.
                 if (mode == Anime4KManager.Mode.OFF) {
-                    MPVLib.setPropertyString("glsl-shaders", "")
+                    MPVLib.command("glsl-shaders-clear")
                     return
                 }
                 val chain = manager.getShaderChain(mode, quality)
                 if (chain.isNotEmpty()) {
-                    MPVLib.setPropertyString("glsl-shaders", chain)
+                    MPVLib.command("glsl-shaders-set", *chain.split(':').toTypedArray())
                 } else {
-                    MPVLib.setPropertyString("glsl-shaders", "")
+                    MPVLib.command("glsl-shaders-clear")
                 }
             } catch (e: Exception) {
                 Log.e("KinoMPVView", "Failed to apply Anime4K shaders", e)
+                // Fallback to the option-string path; works on some builds.
+                try {
+                    val chain = if (mode == Anime4KManager.Mode.OFF) "" else manager.getShaderChain(mode, quality)
+                    MPVLib.setPropertyString("glsl-shaders", chain)
+                } catch (_: Exception) {}
             }
         }
     }

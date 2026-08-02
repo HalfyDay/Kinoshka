@@ -1,6 +1,8 @@
 package hd.kinoshka.app.ui.screens
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -96,6 +98,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material3.Icon
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ripple
 import androidx.compose.ui.geometry.Offset
@@ -200,7 +205,10 @@ fun HomeScreen(
     onToggleFilterSheet: (Boolean) -> Unit = {},
     onOpenCalendar: () -> Unit = {},
     onOpenFeed: () -> Unit = {},
-    onLibrarySortSelected: (hd.kinoshka.app.data.local.LibrarySortType) -> Unit = {}
+    onLibrarySortSelected: (hd.kinoshka.app.data.local.LibrarySortType) -> Unit = {},
+    onInstantSearch: (String) -> Unit = {},
+    onRemoveSearchHistory: (String) -> Unit = {},
+    onClearSearchHistory: () -> Unit = {}
 ) {
     val focusManager = LocalFocusManager.current
     val libraryMetrics = state.libraryTileSize.toGridMetrics()
@@ -225,6 +233,7 @@ fun HomeScreen(
             }
         )
     }
+    var isSearchFocused by remember { mutableStateOf(false) }
     var libraryQuery by rememberSaveable { mutableStateOf("") }
     var discoverQuery by rememberSaveable { mutableStateOf("") }
     var moreQuery by rememberSaveable { mutableStateOf("") }
@@ -232,6 +241,14 @@ fun HomeScreen(
         MainSection.LIBRARY -> libraryQuery
         MainSection.DISCOVER -> discoverQuery
         MainSection.MORE -> moreQuery
+    }
+    // Instant search: debounce the DISCOVER query and fire a cancellable search while typing, so
+    // results appear before the user hits the IME search key. ~350ms avoids hammering the API.
+    LaunchedEffect(discoverQuery, section, state.contentType) {
+        if (section == MainSection.DISCOVER && discoverQuery.trim().length >= 2) {
+            kotlinx.coroutines.delay(350)
+            onInstantSearch(discoverQuery)
+        }
     }
     var libraryTab by rememberSaveable { mutableStateOf(LibraryTab.WATCHING) }
     var libraryFilter by rememberSaveable { mutableStateOf(LibraryFilterType.ALL) }
@@ -315,51 +332,93 @@ fun HomeScreen(
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(searchRowHeight)
-                        .clipToBounds()
-                ) {
-                    SearchRow(
-                        query = activeQuery,
-                        avatar = state.profileAvatar,
-                        placeholder = when (section) {
-                            MainSection.LIBRARY -> "Поиск в библиотеке"
-                            MainSection.DISCOVER -> if (state.contentType == ContentType.ANIME) "Поиск аниме" else "Поиск фильмов"
-                            MainSection.MORE -> "Поиск по разделу Ещё"
-                        },
-                        section = section,
-                        contentType = state.contentType,
-                        onContentTypeSelected = onContentTypeSelected,
-                        libraryFilter = libraryFilter,
-                        onLibraryFilterSelected = { libraryFilter = it },
-                        librarySort = librarySort,
-                        onLibrarySortSelected = { sortType ->
-                            librarySort = sortType
-                            onLibrarySortSelected(sortType)
-                        },
-                        isFilterActive = state.filterState.isActive,
-                        onFilterClick = { onToggleFilterSheet(true) },
-                        onQueryChange = { value ->
-                            when (section) {
-                                MainSection.LIBRARY -> libraryQuery = value
-                                MainSection.DISCOVER -> discoverQuery = value
-                                MainSection.MORE -> moreQuery = value
-                            }
-                            onQueryChange(value)
-                        },
-                        onSearch = {
-                            focusManager.clearFocus()
-                            if (section == MainSection.DISCOVER) {
-                                onSubmitSearch()
-                            }
-                        },
-                        onAvatarClick = onOpenProfile,
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .alpha(searchRowAlpha)
-                    )
+                            .height(searchRowHeight)
+                            .clipToBounds()
+                    ) {
+                        SearchRow(
+                            query = activeQuery,
+                            avatar = state.profileAvatar,
+                            placeholder = when (section) {
+                                MainSection.LIBRARY -> "Поиск в библиотеке"
+                                MainSection.DISCOVER -> if (state.contentType == ContentType.ANIME) "Поиск аниме" else "Поиск фильмов"
+                                MainSection.MORE -> "Поиск по разделу Ещё"
+                            },
+                            section = section,
+                            contentType = state.contentType,
+                            onContentTypeSelected = onContentTypeSelected,
+                            libraryFilter = libraryFilter,
+                            onLibraryFilterSelected = { libraryFilter = it },
+                            librarySort = librarySort,
+                            onLibrarySortSelected = { sortType ->
+                                librarySort = sortType
+                                onLibrarySortSelected(sortType)
+                            },
+                            isFilterActive = state.filterState.isActive,
+                            onFilterClick = { onToggleFilterSheet(true) },
+                            onQueryChange = { value ->
+                                when (section) {
+                                    MainSection.LIBRARY -> libraryQuery = value
+                                    MainSection.DISCOVER -> discoverQuery = value
+                                    MainSection.MORE -> moreQuery = value
+                                }
+                                onQueryChange(value)
+                            },
+                            onSearch = {
+                                isSearchFocused = false
+                                focusManager.clearFocus()
+                                if (section == MainSection.DISCOVER) {
+                                    onSubmitSearch()
+                                }
+                            },
+                            onFocusChanged = { focused ->
+                                isSearchFocused = focused
+                            },
+                            onAvatarClick = onOpenProfile,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .alpha(searchRowAlpha)
+                        )
+                    }
+
+                    // Recent searches — overlay positioned right below the search bar
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = section == MainSection.DISCOVER && isSearchFocused && state.searchHistory.isNotEmpty(),
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = searchRowHeight)
+                            .zIndex(10f)
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+                            tonalElevation = 4.dp
+                        ) {
+                            Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                                SearchHistoryRow(
+                                    history = state.searchHistory,
+                                    contentType = state.contentType,
+                                    onPick = { q ->
+                                        discoverQuery = q
+                                        onQueryChange(q)
+                                        isSearchFocused = false
+                                        focusManager.clearFocus()
+                                        onSubmitSearch()
+                                    },
+                                    onRemove = onRemoveSearchHistory,
+                                    onClear = onClearSearchHistory
+                                )
+                            }
+                        }
+                    }
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -393,9 +452,17 @@ fun HomeScreen(
                                             fadeIn(animationSpec = tween(250)).togetherWith(fadeOut(animationSpec = tween(150)))
                                         },
                                         label = "libraryGridAnim"
-                                    ) { _ ->
+                                    ) { targetContentType ->
+                                        val filteredItems = remember(items, targetContentType) {
+                                            items.filter { item ->
+                                                when (targetContentType) {
+                                                    ContentType.FILMS -> item.type != "ANIME"
+                                                    ContentType.ANIME -> item.type == "ANIME"
+                                                }
+                                            }
+                                        }
                                         LibraryPageGrid(
-                                            items = items,
+                                            items = filteredItems,
                                             historyMode = pageTab == LibraryTab.HISTORY,
                                             onOpenHistoryFilm = onOpenHistoryFilm,
                                             onRemoveFromHistory = onRemoveFromHistory,
@@ -413,9 +480,9 @@ fun HomeScreen(
                                     fadeIn(animationSpec = tween(250)).togetherWith(fadeOut(animationSpec = tween(150)))
                                 },
                                 label = "discoverGridAnim"
-                            ) { _ ->
+                            ) { targetContentType ->
                                 DiscoverContent(
-                                    state = state,
+                                    state = state.copy(contentType = targetContentType),
                                     sourceItems = discoverItems,
                                     metrics = discoverMetrics,
                                     statusByFilmId = statusByFilmId,
@@ -479,7 +546,8 @@ private fun SearchRow(
     librarySort: hd.kinoshka.app.data.local.LibrarySortType = hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED,
     onLibrarySortSelected: ((hd.kinoshka.app.data.local.LibrarySortType) -> Unit)? = null,
     isFilterActive: Boolean = false,
-    onFilterClick: (() -> Unit)? = null
+    onFilterClick: (() -> Unit)? = null,
+    onFocusChanged: ((Boolean) -> Unit)? = null
 ) {
     Row(
         modifier = modifier,
@@ -522,7 +590,11 @@ private fun SearchRow(
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { onSearch() }),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focusState ->
+                                onFocusChanged?.invoke(focusState.isFocused)
+                            }
                     )
                 }
             }
@@ -714,6 +786,79 @@ private fun SearchRow(
             ) {
                 AvatarBadge(avatar = avatar)
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SearchHistoryRow(
+    history: List<hd.kinoshka.app.data.local.SearchHistoryRecord>,
+    contentType: ContentType,
+    onPick: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onClear: () -> Unit
+) {
+    val filtered = history.filter { it.contentType == contentType.name }.take(5)
+    if (filtered.isEmpty()) return
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        filtered.forEach { item ->
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onPick(item.query) },
+                color = Color.Transparent
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.History,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text(
+                        text = item.query,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    IconButton(
+                        onClick = { onRemove(item.query) },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                            contentDescription = "Удалить",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+            }
+        }
+        
+        TextButton(
+            onClick = onClear,
+            modifier = Modifier.align(Alignment.End)
+        ) {
+            Text(
+                text = "Очистить историю",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
     }
 }
@@ -1292,6 +1437,7 @@ private fun LibraryGridCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
             .combinedClickable(
                 onClick = onOpen,
                 onLongClick = onLongPress
@@ -1310,6 +1456,14 @@ private fun LibraryGridCard(
                 filterQuality = FilterQuality.Low,
                 modifier = Modifier.fillMaxSize()
             )
+            // New-episode badge (TopStart): shows when an ongoing anime has more episodes aired
+            // than the user has watched. Only for active statuses, not completed/dropped.
+            if (item.hasNewEpisode()) {
+                NewEpisodeBadge(
+                    newCount = (item.episodesAired ?: 0) - (item.watchedEpisodes ?: 0),
+                    modifier = Modifier.align(Alignment.TopStart)
+                )
+            }
             item.status?.let {
                 UserStatusBadge(
                     status = it,
@@ -1374,6 +1528,7 @@ private fun LibraryVerticalRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
             .combinedClickable(
                 onClick = onOpen,
                 onLongClick = onLongPress
@@ -1394,6 +1549,12 @@ private fun LibraryVerticalRow(
                 filterQuality = FilterQuality.Low,
                 modifier = Modifier.fillMaxSize()
             )
+            if (item.hasNewEpisode()) {
+                NewEpisodeBadge(
+                    newCount = (item.episodesAired ?: 0) - (item.watchedEpisodes ?: 0),
+                    modifier = Modifier.align(Alignment.TopStart)
+                )
+            }
             item.status?.let {
                 UserStatusBadge(status = it, modifier = Modifier.align(Alignment.BottomEnd))
             }
@@ -1684,6 +1845,39 @@ private fun UserStatusBadge(
                 )
             }
         }
+    }
+}
+
+/**
+ * True when this library item (anime) has new episodes the user hasn't watched yet.
+ * Only for active statuses (watching / rewatching / on_hold / planned) — completed/dropped
+ * titles are not badged.
+ */
+private fun LibraryUiItem.hasNewEpisode(): Boolean {
+    if (status == UserFilmStatus.COMPLETED || status == UserFilmStatus.DROPPED) return false
+    val aired = episodesAired ?: return false
+    val watched = watchedEpisodes ?: 0
+    return aired > watched && aired < 10000
+}
+
+@Composable
+private fun NewEpisodeBadge(
+    newCount: Int,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.padding(6.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.primary,
+        shadowElevation = 2.dp
+    ) {
+        Text(
+            text = if (newCount in 1..99) "+$newCount эп." else "Новая серия",
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onPrimary
+        )
     }
 }
 

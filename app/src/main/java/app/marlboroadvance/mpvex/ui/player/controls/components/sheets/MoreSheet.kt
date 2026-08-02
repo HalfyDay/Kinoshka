@@ -46,6 +46,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import hd.kinoshka.app.R
 import app.marlboroadvance.mpvex.domain.anime4k.Anime4KManager
+import app.marlboroadvance.mpvex.domain.anime4k.applyShaderChainRuntime
 import app.marlboroadvance.mpvex.preferences.AdvancedPreferences
 import app.marlboroadvance.mpvex.preferences.DecoderPreferences
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
@@ -213,7 +214,7 @@ val scope = rememberCoroutineScope()
               leadingIcon = null,
               onClick = {
                 decoderPreferences.anime4kMode.set(mode.name)
-                
+
                 // Apply shaders immediately (runtime change)
                 scope.launch(Dispatchers.IO) {
                   runCatching {
@@ -229,10 +230,7 @@ val scope = rememberCoroutineScope()
                         Anime4KManager.Mode.OFF
                     }
 
-                    val shaderChain = anime4kManager.getShaderChain(currentMode, quality)
-
-                    // Use setPropertyString for runtime changes
-                    MPVLib.setPropertyString("glsl-shaders", if (shaderChain.isNotEmpty()) shaderChain else "")
+                    anime4kManager.applyShaderChainRuntime(currentMode, quality)
                     onAnime4KChanged()
                   }
                 }
@@ -273,10 +271,7 @@ val scope = rememberCoroutineScope()
                         Anime4KManager.Quality.BALANCED
                     }
 
-                    val shaderChain = anime4kManager.getShaderChain(modeEnum, currentQuality)
-
-                    // Use setPropertyString for runtime changes
-                    MPVLib.setPropertyString("glsl-shaders", if (shaderChain.isNotEmpty()) shaderChain else "")
+                    anime4kManager.applyShaderChainRuntime(modeEnum, currentQuality)
                     onAnime4KChanged()
                   }
                 }

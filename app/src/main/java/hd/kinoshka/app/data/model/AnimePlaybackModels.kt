@@ -5,7 +5,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class AnimeSourceType(val displayName: String, val description: String) {
     KODIK("Kodik", "Большой каталог озвучек и субтитров"),
-    ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p")
+    ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p"),
+    ANILIB("AniLib", "Релизы AniLib (AniLibria v2) с качествами 1080p/720p/480p")
 }
 
 @Serializable

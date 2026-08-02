@@ -1,6 +1,12 @@
 package hd.kinoshka.app.ui.screens
 
 import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.Schedule
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.TimeZone
+import java.util.Date
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -23,6 +29,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
@@ -103,6 +110,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -137,6 +146,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.ui.graphics.vector.VectorPainter
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.filled.PlayArrow
@@ -198,6 +208,7 @@ import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmLinkItem
 import hd.kinoshka.app.data.model.SeasonItem
+import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.ui.components.shimmerEffect
@@ -240,7 +251,8 @@ fun DetailsScreen(
         translations: List<hd.kinoshka.app.data.model.FlatTranslation>,
         currentTranslationId: String
     ) -> Unit)? = null,
-    playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST
+    playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
+    playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.DDBB
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -253,6 +265,9 @@ fun DetailsScreen(
     var showDnsSheet by remember { mutableStateOf(false) }
     var isInteractive by remember { mutableStateOf(true) }
     var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
+    // For films, when MPVEX is selected, this triggers the AnimePlaybackSelectionScreen with a
+    // synthetic shikimoriId=0 so the resolver uses title-based Kodik search only.
+    var activeFilmPlaybackSelection by remember(filmId) { mutableStateOf(false) }
 
     LaunchedEffect(filmId) {
         load(filmId)
@@ -261,6 +276,7 @@ fun DetailsScreen(
     BackHandler {
         when {
             activePlaybackSelection -> activePlaybackSelection = false
+            activeFilmPlaybackSelection -> activeFilmPlaybackSelection = false
             selectedCharacterId != null -> selectedCharacterId = null
             previewPosterUrl != null -> {
                 previewPosterUrl = null
@@ -377,6 +393,7 @@ fun DetailsScreen(
             state.item != null -> {
                 val item = state.item
                 val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.any { it.genre?.lowercase() == "аниме" }
+                val scope = rememberCoroutineScope()
                 val scrollState = rememberLazyListState()
                 val contentAlpha by animateFloatAsState(
                     targetValue = if (contentVisible) 1f else 0f,
@@ -475,7 +492,56 @@ fun DetailsScreen(
                                     onWatch = {
                                         isInteractive = false
                                         onWatch(item)
-                                        onOpenUrl(item.toWatchUrl())
+                                        if (
+                                            playerMode == hd.kinoshka.app.data.local.PlayerMode.MPVEX &&
+                                            onOpenNativePlayer != null
+                                        ) {
+                                            val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
+                                            val ctx = context
+                                            scope.launch {
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(ctx, "Поиск потока для \"$filmTitle\"…", Toast.LENGTH_SHORT).show()
+                                                }
+                                                val stream = AnimeStreamResolver.resolveFilmStreamByTitle(filmTitle, item.kinopoiskId)
+                                                if (stream != null) {
+                                                    var normalizedUrl = stream.url
+                                                    if (normalizedUrl.startsWith("//")) {
+                                                        normalizedUrl = "https:$normalizedUrl"
+                                                    }
+                                                    if (normalizedUrl.startsWith("http", ignoreCase = true)) {
+                                                        onOpenNativePlayer(
+                                                            normalizedUrl,
+                                                            stream.headers,
+                                                            stream.qualities,
+                                                            filmTitle,
+                                                            1,
+                                                            filmTitle,
+                                                            0,
+                                                            "KODIK",
+                                                            emptyList(),
+                                                            emptyList(),
+                                                            ""
+                                                        )
+                                                    } else {
+                                                        withContext(Dispatchers.Main) {
+                                                            Toast.makeText(ctx, "Нативный плеер недоступен, открываю в плеере сайта", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                        onOpenUrl(item.toWatchUrl())
+                                                    }
+                                                } else {
+                                                    // Kodik doesn't have this film — fall back to DDBB/web player
+                                                    withContext(Dispatchers.Main) {
+                                                        Toast.makeText(ctx, "Фильм не найден в Kodik, открываю в плеере сайта", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                    onOpenUrl(item.toWatchUrl())
+                                                }
+                                                withContext(Dispatchers.Main) {
+                                                    isInteractive = true
+                                                }
+                                            }
+                                        } else {
+                                            onOpenUrl(item.toWatchUrl())
+                                        }
                                     },
                                     onOpenEditor = { showProfileEditor = true },
                                     showDisableAdsButton = !adGuardDnsActive,
@@ -571,6 +637,46 @@ fun DetailsScreen(
                             }
                         }
                     }
+                }
+
+                // mpvEx-for-films selection overlay (uses the same UI as anime). The screen
+                // reuses AnimePlaybackSelectionScreen which calls prefetchAllMedia(0, title); Kodik
+                // handles shikimoriId=0 via title-search, AniLiberty/AniLib silently return empty.
+                if (!isAnime && activeFilmPlaybackSelection && onOpenNativePlayer != null) {
+                    val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
+                    AnimePlaybackSelectionScreen(
+                        shikimoriId = 0,
+                        animeTitle = filmTitle,
+                        playbackSequence = playbackSequence,
+                        onDismissRequest = { activeFilmPlaybackSelection = false },
+                        onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
+                            var normalizedUrl = stream.url
+                            if (normalizedUrl.startsWith("//")) {
+                                normalizedUrl = "https:$normalizedUrl"
+                            }
+                            if (normalizedUrl.startsWith("http", ignoreCase = true)) {
+                                onOpenNativePlayer(
+                                    normalizedUrl,
+                                    stream.headers,
+                                    stream.qualities,
+                                    filmTitle,
+                                    epNum,
+                                    epTitle,
+                                    0,
+                                    source.name,
+                                    episodes,
+                                    translations,
+                                    trId
+                                )
+                            }
+                            activeFilmPlaybackSelection = false
+                        },
+                        onWebFallback = {
+                            // Kodik does not index every film — fall back to the WebView player so
+                            // the watch button is never inert.
+                            onOpenUrl(item.toWatchUrl())
+                        }
+                    )
                 }
 
                 if (!isAnime || !activePlaybackSelection) {
@@ -2502,6 +2608,17 @@ private fun AnimeDetailsLayout(
             }
         }
 
+        // Next Episode Countdown Block for Ongoing Anime
+        val nextEpAt = anime?.nextEpisodeAt
+        if (anime?.status == "ongoing" && !nextEpAt.isNullOrBlank()) {
+            item {
+                NextEpisodeCountdownCard(
+                    nextEpisodeAt = nextEpAt,
+                    episodesAired = anime.episodesAired
+                )
+            }
+        }
+
         // Standalone Expandable Description with padding
         if (!item.description.isNullOrBlank()) {
             item {
@@ -2546,7 +2663,7 @@ private fun AnimeDetailsLayout(
                                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                                 ) {
                                     Text(
-                                        text = genreName.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
+                                        text = genreName.replaceFirstChar { if (it.isLowerCase()) it.titlecase(androidx.compose.ui.text.intl.Locale.current.platformLocale) else it.toString() },
                                         style = MaterialTheme.typography.labelLarge,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -3372,7 +3489,41 @@ private fun formatRussianDate(dateStr: String?): String {
 }
 
 private fun formatNextEpisode(isoDate: String?): String {
-    return formatRussianDate(isoDate)
+    if (isoDate.isNullOrBlank()) return "—"
+    // nextEpisodeAt is a UTC timestamp (with or without a trailing Z/.SSSZ offset). The old code
+    // took dateStr.take(10), which is the UTC calendar date — off by one day for users ahead of UTC.
+    // Parse the instant as UTC, then format the date in the device's local timezone.
+    val localDate = utcToLocalDateString(isoDate)
+    return formatRussianDate(localDate ?: isoDate.take(10))
+}
+
+/**
+ * Parses a Shikimori timestamp (bare "yyyy-MM-dd'T'HH:mm:ss", with ".SSSZ", or "+HH:MM" offset)
+ * as UTC and returns the local-calendar date as "yyyy-MM-dd" so [formatRussianDate] shows the
+ * correct day for the user's timezone. Returns null if parsing fails.
+ */
+private fun utcToLocalDateString(iso: String): String? {
+    return runCatching {
+        val instant = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val normalized = iso.trim().let {
+                when {
+                    it.endsWith("Z") || it.contains("+") || it.substringAfterLast('T').contains("-") -> it
+                    else -> it + "Z" // bare UTC string — append Z so Instant can parse it
+                }
+            }
+            java.time.OffsetDateTime.parse(normalized).toInstant()
+        } else {
+            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            fmt.parse(iso.substringBefore('.'))?.toInstant()
+        } ?: return null
+        val zdt = instant.atZone(java.time.ZoneId.systemDefault())
+        String.format(
+            java.util.Locale.US,
+            "%04d-%02d-%02d",
+            zdt.year, zdt.monthValue, zdt.dayOfMonth
+        )
+    }.getOrNull()
 }
 
 private fun parseShikimoriBbCode(
@@ -3656,6 +3807,10 @@ private fun DetailsTopBar(
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    var showTorrentSheet by remember { mutableStateOf(false) }
+    var torrentLinks by remember { mutableStateOf<List<AnimeStreamResolver.TorrentLink>>(emptyList()) }
+    var torrentLoading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     val thresholdPx = with(density) { (if (isAnime) 380.dp else 200.dp).toPx() }
     val fadeRangePx = with(density) { 40.dp.toPx() }
@@ -3717,6 +3872,32 @@ private fun DetailsTopBar(
 
                 IconButton(
                     onClick = {
+                        torrentLoading = true
+                        showTorrentSheet = true
+                        scope.launch {
+                            val links = withContext(Dispatchers.IO) {
+                                if (isAnime) {
+                                    val shikimoriId = item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                                    AnimeStreamResolver.fetchTorrents(shikimoriId, item.nameRu ?: item.nameOriginal ?: "")
+                                } else {
+                                    val title = (item.nameRu ?: item.nameOriginal ?: "").trim()
+                                    val yearStr = item.year?.toString()
+                                    AnimeStreamResolver.fetchFilmTorrents(title, yearStr)
+                                }
+                            }
+                            torrentLinks = links
+                            torrentLoading = false
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = "Скачать",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                IconButton(
+                    onClick = {
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
                             val shareUrl = if (isAnime) {
@@ -3734,6 +3915,82 @@ private fun DetailsTopBar(
                         contentDescription = "Поделиться",
                         tint = MaterialTheme.colorScheme.onSurface
                     )
+                }
+            }
+        }
+    }
+
+    // Torrent picker (anime). Hands magnet/.torrent links to the OS, which opens the user's
+    // torrent client — no in-app torrent engine. Films use the external-browser path above.
+    if (showTorrentSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showTorrentSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Торренты (AniLiberty)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Ссылка откроется во внешнем торрент-клиенте.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (torrentLoading) {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
+                } else if (torrentLinks.isEmpty()) {
+                    Text(
+                        text = "Торренты не найдены для этого тайтла.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(8.dp)
+                    )
+                } else {
+                    torrentLinks.forEach { link ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            onClick = {
+                                val uri = (link.magnet ?: link.torrentUrl) ?: return@Surface
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                runCatching { context.startActivity(intent) }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(14.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = link.quality,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "${link.size} • ↑${link.seeders} ↓${link.leechers}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = "Скачать",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -3793,6 +4050,104 @@ private class FractionalClipShape(private val fraction: Float) : androidx.compos
         return androidx.compose.ui.graphics.Outline.Rectangle(
             androidx.compose.ui.geometry.Rect(0f, 0f, size.width * fraction, size.height)
         )
+    }
+}
+
+@Composable
+private fun NextEpisodeCountdownCard(
+    nextEpisodeAt: String,
+    episodesAired: Int?
+) {
+    val targetTime = remember(nextEpisodeAt) {
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val normalized = nextEpisodeAt.trim().let {
+                    when {
+                        it.endsWith("Z") || it.contains("+") || it.substringAfterLast('T').contains("-") -> it
+                        else -> it + "Z"
+                    }
+                }
+                java.util.Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
+            } else {
+                val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+                fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                fmt.parse(nextEpisodeAt.substringBefore('.'))
+            }
+        }.getOrNull()
+    } ?: return
+
+    val now = System.currentTimeMillis()
+    val diffMs = targetTime.time - now
+    val nextEpNum = (episodesAired ?: 0) + 1
+
+    val (days, hours, minutes) = remember(diffMs) {
+        if (diffMs <= 0) Triple(0L, 0L, 0L)
+        else {
+            val d = diffMs / (1000 * 60 * 60 * 24)
+            val h = (diffMs / (1000 * 60 * 60)) % 24
+            val m = (diffMs / (1000 * 60)) % 60
+            Triple(d, h, m)
+        }
+    }
+
+    val countdownText = if (diffMs > 0) {
+        val parts = mutableListOf<String>()
+        if (days > 0) parts.add("$days д.")
+        if (hours > 0 || days > 0) parts.add("$hours ч.")
+        parts.add("$minutes мин.")
+        "Серия $nextEpNum выйдет через ${parts.joinToString(" ")}"
+    } else {
+        "Серия $nextEpNum выйдет в ближайшее время"
+    }
+
+    val dateFormatted = remember(targetTime) {
+        val cal = Calendar.getInstance().apply { time = targetTime }
+        val dayOfWeek = SimpleDateFormat("EEEE", Locale("ru")).format(cal.time)
+        val dayMonth = SimpleDateFormat("d MMMM", Locale("ru")).format(cal.time)
+        "$dayOfWeek, $dayMonth"
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Schedule,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = countdownText,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(1.dp))
+                Text(
+                    text = dateFormatted,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 

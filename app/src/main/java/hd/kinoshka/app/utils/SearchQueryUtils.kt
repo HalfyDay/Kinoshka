@@ -37,4 +37,38 @@ object SearchQueryUtils {
         }
         return sb.toString()
     }
+
+    /**
+     * Relevance score for a search result against the typed query. Higher is better.
+     * Order of priority: exact title match > title starts with query > title contains query >
+     * substring/other. Ties broken by rating then year (passed in for context).
+     *
+     * This makes search "smarter" — a query like "one piece" surfaces the exact-titled series
+     * above merely-rating-ordered results, instead of returning whatever the API ranked first.
+     */
+    fun relevanceScore(
+        query: String,
+        nameRu: String?,
+        nameOriginal: String?,
+        rating: Double?,
+        year: Int?
+    ): Int {
+        val q = query.trim().lowercase()
+        if (q.isBlank()) return 0
+        val candidates = listOfNotNull(nameRu, nameOriginal).map { it.lowercase() }
+        var best = 0
+        for (name in candidates) {
+            best = maxOf(best, when {
+                name == q -> 1000
+                name.startsWith(q) -> 700
+                name.contains(" $q") || name.contains(" $q ") -> 500
+                name.contains(q) -> 300
+                else -> 0
+            })
+        }
+        // Tie-breakers: rating (0..10 → 0..100), then recency.
+        best += ((rating ?: 0.0) * 10).toInt().coerceIn(0, 100)
+        best += (year ?: 0).coerceAtLeast(1900) - 1900
+        return best
+    }
 }

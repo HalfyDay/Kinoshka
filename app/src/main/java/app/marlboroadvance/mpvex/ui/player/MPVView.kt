@@ -101,25 +101,40 @@ class MPVView(
     
     // Set GPU API context (Vulkan or OpenGL)
     if (decoderPreferences.useVulkan.get()) {
+      MPVLib.setOptionString("gpu-api", "vulkan")
       MPVLib.setOptionString("gpu-context", "androidvk")
     }
 
-    // Set hwdec with fallback order: HW+ (mediacodec) -> HW (mediacodec-copy) -> SW (no)
+    // Hardware decoding. Prefer mediacodec-COPY over direct mediacodec: the non-copy path
+    // renders direct to the SurfaceView and is a prime cause of black/corrupt frames on HLS
+    // segment/format changes (the reported flicker/corruption/skip bug). Copy-decode moves
+    // frames back through the GPU vo so rendering is composited and shaders (Anime4K) run.
     MPVLib.setOptionString(
       "hwdec",
-      if (decoderPreferences.tryHWDecoding.get()) "mediacodec,mediacodec-copy,no" else "no",
+      if (decoderPreferences.tryHWDecoding.get()) "mediacodec-copy,mediacodec,no" else "no",
     )
     MPVLib.setOptionString("hwdec-codecs", "all")
 
     if (decoderPreferences.useYUV420P.get()) {
       MPVLib.setOptionString("vf", "format=yuv420p")
     }
-    
+
     // Cap demuxer cache for mobile to prevent memory issues
     val cacheMegs = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) 64 else 32
     MPVLib.setOptionString("demuxer-max-bytes", "${cacheMegs * 1024 * 1024}")
     MPVLib.setOptionString("demuxer-max-back-bytes", "${cacheMegs * 1024 * 1024}")
-    
+    // HLS streaming smoothness: keep a readahead buffer so segment-boundary rebuffers don't
+    // read as a "skip a few seconds" stall. demuxer-readahead-secs governs how far ahead the
+    // demuxer pulls; cache-secs is the target seconds of buffered data.
+    MPVLib.setOptionString("demuxer-readahead-secs", "12")
+    MPVLib.setOptionString("cache-secs", "10")
+    // Drop late video frames at the VO to avoid backpressured stutter after a rebuffer.
+    MPVLib.setOptionString("framedrop", "vo")
+
+    // Optimization: adjust threads for video decoding
+    MPVLib.setOptionString("vd-lavc-threads", "0") // auto
+    MPVLib.setOptionString("fbo-format", "rgba16f") // better for shaders performance vs 32f
+
     val logLevel = if (advancedPreferences.verboseLogging.get()) "v" else "warn"
     MPVLib.setOptionString("msg-level", "all=$logLevel")
 
@@ -214,6 +229,8 @@ class MPVView(
       "video-params/aspect" to MPVLib.MpvFormat.MPV_FORMAT_DOUBLE,
       "video-params/w" to MPVLib.MpvFormat.MPV_FORMAT_INT64,
       "video-params/h" to MPVLib.MpvFormat.MPV_FORMAT_INT64,
+      "vo-drop-frame-count" to MPVLib.MpvFormat.MPV_FORMAT_INT64,
+      "frame-drop-count" to MPVLib.MpvFormat.MPV_FORMAT_INT64,
       "eof-reached" to MPVLib.MpvFormat.MPV_FORMAT_FLAG,
       "user-data/mpvex/show_text" to MPVLib.MpvFormat.MPV_FORMAT_STRING,
       "user-data/mpvex/toggle_ui" to MPVLib.MpvFormat.MPV_FORMAT_STRING,
@@ -329,8 +346,8 @@ class MPVView(
 
   fun applyAnime4KShaders() {
     runCatching {
-      val enabled = decoderPreferences.enableAnime4K.get()
-      if (!enabled) {
+      val modeStr = decoderPreferences.anime4kMode.get()
+      if (modeStr == "OFF") {
         return
       }
       
@@ -344,14 +361,6 @@ class MPVView(
       // Initialize shader files if needed - THIS IS CRITICAL!
       if (!anime4kManager.initialize()) {
         return
-      }
-      
-      // Get preferences
-      val modeStr = decoderPreferences.anime4kMode.get()
-      
-      // Check if mode is OFF - if so, don't apply any shaders
-      if (modeStr == "OFF") {
-        return  // Exit early - user wants it OFF
       }
       
       // Parse user's selected mode
@@ -372,6 +381,8 @@ class MPVView(
       val shaderChain = anime4kManager.getShaderChain(mode, quality)
       
       if (shaderChain.isNotEmpty()) {
+        // Force mediacodec-copy when GLSL shaders are active so GPU texture pipeline processes shaders.
+        MPVLib.setOptionString("hwdec", "mediacodec-copy")
         // OpenGL-only tuning should not be pushed onto the Vulkan backend.
         if (!useVulkan) {
           MPVLib.setOptionString("opengl-pbo", "yes")

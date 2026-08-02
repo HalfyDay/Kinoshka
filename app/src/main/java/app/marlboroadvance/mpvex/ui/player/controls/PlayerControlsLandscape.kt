@@ -94,16 +94,6 @@ fun TopLeftPlayerControlsLandscape(
       )
     }
 
-    if (animeTranslations.isNotEmpty()) {
-        AnimeQualityDropdown(
-            qualities = animeQualities,
-            currentQualityId = currentQualityId,
-            hideBackground = hideBackground,
-            viewModel = viewModel,
-            onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
-        )
-    }
-
     if (animeEpisodes.isEmpty()) {
       val titleInteractionSource = remember { MutableInteractionSource() }
 
@@ -257,10 +247,22 @@ fun BottomRightPlayerControlsLandscape(
   viewModel: PlayerViewModel,
   activity: PlayerActivity,
 ) {
+    val animeQualities by viewModel.animeQualities.collectAsState()
+    val currentQualityId by viewModel.currentAnimeQualityId.collectAsState()
+    val showQuality = animeQualities.isNotEmpty() || currentQualityId != null
     Row(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),
   ) {
+    if (showQuality) {
+      AnimeQualityDropdown(
+        qualities = animeQualities,
+        currentQualityId = currentQualityId,
+        hideBackground = hideBackground,
+        viewModel = viewModel,
+        onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
+      )
+    }
     buttons.forEach { button ->
       RenderPlayerButton(
         button = button,
