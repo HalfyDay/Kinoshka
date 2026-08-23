@@ -1,6 +1,7 @@
 package hd.kinoshka.app.data.local
 
 import android.content.Context
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
@@ -122,7 +123,32 @@ enum class LibrarySortType(val label: String) {
     RELEASE_DATE("По дате выхода")
 }
 
+private const val MAX_PROFILES = 5000
+private const val PROFILE_HARD_CEILING = 20_000
+
+private fun UserFilmProfile.isCurated(): Boolean =
+    status != null || userRating != null || !note.isNullOrBlank() ||
+        (watchedEpisodes ?: 0) > 0 || (watchedSeasons ?: 0) > 0
+
+private fun capProfiles(all: List<UserFilmProfile>): List<UserFilmProfile> {
+    if (all.size <= MAX_PROFILES) return all
+    val (curated, incidental) = all.partition { it.isCurated() }
+    // Never silently evict user-authored entries. If curation alone exceeds the soft cap, keep it
+    // all but still bound growth: SharedPreferences re-serializes this entire blob on every write.
+    if (curated.size >= MAX_PROFILES) {
+        return curated.sortedByDescending { it.updatedAt }.take(PROFILE_HARD_CEILING)
+    }
+    val keptIncidental = incidental.sortedByDescending { it.updatedAt }.take(MAX_PROFILES - curated.size)
+    return (curated + keptIncidental).sortedByDescending { it.updatedAt }
+}
+
 class UserStateStore(context: Context) {
+    private companion object {
+        // Guards every read-modify-write of the shared blobs across all instances. Must be static:
+        // each call site constructs its own UserStateStore, but they all mutate the same prefs file.
+        val BLOB_LOCK = Any()
+    }
+
     private val prefs = context.applicationContext
         .getSharedPreferences("kino_user_state", Context.MODE_PRIVATE)
     private val gson = Gson()
@@ -170,7 +196,7 @@ class UserStateStore(context: Context) {
         return getShikimoriAnimeCache()[shikimoriId]
     }
 
-    fun saveShikimoriAnimeInfo(info: ShikimoriAnimeCache) {
+    fun saveShikimoriAnimeInfo(info: ShikimoriAnimeCache) = synchronized(BLOB_LOCK) {
         val cache = getShikimoriAnimeCache().toMutableMap()
         cache[info.shikimoriId] = info
         // Keep only last 500 entries
@@ -307,14 +333,14 @@ class UserStateStore(context: Context) {
         prefs.edit().remove(historyKey).apply()
     }
 
-    fun removeFromHistory(kinopoiskId: Int) {
+    fun removeFromHistory(kinopoiskId: Int) = synchronized(BLOB_LOCK) {
         val current = readHistory().toMutableList()
         if (current.removeAll { it.kinopoiskId == kinopoiskId }) {
             writeHistory(current)
         }
     }
 
-    fun addFromFilmItem(item: FilmItem) {
+    fun addFromFilmItem(item: FilmItem) = synchronized(BLOB_LOCK) {
         val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
         val subtitle = item.year?.toString()
         val rating = item.ratingKinopoisk?.let { "KP %.1f".format(Locale.US, it) }
@@ -333,7 +359,7 @@ class UserStateStore(context: Context) {
         )
     }
 
-    fun addFromDetails(item: FilmDetails) {
+    fun addFromDetails(item: FilmDetails) = synchronized(BLOB_LOCK) {
         val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
         val subtitle = item.year?.toString()
         val rating = item.ratingKinopoisk?.let { "KP %.1f".format(Locale.US, it) }
@@ -375,14 +401,18 @@ class UserStateStore(context: Context) {
     }
 
     fun touch(kinopoiskId: Int) {
-        val current = readHistory().toMutableList()
-        val index = current.indexOfFirst { it.kinopoiskId == kinopoiskId }
-        if (index < 0) return
+        // Block body + inner synchronized: the verbatim body early-returns, and Kotlin forbids
+        // `return` in an expression-body function. synchronized is inline, so the non-local return works.
+        synchronized(BLOB_LOCK) {
+            val current = readHistory().toMutableList()
+            val index = current.indexOfFirst { it.kinopoiskId == kinopoiskId }
+            if (index < 0) return
 
-        val updated = current[index].copy(viewedAt = System.currentTimeMillis())
-        current.removeAt(index)
-        current.add(0, updated)
-        writeHistory(current)
+            val updated = current[index].copy(viewedAt = System.currentTimeMillis())
+            current.removeAt(index)
+            current.add(0, updated)
+            writeHistory(current)
+        }
     }
 
     fun updateProfileFromDetails(
@@ -396,59 +426,94 @@ class UserStateStore(context: Context) {
         totalSeasons: Int?,
         totalEpisodes: Int?
     ): UserFilmProfile {
-        val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
-        val subtitle = item.year?.toString()
-        val ratingText = item.ratingKinopoisk?.let { "★ %.1f".format(Locale.US, it) }
-        val isRussian = item.isRussianContent()
+        // The whole read-modify-write must hold the lock, otherwise a concurrent writer on another
+        // thread re-serializes a stale profile list and erases this edit. Returning the synchronized
+        // block's own value (rather than a non-local return from inside it) keeps the flow obvious.
+        return synchronized(BLOB_LOCK) {
+            val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
+            val subtitle = item.year?.toString()
+            val ratingText = item.ratingKinopoisk?.let { "★ %.1f".format(Locale.US, it) }
+            val isRussian = item.isRussianContent()
 
-        val existing = getProfile(item.kinopoiskId)
-        val finalTotalEpisodes = totalEpisodes ?: existing?.totalEpisodes
-        val finalTotalSeasons = totalSeasons ?: existing?.totalSeasons
+            val existing = getProfile(item.kinopoiskId)
+            val finalTotalEpisodes = totalEpisodes ?: existing?.totalEpisodes
+            val finalTotalSeasons = totalSeasons ?: existing?.totalSeasons
+            val isAnime = item.kinopoiskId >= ANIME_ID_OFFSET || item.type == "ANIME"
+            // For anime this field is displayed as the number of rewatches.  Starting a
+            // completed title again from the "Watching" state is a rewatch even if its
+            // episode progress is reset for the new run.
+            val isStartingAnimeRewatch = isAnime &&
+                existing?.status == UserFilmStatus.COMPLETED &&
+                status == UserFilmStatus.WATCHING
 
-        val finalWatchedEpisodes = if (status == UserFilmStatus.COMPLETED) {
-            finalTotalEpisodes?.coerceAtLeast(watchedEpisodes ?: 0) ?: (watchedEpisodes ?: 1)
-        } else {
-            watchedEpisodes
-        }
-
-        val finalWatchedSeasons = if (status == UserFilmStatus.COMPLETED) {
-            // For series, COMPLETED means all seasons watched. 
-            // However, we don't want to force it if it's being used as "Repeats" in UI or if not applicable.
-            if (watchedSeasons != null && watchedSeasons > 0) {
-                finalTotalSeasons?.coerceAtLeast(watchedSeasons) ?: watchedSeasons
+            val finalWatchedEpisodes = if (status == UserFilmStatus.COMPLETED) {
+                finalTotalEpisodes?.coerceAtLeast(watchedEpisodes ?: 0) ?: (watchedEpisodes ?: 1)
             } else {
-                // If it's a TV series and NOT anime (where watchedSeasons is "Repeats"), set it.
-                val isAnime = item.kinopoiskId >= ANIME_ID_OFFSET
-                if (item.type == "TV_SERIES" && !isAnime) {
-                    finalTotalSeasons?.coerceAtLeast(1) ?: watchedSeasons
-                } else {
-                    watchedSeasons
-                }
+                watchedEpisodes
             }
-        } else {
-            watchedSeasons
-        }
 
-        val profile = UserFilmProfile(
-            kinopoiskId = item.kinopoiskId,
-            title = title,
-            subtitle = subtitle,
-            posterUrl = item.posterUrlPreview ?: item.posterUrl,
-            ratingText = ratingText,
-            type = item.type,
-            isRussian = isRussian,
-            status = status,
-            userRating = userRating,
-            note = note?.trim().takeUnless { it.isNullOrBlank() },
-            watchedSeasons = finalWatchedSeasons,
-            watchedEpisodes = finalWatchedEpisodes,
-            totalEpisodesInSeason = totalEpisodesInSeason?.coerceAtLeast(0),
-            totalSeasons = finalTotalSeasons?.coerceAtLeast(0),
-            totalEpisodes = finalTotalEpisodes?.coerceAtLeast(0),
-            updatedAt = System.currentTimeMillis()
-        )
-        upsertProfile(profile)
-        return profile
+            val finalWatchedSeasons = if (status == UserFilmStatus.COMPLETED) {
+                // For series, COMPLETED means all seasons watched.
+                // However, we don't want to force it if it's being used as "Repeats" in UI or if not applicable.
+                if (watchedSeasons != null && watchedSeasons > 0) {
+                    finalTotalSeasons?.coerceAtLeast(watchedSeasons) ?: watchedSeasons
+                } else {
+                    // If it's a TV series and NOT anime (where watchedSeasons is "Repeats"), set it.
+                    if (item.type == "TV_SERIES" && !isAnime) {
+                        finalTotalSeasons?.coerceAtLeast(1) ?: watchedSeasons
+                    } else {
+                        watchedSeasons
+                    }
+                }
+            } else if (isStartingAnimeRewatch) {
+                // Do not carry the old episode position into a fresh viewing, but retain the
+                // rewatch fact even when the editor submits a cleared/null progress value.
+                maxOf(existing.watchedSeasons ?: 0, 1)
+            } else {
+                watchedSeasons
+            }
+
+            val profile = UserFilmProfile(
+                kinopoiskId = item.kinopoiskId,
+                title = title,
+                subtitle = subtitle,
+                posterUrl = item.posterUrlPreview ?: item.posterUrl,
+                ratingText = ratingText,
+                type = item.type,
+                isRussian = isRussian,
+                status = status,
+                userRating = userRating,
+                note = note?.trim().takeUnless { it.isNullOrBlank() },
+                watchedSeasons = finalWatchedSeasons,
+                watchedEpisodes = finalWatchedEpisodes,
+                totalEpisodesInSeason = totalEpisodesInSeason?.coerceAtLeast(0),
+                totalSeasons = finalTotalSeasons?.coerceAtLeast(0),
+                totalEpisodes = finalTotalEpisodes?.coerceAtLeast(0),
+                updatedAt = System.currentTimeMillis()
+            )
+            upsertProfile(profile)
+            profile
+        }
+    }
+
+    fun updateSeriesProgress(kinopoiskId: Int, seasonNumber: Int, episodeNumber: Int) {
+        // Block body + inner synchronized: the verbatim body early-returns when no profile exists.
+        synchronized(BLOB_LOCK) {
+            val existing = readProfiles().firstOrNull { it.kinopoiskId == kinopoiskId } ?: return
+            val status = if (existing.status == UserFilmStatus.REWATCHING || existing.status == UserFilmStatus.COMPLETED) {
+                existing.status
+            } else {
+                UserFilmStatus.WATCHING
+            }
+            upsertProfile(
+                existing.copy(
+                    watchedSeasons = seasonNumber,
+                    watchedEpisodes = episodeNumber,
+                    status = status,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+        }
     }
 
     fun updateWatchedEpisode(
@@ -457,55 +522,60 @@ class UserStateStore(context: Context) {
         episodeNum: Int,
         totalEpisodes: Int
     ) {
-        val kinopoiskId = shikimoriId + ANIME_ID_OFFSET
-        val current = readProfiles().toMutableList()
-        val index = current.indexOfFirst { it.kinopoiskId == kinopoiskId }
-        val existing = if (index >= 0) current[index] else null
+        // Block body + inner synchronized: the verbatim body aborts early on an unreadable blob.
+        synchronized(BLOB_LOCK) {
+            val kinopoiskId = shikimoriId + ANIME_ID_OFFSET
+            val current = readProfilesOrNull()?.toMutableList() ?: return
+            val index = current.indexOfFirst { it.kinopoiskId == kinopoiskId }
+            val existing = if (index >= 0) current[index] else null
 
-        val currentStatus = existing?.status
-        val newStatus = if (currentStatus == UserFilmStatus.REWATCHING || currentStatus == UserFilmStatus.COMPLETED) {
-            currentStatus
-        } else {
-            UserFilmStatus.WATCHING
-        }
+            val currentStatus = existing?.status
+            val newStatus = if (totalEpisodes > 0 && episodeNum >= totalEpisodes) {
+                UserFilmStatus.COMPLETED
+            } else if (currentStatus == UserFilmStatus.REWATCHING) {
+                currentStatus
+            } else {
+                UserFilmStatus.WATCHING
+            }
 
-        val updated = if (existing != null) {
-            existing.copy(
-                watchedEpisodes = episodeNum,
-                totalEpisodes = totalEpisodes.takeIf { it > 0 } ?: existing.totalEpisodes,
-                status = newStatus,
-                updatedAt = System.currentTimeMillis()
-            )
-        } else {
-            UserFilmProfile(
-                kinopoiskId = kinopoiskId,
-                title = animeTitle,
-                subtitle = null,
-                posterUrl = null,
-                ratingText = null,
-                type = "ANIME",
-                isRussian = false,
-                status = newStatus,
-                userRating = null,
-                note = null,
-                watchedSeasons = null,
-                watchedEpisodes = episodeNum,
-                totalEpisodesInSeason = null,
-                totalSeasons = null,
-                totalEpisodes = totalEpisodes.takeIf { it > 0 },
-                updatedAt = System.currentTimeMillis()
-            )
-        }
+            val updated = if (existing != null) {
+                existing.copy(
+                    watchedEpisodes = episodeNum,
+                    totalEpisodes = totalEpisodes.takeIf { it > 0 } ?: existing.totalEpisodes,
+                    status = newStatus,
+                    updatedAt = System.currentTimeMillis()
+                )
+            } else {
+                UserFilmProfile(
+                    kinopoiskId = kinopoiskId,
+                    title = animeTitle,
+                    subtitle = null,
+                    posterUrl = null,
+                    ratingText = null,
+                    type = "ANIME",
+                    isRussian = false,
+                    status = newStatus,
+                    userRating = null,
+                    note = null,
+                    watchedSeasons = null,
+                    watchedEpisodes = episodeNum,
+                    totalEpisodesInSeason = null,
+                    totalSeasons = null,
+                    totalEpisodes = totalEpisodes.takeIf { it > 0 },
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
 
-        if (index >= 0) {
-            current[index] = updated
-        } else {
-            current.add(0, updated)
+            if (index >= 0) {
+                current[index] = updated
+            } else {
+                current.add(0, updated)
+            }
+            writeProfiles(capProfiles(current))
         }
-        writeProfiles(current.take(500))
     }
 
-    private fun upsert(newValue: HistoryRecord) {
+    private fun upsert(newValue: HistoryRecord) = synchronized(BLOB_LOCK) {
         val current = readHistory().toMutableList()
         current.removeAll { it.kinopoiskId == newValue.kinopoiskId }
         current.add(0, newValue)
@@ -513,10 +583,15 @@ class UserStateStore(context: Context) {
     }
 
     private fun upsertProfile(newValue: UserFilmProfile) {
-        val current = readProfiles().toMutableList()
-        current.removeAll { it.kinopoiskId == newValue.kinopoiskId }
-        current.add(0, newValue)
-        writeProfiles(current.take(500))
+        // Block body + inner synchronized: the verbatim body aborts early on an unreadable blob.
+        synchronized(BLOB_LOCK) {
+            // Abort rather than clobber: if the stored blob is unreadable, writing a fresh single-entry
+            // list would replace the whole library with just this one title.
+            val current = readProfilesOrNull()?.toMutableList() ?: return
+            current.removeAll { it.kinopoiskId == newValue.kinopoiskId }
+            current.add(0, newValue)
+            writeProfiles(capProfiles(current))
+        }
     }
 
     fun exportLibraryJson(): String {
@@ -530,12 +605,12 @@ class UserStateStore(context: Context) {
         return prettyGson.toJson(backup)
     }
 
-    fun importLibraryJson(rawJson: String): Result<Unit> {
-        return runCatching {
+    fun importLibraryJson(rawJson: String): Result<Unit> = synchronized(BLOB_LOCK) {
+        runCatching {
             val backup = gson.fromJson(rawJson, LibraryBackup::class.java)
                 ?: error("Файл пустой или поврежден")
             writeHistory(backup.history.orEmpty().take(200))
-            writeProfiles(backup.profiles.orEmpty().take(500))
+            writeProfiles(capProfiles(backup.profiles.orEmpty()))
             setProfileAvatar(backup.profileAvatar.orEmpty().ifBlank { "🎬" })
             backup.preferences?.let { preferences ->
                 setThemeMode(preferences.themeMode)
@@ -546,6 +621,7 @@ class UserStateStore(context: Context) {
                 setLibraryTileSize(preferences.libraryTileSize ?: fallbackTileSize)
                 setFpsCounterEnabled(preferences.showFpsCounter)
             }
+            Unit
         }
     }
 
@@ -557,20 +633,43 @@ class UserStateStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
-    private fun readProfiles(): List<UserFilmProfile> {
+    /**
+     * Parses the stored profile list, or returns `null` when the blob exists but cannot be parsed.
+     *
+     * The distinction matters: every mutation is a read-modify-write, so treating a parse failure as
+     * "empty library" would make the very next write persist that emptiness and destroy the library
+     * permanently. Writers must abort on `null`; read-only callers can fall back to an empty list.
+     */
+    private fun readProfilesOrNull(): List<UserFilmProfile>? {
         val raw = prefs.getString(profileKey, null) ?: return emptyList()
         val type = object : TypeToken<List<UserFilmProfile>>() {}.type
         return runCatching {
             gson.fromJson<List<UserFilmProfile>>(raw, type).orEmpty()
-        }.getOrDefault(emptyList())
+        }.getOrNull()
     }
+
+    private fun readProfiles(): List<UserFilmProfile> = readProfilesOrNull().orEmpty()
 
     private fun writeHistory(value: List<HistoryRecord>) {
         prefs.edit().putString(historyKey, gson.toJson(value)).apply()
     }
 
     private fun writeProfiles(value: List<UserFilmProfile>) {
-        prefs.edit().putString(profileKey, gson.toJson(value)).apply()
+        // commit() rather than apply(): the library is the one piece of state users cannot recreate,
+        // and apply() only schedules the disk write. A crash immediately afterwards — the app was
+        // SIGKILLed right after an episode pick — could lose the edit, which is how titles silently
+        // disappeared from the library.
+        prefs.edit().putString(profileKey, gson.toJson(value)).commit()
+    }
+
+    /**
+     * Forces every queued apply() on this SharedPreferences instance to disk. commit() writes the whole
+     * current map synchronously, so it subsumes any pending async write. BLOCKING — never call from main.
+     */
+    fun flushToDisk() {
+        runCatching {
+            prefs.edit().putLong("durability_flush_counter", System.currentTimeMillis()).commit()
+        }.onFailure { Log.e("UserStateStore", "flushToDisk failed", it) }
     }
 
     // ---- Search query history ----
@@ -582,16 +681,19 @@ class UserStateStore(context: Context) {
     }
 
     fun addSearchQuery(query: String, contentType: String) {
-        val clean = query.trim()
-        if (clean.isBlank()) return
-        val current = getSearchHistory().toMutableList()
-        // Dedup by query+contentType, most-recent-first, cap at 20.
-        current.removeAll { it.query.equals(clean, ignoreCase = true) && it.contentType == contentType }
-        current.add(0, SearchHistoryRecord(clean, contentType, System.currentTimeMillis()))
-        prefs.edit().putString(searchHistoryKey, gson.toJson(current.take(20))).apply()
+        // Block body + inner synchronized: the verbatim body early-returns on a blank query.
+        synchronized(BLOB_LOCK) {
+            val clean = query.trim()
+            if (clean.isBlank()) return
+            val current = getSearchHistory().toMutableList()
+            // Dedup by query+contentType, most-recent-first, cap at 20.
+            current.removeAll { it.query.equals(clean, ignoreCase = true) && it.contentType == contentType }
+            current.add(0, SearchHistoryRecord(clean, contentType, System.currentTimeMillis()))
+            prefs.edit().putString(searchHistoryKey, gson.toJson(current.take(20))).apply()
+        }
     }
 
-    fun removeSearchQuery(query: String, contentType: String) {
+    fun removeSearchQuery(query: String, contentType: String) = synchronized(BLOB_LOCK) {
         val current = getSearchHistory().toMutableList()
         current.removeAll { it.query.equals(query, ignoreCase = true) && it.contentType == contentType }
         prefs.edit().putString(searchHistoryKey, gson.toJson(current)).apply()

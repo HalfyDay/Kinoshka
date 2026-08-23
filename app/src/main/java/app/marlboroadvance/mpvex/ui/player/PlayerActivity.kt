@@ -25,6 +25,7 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -43,6 +44,8 @@ import app.marlboroadvance.mpvex.domain.playbackstate.repository.PlaybackStateRe
 import app.marlboroadvance.mpvex.preferences.AdvancedPreferences
 import app.marlboroadvance.mpvex.preferences.AudioPreferences
 import app.marlboroadvance.mpvex.preferences.BrowserPreferences
+import app.marlboroadvance.mpvex.domain.anime4k.Anime4KManager
+import app.marlboroadvance.mpvex.domain.anime4k.clearShaderChainRuntime
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.ui.player.controls.PlayerControls
@@ -61,9 +64,14 @@ import hd.kinoshka.app.data.api.ApiClient
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.AnimeEpisode
+import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
+import hd.kinoshka.app.data.model.MovieStreamResult
+import hd.kinoshka.app.data.model.NativePlaybackMode
 import hd.kinoshka.app.data.source.AnimeStreamResolver
+import hd.kinoshka.app.data.source.MovieStreamResolver
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.Json
@@ -153,10 +161,32 @@ class PlayerActivity :
   private val fileManager: FileManager by inject()
 
   /**
+   * Preferences for decoder settings.
+   */
+  private val decoderPreferences: app.marlboroadvance.mpvex.preferences.DecoderPreferences by inject()
+
+  /**
+   * Anime4K shader manager.
+   */
+  private val anime4kManager: Anime4KManager by inject()
+
+  /**
    * Track selector for automatic audio/subtitle selection
    */
   private val trackSelector: TrackSelector by lazy {
     TrackSelector(audioPreferences, subtitlesPreferences)
+  }
+
+  /**
+   * Monitors shader-induced frame drops and auto-downgrades quality.
+   */
+  private val shaderPerformanceMonitor by lazy {
+    ShaderPerformanceMonitor(
+      decoderPreferences = decoderPreferences,
+      anime4kManager = anime4kManager,
+      onWarning = { msg -> viewModel.setShaderWarning(msg) },
+      onPermanentWarning = { msg -> viewModel.setShaderWarningPermanent(msg) },
+    )
   }
 
   // ==================== Views ====================
@@ -236,6 +266,9 @@ class PlayerActivity :
   private var savePlaybackStateJob: kotlinx.coroutines.Job? = null // Track ongoing save job
   private var wasPlayingBeforePause = false // Track if video was playing before pause
   private var pendingSeekPosition: Double? = null // Track position to seek back to after quality change
+  private var currentAnimeSourceType: AnimeSourceType = AnimeSourceType.KODIK
+  private var currentAnimeStream: AnimeMediaStream? = null
+  private var movieSeriesContext: MovieSeriesPlaybackContext? = null
 
   /**
    * Thermal and performance monitoring
@@ -251,6 +284,15 @@ class PlayerActivity :
         else -> null
       }
       viewModel.setThermalWarning(warning)
+
+      if (status >= PowerManager.THERMAL_STATUS_SEVERE && decoderPreferences.enableAnime4K.get()) {
+        val currentMode = decoderPreferences.anime4kMode.get()
+        if (currentMode != "OFF") {
+          anime4kManager.clearShaderChainRuntime()
+          decoderPreferences.anime4kMode.set("OFF")
+          viewModel.setShaderWarningPermanent("Anime4K отключён из-за перегрева устройства.")
+        }
+      }
     }
   } else null
 
@@ -267,6 +309,14 @@ class PlayerActivity :
         if (celsius >= 45f) {
           withContext(Dispatchers.Main) {
             viewModel.setThermalWarning("Батарея перегрета: ${celsius}°C")
+            if (celsius >= 48f && decoderPreferences.enableAnime4K.get()) {
+              val currentMode = decoderPreferences.anime4kMode.get()
+              if (currentMode != "OFF") {
+                anime4kManager.clearShaderChainRuntime()
+                decoderPreferences.anime4kMode.set("OFF")
+                viewModel.setShaderWarningPermanent("Anime4K отключён из-за перегрева батареи.")
+              }
+            }
           }
         }
         delay(10000) // Every 10 seconds
@@ -288,11 +338,17 @@ class PlayerActivity :
       val diff = currentDropCount - lastDropCount
       val timeDiff = now - lastDropTime
       if (timeDiff >= 2000 && diff > 15) { // More than 15 frames per 2 seconds dropped
-        viewModel.setLagWarning("Обнаружены задержки (пропущено кадров: $diff)")
+        viewModel.setLagWarning("Плеер перегружен: пропущено кадров $diff за 2 с")
+        if (decoderPreferences.enableAnime4K.get()) {
+          viewModel.setShaderWarning("Шейдеры создают нагрузку, снижаю качество")
+        }
       }
     }
     lastDropCount = currentDropCount
     lastDropTime = now
+
+    // Also feed the shader performance monitor so it can auto-downgrade/disable
+    shaderPerformanceMonitor.checkPerformance(currentDropCount)
   }
 
   // ==================== Background Playback ====================
@@ -411,6 +467,8 @@ class PlayerActivity :
     setupMediaSession()
 
     setAnimeExtras(intent.extras)
+    setMovieSeriesExtras(intent.extras)
+    setQualityOnlyMovieExtras(intent.extras)
 
     playlistId = intent.getIntExtra("playlist_id", -1).takeIf { it != -1 }
     playlistIndex = intent.getIntExtra("playlist_index", 0)
@@ -468,7 +526,8 @@ class PlayerActivity :
     }
     mediaIdentifier = getMediaIdentifier(intent, fileName)
 
-    // Set HTTP headers (including referer) BEFORE playing the file
+    // Set network options and headers before the demuxer opens the stream.
+    applyAnimeTransportOptions(intent.getBooleanExtra("anime_disable_http_reuse", false))
     setHttpHeadersFromExtras(intent.extras)
 
     getPlayableUri(intent)?.let(player::playFile)
@@ -1144,13 +1203,12 @@ class PlayerActivity :
   }
 
   /**
-   * Processes intent extras to set initial playback position, subtitles, and HTTP headers.
+   * Processes intent extras that must be applied after a file is loaded.
    *
    * This method checks the intent extras for the following keys:
    * - "position": The initial playback position in seconds.
    * - "subs": A list of subtitle URIs to add.
    * - "subs.enable": A list of subtitle URIs to enable.
-   * - "headers": A list of HTTP headers to set for network playback.
    *
    * @param extras Bundle containing intent extras
    */
@@ -1162,7 +1220,6 @@ class PlayerActivity :
     }
 
     addSubtitlesFromExtras(extras)
-    setHttpHeadersFromExtras(extras)
   }
 
   private fun setAnimeExtras(extras: Bundle?) {
@@ -1173,6 +1230,11 @@ class PlayerActivity :
     val currentEp = extras.getInt("anime_current_episode", -1).takeIf { it != -1 }
     val currentTr = extras.getString("anime_current_translation_id")
     val currentQ = extras.getString("anime_current_quality") ?: "Auto"
+    currentAnimeSourceType = try {
+      AnimeSourceType.valueOf(extras.getString("anime_source_type") ?: AnimeSourceType.KODIK.name)
+    } catch (e: Exception) {
+      AnimeSourceType.KODIK
+    }
 
     val episodes = if (!episodesJson.isNullOrEmpty()) {
       try { Json.decodeFromString<List<AnimeEpisode>>(episodesJson) } catch (e: Exception) { emptyList() }
@@ -1186,6 +1248,16 @@ class PlayerActivity :
       try { Json.decodeFromString<Map<String, String>>(qualitiesJson) } catch (e: Exception) { emptyMap() }
     } else emptyMap()
 
+    val initialUrl = extras.getString("anime_auto_url") ?: extras.getString("uri") ?: intent.dataString
+    if (!initialUrl.isNullOrBlank()) {
+      currentAnimeStream = AnimeMediaStream(
+        url = initialUrl,
+        qualities = qualities,
+        headers = headersFromExtras(extras),
+        quality = currentQ,
+      )
+    }
+
     if (episodes.isNotEmpty() || translations.isNotEmpty()) {
       viewModel.setAnimeData(episodes, translations, currentEp, currentTr, qualities, currentQ)
       val shikimoriId = extras.getInt("anime_shikimori_id", 0)
@@ -1195,11 +1267,14 @@ class PlayerActivity :
         viewModel.setWatchedEpisodesCount(profile?.watchedEpisodes ?: 0)
       }
 
-      viewModel.onAnimeEpisodeSelected = { epNum ->
+      viewModel.onAnimeEpisodeSelected = episodeSelected@{ epNum ->
+        if (epNum == viewModel.currentAnimeEpisodeNumber.value) {
+          Log.d(TAG, "Ignoring duplicate anime episode selection: $epNum")
+          return@episodeSelected
+        }
         val shikimoriId = extras.getInt("anime_shikimori_id", 0)
         val animeTitle = extras.getString("anime_title", "")
-        val srcTypeStr = extras.getString("anime_source_type")
-        val srcType = try { AnimeSourceType.valueOf(srcTypeStr ?: "") } catch (e: Exception) { AnimeSourceType.KODIK }
+        val srcType = currentAnimeSourceType
         val trId = viewModel.currentAnimeTranslationId.value ?: currentTr ?: ""
         val userStateStore = UserStateStore(this)
         val prefQuality = userStateStore.getPreferredQuality()
@@ -1212,40 +1287,21 @@ class PlayerActivity :
           withContext(Dispatchers.Main) {
             viewModel.setLoadingStream(false)
             if (stream != null) {
-              val effectiveQuality = if (stream.qualities.containsKey(prefQuality)) prefQuality else "Auto"
-              val url = if (effectiveQuality != "Auto") stream.qualities[effectiveQuality] ?: stream.url else stream.url
-
-              viewModel.setAnimeData(episodes, translations, epNum, trId, stream.qualities, effectiveQuality)
-              fileName = "$animeTitle • Серия $epNum"
-              mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(url), fileName)
-              MPVLib.setPropertyString("media-title", fileName)
-              if (stream.headers.isNotEmpty()) {
-                val headerMap = mutableMapOf<String, String>()
-                stream.headers.forEach { (k, v) ->
-                  if (k.equals("user-agent", ignoreCase = true)) {
-                    MPVLib.setPropertyString("user-agent", v)
-                  } else {
-                    headerMap[k] = v
-                  }
-                }
-                if (headerMap.isNotEmpty()) {
-                  val headersString = headerMap
-                    .map { "${it.key}: ${it.value.replace(",", "\\,")}" }
-                    .joinToString(",")
-                  MPVLib.setPropertyString("http-header-fields", headersString)
-                }
-              }
-              MPVLib.command("loadfile", url)
+              applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
             }
           }
         }
       }
 
-      viewModel.onAnimeTranslationSelected = { trId ->
+      viewModel.onAnimeTranslationSelected = translationSelected@{ trId ->
+        if (trId == viewModel.currentAnimeTranslationId.value) {
+          Log.d(TAG, "Ignoring duplicate anime translation selection: $trId")
+          return@translationSelected
+        }
         val shikimoriId = extras.getInt("anime_shikimori_id", 0)
         val animeTitle = extras.getString("anime_title", "")
-        val srcTypeStr = extras.getString("anime_source_type")
-        val srcType = try { AnimeSourceType.valueOf(srcTypeStr ?: "") } catch (e: Exception) { AnimeSourceType.KODIK }
+        val selectedTranslation = viewModel.animeTranslations.value.firstOrNull { it.translationId == trId }
+        val srcType = selectedTranslation?.source ?: currentAnimeSourceType
         val epNum = viewModel.currentAnimeEpisodeNumber.value ?: currentEp ?: 1
         val userStateStore = UserStateStore(this)
         val prefQuality = userStateStore.getPreferredQuality()
@@ -1258,110 +1314,205 @@ class PlayerActivity :
           withContext(Dispatchers.Main) {
             viewModel.setLoadingStream(false)
             if (stream != null) {
-              val effectiveQuality = if (stream.qualities.containsKey(prefQuality)) prefQuality else "Auto"
-              val url = if (effectiveQuality != "Auto") stream.qualities[effectiveQuality] ?: stream.url else stream.url
-
-              viewModel.setAnimeData(episodes, translations, epNum, trId, stream.qualities, effectiveQuality)
-              fileName = "$animeTitle • Серия $epNum"
-              mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(url), fileName)
-              MPVLib.setPropertyString("media-title", fileName)
-              if (stream.headers.isNotEmpty()) {
-                val headerMap = mutableMapOf<String, String>()
-                stream.headers.forEach { (k, v) ->
-                  if (k.equals("user-agent", ignoreCase = true)) {
-                    MPVLib.setPropertyString("user-agent", v)
-                  } else {
-                    headerMap[k] = v
-                  }
-                }
-                if (headerMap.isNotEmpty()) {
-                  val headersString = headerMap
-                    .map { "${it.key}: ${it.value.replace(",", "\\,")}" }
-                    .joinToString(",")
-                  MPVLib.setPropertyString("http-header-fields", headersString)
-                }
-              }
-              MPVLib.command("loadfile", url)
+              applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
             }
           }
         }
       }
 
-      viewModel.onAnimeQualitySelected = { qId ->
+      viewModel.onAnimeQualitySelected = qualitySelected@{ qId ->
+        if (qId == viewModel.currentAnimeQualityId.value) {
+          Log.d(TAG, "Ignoring duplicate anime quality selection: $qId")
+          return@qualitySelected
+        }
         pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
         viewModel.setLoadingStream(true)
         UserStateStore(this).setPreferredQuality(qId)
 
+        val animeTitle = extras.getString("anime_title", "")
+        val trId = viewModel.currentAnimeTranslationId.value ?: currentTr ?: ""
+        val epNum = viewModel.currentAnimeEpisodeNumber.value ?: currentEp ?: 1
+
         if (qId == "Auto") {
-          // Auto = the resolver's default (best-available) URL for the current episode/translation.
-          // animeQualities has no "Auto" entry, so re-resolve to obtain stream.url and reload.
           val shikimoriId = extras.getInt("anime_shikimori_id", 0)
-          val animeTitle = extras.getString("anime_title", "")
-          val srcTypeStr = extras.getString("anime_source_type")
-          val srcType = try { AnimeSourceType.valueOf(srcTypeStr ?: "") } catch (e: Exception) { AnimeSourceType.KODIK }
-          val trId = viewModel.currentAnimeTranslationId.value ?: currentTr ?: ""
-          val epNum = viewModel.currentAnimeEpisodeNumber.value ?: currentEp ?: 1
+          val srcType = currentAnimeSourceType
 
           lifecycleScope.launch(Dispatchers.IO) {
             val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
             withContext(Dispatchers.Main) {
               if (stream != null) {
-                val url = stream.url
-                fileName = "$animeTitle • Серия $epNum"
-                mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(url), fileName)
-                MPVLib.setPropertyString("media-title", fileName)
-                if (stream.headers.isNotEmpty()) {
-                  val headerMap = mutableMapOf<String, String>()
-                  stream.headers.forEach { (k, v) ->
-                    if (k.equals("user-agent", ignoreCase = true)) {
-                      MPVLib.setPropertyString("user-agent", v)
-                    } else {
-                      headerMap[k] = v
-                    }
-                  }
-                  if (headerMap.isNotEmpty()) {
-                    val headersString = headerMap
-                      .map { "${it.key}: ${it.value.replace(",", "\\,")}" }
-                      .joinToString(",")
-                    MPVLib.setPropertyString("http-header-fields", headersString)
-                  }
-                }
-                MPVLib.command("loadfile", url)
-                viewModel.setAnimeData(
-                  viewModel.animeEpisodes.value,
-                  viewModel.animeTranslations.value,
-                  viewModel.currentAnimeEpisodeNumber.value,
-                  viewModel.currentAnimeTranslationId.value,
-                  stream.qualities,
-                  "Auto"
-                )
+                applyAnimeStream(stream, srcType, "Auto", animeTitle, epNum, trId, episodes, translations)
               }
               viewModel.setLoadingStream(false)
             }
           }
         } else {
-          val url = viewModel.animeQualities.value[qId]
-          if (url != null) {
-            lifecycleScope.launch(Dispatchers.IO) {
-              withContext(Dispatchers.Main) {
-                MPVLib.command("loadfile", url)
-                viewModel.setAnimeData(
-                  viewModel.animeEpisodes.value,
-                  viewModel.animeTranslations.value,
-                  viewModel.currentAnimeEpisodeNumber.value,
-                  viewModel.currentAnimeTranslationId.value,
-                  viewModel.animeQualities.value,
-                  qId
-                )
-                viewModel.setLoadingStream(false)
-              }
-            }
-          } else {
-            viewModel.setLoadingStream(false)
+          val stream = currentAnimeStream
+          if (stream != null && stream.qualities.containsKey(qId)) {
+            applyAnimeStream(stream, currentAnimeSourceType, qId, animeTitle, epNum, trId, episodes, translations)
           }
+          viewModel.setLoadingStream(false)
         }
       }
     }
+  }
+
+  private fun setQualityOnlyMovieExtras(extras: Bundle?) {
+    if (extras?.getString("playback_mode") != NativePlaybackMode.QUALITY_ONLY_MOVIE.name) return
+    val stream = currentAnimeStream ?: return
+    if (stream.qualities.isEmpty()) return
+    val currentQuality = extras.getString("anime_current_quality") ?: "Auto"
+    viewModel.setAnimeData(emptyList(), emptyList(), null, null, stream.qualities, currentQuality)
+    viewModel.onAnimeEpisodeSelected = null
+    viewModel.onAnimeTranslationSelected = null
+    viewModel.onAnimeQualitySelected = qualitySelected@{ quality ->
+      val activeStream = currentAnimeStream ?: return@qualitySelected
+      if (quality == viewModel.currentAnimeQualityId.value) return@qualitySelected
+      pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
+      UserStateStore(this).setPreferredQuality(quality)
+      val effectiveQuality = quality.takeIf { it != "Auto" && activeStream.qualities.containsKey(it) } ?: "Auto"
+      val url = activeStream.qualities[effectiveQuality] ?: activeStream.url
+      applyHttpHeaders(activeStream.headers)
+      viewModel.setAnimeData(emptyList(), emptyList(), null, null, activeStream.qualities, effectiveQuality)
+      MPVLib.command("loadfile", url, "replace")
+    }
+  }
+
+  private fun setMovieSeriesExtras(extras: Bundle?) {
+    val contextJson = extras?.getString("movie_series_context") ?: return
+    val context = runCatching { Json.decodeFromString<MovieSeriesPlaybackContext>(contextJson) }
+      .onFailure { Log.e(TAG, "Failed to decode movie series context", it) }
+      .getOrNull() ?: return
+    movieSeriesContext = context
+
+    val uiEpisodes = context.episodes.map { episode ->
+      AnimeEpisode(
+        number = episode.playerEpisodeKey,
+        title = "Сезон ${episode.seasonNumber}, серия ${episode.episodeNumber}",
+        link = episode.playerUrl,
+      )
+    }
+    val currentQuality = extras.getString("anime_current_quality") ?: "Auto"
+    viewModel.setAnimeData(
+      uiEpisodes,
+      emptyList(),
+      context.currentEpisode.playerEpisodeKey,
+      null,
+      currentAnimeStream?.qualities.orEmpty(),
+      currentQuality,
+    )
+
+    viewModel.onAnimeEpisodeSelected = episodeSelected@{ episodeKey ->
+      val activeContext = movieSeriesContext ?: return@episodeSelected
+      if (episodeKey == activeContext.currentEpisode.playerEpisodeKey) return@episodeSelected
+      val selected = activeContext.episodes.firstOrNull { it.playerEpisodeKey == episodeKey } ?: return@episodeSelected
+      viewModel.setLoadingStream(true)
+      pendingSeekPosition = null
+      lifecycleScope.launch(Dispatchers.IO) {
+        val result = MovieStreamResolver.resolveEpisode(activeContext.request, selected, activeContext.candidates)
+        withContext(Dispatchers.Main) {
+          if (result is MovieStreamResult.Success) {
+            val updatedContext = activeContext.copy(currentEpisode = selected)
+            movieSeriesContext = updatedContext
+            currentAnimeStream = result.stream
+            UserStateStore(this@PlayerActivity).updateSeriesProgress(
+              updatedContext.kinopoiskId,
+              selected.seasonNumber,
+              selected.episodeNumber,
+            )
+            applyMovieSeriesStream(result.stream, updatedContext, UserStateStore(this@PlayerActivity).getPreferredQuality())
+          } else {
+            Toast.makeText(this@PlayerActivity, "Не удалось открыть выбранную серию", Toast.LENGTH_SHORT).show()
+          }
+          viewModel.setLoadingStream(false)
+        }
+      }
+    }
+
+    viewModel.onAnimeQualitySelected = qualitySelected@{ quality ->
+      val activeContext = movieSeriesContext ?: return@qualitySelected
+      val stream = currentAnimeStream ?: return@qualitySelected
+      if (quality == viewModel.currentAnimeQualityId.value) return@qualitySelected
+      pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
+      UserStateStore(this).setPreferredQuality(quality)
+      applyMovieSeriesStream(stream, activeContext, quality)
+    }
+  }
+
+  private fun applyMovieSeriesStream(
+    stream: AnimeMediaStream,
+    context: MovieSeriesPlaybackContext,
+    requestedQuality: String,
+  ) {
+    val effectiveQuality = requestedQuality.takeIf { it != "Auto" && stream.qualities.containsKey(it) } ?: "Auto"
+    val url = stream.qualities[effectiveQuality] ?: stream.url
+    val episode = context.currentEpisode
+    fileName = "${context.displayTitle} • S${episode.seasonNumber}E${episode.episodeNumber}"
+    mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(url), fileName)
+    MPVLib.setPropertyString("media-title", fileName)
+    applyAnimeTransportOptions(false)
+    applyHttpHeaders(stream.headers)
+    val uiEpisodes = context.episodes.map {
+      AnimeEpisode(it.playerEpisodeKey, "Сезон ${it.seasonNumber}, серия ${it.episodeNumber}", it.playerUrl)
+    }
+    viewModel.setAnimeData(uiEpisodes, emptyList(), episode.playerEpisodeKey, null, stream.qualities, effectiveQuality)
+    MPVLib.command("loadfile", url, "replace")
+  }
+
+  private fun applyAnimeStream(
+    stream: AnimeMediaStream,
+    sourceType: AnimeSourceType,
+    requestedQuality: String,
+    animeTitle: String,
+    episodeNumber: Int,
+    translationId: String,
+    episodes: List<AnimeEpisode>,
+    translations: List<FlatTranslation>,
+  ) {
+    val effectiveQuality = requestedQuality.takeIf { it != "Auto" && stream.qualities.containsKey(it) } ?: "Auto"
+    val url = stream.qualities[effectiveQuality] ?: stream.url
+
+    currentAnimeSourceType = sourceType
+    currentAnimeStream = stream
+    fileName = "$animeTitle • Серия $episodeNumber"
+    mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(url), fileName)
+    MPVLib.setPropertyString("media-title", fileName)
+    applyAnimeTransportOptions(sourceType == AnimeSourceType.ANILIBERTY)
+    applyHttpHeaders(stream.headers)
+    viewModel.setAnimeData(
+      episodes,
+      translations,
+      episodeNumber,
+      translationId,
+      stream.qualities,
+      effectiveQuality,
+    )
+    MPVLib.command("loadfile", url, "replace")
+  }
+
+  private fun applyAnimeTransportOptions(disableHttpReuse: Boolean) {
+    val options = if (disableHttpReuse) "http_persistent=0,http_multiple=0" else ""
+    val result = MPVLib.setPropertyString("demuxer-lavf-o", options)
+    Log.d(TAG, "Anime transport HTTP reuse ${if (disableHttpReuse) "disabled" else "reset"}: result=$result")
+  }
+
+  private fun applyHttpHeaders(headers: Map<String, String>) {
+    headers.entries.firstOrNull { it.key.equals("user-agent", ignoreCase = true) }?.let {
+      MPVLib.setPropertyString("user-agent", it.value)
+    }
+    val headersString = headers
+      .filterKeys { !it.equals("user-agent", ignoreCase = true) }
+      .map { "${it.key}: ${it.value.replace(",", "\\,")}" }
+      .joinToString(",")
+    MPVLib.setPropertyString("http-header-fields", headersString)
+  }
+
+  private fun headersFromExtras(extras: Bundle): Map<String, String> {
+    val values = extras.getStringArray("headers") ?: return emptyMap()
+    return values.asSequence()
+      .chunked(2)
+      .filter { it.size == 2 && it[1].isNotBlank() }
+      .associate { it[0] to it[1] }
   }
 
   /**
@@ -2679,7 +2830,8 @@ class PlayerActivity :
     }
     mediaIdentifier = getMediaIdentifier(intent, fileName)
 
-    // Set HTTP headers (including referer) BEFORE loading the new file
+    // Reset or apply source-specific transport state before opening the new file.
+    applyAnimeTransportOptions(intent.getBooleanExtra("anime_disable_http_reuse", false))
     setHttpHeadersFromExtras(intent.extras)
 
     // Load the new file

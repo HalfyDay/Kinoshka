@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -48,6 +49,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.draw.clip
 import androidx.compose.animation.AnimatedContent
@@ -131,7 +134,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
@@ -152,7 +154,7 @@ import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
 import hd.kinoshka.app.data.local.UserFilmStatus
 import hd.kinoshka.app.data.model.FilmItem
-import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
+import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.ui.components.SkeletonGridCard
 import hd.kinoshka.app.ui.components.SkeletonGridLoading
@@ -337,7 +339,6 @@ fun HomeScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(searchRowHeight)
-                            .clipToBounds()
                     ) {
                         SearchRow(
                             query = activeQuery,
@@ -385,40 +386,6 @@ fun HomeScreen(
                     }
 
                     // Recent searches — overlay positioned right below the search bar
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = section == MainSection.DISCOVER && isSearchFocused && state.searchHistory.isNotEmpty(),
-                        enter = fadeIn() + expandVertically(),
-                        exit = fadeOut() + shrinkVertically(),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = searchRowHeight)
-                            .zIndex(10f)
-                    ) {
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 2.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
-                            tonalElevation = 4.dp
-                        ) {
-                            Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                                SearchHistoryRow(
-                                    history = state.searchHistory,
-                                    contentType = state.contentType,
-                                    onPick = { q ->
-                                        discoverQuery = q
-                                        onQueryChange(q)
-                                        isSearchFocused = false
-                                        focusManager.clearFocus()
-                                        onSubmitSearch()
-                                    },
-                                    onRemove = onRemoveSearchHistory,
-                                    onClear = onClearSearchHistory
-                                )
-                            }
-                        }
-                    }
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -446,29 +413,16 @@ fun HomeScreen(
                                 ) { page ->
                                     val pageTab = LibraryTab.entries[page]
                                     val items = libraryItemsByTab[pageTab].orEmpty()
-                                    AnimatedContent(
-                                        targetState = state.contentType,
-                                        transitionSpec = {
-                                            fadeIn(animationSpec = tween(250)).togetherWith(fadeOut(animationSpec = tween(150)))
-                                        },
-                                        label = "libraryGridAnim"
-                                    ) { targetContentType ->
-                                        val filteredItems = remember(items, targetContentType) {
-                                            items.filter { item ->
-                                                when (targetContentType) {
-                                                    ContentType.FILMS -> item.type != "ANIME"
-                                                    ContentType.ANIME -> item.type == "ANIME"
-                                                }
-                                            }
-                                        }
-                                        LibraryPageGrid(
-                                            items = filteredItems,
-                                            historyMode = pageTab == LibraryTab.HISTORY,
-                                            onOpenHistoryFilm = onOpenHistoryFilm,
-                                            onRemoveFromHistory = onRemoveFromHistory,
-                                            metrics = libraryMetrics
-                                        )
-                                    }
+                                    // The library has its own content filter (libraryFilter).
+                                    // Do not also filter it by the global Discover/Search type:
+                                    // changing Kino/Anime in search must not hide library items.
+                                    LibraryPageGrid(
+                                        items = items,
+                                        historyMode = pageTab == LibraryTab.HISTORY,
+                                        onOpenHistoryFilm = onOpenHistoryFilm,
+                                        onRemoveFromHistory = onRemoveFromHistory,
+                                        metrics = libraryMetrics
+                                    )
                                 }
                             }
                         }
@@ -503,6 +457,39 @@ fun HomeScreen(
                                 onOpenSettings = onOpenSettings,
                                 onOpenAbout = onOpenAbout
                             )
+                        }
+                    }
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = section == MainSection.DISCOVER && isSearchFocused && state.searchHistory.isNotEmpty(),
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically(),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .fillMaxWidth()
+                            .padding(top = 4.dp)
+                            .zIndex(20f)
+                    ) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.98f),
+                            tonalElevation = 6.dp
+                        ) {
+                            Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                SearchHistoryRow(
+                                    history = state.searchHistory,
+                                    contentType = state.contentType,
+                                    onPick = { q ->
+                                        discoverQuery = q
+                                        onQueryChange(q)
+                                        isSearchFocused = false
+                                        focusManager.clearFocus()
+                                        onSubmitSearch()
+                                    },
+                                    onRemove = onRemoveSearchHistory,
+                                    onClear = onClearSearchHistory
+                                )
+                            }
                         }
                     }
                 }
@@ -799,66 +786,76 @@ private fun SearchHistoryRow(
     onRemove: (String) -> Unit,
     onClear: () -> Unit
 ) {
-    val filtered = history.filter { it.contentType == contentType.name }.take(5)
+    val filtered = history.filter { it.contentType == contentType.name }.take(10)
     if (filtered.isEmpty()) return
-    Column(
+    LazyRow(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp)
     ) {
         filtered.forEach { item ->
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onPick(item.query) },
-                color = Color.Transparent
-            ) {
-                Row(
+            item(key = item.query) {
+                Surface(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .height(40.dp)
+                        .widthIn(min = 112.dp, max = 240.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable { onPick(item.query) },
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    tonalElevation = 2.dp
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.History,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Text(
-                        text = item.query,
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    IconButton(
-                        onClick = { onRemove(item.query) },
-                        modifier = Modifier.size(24.dp)
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = androidx.compose.material.icons.Icons.Default.Close,
-                            contentDescription = "Удалить",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            imageVector = Icons.Default.History,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier.size(16.dp)
                         )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = item.query,
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        IconButton(
+                            onClick = { onRemove(item.query) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Удалить",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            )
+                        }
                     }
                 }
             }
         }
-        
-        TextButton(
-            onClick = onClear,
-            modifier = Modifier.align(Alignment.End)
-        ) {
-            Text(
-                text = "Очистить историю",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary
-            )
+        // Clear all button at end
+        item {
+            TextButton(
+                onClick = onClear,
+                modifier = Modifier
+                    .height(40.dp)
+                    .padding(horizontal = 8.dp)
+                    .clip(RoundedCornerShape(20.dp))
+            ) {
+                Text(
+                    text = "Очистить историю",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         }
     }
 }
@@ -2082,7 +2079,7 @@ private fun LoadingCard() {
                 .padding(vertical = 36.dp),
             contentAlignment = Alignment.Center
         ) {
-            ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
+            KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
         }
     }
 }

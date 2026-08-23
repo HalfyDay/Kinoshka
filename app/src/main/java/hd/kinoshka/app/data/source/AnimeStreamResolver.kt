@@ -91,6 +91,10 @@ object AnimeStreamResolver {
 
     private fun parseAniLibertyEpisodes(release: JSONObject): List<AnimeEpisode> {
         val episodes = release.optJSONArray("episodes") ?: return emptyList()
+        // distinctBy is required, not cosmetic: two records can collapse onto the same `number`
+        // because org.json's optInt truncates a fractional ordinal (7.5 -> 7), and an episode with no
+        // ordinal/sort_order falls through to `id`, which lives in a different numbering space than
+        // its siblings. This list feeds a keyed LazyColumn, which rejects duplicate keys.
         return episodes.asSequenceObjects().mapNotNull { episode ->
             val number = episode.optInt("ordinal").takeIf { it > 0 }
                 ?: episode.optInt("sort_order").takeIf { it > 0 }
@@ -100,7 +104,7 @@ object AnimeStreamResolver {
                 episode.optString("name_english").ifBlank { "Серия $number" }
             }
             AnimeEpisode(number = number, title = title, id = episode.optInt("id").takeIf { it > 0 })
-        }.sortedBy { it.number }.toList()
+        }.distinctBy { it.number }.sortedBy { it.number }.toList()
     }
 
     suspend fun prefetchAllMedia(shikimoriId: Int, animeTitle: String): List<FlatTranslation> {
@@ -172,7 +176,13 @@ object AnimeStreamResolver {
                         listOf(
                             FlatTranslation(
                                 source = AnimeSourceType.ANILIBERTY,
-                                translationId = "default",
+                                // A literal "default" collides with every other source's fallback id:
+                                // AnimeControls compares translationId alone and would highlight both
+                                // rows as selected. The alias is also the id findAniLibertyRelease can
+                                // fetch directly, so it doubles as a fast-path key.
+                                translationId = release.optString("alias")
+                                    .ifBlank { release.optInt("id").takeIf { it > 0 }?.toString().orEmpty() }
+                                    .ifBlank { "default" },
                                 title = title,
                                 type = "voice",
                                 episodes = episodes
@@ -199,7 +209,11 @@ object AnimeStreamResolver {
                         listOf(
                             FlatTranslation(
                                 source = AnimeSourceType.ANILIB,
-                                translationId = "default",
+                                // Distinct from the Kodik/AniLiberty fallback ids for the same reason
+                                // (AnimeControls matches on translationId alone). AniLib playback
+                                // re-resolves via findAniLibRelease and ignores this id, so any unique
+                                // value is safe here.
+                                translationId = release.optInt("id").takeIf { it > 0 }?.toString() ?: "default",
                                 title = title,
                                 type = "voice",
                                 episodes = episodes
@@ -219,8 +233,42 @@ object AnimeStreamResolver {
             val anilibertyResult = deferredAniLiberty.await()
             val anilibResult = deferredAniLib.await()
             Log.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodikResult.size}, Aniliberty: ${anilibertyResult.size}, AniLib: ${anilibResult.size}")
-            kodikResult + anilibertyResult + anilibResult
+            mergeTranslations(kodikResult + anilibertyResult + anilibResult)
         }
+    }
+
+    /**
+     * Collapses translations that share a (source, translationId) pair.
+     *
+     * Kodik returns one row per catalogue entry, so a single studio appears many times over — an
+     * unfiltered search for one show yielded translation id 609 ("AniDUB") eighteen times. Rendering
+     * that list crashed the app, because the selection UI keys its LazyColumn by translationId and
+     * Compose requires keys to be unique ("Key \"609\" was already used").
+     *
+     * Rows for the same dub are merged rather than dropped: their episode lists are unioned so the
+     * most complete variant survives, which also fixes dubs that were previously split across rows.
+     */
+    private fun mergeTranslations(translations: List<FlatTranslation>): List<FlatTranslation> {
+        if (translations.size < 2) return translations
+
+        val merged = LinkedHashMap<Pair<AnimeSourceType, String>, FlatTranslation>()
+        for (translation in translations) {
+            val key = translation.source to translation.translationId
+            val existing = merged[key]
+            merged[key] = if (existing == null) {
+                translation
+            } else {
+                val episodes = (existing.episodes + translation.episodes)
+                    .distinctBy { it.number }
+                    .sortedBy { it.number }
+                // Prefer whichever row carried a real episode list; titles are identical per id.
+                existing.copy(episodes = episodes)
+            }
+        }
+        if (merged.size != translations.size) {
+            Log.i(TAG, "Merged ${translations.size} translations into ${merged.size} unique dubs")
+        }
+        return merged.values.toList()
     }
 
     suspend fun fetchTranslations(
@@ -311,8 +359,16 @@ object AnimeStreamResolver {
     }
 
     private suspend fun fetchKodikEpisodes(shikimoriId: Int, animeTitle: String, translationId: String): List<AnimeEpisode> = withContext(Dispatchers.IO) {
-        val result = kodikSearch(shikimoriId, animeTitle, translationId).firstOrNull() ?: return@withContext emptyList()
-        extractKodikEpisodes(result)
+        // A Kodik translation.id identifies a *studio*, not a release, so one id spans several
+        // catalogue rows (seasons, OVAs, re-uploads) and the search returns up to 10 of them.
+        // prefetchAllMedia advertises the union of their episodes (see mergeTranslations), so looking
+        // at only the first row made resolveKodikStream report "episode not found" for every episode
+        // outside that row. Union all rows, preferring whichever copy actually carries a link.
+        kodikSearch(shikimoriId, animeTitle, translationId)
+            .flatMap { extractKodikEpisodes(it) }
+            .groupBy { it.number }
+            .map { (_, eps) -> eps.firstOrNull { !it.link.isNullOrBlank() } ?: eps.first() }
+            .sortedBy { it.number }
     }
 
     private suspend fun resolveKodikStream(
@@ -414,7 +470,7 @@ object AnimeStreamResolver {
             Log.i(TAG, "[Aniliberty] resolveStream: direct HLS qualities: ${qualities.keys}")
         }
 
-        val url = qualities["1080p"] ?: qualities["720p"] ?: qualities["480p"] ?: return@withContext null
+        val url = qualities["720p"] ?: qualities["1080p"] ?: qualities["480p"] ?: return@withContext null
         AnimeMediaStream(
             url = url,
             qualities = qualities,
@@ -469,7 +525,7 @@ object AnimeStreamResolver {
             } else emptyMap()
         }
 
-        val url = qualities["1080p"] ?: qualities["720p"] ?: qualities["480p"] ?: qualities.values.firstOrNull() ?: return@withContext null
+        val url = qualities["720p"] ?: qualities["1080p"] ?: qualities["480p"] ?: qualities.values.firstOrNull() ?: return@withContext null
         AnimeMediaStream(
             url = url,
             qualities = qualities,
@@ -517,9 +573,20 @@ object AnimeStreamResolver {
                     val tBody = get(titleUrl, referer = "https://kodik.info/") ?: continue
                     val results = runCatching { JSONObject(tBody).optJSONArray("results") }.getOrNull() ?: continue
                     if (results.length() > 0) {
-                        Log.i(TAG, "[Kodik] FOUND by title \"$query\": ${results.length()} results on $base")
+                        // A Kodik title search is fuzzy: querying "Лимонные девочки" returns ~100 rows
+                        // spanning 30+ unrelated shows ("Девушки и танки", "Вторжение Кальмарки", …).
+                        // Keeping them all showed dubs from the wrong anime and produced duplicate
+                        // translation ids in the UI list. Restrict to rows that actually belong to
+                        // this title before accepting the response.
+                        val raw = (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+                        val relevant = filterKodikResultsForTitle(raw, shikimoriId, animeTitle)
+                        if (relevant.isEmpty()) {
+                            Log.d(TAG, "[Kodik] title \"$query\": ${raw.size} results, none matched id=$shikimoriId/\"$animeTitle\"")
+                            continue
+                        }
+                        Log.i(TAG, "[Kodik] FOUND by title \"$query\": ${relevant.size}/${raw.size} relevant results on $base")
                         lastWorkingKodikToken = token
-                        return (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+                        return relevant
                     }
                 }
             }
@@ -582,6 +649,7 @@ object AnimeStreamResolver {
             append(base.trimEnd('/')).append("/search?token=").append(token)
             append("&").append(key).append("=").append(encoded)
             append("&with_episodes=true")
+            append("&with_material_data=true")
             append("&limit=").append(limit)
             append("&with_episodes_data=true")
             append("&with_page_links=true")
@@ -653,7 +721,7 @@ object AnimeStreamResolver {
         return null
     }
 
-    private suspend fun resolveKodikHls(episodeUrl: String): Map<String, String> {
+    internal suspend fun resolveKodikHls(episodeUrl: String): Map<String, String> {
         Log.d(TAG, "[Kodik] resolveHls: $episodeUrl")
         val outerResult = fetchHtmlWithDomainFallbacks(episodeUrl, referer = "https://shikimori.one/")
             ?: run {
@@ -940,6 +1008,58 @@ object AnimeStreamResolver {
         return queries.distinct().filter { it.length >= 3 }
     }
 
+    /**
+     * Kodik's `title=` search is a fuzzy substring match across its whole catalogue, so a query for
+     * one show routinely returns rows for dozens of unrelated ones. Narrow a raw response down to
+     * rows that plausibly belong to [shikimoriId] / [animeTitle].
+     *
+     * Preference order:
+     *  1. Rows whose `shikimori_id` equals the requested one — authoritative, so nothing else is needed.
+     *  2. Otherwise rows whose title matches ours after normalisation (used when the catalogue row
+     *     carries no shikimori id at all).
+     */
+    private fun filterKodikResultsForTitle(
+        results: List<JSONObject>,
+        shikimoriId: Int,
+        animeTitle: String
+    ): List<JSONObject> {
+        if (results.isEmpty()) return emptyList()
+
+        if (shikimoriId > 0) {
+            val byId = results.filter { it.optString("shikimori_id").toIntOrNull() == shikimoriId }
+            if (byId.isNotEmpty()) return byId
+        }
+
+        val expected = normalizeAnimeTitleForMatch(animeTitle)
+        if (expected.isBlank()) return emptyList()
+
+        return results.filter { item ->
+            val material = item.optJSONObject("material_data")
+            sequenceOf(
+                item.optString("title"),
+                item.optString("title_orig"),
+                material?.optString("title"),
+                material?.optString("anime_title"),
+                material?.optString("title_en")
+            ).any { candidate ->
+                val normalized = normalizeAnimeTitleForMatch(candidate.orEmpty())
+                normalized.isNotBlank() && (normalized == expected || normalized.startsWith("$expected ") || expected.startsWith("$normalized "))
+            }
+        }
+    }
+
+    /**
+     * Normalises a title for equality comparison: lower-cases, folds ё→е, drops season/bracket tags
+     * ("[ТВ-1]", "(фильм)") and collapses every non-alphanumeric run to a single space.
+     */
+    private fun normalizeAnimeTitleForMatch(value: String): String = value
+        .lowercase()
+        .replace('ё', 'е')
+        .replace(Regex("""\[[^\]]*]|\([^)]*\)"""), " ")
+        .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+        .trim()
+        .replace(Regex("""\s+"""), " ")
+
     private suspend fun get(url: String, referer: String? = null): String? = runCatching {
         val builder = Request.Builder()
             .url(url)
@@ -1073,7 +1193,7 @@ object AnimeStreamResolver {
         }.getOrNull()
     }
 
-    private fun absoluteKodikUrl(value: String): String = when {
+    internal fun absoluteKodikUrl(value: String): String = when {
         value.startsWith("http") -> value
         value.startsWith("//") -> "https:$value"
         value.startsWith("/") -> "https://w.kdkonl.com$value"
@@ -1380,44 +1500,7 @@ object AnimeStreamResolver {
         val torrentUrl: String?
     )
 
-    /**
-     * Best-effort film stream resolution for the mpvEx-for-films toggle. Kodik also indexes many
-     * films/series by title, so search Kodik by title and resolve the first result's HLS. Returns
-     * null if nothing is found — the caller falls back to the WebView film player in that case.
-     * This is intentionally best-effort: Kodik's catalog is anime-heavy, so non-anime films often
-     * won't resolve, and that's handled gracefully.
-     */
-    suspend fun resolveFilmStreamByTitle(title: String, kinopoiskId: Int = 0): AnimeMediaStream? = withContext(Dispatchers.IO) {
-        runCatching {
-            val clean = title.trim()
-            var results = if (kinopoiskId > 0) {
-                kodikSearchByKinopoiskId(kinopoiskId)
-            } else emptyList()
-
-            if (results.isEmpty() && clean.isNotBlank()) {
-                results = kodikSearch(shikimoriId = 0, animeTitle = clean, translationId = null)
-            }
-            val first = results.firstOrNull() ?: return@runCatching null
-            // Use the first episode link (films typically have a single "1" entry).
-            val episodes = extractKodikEpisodes(first)
-            val ep = episodes.firstOrNull() ?: return@runCatching null
-            val link = ep.link?.takeIf { it.isNotBlank() } ?: return@runCatching null
-            val qualities = resolveKodikHls(absoluteKodikUrl(link))
-            if (qualities.isEmpty()) return@runCatching null
-            val url = qualities["720p"] ?: qualities["1080p"] ?: qualities["480p"] ?: qualities.values.first()
-            AnimeMediaStream(
-                url = url,
-                qualities = qualities,
-                quality = qualities.entries.firstOrNull { it.value == url }?.key ?: "Auto",
-                headers = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to "https://kodik.info/"
-                )
-            )
-        }.getOrNull()
-    }
-
-    private suspend fun kodikSearchByKinopoiskId(kinopoiskId: Int): List<JSONObject> {
+    internal suspend fun kodikSearchByKinopoiskId(kinopoiskId: Int): List<JSONObject> {
         val tokens = loadKodikTokens()
         for (token in tokens) {
             for (base in KODIK_API_BASES) {
@@ -1436,6 +1519,63 @@ object AnimeStreamResolver {
      * Searches Kodik by kinopoisk_id and returns the embed player URL (iframe link).
      * Used as a fallback when DDBB API is unreachable.
      */
+    internal enum class KodikSearchFailure { NONE, PROVIDER, NETWORK }
+
+    internal data class KodikMovieSearchResult(
+        val items: List<JSONObject> = emptyList(),
+        val failure: KodikSearchFailure = KodikSearchFailure.NONE
+    )
+
+    internal suspend fun kodikSearchMovieByTitle(title: String): KodikMovieSearchResult =
+        kodikSearchMovieField("title", title, 20)
+
+    internal suspend fun kodikSearchMovieByImdbId(imdbId: String): KodikMovieSearchResult =
+        kodikSearchMovieField("imdb_id", imdbId, 10)
+
+    internal suspend fun kodikSearchMovieByKinopoiskId(id: Int): KodikMovieSearchResult =
+        kodikSearchMovieField("kinopoisk_id", id.toString(), 10)
+
+    private suspend fun kodikSearchMovieField(key: String, value: String, limit: Int): KodikMovieSearchResult {
+        val tokens = loadKodikTokens()
+        var sawProviderFailure = false
+        var sawNetworkFailure = false
+        for (token in tokens) {
+            for (base in KODIK_API_BASES) {
+                val url = kodikSearchUrl(base, token, key, value, null, limit)
+                val request = Request.Builder().url(url).addHeader("User-Agent", USER_AGENT).build()
+                val response = runCatching { client.newCall(request).execute() }.getOrElse {
+                    sawNetworkFailure = true
+                    continue
+                }
+                response.use {
+                    val body = it.body?.string().orEmpty()
+                    if (!it.isSuccessful) {
+                        val error = runCatching { JSONObject(body).optString("error") }.getOrDefault("")
+                        if (error.contains("токен", ignoreCase = true) || it.code >= 500) sawProviderFailure = true
+                        continue
+                    }
+                    val results = runCatching { JSONObject(body).optJSONArray("results") }.getOrNull()
+                    if (results != null) {
+                        val items = (0 until results.length()).mapNotNull(results::optJSONObject)
+                        return KodikMovieSearchResult(items)
+                    }
+                }
+            }
+        }
+        return KodikMovieSearchResult(
+            failure = when {
+                sawProviderFailure -> KodikSearchFailure.PROVIDER
+                sawNetworkFailure -> KodikSearchFailure.NETWORK
+                else -> KodikSearchFailure.NONE
+            }
+        )
+    }
+
+    internal fun kodikPlaybackHeaders(): Map<String, String> = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Referer" to "https://kodik.info/"
+    )
+
     suspend fun fetchKodikEmbedForKinopoisk(kinopoiskId: Int): String? = withContext(Dispatchers.IO) {
         runCatching {
             val results = kodikSearchByKinopoiskId(kinopoiskId)

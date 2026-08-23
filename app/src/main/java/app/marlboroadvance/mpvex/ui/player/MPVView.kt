@@ -21,6 +21,81 @@ import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import kotlin.reflect.KProperty
 
+/**
+ * Monitors frame drops to detect when shaders cause performance issues.
+ * When excessive drops are detected, downgrades shader quality
+ * and emits warnings via callbacks (temporary + permanent).
+ */
+class ShaderPerformanceMonitor(
+  private val decoderPreferences: DecoderPreferences,
+  private val anime4kManager: Anime4KManager,
+  private val onWarning: (String) -> Unit,
+  private val onPermanentWarning: (String?) -> Unit,
+) {
+  private var lastFrameDropCheck = 0L
+  private var frameDropCount = 0L
+  private var consecutiveBadIntervals = 0
+  private val INTERVAL_MS = 2500L
+  private val DROPS_PER_SEC_THRESHOLD = 10
+  private var lastDowngradeTime = 0L
+
+  fun checkPerformance(dropCount: Long) {
+    val now = System.currentTimeMillis()
+    if (lastFrameDropCheck == 0L) {
+      lastFrameDropCheck = now
+      frameDropCount = dropCount
+      return
+    }
+    val elapsed = now - lastFrameDropCheck
+    if (elapsed < INTERVAL_MS) return
+    val dropsTotal = dropCount - frameDropCount
+    val dropsPerSec = (dropsTotal * 1000.0 / elapsed).toInt()
+    frameDropCount = dropCount
+    lastFrameDropCheck = now
+
+    if (dropsPerSec <= DROPS_PER_SEC_THRESHOLD) {
+      consecutiveBadIntervals = 0
+      return
+    }
+
+    consecutiveBadIntervals++
+    onWarning("Шейдеры перегружают устройство: $dropsPerSec пропусков/с")
+    // Need 2 consecutive bad intervals before reacting (debounce)
+    if (consecutiveBadIntervals < 2) return
+
+    // Cooldown: don't downgrade more than once every 10 seconds
+    if (now - lastDowngradeTime < 10_000) return
+    lastDowngradeTime = now
+
+    val currentModeStr = decoderPreferences.anime4kMode.get()
+    if (currentModeStr == "OFF") return
+    val currentQualityStr = decoderPreferences.anime4kQuality.get()
+    val newQuality: String
+    val warningMsg: String
+    when (currentQualityStr) {
+      "HIGH" -> { newQuality = "BALANCED"; warningMsg = "Шейдеры тормозят на HIGH. Снижено до BALANCED" }
+      "BALANCED" -> { newQuality = "FAST"; warningMsg = "Шейдеры тормозят на BALANCED. Снижено до FAST" }
+      "FAST" -> {
+        newQuality = "FAST"
+        decoderPreferences.anime4kMode.set("OFF")
+        onWarning("Шейдеры не справляются даже на FAST. Отключены")
+        onPermanentWarning("Устройство не тянет Anime4K. Шейдеры отключены.")
+        return
+      }
+      else -> return
+    }
+    decoderPreferences.anime4kQuality.set(newQuality)
+    onWarning("$warningMsg. Применится при следующем запуске плеера")
+  }
+
+  fun reset() {
+    lastFrameDropCheck = 0L
+    frameDropCount = 0L
+    consecutiveBadIntervals = 0
+    lastDowngradeTime = 0L
+  }
+}
+
 class MPVView(
   context: Context,
   attributes: AttributeSet,
@@ -133,7 +208,9 @@ class MPVView(
 
     // Optimization: adjust threads for video decoding
     MPVLib.setOptionString("vd-lavc-threads", "0") // auto
-    MPVLib.setOptionString("fbo-format", "rgba16f") // better for shaders performance vs 32f
+    // Use rgba8 instead of rgba16f to reduce GPU memory bandwidth significantly.
+    // Anime4K CNN shaders don't require high-precision intermediate buffers.
+    MPVLib.setOptionString("fbo-format", "rgba8")
 
     val logLevel = if (advancedPreferences.verboseLogging.get()) "v" else "warn"
     MPVLib.setOptionString("msg-level", "all=$logLevel")
@@ -382,7 +459,7 @@ class MPVView(
       
       if (shaderChain.isNotEmpty()) {
         // Force mediacodec-copy when GLSL shaders are active so GPU texture pipeline processes shaders.
-        MPVLib.setOptionString("hwdec", "mediacodec-copy")
+        MPVLib.setOptionString("hwdec", "mediacodec-copy,mediacodec,no")
         // OpenGL-only tuning should not be pushed onto the Vulkan backend.
         if (!useVulkan) {
           MPVLib.setOptionString("opengl-pbo", "yes")
@@ -390,7 +467,9 @@ class MPVView(
         }
         MPVLib.setOptionString("vd-lavc-dr", "yes")
         
-        // Apply shaders (MUST use setOptionString in initOptions!)
+        // initOptions runs before mpv starts playback. Do not mutate this
+        // option after playback has started: some libmpv Android builds then
+        // enqueue a bogus /null input after EOF.
         MPVLib.setOptionString("glsl-shaders", shaderChain)
       }
     }.onFailure {

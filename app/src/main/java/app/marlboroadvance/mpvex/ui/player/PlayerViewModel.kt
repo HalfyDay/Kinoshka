@@ -287,6 +287,12 @@ class PlayerViewModel(
   private val _lagWarning = MutableStateFlow<String?>(null)
   val lagWarning: StateFlow<String?> = _lagWarning
 
+  private val _shaderWarning = MutableStateFlow<String?>(null)
+  val shaderWarning: StateFlow<String?> = _shaderWarning
+
+  private val _shaderWarningPermanent = MutableStateFlow<String?>(null)
+  val shaderWarningPermanent: StateFlow<String?> = _shaderWarningPermanent
+
   fun setThermalWarning(message: String?) {
     _thermalWarning.value = message
     if (message != null) {
@@ -309,6 +315,22 @@ class PlayerViewModel(
         }
       }
     }
+  }
+
+  fun setShaderWarning(message: String?) {
+    _shaderWarning.value = message
+    if (message != null) {
+      viewModelScope.launch {
+        delay(5000)
+        if (_shaderWarning.value == message) {
+          _shaderWarning.value = null
+        }
+      }
+    }
+  }
+
+  fun setShaderWarningPermanent(message: String?) {
+    _shaderWarningPermanent.value = message
   }
 
   val playerUpdate = MutableStateFlow<PlayerUpdates>(PlayerUpdates.None)

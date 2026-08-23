@@ -250,7 +250,14 @@ class FilmsViewModel(
             uiState = uiState.copy(shikimoriAuthState = state)
             if (state.isLoggedIn && state.userId > 0) {
                 viewModelScope.launch {
-                    val rates = animeRepository.getUserRates(state.userId)
+                    val ratesResult = animeRepository.getUserRates(state.userId)
+                    // Если оба эндпоинта Shikimori упали — сохраняем последний известный список.
+                    // Иначе одна временная ошибка сети стирала бы всю Shikimori-часть библиотеки.
+                    val rates = ratesResult.getOrNull()
+                    if (rates == null) {
+                        uiState = uiState.copy(error = "Не удалось обновить список Shikimori. Показаны последние данные.")
+                        return@launch
+                    }
                     // First, populate from local cache
                     val localCache = userStateStore.getShikimoriAnimeCache()
                     val ratesWithLocalCache = rates.map { rate ->
@@ -788,7 +795,12 @@ class FilmsViewModel(
                                 type = kindStr
                             )
                         }
-                        detailsState = detailsState.copy(relations = relationItems)
+                        // Shikimori может вернуть одно и то же аниме под двумя relation-связями;
+                        // все они мапятся в один id (a.id + ANIME_ID_OFFSET), а HorizontalFilmsCard
+                        // использует key = { it.id } -> краш на дубликате ключа.
+                        detailsState = detailsState.copy(
+                            relations = relationItems.filter { it.id > 0 }.distinctBy { it.id }
+                        )
                     }
                     launch {
                         val rolesList = runCatching { animeRepository.roles(shikimoriId) }.getOrDefault(emptyList())
@@ -854,6 +866,13 @@ class FilmsViewModel(
         }
     }
 
+    /**
+     * Keyed-списки (HomeScreen: key = { _, film -> film.kinopoiskId }) падают, если один
+     * kinopoiskId встречается дважды. Страницы API это иногда допускают, а rankResults только
+     * сортирует и такой дубликат не убирает — поэтому дедуп нужен на каждом присвоении items.
+     */
+    private fun List<FilmItem>.dedupe(): List<FilmItem> = distinctBy { it.kinopoiskId }
+
     private suspend fun fetchAnime(query: String?, page: Int): List<FilmItem> {
         val filters = uiState.filterState
         return animeRepository.search(
@@ -865,7 +884,7 @@ class FilmsViewModel(
             order = filters.animeOrder,
             scoreFrom = filters.animeScoreFrom,
             page = page
-        ).map { it.toFilmItem() }
+        ).map { it.toFilmItem() }.dedupe()
     }
 
     private fun loadDiscoverFirstPage(category: DiscoverCategory) {
@@ -891,9 +910,10 @@ class FilmsViewModel(
                 .onSuccess { items ->
                     uiState = uiState.copy(
                         loading = false,
-                        items = items,
+                        items = items.dedupe(),
                         isSearchResult = false,
                         currentPage = 1,
+                        // hasMore считается по СЫРОЙ странице сервера — это верный признак пагинации.
                         hasMore = items.isNotEmpty()
                     )
                 }
@@ -997,10 +1017,11 @@ class FilmsViewModel(
                         if (fallbackItems.isNotEmpty()) {
                             uiState = uiState.copy(
                                 loading = false,
-                                items = rankResults(fallbackItems, cleanQuery),
+                                items = rankResults(fallbackItems, cleanQuery).dedupe(),
                                 isSearchResult = true,
                                 isInstantSearch = instant,
                                 currentPage = 1,
+                                // hasMore — по сырой странице сервера, а не по дедуплицированной.
                                 hasMore = fallbackItems.isNotEmpty()
                             )
                             return@launch
@@ -1009,10 +1030,11 @@ class FilmsViewModel(
                 }
                 uiState = uiState.copy(
                     loading = false,
-                    items = rankResults(items, cleanQuery),
+                    items = rankResults(items, cleanQuery).dedupe(),
                     isSearchResult = true,
                     isInstantSearch = instant,
                     currentPage = 1,
+                    // hasMore — по сырой странице сервера, а не по дедуплицированной.
                     hasMore = items.isNotEmpty()
                 )
                 // Persist non-blank successful searches to history (only for explicit submits,
@@ -1379,7 +1401,9 @@ private fun HistoryRecord.toLibraryUiItem(
         isRussian = profile?.isRussian ?: (isRussian == true),
         viewedAtMillis = viewedAt,
         viewedAtLabel = format.format(Date(viewedAt)),
-        status = profile?.status,
+        // History entries created before a profile was persisted must still be visible in
+        // the default library tab. They represent an actively watched title.
+        status = profile?.status ?: UserFilmStatus.WATCHING,
         userRating = profile?.userRating,
         note = profile?.note,
         watchedSeasons = profile?.watchedSeasons,

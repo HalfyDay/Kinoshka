@@ -256,27 +256,33 @@ class KinoMPVView(
         pendingAnime4kMode = mode
         pendingAnime4kQuality = quality
         anime4kManagerInstance = manager
-
-        if (isNativeReady) {
+        /* Runtime shader mutation is disabled for this libmpv build: changing
+           glsl-shaders tears down the active video output. Preferences are
+           applied when the player is initialized next time. */
+        if (false && isNativeReady) {
             try {
                 // Use the runtime command API (glsl-shaders-set / glsl-shaders-clear). Writing
                 // the glsl-shaders option via the property-string API after playback started is
                 // a no-op on most libmpv builds — that's why toggling modes had no visible effect.
                 if (mode == Anime4KManager.Mode.OFF) {
-                    MPVLib.command("glsl-shaders-clear")
+                    MPVLib.command("change-list", "glsl-shaders", "clr", "")
+                    MPVLib.setPropertyString("glsl-shaders", "")
                     return
                 }
                 val chain = manager.getShaderChain(mode, quality)
                 if (chain.isNotEmpty()) {
-                    MPVLib.command("glsl-shaders-set", *chain.split(':').toTypedArray())
+                    MPVLib.command("change-list", "glsl-shaders", "set", chain)
+                    MPVLib.setPropertyString("glsl-shaders", chain)
                 } else {
-                    MPVLib.command("glsl-shaders-clear")
+                    MPVLib.command("change-list", "glsl-shaders", "clr", "")
+                    MPVLib.setPropertyString("glsl-shaders", "")
                 }
             } catch (e: Exception) {
                 Log.e("KinoMPVView", "Failed to apply Anime4K shaders", e)
                 // Fallback to the option-string path; works on some builds.
                 try {
                     val chain = if (mode == Anime4KManager.Mode.OFF) "" else manager.getShaderChain(mode, quality)
+                    MPVLib.command("change-list", "glsl-shaders", "set", chain)
                     MPVLib.setPropertyString("glsl-shaders", chain)
                 } catch (_: Exception) {}
             }

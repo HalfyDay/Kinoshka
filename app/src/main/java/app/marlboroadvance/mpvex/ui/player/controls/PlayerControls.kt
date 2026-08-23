@@ -49,6 +49,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Warning
@@ -72,6 +73,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -387,7 +389,7 @@ fun PlayerControls(
                 modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)),
                 contentAlignment = Alignment.Center
             ) {
-                androidx.compose.material3.CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
             }
         }
 
@@ -608,9 +610,52 @@ fun PlayerControls(
 
         val thermalWarning by viewModel.thermalWarning.collectAsState()
         val lagWarning by viewModel.lagWarning.collectAsState()
+        val shaderWarning by viewModel.shaderWarning.collectAsState()
+        val shaderWarningPermanent by viewModel.shaderWarningPermanent.collectAsState()
 
+        // Permanent shader warning (stays visible until dismissed by user)
         AnimatedVisibility(
-          visible = thermalWarning != null || lagWarning != null,
+          visible = shaderWarningPermanent != null,
+          enter = fadeIn() + expandVertically(),
+          exit = fadeOut() + shrinkVertically(),
+          modifier = Modifier.constrainAs(warnings) {
+            top.linkTo(playerUpdates.bottom, 16.dp)
+            start.linkTo(parent.start)
+            end.linkTo(parent.end)
+          }
+        ) {
+          Surface(
+            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.padding(horizontal = 16.dp)
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(18.dp))
+              Text(
+                text = shaderWarningPermanent ?: "",
+                style = MaterialTheme.typography.labelMedium
+              )
+              // Dismiss button so the user can close the permanent warning
+              Icon(
+                imageVector = Icons.Default.Cancel,
+                contentDescription = "Dismiss",
+                modifier = Modifier
+                  .size(18.dp)
+                  .clip(CircleShape)
+                  .clickable { viewModel.setShaderWarningPermanent(null) }
+              )
+            }
+          }
+        }
+
+        // Temporary warnings: thermal, lag, shader (auto-dismiss after delay)
+        AnimatedVisibility(
+          visible = thermalWarning != null || lagWarning != null || shaderWarning != null,
           enter = fadeIn() + expandVertically(),
           exit = fadeOut() + shrinkVertically(),
           modifier = Modifier.constrainAs(warnings) {
@@ -631,8 +676,9 @@ fun PlayerControls(
               horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
               Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(18.dp))
+              // Shader warnings take priority, then thermal, then lag
               Text(
-                text = thermalWarning ?: lagWarning ?: "",
+                text = shaderWarning ?: thermalWarning ?: lagWarning ?: "",
                 style = MaterialTheme.typography.labelMedium
               )
             }
