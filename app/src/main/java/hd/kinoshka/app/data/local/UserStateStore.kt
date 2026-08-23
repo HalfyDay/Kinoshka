@@ -40,8 +40,8 @@ enum class UserFilmStatus {
 }
 
 enum class PlayerMode(val displayName: String) {
-    DDBB("Источники (ddbb)"),
-    SITE("Зеркало сайта (kinopoisk.ws)"),
+    DDBB("Веб-плеер"),
+    SITE("Открыть сайт"),
     MPVEX("mpvEx (нативный)")
 }
 
@@ -449,7 +449,9 @@ class UserStateStore(context: Context) {
             val finalWatchedEpisodes = if (status == UserFilmStatus.COMPLETED) {
                 finalTotalEpisodes?.coerceAtLeast(watchedEpisodes ?: 0) ?: (watchedEpisodes ?: 1)
             } else {
-                watchedEpisodes
+                // Null means "the editor has no opinion about this field" (non-series types submit
+                // null), not "clear it" — keep whatever the player last recorded.
+                watchedEpisodes ?: existing?.watchedEpisodes
             }
 
             val finalWatchedSeasons = if (status == UserFilmStatus.COMPLETED) {
@@ -470,7 +472,7 @@ class UserStateStore(context: Context) {
                 // rewatch fact even when the editor submits a cleared/null progress value.
                 maxOf(existing.watchedSeasons ?: 0, 1)
             } else {
-                watchedSeasons
+                watchedSeasons ?: existing?.watchedSeasons
             }
 
             val profile = UserFilmProfile(
@@ -486,7 +488,7 @@ class UserStateStore(context: Context) {
                 note = note?.trim().takeUnless { it.isNullOrBlank() },
                 watchedSeasons = finalWatchedSeasons,
                 watchedEpisodes = finalWatchedEpisodes,
-                totalEpisodesInSeason = totalEpisodesInSeason?.coerceAtLeast(0),
+                totalEpisodesInSeason = (totalEpisodesInSeason ?: existing?.totalEpisodesInSeason)?.coerceAtLeast(0),
                 totalSeasons = finalTotalSeasons?.coerceAtLeast(0),
                 totalEpisodes = finalTotalEpisodes?.coerceAtLeast(0),
                 updatedAt = System.currentTimeMillis()
@@ -496,14 +498,16 @@ class UserStateStore(context: Context) {
         }
     }
 
-    fun updateSeriesProgress(kinopoiskId: Int, seasonNumber: Int, episodeNumber: Int) {
+    fun updateSeriesProgress(kinopoiskId: Int, seasonNumber: Int, episodeNumber: Int, finished: Boolean = false) {
         // Block body + inner synchronized: the verbatim body early-returns when no profile exists.
         synchronized(BLOB_LOCK) {
             val existing = readProfiles().firstOrNull { it.kinopoiskId == kinopoiskId } ?: return
-            val status = if (existing.status == UserFilmStatus.REWATCHING || existing.status == UserFilmStatus.COMPLETED) {
-                existing.status
-            } else {
-                UserFilmStatus.WATCHING
+            val status = when {
+                // User explicitly dropped/put the title on hold — playback must not override that.
+                existing.status == UserFilmStatus.DROPPED || existing.status == UserFilmStatus.ON_HOLD -> existing.status
+                finished -> UserFilmStatus.COMPLETED
+                existing.status == UserFilmStatus.REWATCHING || existing.status == UserFilmStatus.COMPLETED -> existing.status
+                else -> UserFilmStatus.WATCHING
             }
             upsertProfile(
                 existing.copy(
@@ -513,6 +517,23 @@ class UserStateStore(context: Context) {
                     updatedAt = System.currentTimeMillis()
                 )
             )
+        }
+    }
+
+    /**
+     * Marks a movie (or any single-unit title) as fully watched: moves it to COMPLETED so it lands
+     * in the library folder matching what actually happened in the player. Titles the user
+     * explicitly dropped or put on hold are left untouched.
+     */
+    fun markTitleWatched(kinopoiskId: Int) {
+        synchronized(BLOB_LOCK) {
+            val existing = readProfiles().firstOrNull { it.kinopoiskId == kinopoiskId } ?: return
+            if (existing.status == UserFilmStatus.COMPLETED) return
+            val status = when (existing.status) {
+                UserFilmStatus.DROPPED, UserFilmStatus.ON_HOLD -> existing.status
+                else -> UserFilmStatus.COMPLETED
+            }
+            upsertProfile(existing.copy(status = status, updatedAt = System.currentTimeMillis()))
         }
     }
 
@@ -538,10 +559,18 @@ class UserStateStore(context: Context) {
                 UserFilmStatus.WATCHING
             }
 
+            // The player's episode list is not canonical (it can be shorter than the real run while
+            // a season is airing). Never let it shrink the stored total — that made the progress
+            // percentage and the watched checkmarks disagree.
+            val mergedTotal = maxOf(
+                existing?.totalEpisodes ?: 0,
+                totalEpisodes.takeIf { it > 0 } ?: 0
+            ).takeIf { it > 0 } ?: existing?.totalEpisodes
+
             val updated = if (existing != null) {
                 existing.copy(
                     watchedEpisodes = episodeNum,
-                    totalEpisodes = totalEpisodes.takeIf { it > 0 } ?: existing.totalEpisodes,
+                    totalEpisodes = mergedTotal,
                     status = newStatus,
                     updatedAt = System.currentTimeMillis()
                 )
@@ -651,7 +680,10 @@ class UserStateStore(context: Context) {
     private fun readProfiles(): List<UserFilmProfile> = readProfilesOrNull().orEmpty()
 
     private fun writeHistory(value: List<HistoryRecord>) {
-        prefs.edit().putString(historyKey, gson.toJson(value)).apply()
+        // commit() mirrors writeProfiles(): addFromDetails writes history+profile as a pair, and an
+        // async apply() here could land after a crash, leaving history without a profile — which
+        // then shows up as a phantom WATCHING entry in the library.
+        prefs.edit().putString(historyKey, gson.toJson(value)).commit()
     }
 
     private fun writeProfiles(value: List<UserFilmProfile>) {
