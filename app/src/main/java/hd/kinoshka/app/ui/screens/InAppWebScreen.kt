@@ -248,27 +248,19 @@ private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withC
             val body = readBodyLimited(response) ?: return@withContext emptyList()
             val arr = JSONObject(body).optJSONArray("data") ?: return@withContext emptyList()
             val players = mutableListOf<DdbbPlayer>()
+            val seenTypes = mutableSetOf<String>()
+            // One menu entry per source. Translations (озвучки) are deliberately NOT flattened
+            // into duplicate rows: every embed player exposes its own voiceover picker, and the
+            // aggregator's per-translation iframeUrls often repeat the same player URL, which is
+            // how "Перевод N" entries ended up opening identical/mismatched streams.
             for (i in 0 until arr.length()) {
                 val obj = arr.optJSONObject(i) ?: continue
-                val type = obj.optString("type", "Источник ${i + 1}")
+                val type = obj.optString("type", "Источник ${i + 1}").trim()
                 val defaultUrl = obj.optString("iframeUrl", "")
-                val transArr = obj.optJSONArray("translations")
-                if (transArr != null && transArr.length() > 0) {
-                    for (translationIndex in 0 until transArr.length()) {
-                        val translation = transArr.optJSONObject(translationIndex) ?: continue
-                        val resolvedUrl = translation.optString("iframeUrl", defaultUrl)
-                        if (!isSafeEmbedUrl(resolvedUrl)) continue
-                        val translationName = translation.optString("name").ifBlank { "Перевод ${translationIndex + 1}" }
-                        val quality = translation.optString("quality").takeIf { it.isNotBlank() }
-                        val label = buildString {
-                            append(type).append(" • ").append(translationName)
-                            if (quality != null) append(" • ").append(quality)
-                        }
-                        players.add(DdbbPlayer("${type.lowercase()}_${i}_$translationIndex", label, resolvedUrl))
-                    }
-                } else if (isSafeEmbedUrl(defaultUrl)) {
-                    players.add(DdbbPlayer(id = "${type.lowercase()}_$i", name = type, iframeUrl = defaultUrl))
-                }
+                if (!isSafeEmbedUrl(defaultUrl)) continue
+                val key = type.lowercase().ifBlank { "source_$i" }
+                if (!seenTypes.add(key)) continue
+                players.add(DdbbPlayer(id = key, name = type.replaceFirstChar { it.uppercase() }, iframeUrl = defaultUrl))
             }
             if (players.isNotEmpty()) return@withContext players
         } catch (e: Exception) {
@@ -318,6 +310,37 @@ private const val HIDE_WEB_TOP_BAR_JS = """
 })();
 """
 
+// Lighter variant for known video-source embeds (alloha/turbo/veoveo/collaps): stretches the
+// player to fill the screen but does NOT hide by wildcard class matches ([class*="popup"],
+// [class*="overlay"], [class*="banner"]...) — those nuke the players' own UI (quality menus,
+// voiceover pickers, control popups) and were part of why these sources looked broken.
+private const val PLAYER_EMBED_CSS_JS = """
+(function () {
+  try {
+    var style = document.createElement('style');
+    style.innerHTML = `
+      html, body {
+        overflow: hidden !important;
+        width: 100% !important; height: 100% !important;
+        margin: 0 !important; padding: 0 !important;
+        background: black !important;
+      }
+      #player, .player-container, [id*="player"]:not([id*="player-ad"]),
+      [class*="player-wrapper"], [class*="player-container"],
+      .video-js, .jwplayer, video {
+        position: fixed !important; top: 0 !important; left: 0 !important;
+        width: 100vw !important; height: 100vh !important;
+        max-height: 100vh !important;
+        z-index: 2147483000 !important;
+        margin: 0 !important; padding: 0 !important;
+        background: black !important;
+      }
+    `;
+    document.head.appendChild(style);
+  } catch (e) {}
+})();
+"""
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InAppWebScreen(
@@ -353,9 +376,13 @@ fun InAppWebScreen(
     var isPageLoading by remember { mutableStateOf(true) }
     var autoRetryCount by remember { mutableStateOf(0) }
     var retryTrigger by remember { mutableStateOf(0) }
+    // Auto-advance budget: a dead first source walks down the list instead of showing an error.
+    // Reset whenever the user acts (manual pick / retry / new url).
+    var autoSourceFallbackCount by remember { mutableStateOf(0) }
 
     // Fetch players on launch
     LaunchedEffect(url, retryTrigger) {
+        autoSourceFallbackCount = 0
         if (shikimoriId != null) {
             isLoadingPlayers = true
             // Try fetching real Kodik embed URL natively (bypasses SSL issues)
@@ -421,7 +448,7 @@ fun InAppWebScreen(
             val currentUrl = wv.url ?: ""
             // Don't reload if already on this URL
             if (sel.iframeUrl != currentUrl) {
-                wv.loadUrl(sel.iframeUrl)
+                wv.loadUrl(sel.iframeUrl, sourceLoadHeaders())
             }
         }
     }
@@ -596,9 +623,19 @@ fun InAppWebScreen(
                     }
 
                     override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-                        handler?.cancel()
-                        webViewError = "Источник отклонён из-за ошибки защищённого соединения"
-                        isPageLoading = false
+                        // Known video-source hosts frequently ship broken/expired cert chains that
+                        // desktop browsers tolerate; cancelling here made alloha/turbo/veoveo look
+                        // dead while collaps worked. Proceed only for whitelisted players.
+                        val failedHost = runCatching { Uri.parse(error?.url.orEmpty()).host?.lowercase().orEmpty() }
+                            .getOrDefault("")
+                            .ifBlank { runCatching { Uri.parse(view?.url.orEmpty()).host?.lowercase().orEmpty() }.getOrDefault("") }
+                        if (PLAYER_HOST_WHITELIST.any { failedHost.contains(it) }) {
+                            handler?.proceed()
+                        } else {
+                            handler?.cancel()
+                            webViewError = "Источник отклонён из-за ошибки защищённого соединения"
+                            isPageLoading = false
+                        }
                     }
 
                     // Don't treat HTTP errors as fatal — pages often handle redirects via JS
@@ -613,6 +650,26 @@ fun InAppWebScreen(
                         if (request?.isForMainFrame != true) return
                         android.util.Log.w("InAppWeb", "WebView error: ${error?.errorCode} ${error?.description} for ${request.url}")
                         val failedUrl = request.url?.toString() ?: return
+
+                        // Web-player mode: a dead source advances to the next one automatically.
+                        if (
+                            playerMode == hd.kinoshka.app.data.local.PlayerMode.DDBB &&
+                            shikimoriId == null &&
+                            autoSourceFallbackCount < MAX_AUTO_SOURCE_FALLBACKS
+                        ) {
+                            val idx = ddbbPlayers.indexOfFirst { it.iframeUrl == failedUrl }
+                            if (idx >= 0 && idx + 1 < ddbbPlayers.size) {
+                                autoSourceFallbackCount++
+                                val next = ddbbPlayers[idx + 1]
+                                android.util.Log.i("InAppWeb", "Source failed, falling back to ${next.name}")
+                                view?.post {
+                                    selectedPlayer = next
+                                    webViewRef?.loadUrl(next.iframeUrl, sourceLoadHeaders())
+                                }
+                                return
+                            }
+                        }
+
                         if (!wsFallbackAttempted && failedUrl.contains("kinopoisk.cx")) {
                             wsFallbackAttempted = true
                             val wsUrl = failedUrl.replace("www.kinopoisk.cx", KINOPOISK_WS_HOST)
@@ -641,10 +698,16 @@ fun InAppWebScreen(
                             // kinopoisk mirrors (.ws/.cx) host a real player page that redirects in;
                             // don't force overflow:hidden there (it freezes info/404 interstitials and
                             // is the root cause of "opens the site but doesn't scroll"). Just strip ads.
-                            if (!isKinopoiskMirror) {
+                            if (isVideoSourceHost(host)) {
+                                // Embed players: fullscreen stretch without wildcard UI nukes,
+                                // plus the ad-overlay watchdog.
+                                view?.evaluateJavascript(PLAYER_EMBED_CSS_JS, null)
+                                view?.evaluateJavascript(REMOVE_ADS_JS, null)
+                                view?.evaluateJavascript(PLAYER_ANTIADS_JS, null)
+                            } else if (!isKinopoiskMirror) {
                                 view?.evaluateJavascript(HIDE_WEB_TOP_BAR_JS, null)
+                                view?.evaluateJavascript(REMOVE_ADS_JS, null)
                             }
-                            view?.evaluateJavascript(REMOVE_ADS_JS, null)
                             if (isKinopoiskMirror && playerMode != hd.kinoshka.app.data.local.PlayerMode.SITE) {
                                 // Try to isolate the video player on the mirror page for a fullscreen feel.
                                 view?.evaluateJavascript(PEQ_MIRROR_CSS_JS, null)
@@ -820,9 +883,10 @@ fun InAppWebScreen(
                                     onClick = {
                                         selectedPlayer = player
                                         showServerSheet = false
+                                        autoSourceFallbackCount = 0
                                         val wv = webViewRef
                                         if (wv != null) {
-                                            wv.loadUrl(player.iframeUrl)
+                                            wv.loadUrl(player.iframeUrl, sourceLoadHeaders())
                                         }
                                     },
                                     modifier = Modifier.fillMaxWidth()
@@ -912,8 +976,8 @@ private fun extractShikimoriId(url: String): Int? {
     return if (url.contains("shikimori")) last else null
 }
 
-// Known ad/tracking domains to block in WebView
-private val AD_DOMAINS = listOf(
+// Known ad/tracking hosts blocked in WebView. Matched against the URL HOST only.
+private val AD_HOSTS = listOf(
     "doubleclick.net", "googlesyndication.com", "googleadservices.com",
     "ads.", "ad.", "analytics.", "tracking.", "pixel.", "beacon.",
     "popunder.", "popads.", "adnxs.com", "adskeeper.",
@@ -921,10 +985,8 @@ private val AD_DOMAINS = listOf(
     "juicyads.", "trafficjunky.", "eroadvertising.",
     "adbrite.", "advertising.com", "adroll.com",
     "mc.yandex.ru", "an.yandex.ru",
-    "connect.vk.ru", "vk.com/rtrg",
     "ssp.io", "adfox.", "bannerbook.", "rnet.plus",
     "tns-counter.ru", "mediascope.net",
-    "preroll", "midroll", "postroll",
     "imasdk.googleapis.com", "pubmatic.com", "rubiconproject.com",
     "sharethrough.com", "outbrain.com", "taboola.com",
     "criteo.com", "casalemedia.com", "indexexchange.com",
@@ -938,14 +1000,45 @@ private val AD_DOMAINS = listOf(
     "adtec.ru", "video-mech.ru", "ad.mail.ru", "ad.moe.video"
 )
 
+// Video sources whose CDN paths legitimately contain things like "/ads/" or "banner" (creative
+// assets, pre-roll config). Blocking by substring over the full URL used to cut their players'
+// own requests and break playback — alloha/turbo/veoveo died exactly this way while collaps
+// survived. Never intercept anything on these hosts.
+private val PLAYER_HOST_WHITELIST = listOf(
+    "alloha", "collaps", "kodik", "aniqit", "kdkonl", "vsh.my",
+    "turbo", "veoveo", "vibix", "cdnmovies", "ddbb.lol",
+    "kinopoisk.ws", "kinopoisk.cx", "pkvbn.xyz", "s3.turbovi.ru", "allohatv"
+)
+
 private fun isAdUrl(url: String): Boolean {
-    val lower = url.lowercase()
-    return AD_DOMAINS.any { lower.contains(it) }
+    val host = runCatching { Uri.parse(url).host?.lowercase() }.getOrNull() ?: return false
+    if (host.isEmpty()) return false
+    if (PLAYER_HOST_WHITELIST.any { host.contains(it) }) return false
+    return AD_HOSTS.any { host.contains(it) }
 }
+
+// True when the loaded page is one of the video-source embeds we inject the anti-ad watchdog into.
+private fun isVideoSourceHost(host: String): Boolean {
+    val h = host.lowercase()
+    if (h.isEmpty()) return false
+    return PLAYER_HOST_WHITELIST.any { h.contains(it) } && !h.contains("kinopoisk") && !h.contains("pkvbn")
+}
+
+// Referer sent with every source load. Several embed players (alloha/turbo in particular) check
+// that the frame was opened from an aggregator page and refuse to play on a cold referer.
+private fun sourceLoadHeaders(): Map<String, String> = mapOf(
+    "Referer" to "https://ddbb.lol/",
+    "Origin" to "https://ddbb.lol"
+)
+
+private const val MAX_AUTO_SOURCE_FALLBACKS = 3
 
 private const val REMOVE_ADS_JS = """
 (function () {
   try {
+    // Neutralize popups/popunders/redirects before anything can hook clicks
+    window.open = function () { return null; };
+
     // Remove iframes that look like ads
     var frames = document.querySelectorAll('iframe');
     for (var i = frames.length - 1; i >= 0; i--) {
@@ -954,7 +1047,7 @@ private const val REMOVE_ADS_JS = """
           src.includes('adnxs') || src.includes('propeller') ||
           src.includes('clickadu') || src.includes('popunder') ||
           src.includes('exoclick') || src.includes('advertising') ||
-          src.includes('ads.') || src.includes('/ads/') ||
+          src.includes('adskeeper') || src.includes('hilltopads') ||
           src.includes('buzzoola') ||
           src.includes('bidderstack') || src.includes('timing-js') ||
           src.includes('targetads') || src.includes('adriver') ||
@@ -964,18 +1057,56 @@ private const val REMOVE_ADS_JS = """
         frames[i].remove();
       }
     }
-    // Remove overlay/popup/preloader elements
-    var selectors = '[class*="ad"], [id*="ad"], [class*="banner"], [id*="banner"], ' +
-      '[class*="popup"], [class*="overlay"], [id*="popup"], ' +
-      '[class*="preloader-overlay"], [class*="ad-block"], [class*="ads-block"], ' +
-      '[class*="preroll"], [class*="midroll"], [class*="postroll"], ' +
-      '[class*="commercial"], [class*="promo"]';
+    // Remove explicit ad containers only. Deliberately NOT using [class*="ad"] /
+    // [class*="banner"] wildcards here: they match "header", "download", player chrome and
+    // wiped legit UI on alloha/turbo/veoveo embeds.
+    var selectors = '.adsbygoogle, [id*="adBanner"], [class*="ad-banner"], ' +
+      '[id*="google_ads"], .ad-block, .ads-block, .adblock-detected, ' +
+      '[class*="popunder"], [class*="popup-ad"], [data-ad], [data-adv]';
     document.querySelectorAll(selectors).forEach(function(el) { el.remove(); });
-    // Force body/html to fit viewport — prevents scrolling
-    document.documentElement.style.height = '100vh';
-    document.documentElement.style.overflow = 'hidden';
-    document.body.style.height = '100vh';
-    document.body.style.overflow = 'hidden';
+  } catch (e) {}
+})();
+"""
+
+// Injected on video-source hosts (alloha/turbo/veoveo/collaps). Kills fullscreen ad overlays:
+// popups are already disabled by REMOVE_ADS_JS, this one removes fixed-position overlays that
+// sit ABOVE the player and re-appears them via MutationObserver.
+private const val PLAYER_ANTIADS_JS = """
+(function () {
+  try {
+    if (window.__kinoAntiAdsInstalled) return;
+    window.__kinoAntiAdsInstalled = true;
+
+    function isAdOverlay(el) {
+      if (!el || el === document.body || el === document.documentElement) return false;
+      var st;
+      try { st = getComputedStyle(el); } catch (e) { return false; }
+      if (st.position !== 'fixed' && st.position !== 'absolute') return false;
+      if (st.display === 'none' || st.visibility === 'hidden') return false;
+      var z = parseInt(st.zIndex, 10);
+      if (isNaN(z) || z < 100) return false;
+      var r = el.getBoundingClientRect();
+      if (r.width < innerWidth * 0.6 || r.height < innerHeight * 0.5) return false;
+      // Player wrappers themselves are usually marked as such — keep them
+      var id = ((el.id || '') + ' ' + (el.className || '')).toLowerCase();
+      if (/player|video|jw|plyr|vjs/.test(id)) return false;
+      // Contains a clickable close hint? still an ad, remove it anyway.
+      return true;
+    }
+
+    function sweep() {
+      try {
+        var all = document.body ? document.body.querySelectorAll('div, iframe, a') : [];
+        for (var i = 0; i < all.length; i++) {
+          if (isAdOverlay(all[i])) all[i].remove();
+        }
+      } catch (e) {}
+    }
+
+    sweep();
+    setInterval(sweep, 1500);
+
+    new MutationObserver(sweep).observe(document.documentElement, { childList: true, subtree: true });
   } catch (e) {}
 })();
 """

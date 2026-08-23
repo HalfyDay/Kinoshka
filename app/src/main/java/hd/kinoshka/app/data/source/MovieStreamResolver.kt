@@ -42,13 +42,36 @@ object MovieStreamResolver {
     }
 
     suspend fun resolveMovie(request: MoviePlaybackRequest): MovieStreamResult = withContext(Dispatchers.IO) {
-        when (val catalog = loadCatalog(request)) {
+        val kodikResult: MovieStreamResult = when (val catalog = loadCatalog(request)) {
             is MovieCatalogResult.Unavailable -> MovieStreamResult.Unavailable(catalog.reason)
             is MovieCatalogResult.Available -> {
                 val references = catalog.candidates.flatMap { candidate -> movieReferences(candidate).map { candidate to it } }
                 resolveReferences(references, null)
             }
         }
+        if (kodikResult is MovieStreamResult.Success) return@withContext kodikResult
+
+        // Kodik does not index most live-action films, and its player obfuscation breaks now and
+        // then; the ddbb aggregator (same sources the in-app web player uses) covers the gap with
+        // collaps/turbo embeds that expose direct HLS/MP4.
+        request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
+            runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
+                .onFailure { Log.w(TAG, "ddbb fallback failed", it) }
+                .getOrNull()
+                ?.let { stream ->
+                    Log.i(TAG, "ddbb fallback succeeded via ${stream.sourceName}")
+                    return@withContext MovieStreamResult.Success(
+                        AnimeMediaStream(
+                            url = stream.url,
+                            qualities = stream.qualities,
+                            headers = stream.headers,
+                            quality = stream.qualities.keys.firstOrNull() ?: "Auto"
+                        ),
+                        null
+                    )
+                }
+        }
+        kodikResult
     }
 
     suspend fun resolveEpisode(
