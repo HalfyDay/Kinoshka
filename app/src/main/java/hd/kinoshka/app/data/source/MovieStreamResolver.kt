@@ -26,7 +26,7 @@ object MovieStreamResolver {
             return@withContext MovieCatalogResult.Unavailable(failure)
         }
         if (searchResults.accepted.isEmpty()) {
-            Log.w(TAG, "Catalog rejected: ${searchResults.raw.size} provider results, no identity match")
+            Log.w(TAG, "Catalog rejected: ${searchResults.raw.size} provider results, no identity match (kp=${request.kinopoiskId}, imdb=${request.imdbId}, titles=$request.titles)")
             return@withContext MovieCatalogResult.Unavailable(MoviePlaybackFailure.NO_MATCHING_RESULTS)
         }
         // Kodik's `type` is unreliable, so the requested kind is a preference, not a filter:
@@ -88,7 +88,19 @@ object MovieStreamResolver {
                 .filter { it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber }
                 .map { candidate to it.playerUrl }
         }
-        resolveReferences(references, episode)
+        if (references.isNotEmpty()) {
+            return@withContext resolveReferences(references, episode)
+        }
+
+        // Rows discovered via find-player carry only a whole-title player link (no season/episode
+        // map). Resolving that link yields the provider's default episode — a functional start for
+        // series that would otherwise fall straight back to the web player.
+        val wholeTitleLinks = available.mapNotNull { it.topLevelPlayerUrl }
+        if (wholeTitleLinks.isNotEmpty()) {
+            Log.w(TAG, "No episode refs for S${episode.seasonNumber}E${episode.episodeNumber}, resolving whole-title links")
+            return@withContext resolveReferences(available.map { it to it.topLevelPlayerUrl!! }, episode)
+        }
+        resolveReferences(emptyList(), episode)
     }
 
     private data class SearchResults(
@@ -132,6 +144,22 @@ object MovieStreamResolver {
                 evaluate(
                     AnimeStreamResolver.kodikSearchMovieByTitle(title),
                     KodikMovieParser.MatchOrigin.TITLE
+                )
+            }
+        }
+        // Last resort: kodik.info/find-player consults Kodik's site DB directly and serves rows
+        // the public API hides (some live-action series index under ids the API search never
+        // returns). The scraped player link is trusted — the provider itself joined it to our id.
+        if (allAccepted.isEmpty()) {
+            request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
+                val found = AnimeStreamResolver.kodikFindPlayerByExternalId("kinopoisk_id", kpId)
+                Log.d(TAG, "find-player fallback for kp=$kpId: ${found?.optString("link")?.take(80) ?: "null"}")
+                evaluate(
+                    AnimeStreamResolver.KodikMovieSearchResult(
+                        items = listOfNotNull(found),
+                        failure = AnimeStreamResolver.KodikSearchFailure.NONE
+                    ),
+                    KodikMovieParser.MatchOrigin.KINOPOISK_ID
                 )
             }
         }

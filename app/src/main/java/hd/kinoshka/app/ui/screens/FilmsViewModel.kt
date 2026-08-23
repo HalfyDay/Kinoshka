@@ -118,7 +118,9 @@ val shikimoriGenres = listOf(
     FilterItem(id = 23, genre = "Школа"),
     FilterItem(id = 27, genre = "Сёнэн"),
     FilterItem(id = 25, genre = "Сёдзе"),
-    FilterItem(id = 42, genre = "Сэйнэн")
+    FilterItem(id = 42, genre = "Сэйнэн"),
+    FilterItem(id = 24, genre = "Этти"),
+    FilterItem(id = 64, genre = "Хентай")
 )
 
 data class HomeUiState(

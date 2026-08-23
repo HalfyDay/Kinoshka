@@ -41,10 +41,7 @@ fun ExpandableCard(
   modifier: Modifier = Modifier,
   colors: CardColors = CardDefaults.cardColors(),
   shape: Shape = MaterialTheme.shapes.large,
-  border: BorderStroke? = BorderStroke(
-    1.dp,
-    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-  ),
+  border: BorderStroke? = null,
   elevation: CardElevation = CardDefaults.cardElevation(
     defaultElevation = 0.dp,
     pressedElevation = 0.dp,

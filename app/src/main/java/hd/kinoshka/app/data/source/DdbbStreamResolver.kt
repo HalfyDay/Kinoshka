@@ -25,6 +25,7 @@ object DdbbStreamResolver {
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .dns(hd.kinoshka.app.utils.DohFallbackDns)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .build()
@@ -46,35 +47,67 @@ object DdbbStreamResolver {
         val sourceName: String
     )
 
+    /** Sources whose embeds are worth re-resolving inside a real browser environment. */
+    private val HARVESTABLE_TYPES = setOf("alloha", "veoveo", "collaps", "turbo")
+
     /**
      * Walks the ddbb player list for [kinopoiskId] and returns the first successfully extracted
      * stream, or null when every source fails / the aggregator has nothing.
+     *
+     * Per source: cheap HTML regex first, then a headless-WebView harvest for sources whose
+     * streams hide behind JS bootstrapping or region checks (alloha/veoveo), or whose tokens
+     * expire too fast to survive the round-trip (collaps).
      */
     suspend fun resolveMovieStream(kinopoiskId: Int): DdbbStream? = withContext(Dispatchers.IO) {
         if (kinopoiskId <= 0) return@withContext null
         val players = fetchPlayers(kinopoiskId)
         Log.i(TAG, "ddbb offered ${players.size} sources for kp=$kinopoiskId: ${players.map { it.first }}")
         players.forEach { (type, iframeUrl) ->
-            val html = fetchHtml(iframeUrl) ?: run {
-                Log.w(TAG, "$type: embed unreachable ($iframeUrl)")
-                return@forEach
+            val lowerType = type.lowercase()
+
+            val html = fetchHtml(iframeUrl)
+            if (html != null) {
+                extractFromEmbed(html, iframeUrl)?.let { (headers, qualities) ->
+                    if (qualities.isNotEmpty()) {
+                        val bestKey = qualityPreference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
+                        Log.i(TAG, "$lowerType: extracted ${qualities.size} qualities, using $bestKey")
+                        return@withContext DdbbStream(
+                            url = qualities.getValue(bestKey),
+                            headers = headers,
+                            qualities = qualities,
+                            sourceName = type.replaceFirstChar { it.uppercase() }
+                        )
+                    }
+                }
             }
-            extractFromEmbed(html, iframeUrl)?.let { (headers, qualities) ->
-                if (qualities.isNotEmpty()) {
-                    val bestKey = qualityPreference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
-                    Log.i(TAG, "$type: extracted ${qualities.size} qualities, using $bestKey")
+
+            if (lowerType in HARVESTABLE_TYPES && html != null) {
+                Log.i(TAG, "$lowerType: direct extraction failed, harvesting embed in a headless browser…")
+                WebViewStreamHarvester.harvest(
+                    embedUrl = iframeUrl,
+                    pageReferer = "https://ddbb.lol/",
+                    timeoutMs = HARVEST_TIMEOUT_MS,
+                )?.let { harvested ->
+                    val referer = harvested.referer
+                        ?: runCatching { java.net.URI(iframeUrl) }.getOrNull()?.let { "${it.scheme}://${it.host}/" }
+                        ?: "https://ddbb.lol/"
+                    Log.i(TAG, "$lowerType: harvested ${harvested.url.take(100)}")
                     return@withContext DdbbStream(
-                        url = qualities.getValue(bestKey),
-                        headers = headers,
-                        qualities = qualities,
+                        url = harvested.url,
+                        headers = mapOf("Referer" to referer, "User-Agent" to USER_AGENT),
+                        qualities = linkedMapOf("Auto" to harvested.url),
                         sourceName = type.replaceFirstChar { it.uppercase() }
                     )
                 }
+                Log.w(TAG, "$lowerType: harvest found nothing")
+            } else {
+                Log.w(TAG, "$lowerType: no stream extracted")
             }
-            Log.w(TAG, "$type: no stream extracted")
         }
         null
     }
+
+    private const val HARVEST_TIMEOUT_MS = 15_000L
 
     private val qualityPreference = listOf("720p", "1080p", "480p", "360p", "2160p", "240p", "Auto")
 

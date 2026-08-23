@@ -213,6 +213,7 @@ import hd.kinoshka.app.data.model.MovieContentKind
 import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.MovieStreamResult
 import hd.kinoshka.app.data.source.AnimeStreamResolver
+import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.MovieStreamResolver
 import hd.kinoshka.app.data.source.KodikMovieParser
 import hd.kinoshka.app.ui.components.KinoLoadingIndicator
@@ -272,6 +273,9 @@ fun DetailsScreen(
     var showDnsSheet by remember { mutableStateOf(false) }
     var isInteractive by remember { mutableStateOf(true) }
     var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
+    // Full-screen resolving overlay: shown while the native-player branch hunts for a stream,
+    // replacing the old transient toast that was easy to miss during long Kodik/ddbb lookups.
+    var streamResolvingTitle by remember(filmId) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(filmId) {
         load(filmId)
@@ -504,14 +508,19 @@ fun DetailsScreen(
                                             val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
                                             val request = item.toMoviePlaybackRequest()
                                             val ctx = context
+                                            streamResolvingTitle = filmTitle
                                             scope.launch {
                                                 try {
-                                                    Toast.makeText(ctx, "Поиск потока для \"$filmTitle\"…", Toast.LENGTH_SHORT).show()
                                                     if (request.kind == MovieContentKind.SERIES) {
                                                         when (val catalog = MovieStreamResolver.loadCatalog(request)) {
                                                             is hd.kinoshka.app.data.model.MovieCatalogResult.Available -> {
                                                                 val episodes = hd.kinoshka.app.data.model.canonicalSeriesEpisodes(catalog.candidates)
-                                                                val initialEpisode = hd.kinoshka.app.data.model.selectInitialSeriesEpisode(episodes, state.userProfile)
+                                                                // find-player-discovered rows expose only a whole-title player link;
+                                                                // present them as a single S1E1 entry so native playback can start.
+                                                                val effectiveEpisodes = episodes.ifEmpty {
+                                                                    listOf(hd.kinoshka.app.data.model.MovieEpisodeRef(1, 1, "Серия 1", catalog.candidates.firstOrNull()?.topLevelPlayerUrl.orEmpty()))
+                                                                }
+                                                                val initialEpisode = hd.kinoshka.app.data.model.selectInitialSeriesEpisode(effectiveEpisodes, state.userProfile)
                                                                 val result = initialEpisode?.let {
                                                                     MovieStreamResolver.resolveEpisode(request, it, catalog.candidates)
                                                                 }
@@ -524,7 +533,7 @@ fun DetailsScreen(
                                                                     val seriesContext = hd.kinoshka.app.data.model.MovieSeriesPlaybackContext(
                                                                         request = request,
                                                                         candidates = catalog.candidates,
-                                                                        episodes = episodes,
+                                                                        episodes = effectiveEpisodes,
                                                                         currentEpisode = initialEpisode,
                                                                         kinopoiskId = item.kinopoiskId,
                                                                         displayTitle = filmTitle
@@ -552,8 +561,37 @@ fun DetailsScreen(
                                                                 }
                                                             }
                                                             is hd.kinoshka.app.data.model.MovieCatalogResult.Unavailable -> {
-                                                                Toast.makeText(ctx, "${catalog.reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
-                                                                onOpenUrl(item.toWatchUrl())
+                                                                // Kodik's API simply does not index some series
+                                                                // (Rick and Morty among them); their ddbb embeds still
+                                                                // play though — harvest a default-episode stream
+                                                                // natively before giving up to the web player.
+                                                                val harvested = request.kinopoiskId?.takeIf { it > 0 }
+                                                                    ?.let { kpId ->
+                                                                        runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
+                                                                            .onFailure { Log.w("DetailsScreen", "ddbb series fallback failed", it) }
+                                                                            .getOrNull()
+                                                                    }
+                                                                if (harvested != null) {
+                                                                    Log.i("DetailsScreen", "Series native via ddbb/${harvested.sourceName}")
+                                                                    onOpenNativePlayer(
+                                                                        harvested.url,
+                                                                        harvested.headers,
+                                                                        harvested.qualities,
+                                                                        filmTitle,
+                                                                        1,
+                                                                        filmTitle,
+                                                                        0,
+                                                                        item.kinopoiskId,
+                                                                        "KODIK",
+                                                                        emptyList(),
+                                                                        emptyList(),
+                                                                        "",
+                                                                        null
+                                                                    )
+                                                                } else {
+                                                                    Toast.makeText(ctx, "${catalog.reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
+                                                                    onOpenUrl(item.toWatchUrl())
+                                                                }
                                                             }
                                                         }
                                                     } else {
@@ -597,6 +635,7 @@ fun DetailsScreen(
                                                     onOpenUrl(item.toWatchUrl())
                                                 } finally {
                                                     isInteractive = true
+                                                    streamResolvingTitle = null
                                                 }
                                             }
                                         } else {
@@ -728,6 +767,10 @@ fun DetailsScreen(
                 startIndex = imageViewerStartIndex,
                 onDismiss = { imageViewerStartIndex = -1 }
             )
+        }
+
+        streamResolvingTitle?.let { resolvingTitle ->
+            StreamResolvingOverlay(title = resolvingTitle)
         }
 
         if (showProfileEditor && state.item != null) {
@@ -1358,6 +1401,43 @@ private fun RoundedPlayIcon(modifier: Modifier = Modifier, color: Color = Color.
 }
 
 
+
+/**
+ * Blocking overlay shown while the native-player branch searches Kodik/ddbb for a stream.
+ * Replaces the old one-shot toast: stream lookups regularly take 5-20 seconds and the toast
+ * vanished long before any result was visible.
+ */
+@Composable
+private fun StreamResolvingOverlay(title: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.72f))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            hd.kinoshka.app.ui.components.KinoLoadingIndicator()
+            Text(
+                text = "Ищем поток…",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.65f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 40.dp)
+            )
+        }
+    }
+}
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -2385,7 +2465,9 @@ private fun UserFilmStatus.toUiLabel(): String {
 private fun FilmDetails.toWatchUrl(): String {
     if (kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
         val shikimoriId = kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
-        return "https://kodik.info/find-player?shikimori_id=$shikimoriId"
+        // Host is a placeholder: InAppWebScreen detects shikimori_id and resolves the live Kodik
+        // embed via its own API lookup (the old kodik.info domain is NXDOMAIN globally now).
+        return "https://vsh.my/find-player?shikimori_id=$shikimoriId"
     }
     val web = webUrl.orEmpty().trim()
     if (web.isNotBlank()) {

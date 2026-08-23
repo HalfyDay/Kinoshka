@@ -813,12 +813,16 @@ fun RenderPlayerButton(
     }
 
     PlayerButton.BACKGROUND_PLAYBACK -> {
-      ControlsButton(
-        icon = Icons.Default.Headset,
-        onClick = { activity.triggerBackgroundPlayback() },
-        color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier.size(buttonSize),
-      )
+      // triggerBackgroundPlayback() is @RequiresApi(P): on API 26/27 the call crashed with
+      // NoSuchMethodError, so the button simply does not exist below Android 9.
+      if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+        ControlsButton(
+          icon = Icons.Default.Headset,
+          onClick = { activity.triggerBackgroundPlayback() },
+          color = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+          modifier = Modifier.size(buttonSize),
+        )
+      }
     }
 
     PlayerButton.MORE_EXPANDABLE -> {

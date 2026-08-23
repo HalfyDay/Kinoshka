@@ -41,10 +41,6 @@ fun PlayerUpdate(
     contentColor = MaterialTheme.colorScheme.onSurface,
     tonalElevation = 0.dp,
     shadowElevation = 0.dp,
-    border = BorderStroke(
-      1.dp,
-      MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-    ),
     modifier = modifier
       .height(45.dp)
       .animateContentSize(),

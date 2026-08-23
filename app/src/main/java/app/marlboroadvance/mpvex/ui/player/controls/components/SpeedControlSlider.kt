@@ -77,10 +77,6 @@ fun SpeedControlSlider(
     contentColor = MaterialTheme.colorScheme.onSurface,
     tonalElevation = 0.dp,
     shadowElevation = 0.dp,
-    border = BorderStroke(
-      1.dp,
-      MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-    ),
     modifier = modifier.animateContentSize(),
   ) {
     Box(
@@ -201,10 +197,6 @@ fun CompactSpeedIndicator(
     modifier = modifier
       .background(
         color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-        shape = RoundedCornerShape(100.dp)
-      )
-      .border(
-        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
         shape = RoundedCornerShape(100.dp)
       )
       .padding(horizontal = MaterialTheme.spacing.medium, vertical = MaterialTheme.spacing.small)
