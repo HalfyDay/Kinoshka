@@ -67,8 +67,12 @@ fun MpvExPlayerScreen(
             val headersArray = mutableListOf<String>()
             val uaKey = headers.keys.firstOrNull { it.equals("user-agent", ignoreCase = true) }
             val uaValue = if (uaKey != null) headers[uaKey] ?: "" else ""
-            headersArray.add("User-Agent")
-            headersArray.add(uaValue)
+            // An empty UA pair would blank mpv's User-Agent entirely (some CDNs then refuse
+            // segments); omit it when unknown so mpv keeps its own sensible default.
+            if (uaValue.isNotBlank()) {
+                headersArray.add("User-Agent")
+                headersArray.add(uaValue)
+            }
 
             headers.forEach { (key, value) ->
                 if (!key.equals("user-agent", ignoreCase = true)) {

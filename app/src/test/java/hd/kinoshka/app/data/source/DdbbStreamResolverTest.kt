@@ -78,6 +78,21 @@ class DdbbStreamResolverTest {
     }
 
     @Test
+    fun `extracts turbo qualities when file is a plain string`() {
+        val config = """
+            {"lang":"en","id":"player",
+             "file":"[720p]https://cdn.example/single/720.mp4,[Auto]https://cdn.example/single/index.m3u8"}
+        """.trimIndent()
+        val blob = obfuscate(config)
+        val html = """<html><body><script>new Player("$blob");</script></body></html>"""
+        val (headers, qualities) = DdbbStreamResolver.extractFromEmbed(html, "https://abc.obrut.show/embed/x")!!
+
+        assertEquals("https://abc.obrut.show/", headers["Referer"])
+        assertEquals("https://cdn.example/single/720.mp4", qualities["720p"])
+        assertEquals("https://cdn.example/single/index.m3u8", qualities["Auto"])
+    }
+
+    @Test
     fun `returns null for unrecognized embed`() {
         assertNull(DdbbStreamResolver.extractFromEmbed("<html><body>hello</body></html>", "https://example.com/x"))
     }
