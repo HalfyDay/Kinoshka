@@ -24,6 +24,9 @@ fun MpvExPlayerScreen(
     episodeNumber: Int,
     episodeTitle: String,
     shikimoriId: Int = 0,
+    // Kinopoisk id of a native movie (QUALITY_ONLY_MOVIE). The player writes watched/completed
+    // progress back to the library under this key; without it movie playback updated nothing.
+    kinopoiskId: Int = 0,
     sourceType: String = "KODIK",
     episodes: List<AnimeEpisode> = emptyList(),
     translations: List<FlatTranslation> = emptyList(),
@@ -76,6 +79,7 @@ fun MpvExPlayerScreen(
             putExtra("headers", headersArray.toTypedArray())
 
             putExtra("anime_shikimori_id", shikimoriId)
+            putExtra("movie_kinopoisk_id", kinopoiskId)
             putExtra("anime_title", animeTitle)
             putExtra("anime_source_type", sourceType)
             putExtra("anime_disable_http_reuse", sourceType == "ANILIBERTY")

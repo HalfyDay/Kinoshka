@@ -1272,6 +1272,9 @@ class PlayerActivity :
           Log.d(TAG, "Ignoring duplicate anime episode selection: $epNum")
           return@episodeSelected
         }
+        // The outgoing file keeps its media identifier only until applyAnimeStream swaps it, so
+        // record whether it was watched through before starting the next episode.
+        flushOutgoingEpisodeProgress()
         val shikimoriId = extras.getInt("anime_shikimori_id", 0)
         val animeTitle = extras.getString("anime_title", "")
         val srcType = currentAnimeSourceType
@@ -1406,6 +1409,8 @@ class PlayerActivity :
       val activeContext = movieSeriesContext ?: return@episodeSelected
       if (episodeKey == activeContext.currentEpisode.playerEpisodeKey) return@episodeSelected
       val selected = activeContext.episodes.firstOrNull { it.playerEpisodeKey == episodeKey } ?: return@episodeSelected
+      // Commit the outgoing episode's watched state while its identifier still points at it.
+      flushOutgoingEpisodeProgress()
       viewModel.setLoadingStream(true)
       pendingSeekPosition = null
       lifecycleScope.launch(Dispatchers.IO) {
@@ -2424,112 +2429,194 @@ class PlayerActivity :
     // Cancel any previous pending save operation
     savePlaybackStateJob?.cancel()
 
+    // Snapshot everything that depends on live mpv state synchronously. Callers switch files
+    // immediately after this returns (episode change, playlist navigation), and reading
+    // MPVLib inside the async block raced with loadfile, saving positions of the new file
+    // under the old identifier.
+    val snapshotPos = viewModel.pos ?: 0
+    val snapshotDuration = viewModel.duration ?: 0
+    val snapshotSpeed = runCatching { MPVLib.getPropertyDouble("speed") }.getOrNull() ?: DEFAULT_PLAYBACK_SPEED
+    val snapshotZoom = runCatching { MPVLib.getPropertyDouble("video-zoom")?.toFloat() }.getOrNull() ?: 0f
+    val snapshotSid = player.sid
+    val snapshotSecondarySid = player.secondarySid
+    val snapshotSubDelay = ((runCatching { MPVLib.getPropertyDouble("sub-delay") }.getOrNull() ?: 0.0) * MILLISECONDS_TO_SECONDS).toInt()
+    val snapshotSubSpeed = runCatching { MPVLib.getPropertyDouble("sub-speed") }.getOrNull() ?: DEFAULT_SUB_SPEED
+    val snapshotAid = player.aid
+    val snapshotAudioDelay =
+      (
+        (runCatching { MPVLib.getPropertyDouble("audio-delay") }.getOrNull() ?: 0.0) * MILLISECONDS_TO_SECONDS
+        ).toInt()
+    val snapshotExternalSubs = viewModel.externalSubtitles.joinToString("|")
+    val oldIdentifier = mediaIdentifier
+
     // Launch new save job and track it
     savePlaybackStateJob = lifecycleScope.launch(Dispatchers.IO) {
       runCatching {
-        val oldState = playbackStateRepository.getVideoDataByTitle(mediaIdentifier)
-        Log.d(TAG, "Saving playback state for: $mediaTitle (identifier: $mediaIdentifier)")
+        val oldState = playbackStateRepository.getVideoDataByTitle(oldIdentifier)
+        Log.d(TAG, "Saving playback state for: $mediaTitle (identifier: $oldIdentifier)")
 
         val lastPosition = calculateSavePosition(oldState)
-        val duration = viewModel.duration ?: 0
+        val duration = snapshotDuration
         val timeRemaining = if (duration > lastPosition) duration - lastPosition else 0
+
+        val finalWatchedState = computeWatchedState(snapshotPos, duration, lastPosition, oldState?.hasBeenWatched == true)
 
         playbackStateRepository.upsert(
           PlaybackStateEntity(
-            mediaTitle = mediaIdentifier,
+            mediaTitle = oldIdentifier,
             lastPosition = lastPosition,
-            playbackSpeed = MPVLib.getPropertyDouble("speed") ?: DEFAULT_PLAYBACK_SPEED,
-            videoZoom = MPVLib.getPropertyDouble("video-zoom")?.toFloat() ?: 0f,
-            sid = player.sid,
-            secondarySid = player.secondarySid,
-            subDelay = ((MPVLib.getPropertyDouble("sub-delay") ?: 0.0) * MILLISECONDS_TO_SECONDS).toInt(),
-            subSpeed = MPVLib.getPropertyDouble("sub-speed") ?: DEFAULT_SUB_SPEED,
-            aid = player.aid,
-            audioDelay =
-              (
-                (MPVLib.getPropertyDouble("audio-delay") ?: 0.0) * MILLISECONDS_TO_SECONDS
-                ).toInt(),
+            playbackSpeed = snapshotSpeed,
+            videoZoom = snapshotZoom,
+            sid = snapshotSid,
+            secondarySid = snapshotSecondarySid,
+            subDelay = snapshotSubDelay,
+            subSpeed = snapshotSubSpeed,
+            aid = snapshotAid,
+            audioDelay = snapshotAudioDelay,
             timeRemaining = timeRemaining,
-            externalSubtitles = viewModel.externalSubtitles.joinToString("|"),
-            hasBeenWatched = run {
-              val watchedThreshold = browserPreferences.watchedThreshold.get()
-              val durationSeconds = duration.toFloat()
-              val currentPos = viewModel.pos ?: 0
-              
-              // Check if we are at the end (effectively watched)
-              // Using a small buffer (1s) to account for float inaccuracies or near-end stops
-              val isFinished = (durationSeconds > 0) && (currentPos >= durationSeconds - 1)
-
-              val progress = if (durationSeconds > 0) currentPos.toFloat() / durationSeconds else 0f
-              val isCurrentlyWatched = progress >= (watchedThreshold / 100f)
-              
-              // Also check lastPosition in case we are saving partway through (though lastPosition might be 0 if finished)
-              val oldProgress = if (durationSeconds > 0) lastPosition.toFloat() / durationSeconds else 0f
-              val wasWatchedThisSession = oldProgress >= (watchedThreshold / 100f)
-
-              val finalWatchedState = isCurrentlyWatched || isFinished || wasWatchedThisSession || (oldState?.hasBeenWatched == true)
-              if (finalWatchedState) {
-                val shikimoriId = intent.getIntExtra("anime_shikimori_id", 0)
-                if (shikimoriId > 0) {
-                  val animeTitle = intent.getStringExtra("anime_title").orEmpty()
-                  val currentEp = viewModel.currentAnimeEpisodeNumber.value ?: intent.getIntExtra("anime_current_episode", 1)
-                  val totalEps = viewModel.animeEpisodes.value.maxOfOrNull { it.number } ?: viewModel.animeEpisodes.value.size
-                  
-                  UserStateStore(this@PlayerActivity).updateWatchedEpisode(
-                    shikimoriId = shikimoriId,
-                    animeTitle = animeTitle,
-                    episodeNum = currentEp,
-                    totalEpisodes = totalEps
-                  )
-                  viewModel.setWatchedEpisodesCount(currentEp)
-
-                  // Shikimori sync
-                  val authStore = ShikimoriAuthStore(this@PlayerActivity)
-                  val authState = authStore.getAuthState()
-                  if (authState.isLoggedIn && authState.accessToken != null) {
-                    lifecycleScope.launch(Dispatchers.IO) {
-                      val api = ApiClient.shikimoriApi(this@PlayerActivity)
-                       val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
-                       val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
-                       val newStatus = if (currentEp >= totalEps && totalEps > 0) "completed" else "watching"
-                       val authHeader = if (authState.accessToken.startsWith("Bearer ")) authState.accessToken else "Bearer ${authState.accessToken}"
-
-                       if (existingRate != null) {
-                         runCatching {
-                           val updateRequest = hd.kinoshka.app.data.model.UserRateUpdateRequest(
-                             userRate = hd.kinoshka.app.data.model.UserRateUpdateData(
-                               status = newStatus,
-                               episodes = currentEp
-                             )
-                           )
-                           api.updateUserRate(authHeader, existingRate.id, updateRequest)
-                         }
-                       } else {
-                         runCatching {
-                           val createRequest = hd.kinoshka.app.data.model.UserRateRequest(
-                             userRate = hd.kinoshka.app.data.model.UserRateData(
-                               userId = authState.userId,
-                               targetId = shikimoriId,
-                               targetType = "Anime",
-                               status = newStatus,
-                               episodes = currentEp
-                             )
-                           )
-                           api.createUserRate(authHeader, createRequest)
-                         }
-                       }
-                    }
-                  }
-                }
-              }
-              finalWatchedState
-            },
+            externalSubtitles = snapshotExternalSubs,
+            hasBeenWatched = finalWatchedState,
           ),
         )
+
+        if (finalWatchedState) {
+          commitTitleLevelProgress(finalWatched = true)
+        }
       }.onFailure { e ->
         Log.e(TAG, "Error saving playback state", e)
       }
     }
+  }
+
+  /**
+   * Watched-state decision shared by every save path: the current position crossed the user's
+   * watched threshold, the file ran to the end, or it was already flagged as watched.
+   */
+  private fun computeWatchedState(currentPos: Int, duration: Int, lastPosition: Int, previouslyWatched: Boolean): Boolean {
+    val watchedThreshold = browserPreferences.watchedThreshold.get()
+    val durationSeconds = duration.toFloat()
+
+    // Check if we are at the end (effectively watched)
+    // Using a small buffer (1s) to account for float inaccuracies or near-end stops
+    val isFinished = (durationSeconds > 0) && (currentPos >= durationSeconds - 1)
+
+    val progress = if (durationSeconds > 0) currentPos.toFloat() / durationSeconds else 0f
+    val isCurrentlyWatched = progress >= (watchedThreshold / 100f)
+
+    // Also check lastPosition in case we are saving partway through (though lastPosition might be 0 if finished)
+    val oldProgress = if (durationSeconds > 0) lastPosition.toFloat() / durationSeconds else 0f
+    val wasWatchedThisSession = oldProgress >= (watchedThreshold / 100f)
+
+    return isCurrentlyWatched || isFinished || wasWatchedThisSession || previouslyWatched
+  }
+
+  /**
+   * Pushes a "this title made progress" event into the Kinoshka library so the library folder,
+   * the details header and the episode list stay in sync with what actually played.
+   *
+   * Anime goes through [UserStateStore.updateWatchedEpisode]; native movies mark the title as
+   * completed; native series persist season/episode position and auto-complete when the final
+   * episode of the run was watched through.
+   */
+  private fun commitTitleLevelProgress(finalWatched: Boolean) {
+    if (!finalWatched) return
+    val store = UserStateStore(this@PlayerActivity)
+
+    when (currentNativePlaybackMode()) {
+      NativePlaybackMode.MOVIE_SERIES -> {
+        val context = movieSeriesContext ?: return
+        val episode = context.currentEpisode
+        val lastKey = context.episodes.maxOfOrNull { it.playerEpisodeKey }
+        val finishedRun = lastKey != null && episode.playerEpisodeKey >= lastKey
+        store.updateSeriesProgress(
+          context.kinopoiskId,
+          episode.seasonNumber,
+          episode.episodeNumber,
+          finished = finishedRun,
+        )
+      }
+
+      NativePlaybackMode.QUALITY_ONLY_MOVIE -> {
+        val kinopoiskId = intent.getIntExtra("movie_kinopoisk_id", 0)
+        if (kinopoiskId > 0) store.markTitleWatched(kinopoiskId)
+      }
+
+      NativePlaybackMode.ANIME -> {
+        val shikimoriId = intent.getIntExtra("anime_shikimori_id", 0)
+        if (shikimoriId <= 0) return
+        val animeTitle = intent.getStringExtra("anime_title").orEmpty()
+        val currentEp = viewModel.currentAnimeEpisodeNumber.value ?: intent.getIntExtra("anime_current_episode", 1)
+        val totalEps = viewModel.animeEpisodes.value.maxOfOrNull { it.number } ?: viewModel.animeEpisodes.value.size
+
+        UserStateStore(this@PlayerActivity).updateWatchedEpisode(
+          shikimoriId = shikimoriId,
+          animeTitle = animeTitle,
+          episodeNum = currentEp,
+          totalEpisodes = totalEps
+        )
+        viewModel.setWatchedEpisodesCount(currentEp)
+
+        // Shikimori sync
+        val authStore = ShikimoriAuthStore(this@PlayerActivity)
+        val authState = authStore.getAuthState()
+        if (authState.isLoggedIn && authState.accessToken != null) {
+          lifecycleScope.launch(Dispatchers.IO) {
+            val api = ApiClient.shikimoriApi(this@PlayerActivity)
+             val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
+             val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
+             val newStatus = if (totalEps in 1..currentEp) "completed" else "watching"
+             val authHeader = if (authState.accessToken.startsWith("Bearer ")) authState.accessToken else "Bearer ${authState.accessToken}"
+
+             if (existingRate != null) {
+               runCatching {
+                 val updateRequest = hd.kinoshka.app.data.model.UserRateUpdateRequest(
+                   userRate = hd.kinoshka.app.data.model.UserRateUpdateData(
+                     status = newStatus,
+                     episodes = currentEp
+                   )
+                 )
+                 api.updateUserRate(authHeader, existingRate.id, updateRequest)
+               }
+             } else {
+               runCatching {
+                 val createRequest = hd.kinoshka.app.data.model.UserRateRequest(
+                   userRate = hd.kinoshka.app.data.model.UserRateData(
+                     userId = authState.userId,
+                     targetId = shikimoriId,
+                     targetType = "Anime",
+                     status = newStatus,
+                     episodes = currentEp
+                   )
+                 )
+                 api.createUserRate(authHeader, createRequest)
+               }
+             }
+          }
+        }
+      }
+    }
+  }
+
+  private fun currentNativePlaybackMode(): NativePlaybackMode {
+    val name = intent.getStringExtra("playback_mode")
+    return runCatching { NativePlaybackMode.valueOf(name ?: "") }.getOrDefault(NativePlaybackMode.ANIME)
+  }
+
+  /**
+   * Persists progress of the episode that is about to be replaced BEFORE its media identifier is
+   * swapped for the next one. Without this, switching episodes straight from a finished one lost
+   * the fact it was ever watched: the Room flag and the library both ended up describing only the
+   * new file.
+   */
+  private fun flushOutgoingEpisodeProgress() {
+    if (mediaIdentifier.isBlank()) return
+    val pos = viewModel.pos ?: 0
+    val duration = viewModel.duration ?: 0
+    if (duration <= 0 || pos <= 0) return
+
+    // saveVideoPlaybackState snapshots mpv state synchronously and keys everything by the still-
+    // current mediaIdentifier, so this must run before callers reassign it.
+    saveVideoPlaybackState(fileName)
   }
 
   /**

@@ -241,7 +241,6 @@ fun DetailsScreen(
     ) -> Unit,
     onOpenUrl: (String) -> Unit,
     onOpenFilm: (Int) -> Unit,
-    onUpdateAnimeProgress: (shikimoriId: Int, episode: Int, totalEpisodes: Int?) -> Unit = { _, _, _ -> },
     onBack: () -> Unit,
     onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null,
     onOpenNativePlayer: ((
@@ -252,6 +251,7 @@ fun DetailsScreen(
         episodeNumber: Int,
         episodeTitle: String,
         shikimoriId: Int,
+        kinopoiskId: Int,
         sourceType: String,
         episodes: List<hd.kinoshka.app.data.model.AnimeEpisode>,
         translations: List<hd.kinoshka.app.data.model.FlatTranslation>,
@@ -434,6 +434,7 @@ fun DetailsScreen(
                                         epNum,
                                         epTitle,
                                         shikimoriId,
+                                        item.kinopoiskId,
                                         source.name,
                                         episodes,
                                         translations,
@@ -528,20 +529,21 @@ fun DetailsScreen(
                                                                         kinopoiskId = item.kinopoiskId,
                                                                         displayTitle = filmTitle
                                                                     )
-                                                                    onOpenNativePlayer(
-                                                                        result.stream.url,
-                                                                        result.stream.headers,
-                                                                        result.stream.qualities,
-                                                                        filmTitle,
-                                                                        initialEpisode.playerEpisodeKey,
-                                                                        "S${initialEpisode.seasonNumber}E${initialEpisode.episodeNumber}",
-                                                                        0,
-                                                                        "KODIK",
-                                                                        emptyList(),
-                                                                        emptyList(),
-                                                                        "",
-                                                                        seriesContext
-                                                                    )
+                                                                     onOpenNativePlayer(
+                                                                         result.stream.url,
+                                                                         result.stream.headers,
+                                                                         result.stream.qualities,
+                                                                         filmTitle,
+                                                                         initialEpisode.playerEpisodeKey,
+                                                                         "S${initialEpisode.seasonNumber}E${initialEpisode.episodeNumber}",
+                                                                         0,
+                                                                         item.kinopoiskId,
+                                                                         "KODIK",
+                                                                         emptyList(),
+                                                                         emptyList(),
+                                                                         "",
+                                                                         seriesContext
+                                                                     )
                                                                 } else {
                                                                     val reason = (result as? MovieStreamResult.Unavailable)?.reason
                                                                         ?: hd.kinoshka.app.data.model.MoviePlaybackFailure.NO_PLAYABLE_REFERENCES
@@ -564,6 +566,7 @@ fun DetailsScreen(
                                                                 1,
                                                                 filmTitle,
                                                                 0,
+                                                                item.kinopoiskId,
                                                                 "KODIK",
                                                                 emptyList(),
                                                                 emptyList(),

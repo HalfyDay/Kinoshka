@@ -190,6 +190,13 @@ class FilmsViewModel(
     // search) can't let an older, slower request clobber the newer results.
     private var searchJob: kotlinx.coroutines.Job? = null
 
+    // Throttle for refreshAfterPlayerClosed(): ON_RESUME fires several times while navigating,
+    // and rebuilding the library re-serializes the whole profile blob.
+    private var lastResumeRefreshMs = 0L
+    private companion object {
+        const val RESUME_REFRESH_THROTTLE_MS = 1_000L
+    }
+
     var uiState by mutableStateOf(buildInitialState())
         private set
 
@@ -664,36 +671,6 @@ class FilmsViewModel(
         }
     }
 
-    fun updateAnimeProgress(shikimoriId: Int, episode: Int, totalEpisodes: Int? = null) {
-        val animeTitle = detailsState.animeDetails?.russian ?: detailsState.animeDetails?.name ?: "Аниме"
-        userStateStore.updateWatchedEpisode(shikimoriId, animeTitle, episode, totalEpisodes ?: 0)
-        refreshLibraryAndAvatar()
-
-        val authState = uiState.shikimoriAuthState
-        if (authState.isLoggedIn && authState.accessToken != null) {
-            viewModelScope.launch {
-                val existingRate = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
-                val newStatus = if (totalEpisodes != null && totalEpisodes > 0 && episode >= totalEpisodes) "completed" else "watching"
-                if (existingRate != null) {
-                    animeRepository.updateUserRate(
-                        token = authState.accessToken,
-                        rateId = existingRate.id,
-                        status = newStatus,
-                        episodes = episode
-                    )
-                } else {
-                    animeRepository.createUserRate(
-                        token = authState.accessToken,
-                        userId = authState.userId,
-                        targetId = shikimoriId,
-                        status = newStatus,
-                        episodes = episode
-                    )
-                }
-            }
-        }
-    }
-
     fun setProfileAvatar(avatar: String) {
         userStateStore.setProfileAvatar(avatar)
         uiState = uiState.copy(profileAvatar = userStateStore.getProfileAvatar())
@@ -1135,6 +1112,25 @@ class FilmsViewModel(
         )
     }
 
+    /**
+     * Re-reads the persisted state after returning from an external screen (the native player
+     * writes progress straight to SharedPreferences from its own Activity, bypassing this
+     * ViewModel). Without this the library folders, progress bars and the details header showed
+     * stale values until the app was restarted.
+     */
+    fun refreshAfterPlayerClosed() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastResumeRefreshMs < RESUME_REFRESH_THROTTLE_MS) return
+        lastResumeRefreshMs = now
+
+        refreshLibraryAndAvatar()
+
+        val item = detailsState.item
+        if (!detailsState.loading && item != null) {
+            detailsState = detailsState.copy(userProfile = getUserProfileForFilm(item.kinopoiskId))
+        }
+    }
+
     private fun refreshFromStore() {
         val preferences = userStateStore.getUserPreferences()
         val fallbackTileSize = preferences.tileSize
@@ -1165,10 +1161,17 @@ class FilmsViewModel(
         val result = mutableListOf<LibraryUiItem>()
         val addedIds = mutableSetOf<Int>()
 
+        // History entries without a local profile get a placeholder WATCHING status for display.
+        // If a Shikimori rate exists for such an id we later swap that placeholder for the real
+        // server-side status; otherwise merely pressing "Watch" would yank titles out of their
+        // Planned/Completed folders.
+        val defaultedStatusIds = mutableSetOf<Int>()
+
         // First: history records (highest priority for display)
         historyRecords.forEach { history ->
             val profile = profileMap.remove(history.kinopoiskId)
             val item = history.toLibraryUiItem(profile, format)
+            if (profile == null) defaultedStatusIds.add(item.kinopoiskId)
             if (addedIds.add(item.kinopoiskId)) {
                 result += item
             }
@@ -1194,13 +1197,27 @@ class FilmsViewModel(
                 if (existingIdx >= 0) {
                     val existing = result[existingIdx]
                     // Update poster if missing
-                    if (existing.posterUrl == null && item.posterUrl != null) {
-                        result[existingIdx] = existing.copy(posterUrl = item.posterUrl)
+                    var enriched = existing
+                    if (enriched.posterUrl == null && item.posterUrl != null) {
+                        enriched = enriched.copy(posterUrl = item.posterUrl)
                     }
                     // Update total episodes if missing
-                    if (existing.totalEpisodes == null && item.totalEpisodes != null) {
-                        result[existingIdx] = existing.copy(totalEpisodes = item.totalEpisodes)
+                    if (enriched.totalEpisodes == null && item.totalEpisodes != null) {
+                        enriched = enriched.copy(totalEpisodes = item.totalEpisodes)
                     }
+                    // The local side had no opinion about this title (history-only entry): adopt the
+                    // server status/rating/note instead of leaving a synthetic WATCHING default.
+                    if (enriched.kinopoiskId in defaultedStatusIds && existing.status == UserFilmStatus.WATCHING) {
+                        enriched = enriched.copy(
+                            status = item.status,
+                            userRating = enriched.userRating ?: item.userRating,
+                            note = enriched.note?.takeIf { it.isNotBlank() } ?: item.note,
+                            watchedEpisodes = enriched.watchedEpisodes ?: item.watchedEpisodes,
+                            totalEpisodes = enriched.totalEpisodes ?: item.totalEpisodes
+                        )
+                        defaultedStatusIds.remove(enriched.kinopoiskId)
+                    }
+                    result[existingIdx] = enriched
                 }
             }
         }

@@ -31,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -77,6 +79,7 @@ data class NativePlayerArgs(
     val episodeNumber: Int,
     val episodeTitle: String,
     val shikimoriId: Int = 0,
+    val kinopoiskId: Int = 0,
     val sourceType: String = "KODIK",
     val episodes: List<AnimeEpisode> = emptyList(),
     val translations: List<FlatTranslation> = emptyList(),
@@ -278,6 +281,20 @@ fun KinoApp() {
             )
         )
 
+        // The native player (its own Activity) writes watch progress straight into
+        // SharedPreferences. Re-read it whenever the app comes back to the foreground so the
+        // library folders, progress bars and details header never lag behind what was watched.
+        val activityLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+        androidx.compose.runtime.DisposableEffect(activityLifecycleOwner, vm) {
+            val resumeObserver = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    vm.refreshAfterPlayerClosed()
+                }
+            }
+            activityLifecycleOwner.lifecycle.addObserver(resumeObserver)
+            onDispose { activityLifecycleOwner.lifecycle.removeObserver(resumeObserver) }
+        }
+
         KinoTheme(themeMode = vm.uiState.themeMode) {
             Surface(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -364,7 +381,6 @@ fun KinoApp() {
                                 load = vm::loadDetails,
                                 onWatch = vm::onWatch,
                                 onSaveUserProfile = vm::saveUserProfile,
-                                onUpdateAnimeProgress = vm::updateAnimeProgress,
                                 onOpenUrl = { rawUrl -> navController.navigate("web?url=${Uri.encode(rawUrl)}") },
                                 onOpenFilm = { targetId -> navController.navigate(detailsRoute(targetId)) },
                                 onBack = { navController.popBackStack() },
@@ -372,14 +388,14 @@ fun KinoApp() {
                                     vm.searchGenre(genreName, isAnime)
                                     navController.popBackStack("home", false)
                                 },
-                                onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId, seriesContext ->
-                                    val mode = when {
-                                        seriesContext != null -> NativePlaybackMode.MOVIE_SERIES
-                                        episodes.isEmpty() && translations.isEmpty() && shikimoriId == 0 -> NativePlaybackMode.QUALITY_ONLY_MOVIE
-                                        else -> NativePlaybackMode.ANIME
-                                    }
-                                    activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId, seriesContext, mode)
-                                },
+                                 onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
+                                     val mode = when {
+                                         seriesContext != null -> NativePlaybackMode.MOVIE_SERIES
+                                         episodes.isEmpty() && translations.isEmpty() && shikimoriId == 0 -> NativePlaybackMode.QUALITY_ONLY_MOVIE
+                                         else -> NativePlaybackMode.ANIME
+                                     }
+                                     activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext, mode)
+                                 },
                                 playbackSequence = vm.uiState.playbackSequence,
                                 playerMode = vm.uiState.playerMode
                             )
@@ -479,6 +495,7 @@ fun KinoApp() {
                             episodeNumber = args.episodeNumber,
                             episodeTitle = args.episodeTitle,
                             shikimoriId = args.shikimoriId,
+                            kinopoiskId = args.kinopoiskId,
                             sourceType = args.sourceType,
                             episodes = args.episodes,
                             translations = args.translations,
