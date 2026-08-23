@@ -512,16 +512,24 @@ class MediaPlaybackService :
       
       // Clear thumbnail
       thumbnail = null
-      
+
+      // Блокирующий commit() перед остановкой сервиса: apply() кладёт запись в фоновую
+      // очередь, а при сносе задачи процесс умирает раньше, чем очередь успевает слиться
+      // на диск — прогресс просмотра и выбранное качество терялись.
+      runCatching { hd.kinoshka.app.data.local.UserStateStore(this).flushToDisk() }
+        .onFailure { Log.e(TAG, "Error flushing user state in onTaskRemoved", it) }
+
       // Stop the service which will trigger cleanup
+      // Раньше здесь был Process.killProcess(myPid()): SIGKILL нельзя перехватить и он
+      // возвращает управление до того, как ActivityThread выполнит завершение сервиса и
+      // сольёт незаписанные apply() из QueuedWork — все ожидающие записи SharedPreferences
+      // в процессе просто отбрасывались (и это же давало "Sending signal. PID: n SIG: 9").
+      // stopSelf() уже вызывает onDestroy(), а процесс Android освободит сам.
       stopSelf()
-      
-      // Force kill the process to ensure everything stops
-      android.os.Process.killProcess(android.os.Process.myPid())
     } catch (e: Exception) {
       Log.e(TAG, "Error in onTaskRemoved", e)
-      // Force kill even if there's an error
-      android.os.Process.killProcess(android.os.Process.myPid())
+      runCatching { hd.kinoshka.app.data.local.UserStateStore(this).flushToDisk() }
+        .onFailure { Log.e(TAG, "Error flushing user state after onTaskRemoved failure", it) }
     }
     super.onTaskRemoved(rootIntent)
   }

@@ -34,7 +34,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -69,6 +68,8 @@ import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.AnimeTranslation
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.ripple
 
 enum class SelectionStep {
     SOURCE,
@@ -189,7 +190,8 @@ fun AnimePlaybackSelectionSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = null
     ) {
         Column(
             modifier = Modifier
@@ -248,7 +250,7 @@ fun AnimePlaybackSelectionSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
+                        KinoLoadingIndicator()
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("Подготовка видеопотока...", style = MaterialTheme.typography.bodyMedium)
                     }
@@ -260,7 +262,7 @@ fun AnimePlaybackSelectionSheet(
                         .height(220.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    CircularProgressIndicator()
+                    KinoLoadingIndicator()
                 }
             } else if (errorMessage != null) {
                 Box(
@@ -343,31 +345,33 @@ private fun StepSourceContent(
         Spacer(modifier = Modifier.height(8.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(sources) { src ->
-                Surface(
-                    onClick = { onSelect(src) },
-                    enabled = src.isAvailable,
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (src.isAvailable) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.5f),
-                    modifier = Modifier.fillMaxWidth()
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable(
+                            onClick = { if (src.isAvailable) onSelect(src) },
+                            indication = ripple(bounded = true),
+                            interactionSource = remember { MutableInteractionSource() }
+                        )
+                        .padding(16.dp)
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
                                 .size(42.dp)
                                 .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
+                                .background(if (src.isAvailable) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = if (src.isAvailable) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(src.type.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(src.type.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = if (src.isAvailable) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(src.type.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
@@ -390,24 +394,21 @@ private fun StepTranslationContent(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(translations) { tr ->
-                Surface(
-                    onClick = { onSelect(tr) },
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    modifier = Modifier.fillMaxWidth()
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable(
+                            onClick = { onSelect(tr) },
+                            indication = ripple(bounded = true),
+                            interactionSource = remember { MutableInteractionSource() }
+                        )
+                        .padding(14.dp)
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(tr.title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
                             if (tr.episodesCount > 0) {
@@ -439,19 +440,24 @@ private fun StepEpisodeContent(
                 modifier = Modifier.heightIn(max = 320.dp)
             ) {
                 items(episodes) { ep ->
-                    Surface(
-                        onClick = { onSelect(ep) },
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        modifier = Modifier.height(48.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = ep.number.toString(),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                    Box(
+                        modifier = Modifier
+                            .height(48.dp)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable(
+                                onClick = { onSelect(ep) },
+                                indication = ripple(bounded = true, radius = 24.dp),
+                                interactionSource = remember { MutableInteractionSource() }
                             )
-                        }
+                            .padding(horizontal = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = ep.number.toString(),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }

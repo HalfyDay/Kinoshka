@@ -150,10 +150,17 @@ class AnimeRepository(private val api: ShikimoriApi) {
         return runCatching { api.whoami(if (token.startsWith("Bearer ")) token else "Bearer $token") }.getOrNull()
     }
 
-    suspend fun getUserRates(userId: Int): List<hd.kinoshka.app.data.model.ShikimoriUserRate> {
-        val list1 = runCatching { api.getUserAnimeRates(userId) }.getOrDefault(emptyList())
-        if (list1.isNotEmpty()) return list1
-        return runCatching { api.getUserRates(userId) }.getOrDefault(emptyList())
+    /**
+     * Возвращает Result, а не список: раньше сетевая ошибка сворачивалась в emptyList(), вызывающая
+     * сторона писала это в cachedShikimoriRates и пересобирала библиотеку — одна временная ошибка
+     * сети молча удаляла все отслеживаемые в Shikimori аниме из библиотеки.
+     */
+    suspend fun getUserRates(userId: Int): Result<List<hd.kinoshka.app.data.model.ShikimoriUserRate>> {
+        val r1 = runCatching { api.getUserAnimeRates(userId) }
+        r1.getOrNull()?.let { if (it.isNotEmpty()) return Result.success(it) }
+        val r2 = runCatching { api.getUserRates(userId) }
+        // Об ошибке сообщаем только если упали ОБА эндпоинта; реально пустая библиотека — это успех.
+        return if (r2.isFailure && r1.isFailure) r2 else Result.success(r2.getOrDefault(emptyList()))
     }
 
     suspend fun createUserRate(token: String, userId: Int, targetId: Int, status: String, episodes: Int = 0, score: Int = 0): hd.kinoshka.app.data.model.ShikimoriUserRate? {

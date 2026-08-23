@@ -631,9 +631,6 @@ private fun applyShaders(
     scope.launch(Dispatchers.IO) {
         val mode = try { Anime4KManager.Mode.valueOf(modeStr) } catch(e: Exception) { Anime4KManager.Mode.OFF }
         val quality = try { Anime4KManager.Quality.valueOf(qualityStr) } catch(e: Exception) { Anime4KManager.Quality.BALANCED }
-        if (mode != Anime4KManager.Mode.OFF) {
-            runCatching { `is`.xyz.mpv.MPVLib.setPropertyString("hwdec", "mediacodec-copy") }
-        }
         manager.applyShaderChainRuntime(mode, quality)
     }
 }

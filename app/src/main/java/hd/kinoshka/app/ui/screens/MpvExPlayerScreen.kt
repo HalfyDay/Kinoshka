@@ -10,6 +10,8 @@ import app.marlboroadvance.mpvex.ui.player.PlayerActivity
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
+import hd.kinoshka.app.data.model.NativePlaybackMode
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -26,6 +28,8 @@ fun MpvExPlayerScreen(
     episodes: List<AnimeEpisode> = emptyList(),
     translations: List<FlatTranslation> = emptyList(),
     currentTranslationId: String? = null,
+    movieSeriesContext: MovieSeriesPlaybackContext? = null,
+    playbackMode: NativePlaybackMode = NativePlaybackMode.ANIME,
     onBack: () -> Unit,
     onNextEpisode: (() -> Unit)? = null,
     onPrevEpisode: (() -> Unit)? = null
@@ -38,21 +42,23 @@ fun MpvExPlayerScreen(
             action = Intent.ACTION_VIEW
             
             val preferredQuality = userStateStore.getPreferredQuality()
-            val effectiveUrl = if (qualities.containsKey(preferredQuality)) {
-                qualities[preferredQuality] ?: streamUrl
-            } else {
-                streamUrl
-            }
+            val effectiveQuality = preferredQuality.takeIf { it != "Auto" && qualities.containsKey(it) } ?: "Auto"
+            val effectiveUrl = qualities[effectiveQuality] ?: streamUrl
 
             data = Uri.parse(effectiveUrl)
             putExtra("uri", effectiveUrl)
-            
-            val displayTitle = if (episodeTitle.isNotEmpty()) {
-                "$animeTitle • Серия $episodeNumber ($episodeTitle)"
-            } else {
-                "$animeTitle • Серия $episodeNumber"
+            putExtra("anime_auto_url", streamUrl)
+
+            val displayTitle = when {
+                playbackMode == NativePlaybackMode.QUALITY_ONLY_MOVIE -> animeTitle
+                movieSeriesContext != null -> movieSeriesContext.currentEpisode.let { episode ->
+                    "$animeTitle • S${episode.seasonNumber}E${episode.episodeNumber}"
+                }
+                episodeTitle.isNotEmpty() -> "$animeTitle • Серия $episodeNumber ($episodeTitle)"
+                else -> "$animeTitle • Серия $episodeNumber"
             }
             putExtra("title", displayTitle)
+            putExtra("playback_mode", playbackMode.name)
 
             // Convert headers to the flat array format expected by PlayerActivity
             val headersArray = mutableListOf<String>()
@@ -72,8 +78,12 @@ fun MpvExPlayerScreen(
             putExtra("anime_shikimori_id", shikimoriId)
             putExtra("anime_title", animeTitle)
             putExtra("anime_source_type", sourceType)
+            putExtra("anime_disable_http_reuse", sourceType == "ANILIBERTY")
             putExtra("anime_current_episode", episodeNumber)
             putExtra("anime_current_translation_id", currentTranslationId)
+            movieSeriesContext?.let {
+                putExtra("movie_series_context", Json.encodeToString(it))
+            }
 
             if (episodes.isNotEmpty()) {
                 putExtra("anime_episodes", Json.encodeToString(episodes))
@@ -83,7 +93,7 @@ fun MpvExPlayerScreen(
             }
             if (qualities.isNotEmpty()) {
                 putExtra("anime_qualities", Json.encodeToString(qualities))
-                putExtra("anime_current_quality", if (qualities.containsKey(preferredQuality)) preferredQuality else "Auto")
+                putExtra("anime_current_quality", effectiveQuality)
             }
             
             flags = Intent.FLAG_ACTIVITY_NEW_TASK

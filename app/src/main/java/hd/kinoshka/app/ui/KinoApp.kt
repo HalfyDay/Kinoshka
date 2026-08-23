@@ -65,6 +65,8 @@ import hd.kinoshka.app.ui.components.UpdateAvailableSheet
 import hd.kinoshka.app.ui.theme.KinoTheme
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
+import hd.kinoshka.app.data.model.NativePlaybackMode
 import kotlinx.coroutines.launch
 
 data class NativePlayerArgs(
@@ -78,7 +80,9 @@ data class NativePlayerArgs(
     val sourceType: String = "KODIK",
     val episodes: List<AnimeEpisode> = emptyList(),
     val translations: List<FlatTranslation> = emptyList(),
-    val currentTranslationId: String? = null
+    val currentTranslationId: String? = null,
+    val movieSeriesContext: MovieSeriesPlaybackContext? = null,
+    val playbackMode: NativePlaybackMode = NativePlaybackMode.ANIME
 )
 
 @Composable
@@ -368,8 +372,13 @@ fun KinoApp() {
                                     vm.searchGenre(genreName, isAnime)
                                     navController.popBackStack("home", false)
                                 },
-                                onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId ->
-                                    activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId)
+                                onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId, seriesContext ->
+                                    val mode = when {
+                                        seriesContext != null -> NativePlaybackMode.MOVIE_SERIES
+                                        episodes.isEmpty() && translations.isEmpty() && shikimoriId == 0 -> NativePlaybackMode.QUALITY_ONLY_MOVIE
+                                        else -> NativePlaybackMode.ANIME
+                                    }
+                                    activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, srcType, episodes, translations, trId, seriesContext, mode)
                                 },
                                 playbackSequence = vm.uiState.playbackSequence,
                                 playerMode = vm.uiState.playerMode
@@ -474,6 +483,8 @@ fun KinoApp() {
                             episodes = args.episodes,
                             translations = args.translations,
                             currentTranslationId = args.currentTranslationId,
+                            movieSeriesContext = args.movieSeriesContext,
+                            playbackMode = args.playbackMode,
                             onBack = { activeNativePlayerArgs = null }
                         )
                     }

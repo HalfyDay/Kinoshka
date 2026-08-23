@@ -220,6 +220,12 @@ private suspend fun fetchKodikEmbedFromPage(shikimoriId: Int): String? = withCon
     null
 }
 
+private fun isSafeEmbedUrl(value: String): Boolean {
+    val uri = runCatching { android.net.Uri.parse(value) }.getOrNull() ?: return false
+    val host = uri.host?.lowercase() ?: return false
+    return uri.scheme == "https" && host != "localhost" && host != "127.0.0.1" && host != "0.0.0.0"
+}
+
 private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withContext(Dispatchers.IO) {
     for (attempt in 0..2) {
         try {
@@ -247,13 +253,21 @@ private suspend fun fetchDdbbPlayers(kinopoiskId: Int): List<DdbbPlayer> = withC
                 val type = obj.optString("type", "Источник ${i + 1}")
                 val defaultUrl = obj.optString("iframeUrl", "")
                 val transArr = obj.optJSONArray("translations")
-                val resolvedUrl = if (transArr != null && transArr.length() > 0) {
-                    transArr.optJSONObject(0)?.optString("iframeUrl", defaultUrl) ?: defaultUrl
-                } else {
-                    defaultUrl
-                }
-                if (resolvedUrl.isNotBlank()) {
-                    players.add(DdbbPlayer(id = "${type.lowercase()}_$i", name = type, iframeUrl = resolvedUrl))
+                if (transArr != null && transArr.length() > 0) {
+                    for (translationIndex in 0 until transArr.length()) {
+                        val translation = transArr.optJSONObject(translationIndex) ?: continue
+                        val resolvedUrl = translation.optString("iframeUrl", defaultUrl)
+                        if (!isSafeEmbedUrl(resolvedUrl)) continue
+                        val translationName = translation.optString("name").ifBlank { "Перевод ${translationIndex + 1}" }
+                        val quality = translation.optString("quality").takeIf { it.isNotBlank() }
+                        val label = buildString {
+                            append(type).append(" • ").append(translationName)
+                            if (quality != null) append(" • ").append(quality)
+                        }
+                        players.add(DdbbPlayer("${type.lowercase()}_${i}_$translationIndex", label, resolvedUrl))
+                    }
+                } else if (isSafeEmbedUrl(defaultUrl)) {
+                    players.add(DdbbPlayer(id = "${type.lowercase()}_$i", name = type, iframeUrl = defaultUrl))
                 }
             }
             if (players.isNotEmpty()) return@withContext players
@@ -372,7 +386,15 @@ fun InAppWebScreen(
                 // Fetch ddbb players
                 val fetched = fetchDdbbPlayers(kinopoiskId)
                 val ddbbList = if (fetched.isNotEmpty()) {
-                    fetched.sortedByDescending { it.id.contains("collaps") }
+                    fetched.sortedBy { player ->
+                        when {
+                            player.id.contains("collaps") -> 0
+                            player.id.contains("alloha") -> 1
+                            player.id.contains("turbo") -> 2
+                            player.id.contains("veoveo") -> 3
+                            else -> 4
+                        }
+                    }
                 } else {
                     // Fallback — try Kodik embed for this kinopoisk ID, then various players
                     val kodikEmbed = hd.kinoshka.app.data.source.AnimeStreamResolver.fetchKodikEmbedForKinopoisk(kinopoiskId)
@@ -381,13 +403,11 @@ fun InAppWebScreen(
                             add(DdbbPlayer("kodik_native", "Kodik (рекомендуется)", kodikEmbed))
                         }
                         add(DdbbPlayer("vibix", "Vibix Player", "https://vibix.cc/embed/kinopoisk/$kinopoiskId"))
-                        add(DdbbPlayer("alloha", "Alloha Player", "https://api.alloha.tv/?kp=$kinopoiskId"))
                         add(DdbbPlayer("cdnmovies", "CDN Movies", "https://cdnmovies.net/serial/$kinopoiskId"))
                     }
                 }
                 ddbbPlayers = ddbbList
-                val firstPlayer = ddbbList.first()
-                selectedPlayer = firstPlayer
+                selectedPlayer = ddbbList.firstOrNull()
             }
             isLoadingPlayers = false
         }
@@ -514,8 +534,8 @@ fun InAppWebScreen(
                 webView.settings.loadsImagesAutomatically = true
                 webView.settings.useWideViewPort = true
                 webView.settings.loadWithOverviewMode = true
-                webView.settings.allowFileAccess = true
-                webView.settings.allowContentAccess = true
+                webView.settings.allowFileAccess = false
+                webView.settings.allowContentAccess = false
                 webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
                 webView.settings.setGeolocationEnabled(false)
                 webView.settings.defaultTextEncodingName = "UTF-8"
@@ -527,7 +547,7 @@ fun InAppWebScreen(
                     .replace("; wv", "")
                     .replace("Version/4.0 ", "")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                    webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 }
 
                 val cookieManager = CookieManager.getInstance()
@@ -576,7 +596,9 @@ fun InAppWebScreen(
                     }
 
                     override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-                        handler?.proceed()
+                        handler?.cancel()
+                        webViewError = "Источник отклонён из-за ошибки защищённого соединения"
+                        isPageLoading = false
                     }
 
                     // Don't treat HTTP errors as fatal — pages often handle redirects via JS

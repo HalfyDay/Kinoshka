@@ -16,7 +16,7 @@ android {
         minSdk = 26
         targetSdk = 37
         versionCode = 4
-        versionName = "1.0.6"
+        versionName = "1.0.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -141,7 +141,10 @@ dependencies {
     // Network protocols
     implementation("commons-net:commons-net:3.13.0")
     implementation("com.hierynomus:smbj:0.14.0")
-    implementation("com.github.thegrizzlylabs:sardine-android:0.8")
+    // Android provides XmlPullParser; xpp3 bundled by Sardine conflicts with it during R8.
+    implementation("com.github.thegrizzlylabs:sardine-android:0.8") {
+        exclude(group = "xpp3", module = "xpp3")
+    }
     implementation("org.nanohttpd:nanohttpd:2.3.1")
 
     // Other utilities

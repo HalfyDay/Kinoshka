@@ -19,3 +19,15 @@ java_pid*.hprof
 local.properties
 /help/
 .fake
+
+# IDE inspection reports dumped at repo root
+/*.xml
+/index.html
+/script.js
+/styles.css
+/tmp_kinobox.min.css
+
+# Local tooling and generated output
+/graphify-out/
+/.kino-backup/
+/.opencode/

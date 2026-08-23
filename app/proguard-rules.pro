@@ -64,6 +64,10 @@
 -keep class is.xyz.mpv.** { *; }
 -dontwarn is.xyz.mpv.**
 
+# Java EL is an optional dependency of MBassador used by SMBJ and is not
+# available on Android. The EL-backed filter path is not used by the app.
+-dontwarn javax.el.**
+
 # Media3 / ExoPlayer
 -keep class androidx.media3.** { *; }
 -dontwarn androidx.media3.**

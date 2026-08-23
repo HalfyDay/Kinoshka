@@ -31,7 +31,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import hd.kinoshka.app.data.model.*
 import hd.kinoshka.app.data.source.AnimeStreamResolver
-import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
+import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -306,8 +306,6 @@ fun AnimePlaybackSelectionScreen(
                     }
                 }
 
-                Divider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 0.5.dp)
-
                 // Body content
                 Box(
                     modifier = Modifier
@@ -321,7 +319,7 @@ fun AnimePlaybackSelectionScreen(
                                 modifier = Modifier.align(Alignment.Center),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
+                                KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Text(
                                     text = "Получение ссылки на видеопоток...",
@@ -335,7 +333,7 @@ fun AnimePlaybackSelectionScreen(
                                 modifier = Modifier.fillMaxSize(),
                                 contentAlignment = Alignment.Center
                             ) {
-                                ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
+                                KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
                             }
                         }
                         errorMessage != null -> {
@@ -671,7 +669,13 @@ private fun SelectTranslationStep(
                         )
                     }
                 }
-                items(translations, key = { it.translationId }) { tr ->
+                items(
+                    count = translations.size,
+                    // Composite key: a translationId alone is not unique (the same dub studio can
+                    // appear under several catalogue rows), and Compose hard-crashes on duplicates.
+                    key = { index -> "${source.name}:${translations[index].translationId}:$index" }
+                ) { index ->
+                    val tr = translations[index]
                     val isSub = tr.type == "sub" || tr.type == "subtitles"
                     Surface(
                         onClick = { onTranslationSelected(tr) },
@@ -680,11 +684,6 @@ private fun SelectTranslationStep(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 4.dp)
-                            .border(
-                                width = 0.5.dp,
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                shape = RoundedCornerShape(16.dp)
-                            )
                     ) {
                         Row(
                             modifier = Modifier
@@ -864,7 +863,13 @@ private fun SelectEpisodeStep(
                 }
             }
         } else {
-            items(sortedEpisodes, key = { it.number }) { ep ->
+            items(
+                count = sortedEpisodes.size,
+                // Episode numbers can repeat once lists are merged across sources/seasons, so the
+                // index is folded in to guarantee uniqueness.
+                key = { index -> "ep:${sortedEpisodes[index].number}:$index" }
+            ) { index ->
+                val ep = sortedEpisodes[index]
                 Surface(
                     onClick = { onEpisodeSelected(ep) },
                     shape = RoundedCornerShape(16.dp),
@@ -872,11 +877,6 @@ private fun SelectEpisodeStep(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .border(
-                            width = 0.5.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                            shape = RoundedCornerShape(16.dp)
-                        )
                 ) {
                     Row(
                         modifier = Modifier

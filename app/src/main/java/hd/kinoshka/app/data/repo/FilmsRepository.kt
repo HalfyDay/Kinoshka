@@ -24,7 +24,10 @@ class FilmsRepository(private val api: KinopoiskApi) {
     ): List<FilmItem> {
         val key = "$collectionType:$page"
         popularCache.get(key)?.let { return it }
-        val loaded = api.popular(type = collectionType, page = page).items
+        // Дедупликация на входе: одна страница Kinopoisk может содержать повторяющийся
+        // kinopoiskId, а keyed-списки в UI (key = { film.kinopoiskId }) на дубликате падают.
+        // Делаем это ДО cache.put, иначе битая страница живёт в кэше.
+        val loaded = api.popular(type = collectionType, page = page).items.distinctBy { it.kinopoiskId }
         popularCache.put(key, loaded)
         return loaded
     }
@@ -55,7 +58,7 @@ class FilmsRepository(private val api: KinopoiskApi) {
             yearFrom = yearFrom,
             yearTo = yearTo,
             page = page
-        ).items
+        ).items.distinctBy { it.kinopoiskId } // см. popular(): дубликат id ломает keyed-списки UI
         searchCache.put(key, loaded)
         return loaded
     }
@@ -76,7 +79,11 @@ class FilmsRepository(private val api: KinopoiskApi) {
 
     suspend fun seasons(id: Int): List<SeasonItem> {
         seasonsCache.get(id)?.let { return it }
-        val loaded = api.seasons(id).items
+        // SeasonsCard рисует items(seasons, key = { it.number }); number — non-null Int со
+        // значением по умолчанию 0, поэтому два битых элемента дают одинаковый ключ -> краш.
+        // Фильтровать number > 0 НЕЛЬЗЯ: сезон 0 у Kinopoisk — это спешлы, их потеря испортит
+        // seasons.size / totalSeasons / totalEpisodes в профиле пользователя.
+        val loaded = api.seasons(id).items.distinctBy { it.number }
         seasonsCache.put(id, loaded)
         return loaded
     }

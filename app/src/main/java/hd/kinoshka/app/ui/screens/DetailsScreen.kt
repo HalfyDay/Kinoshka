@@ -32,6 +32,7 @@ import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -208,8 +209,13 @@ import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmLinkItem
 import hd.kinoshka.app.data.model.SeasonItem
+import hd.kinoshka.app.data.model.MovieContentKind
+import hd.kinoshka.app.data.model.MoviePlaybackRequest
+import hd.kinoshka.app.data.model.MovieStreamResult
 import hd.kinoshka.app.data.source.AnimeStreamResolver
-import hd.kinoshka.app.ui.components.ExpressiveBlobLoadingIndicator
+import hd.kinoshka.app.data.source.MovieStreamResolver
+import hd.kinoshka.app.data.source.KodikMovieParser
+import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.ui.components.shimmerEffect
 import java.util.Locale
@@ -249,7 +255,8 @@ fun DetailsScreen(
         sourceType: String,
         episodes: List<hd.kinoshka.app.data.model.AnimeEpisode>,
         translations: List<hd.kinoshka.app.data.model.FlatTranslation>,
-        currentTranslationId: String
+        currentTranslationId: String,
+        movieSeriesContext: hd.kinoshka.app.data.model.MovieSeriesPlaybackContext?
     ) -> Unit)? = null,
     playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
     playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.DDBB
@@ -265,9 +272,6 @@ fun DetailsScreen(
     var showDnsSheet by remember { mutableStateOf(false) }
     var isInteractive by remember { mutableStateOf(true) }
     var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
-    // For films, when MPVEX is selected, this triggers the AnimePlaybackSelectionScreen with a
-    // synthetic shikimoriId=0 so the resolver uses title-based Kodik search only.
-    var activeFilmPlaybackSelection by remember(filmId) { mutableStateOf(false) }
 
     LaunchedEffect(filmId) {
         load(filmId)
@@ -276,7 +280,6 @@ fun DetailsScreen(
     BackHandler {
         when {
             activePlaybackSelection -> activePlaybackSelection = false
-            activeFilmPlaybackSelection -> activeFilmPlaybackSelection = false
             selectedCharacterId != null -> selectedCharacterId = null
             previewPosterUrl != null -> {
                 previewPosterUrl = null
@@ -344,7 +347,7 @@ fun DetailsScreen(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
-                        ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
+                        KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
@@ -434,7 +437,8 @@ fun DetailsScreen(
                                         source.name,
                                         episodes,
                                         translations,
-                                        trId
+                                        trId,
+                                        null
                                     )
                                 } else {
                                     throw IllegalArgumentException("Некорректная ссылка на видеопоток: $normalizedUrl")
@@ -497,45 +501,98 @@ fun DetailsScreen(
                                             onOpenNativePlayer != null
                                         ) {
                                             val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
+                                            val request = item.toMoviePlaybackRequest()
                                             val ctx = context
                                             scope.launch {
-                                                withContext(Dispatchers.Main) {
+                                                try {
                                                     Toast.makeText(ctx, "Поиск потока для \"$filmTitle\"…", Toast.LENGTH_SHORT).show()
-                                                }
-                                                val stream = AnimeStreamResolver.resolveFilmStreamByTitle(filmTitle, item.kinopoiskId)
-                                                if (stream != null) {
-                                                    var normalizedUrl = stream.url
-                                                    if (normalizedUrl.startsWith("//")) {
-                                                        normalizedUrl = "https:$normalizedUrl"
-                                                    }
-                                                    if (normalizedUrl.startsWith("http", ignoreCase = true)) {
-                                                        onOpenNativePlayer(
-                                                            normalizedUrl,
-                                                            stream.headers,
-                                                            stream.qualities,
-                                                            filmTitle,
-                                                            1,
-                                                            filmTitle,
-                                                            0,
-                                                            "KODIK",
-                                                            emptyList(),
-                                                            emptyList(),
-                                                            ""
-                                                        )
-                                                    } else {
-                                                        withContext(Dispatchers.Main) {
-                                                            Toast.makeText(ctx, "Нативный плеер недоступен, открываю в плеере сайта", Toast.LENGTH_SHORT).show()
+                                                    if (request.kind == MovieContentKind.SERIES) {
+                                                        when (val catalog = MovieStreamResolver.loadCatalog(request)) {
+                                                            is hd.kinoshka.app.data.model.MovieCatalogResult.Available -> {
+                                                                val episodes = hd.kinoshka.app.data.model.canonicalSeriesEpisodes(catalog.candidates)
+                                                                val initialEpisode = hd.kinoshka.app.data.model.selectInitialSeriesEpisode(episodes, state.userProfile)
+                                                                val result = initialEpisode?.let {
+                                                                    MovieStreamResolver.resolveEpisode(request, it, catalog.candidates)
+                                                                }
+                                                                if (result is MovieStreamResult.Success && initialEpisode != null) {
+                                                                    hd.kinoshka.app.data.local.UserStateStore(ctx).updateSeriesProgress(
+                                                                        item.kinopoiskId,
+                                                                        initialEpisode.seasonNumber,
+                                                                        initialEpisode.episodeNumber
+                                                                    )
+                                                                    val seriesContext = hd.kinoshka.app.data.model.MovieSeriesPlaybackContext(
+                                                                        request = request,
+                                                                        candidates = catalog.candidates,
+                                                                        episodes = episodes,
+                                                                        currentEpisode = initialEpisode,
+                                                                        kinopoiskId = item.kinopoiskId,
+                                                                        displayTitle = filmTitle
+                                                                    )
+                                                                    onOpenNativePlayer(
+                                                                        result.stream.url,
+                                                                        result.stream.headers,
+                                                                        result.stream.qualities,
+                                                                        filmTitle,
+                                                                        initialEpisode.playerEpisodeKey,
+                                                                        "S${initialEpisode.seasonNumber}E${initialEpisode.episodeNumber}",
+                                                                        0,
+                                                                        "KODIK",
+                                                                        emptyList(),
+                                                                        emptyList(),
+                                                                        "",
+                                                                        seriesContext
+                                                                    )
+                                                                } else {
+                                                                    val reason = (result as? MovieStreamResult.Unavailable)?.reason
+                                                                        ?: hd.kinoshka.app.data.model.MoviePlaybackFailure.NO_PLAYABLE_REFERENCES
+                                                                    Toast.makeText(ctx, "${reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
+                                                                    onOpenUrl(item.toWatchUrl())
+                                                                }
+                                                            }
+                                                            is hd.kinoshka.app.data.model.MovieCatalogResult.Unavailable -> {
+                                                                Toast.makeText(ctx, "${catalog.reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
+                                                                onOpenUrl(item.toWatchUrl())
+                                                            }
                                                         }
-                                                        onOpenUrl(item.toWatchUrl())
+                                                    } else {
+                                                        when (val result = MovieStreamResolver.resolveMovie(request)) {
+                                                            is MovieStreamResult.Success -> onOpenNativePlayer(
+                                                                result.stream.url,
+                                                                result.stream.headers,
+                                                                result.stream.qualities,
+                                                                filmTitle,
+                                                                1,
+                                                                filmTitle,
+                                                                0,
+                                                                "KODIK",
+                                                                emptyList(),
+                                                                emptyList(),
+                                                                "",
+                                                                null
+                                                            )
+                                                            is MovieStreamResult.Unavailable -> {
+                                                                // Log alongside the Toast: a transient toast is often missed,
+                                                                // leaving no trace of why playback fell back to the web player.
+                                                                Log.w(
+                                                                    "DetailsScreen",
+                                                                    "Movie stream unavailable for kinopoiskId=${item.kinopoiskId}, reason=${result.reason}"
+                                                                )
+                                                                Toast.makeText(ctx, "${result.reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
+                                                                onOpenUrl(item.toWatchUrl())
+                                                            }
+                                                        }
                                                     }
-                                                } else {
-                                                    // Kodik doesn't have this film — fall back to DDBB/web player
-                                                    withContext(Dispatchers.Main) {
-                                                        Toast.makeText(ctx, "Фильм не найден в Kodik, открываю в плеере сайта", Toast.LENGTH_SHORT).show()
-                                                    }
+                                                } catch (e: Exception) {
+                                                    // Without this the try/finally only restored isInteractive: an IOException
+                                                    // from the resolver left the Watch button silently doing nothing.
+                                                    Log.w(
+                                                        "DetailsScreen",
+                                                        "Stream resolution failed for kinopoiskId=${item.kinopoiskId}, falling back to web player",
+                                                        e
+                                                    )
+                                                    Toast.makeText(ctx, "Не удалось получить поток, открываю веб-плеер", Toast.LENGTH_SHORT).show()
                                                     onOpenUrl(item.toWatchUrl())
-                                                }
-                                                withContext(Dispatchers.Main) {
+                                                } finally {
                                                     isInteractive = true
                                                 }
                                             }
@@ -637,46 +694,6 @@ fun DetailsScreen(
                             }
                         }
                     }
-                }
-
-                // mpvEx-for-films selection overlay (uses the same UI as anime). The screen
-                // reuses AnimePlaybackSelectionScreen which calls prefetchAllMedia(0, title); Kodik
-                // handles shikimoriId=0 via title-search, AniLiberty/AniLib silently return empty.
-                if (!isAnime && activeFilmPlaybackSelection && onOpenNativePlayer != null) {
-                    val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
-                    AnimePlaybackSelectionScreen(
-                        shikimoriId = 0,
-                        animeTitle = filmTitle,
-                        playbackSequence = playbackSequence,
-                        onDismissRequest = { activeFilmPlaybackSelection = false },
-                        onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
-                            var normalizedUrl = stream.url
-                            if (normalizedUrl.startsWith("//")) {
-                                normalizedUrl = "https:$normalizedUrl"
-                            }
-                            if (normalizedUrl.startsWith("http", ignoreCase = true)) {
-                                onOpenNativePlayer(
-                                    normalizedUrl,
-                                    stream.headers,
-                                    stream.qualities,
-                                    filmTitle,
-                                    epNum,
-                                    epTitle,
-                                    0,
-                                    source.name,
-                                    episodes,
-                                    translations,
-                                    trId
-                                )
-                            }
-                            activeFilmPlaybackSelection = false
-                        },
-                        onWebFallback = {
-                            // Kodik does not index every film — fall back to the WebView player so
-                            // the watch button is never inert.
-                            onOpenUrl(item.toWatchUrl())
-                        }
-                    )
                 }
 
                 if (!isAnime || !activePlaybackSelection) {
@@ -1943,15 +1960,19 @@ private fun HorizontalFilmsCard(
     val validItems = remember(items) {
         items.filter { film ->
             val poster = film.posterUrl ?: film.posterUrlPreview
-            val isInvalidPoster = poster.isNullOrBlank() || 
-                poster.contains("no-poster") || 
-                poster.contains("missing") || 
+            val isInvalidPoster = poster.isNullOrBlank() ||
+                poster.contains("no-poster") ||
+                poster.contains("missing") ||
                 poster.contains("placeholder") ||
                 poster.contains("static/posters/missing") ||
                 poster.contains("image-not-found")
             film.id > 0 && !isInvalidPoster &&
             (!film.nameRu.isNullOrBlank() || !film.nameEn.isNullOrBlank() || !film.nameOriginal.isNullOrBlank())
         }
+            // Список рисуется с key = { it.id }; похожие/связанные фильмы Kinopoisk могут
+            // содержать один и тот же id дважды, а дубликат ключа роняет экран
+            // IllegalArgumentException "Key ... was already used" (как в списке серий).
+            .distinctBy { it.id }
     }
     if (validItems.isEmpty()) return
 
@@ -2053,11 +2074,17 @@ private fun ImagesCard(
                 flingBehavior = snapFling,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(
+                // itemsIndexed: indexOf() matched by structural equality, so duplicate frames
+                // all resolved to the first occurrence and opened the wrong image (plus O(n^2) scan).
+                // take(24) preserves order, so the sublist index equals the images index for 0..23.
+                // Ключ обязан включать индекс: Kinopoisk отдаёт повторяющиеся кадры (именно поэтому
+                // ниже и понадобился itemsIndexed вместо indexOf), а оба поля FilmImageItem
+                // nullable — два пустых элемента дали бы одинаковый ключ "". Любой из этих случаев
+                // ронял экран тем же IllegalArgumentException "Key ... was already used".
+                itemsIndexed(
                     items = images.take(24),
-                    key = { it.previewUrl ?: it.imageUrl.orEmpty() }
-                ) { image ->
-                    val previewIndex = images.indexOf(image).takeIf { it >= 0 } ?: 0
+                    key = { index, img -> "$index:${img.previewUrl ?: img.imageUrl.orEmpty()}" }
+                ) { previewIndex, image ->
                     ElevatedCard(
                         modifier = Modifier
                             .width(220.dp)
@@ -2087,10 +2114,10 @@ private fun ImagesViewerDialog(
     onDismiss: () -> Unit
 ) {
     if (images.isEmpty()) return
-    val fullUrls = remember(images) {
-        images.map { it.imageUrl ?: it.previewUrl.orEmpty() }.filter { it.isNotBlank() }
-    }
-    if (fullUrls.isEmpty()) return
+    // No .filter here: dropping blank entries shifted every later index, so the index emitted
+    // by ImagesCard opened the wrong image. Keep 1:1 with `images` and guard per page instead.
+    val fullUrls = remember(images) { images.map { it.imageUrl ?: it.previewUrl.orEmpty() } }
+    if (fullUrls.none { it.isNotBlank() }) return
 
     val safeStart = startIndex.coerceIn(0, fullUrls.lastIndex)
     val pagerState = rememberPagerState(
@@ -2121,7 +2148,7 @@ private fun ImagesViewerDialog(
                 .fillMaxSize()
                 .graphicsLayer { alpha = backgroundAlpha }
         ) { pageIndex ->
-            val bgUrl = fullUrls.getOrNull(pageIndex)
+            val bgUrl = fullUrls.getOrNull(pageIndex)?.takeIf { it.isNotBlank() }
             Box(modifier = Modifier.fillMaxSize()) {
                 if (bgUrl != null) {
                     coil.compose.AsyncImage(
@@ -2225,7 +2252,9 @@ private fun ImagesViewerDialog(
                     contentAlignment = Alignment.Center
                 ) {
                     SubcomposeAsyncImage(
-                        model = fullUrls[page],
+                        // Blank entries are no longer filtered out (that shifted indices), so a page
+                        // may legitimately have no URL — pass null and let the error slot render.
+                        model = fullUrls.getOrNull(page)?.takeIf { it.isNotBlank() },
                         contentDescription = "Кадр ${page + 1}",
                         contentScale = ContentScale.Fit,
                         onSuccess = { resultState ->
@@ -3432,6 +3461,24 @@ private fun DetailRow(label: String, value: String) {
     }
 }
 
+private fun FilmDetails.toMoviePlaybackRequest(): MoviePlaybackRequest {
+    val normalizedType = type.orEmpty().trim().uppercase().replace('-', '_').replace(' ', '_')
+    return MoviePlaybackRequest(
+        kinopoiskId = kinopoiskId.takeIf { it > 0 },
+        imdbId = KodikMovieParser.normalizeImdb(imdbId),
+        titles = listOfNotNull(nameRu, nameEn, nameOriginal)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinctBy(KodikMovieParser::normalizeTitle),
+        year = year ?: startYear,
+        kind = when {
+            serial == true || normalizedType in setOf("TV_SERIES", "MINI_SERIES", "TV_SHOW", "SERIES") -> MovieContentKind.SERIES
+            normalizedType in setOf("FILM", "MOVIE", "VIDEO", "TV_MOVIE") || serial == false -> MovieContentKind.MOVIE
+            else -> MovieContentKind.UNKNOWN
+        }
+    )
+}
+
 private fun formatAnimeSeason(season: String?, airedOn: String?): String {
     if (!season.isNullOrBlank()) {
         val parts = season.split("_")
@@ -3659,7 +3706,7 @@ private fun CharacterDetailsSheet(
                         .height(260.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    ExpressiveBlobLoadingIndicator(color = MaterialTheme.colorScheme.primary)
+                    KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
                 }
             } else if (characterDetails == null) {
                 Box(
