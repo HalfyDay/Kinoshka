@@ -93,9 +93,10 @@ class KinoMPVView(
         MPVLib.setOptionString("profile", "fast")
         MPVLib.setOptionString("vo", "gpu")
         
-        // Hardware decoding options — prefer mediacodec-COPY: direct (non-copy) mediacodec
-        // renders to the SurfaceView and causes black/corrupt frames on HLS segment changes.
-        val hwdecStr = if (pendingHwdec) "mediacodec-copy,mediacodec,no" else "no"
+        // Hardware decoding — mediacodec-COPY only. Direct (non-copy) mediacodec renders to the
+        // SurfaceView and corrupts frames on damaged HLS segments (the "skips 10s / black screen
+        // then recovers" bug); copy mode degrades gracefully instead.
+        val hwdecStr = if (pendingHwdec) "mediacodec-copy" else "no"
         MPVLib.setOptionString("hwdec", hwdecStr)
         MPVLib.setOptionString("hwdec-codecs", "all")
 

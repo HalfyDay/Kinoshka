@@ -102,15 +102,6 @@ fun TopPlayerControlsPortrait(
                 contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
                 tonalElevation = 0.dp,
                 shadowElevation = 0.dp,
-                border =
-                  if (hideBackground) {
-                    null
-                  } else {
-                    BorderStroke(
-                      1.dp,
-                      MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                    )
-                  },
               ) {
                 Row(
                   verticalAlignment = Alignment.CenterVertically,

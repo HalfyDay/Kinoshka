@@ -63,12 +63,7 @@ fun VerticalSlider(
         .height(120.dp)
         .aspectRatio(0.2f)
         .clip(RoundedCornerShape(16.dp))
-        .background(MaterialTheme.colorScheme.background)
-        .border(
-          width = 1.dp,
-          color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-          shape = RoundedCornerShape(16.dp),
-        ),
+        .background(MaterialTheme.colorScheme.background),
     contentAlignment = Alignment.BottomCenter,
   ) {
     val targetHeight by animateFloatAsState(percentage(coercedValue, range), label = "vsliderheight")
@@ -108,12 +103,7 @@ fun VerticalSlider(
         .height(120.dp)
         .aspectRatio(0.2f)
         .clip(RoundedCornerShape(16.dp))
-        .background(MaterialTheme.colorScheme.background)
-        .border(
-          width = 1.dp,
-          color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-          shape = RoundedCornerShape(16.dp),
-        ),
+        .background(MaterialTheme.colorScheme.background),
     contentAlignment = Alignment.BottomCenter,
   ) {
     val targetHeight by animateFloatAsState(percentage(coercedValue, range), label = "vsliderheight")
@@ -152,7 +142,6 @@ fun BrightnessSlider(
     contentColor = MaterialTheme.colorScheme.onSurface,
     tonalElevation = 0.dp,
     shadowElevation = 0.dp,
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
   ) {
     Column(
       modifier = Modifier.padding(horizontal = 12.dp, vertical = 16.dp),
@@ -197,7 +186,6 @@ fun VolumeSlider(
     contentColor = MaterialTheme.colorScheme.onSurface,
     tonalElevation = 0.dp,
     shadowElevation = 0.dp,
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
   ) {
     Column(
       modifier = Modifier.padding(horizontal = 12.dp, vertical = 16.dp),

@@ -55,6 +55,9 @@ object AnimeStreamResolver {
 
     private val client by lazy {
         OkHttpClient.Builder()
+            // Private-DNS blockers sink kodik/aniqit domains at the DNS level; DoH fallback
+            // restores them for every HTTP path (API, find-player, HLS extraction).
+            .dns(hd.kinoshka.app.utils.DohFallbackDns)
             .followRedirects(true)
             .followSslRedirects(true)
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -77,8 +80,13 @@ object AnimeStreamResolver {
     private val prefetchAllMediaCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<FlatTranslation>>>()
     private val resolveStreamCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<AnimeMediaStream>>()
     private val aniLibertyReleaseCache = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
+    // Resolved Kodik HLS link sets keyed by episode link: re-picking an episode previously cost
+    // the whole 3-25 request scrape again.
+    private val kodikHlsCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<Map<String, String>>>()
 
     private const val CACHE_TTL_MS = 10 * 60 * 1000L // 10 minutes cache
+    private const val NEGATIVE_CACHE_TTL_MS = 3 * 60 * 1000L
+    private const val HLS_CACHE_TTL_MS = 30 * 60 * 1000L
 
     @Suppress("UNUSED_PARAMETER")
     suspend fun fetchAvailableSources(shikimoriId: Int, animeTitle: String = ""): List<AnimeSource> = withContext(Dispatchers.IO) {
@@ -110,7 +118,9 @@ object AnimeStreamResolver {
     suspend fun prefetchAllMedia(shikimoriId: Int, animeTitle: String): List<FlatTranslation> {
         val cacheKey = "$shikimoriId:${animeTitle.trim().lowercase()}"
         prefetchAllMediaCache[cacheKey]?.let { entry ->
-            if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) {
+            val age = System.currentTimeMillis() - entry.timestamp
+            val stillValid = if (entry.data.isEmpty()) age < NEGATIVE_CACHE_TTL_MS else age < CACHE_TTL_MS
+            if (stillValid) {
                 return entry.data
             } else {
                 prefetchAllMediaCache.remove(cacheKey)
@@ -118,10 +128,27 @@ object AnimeStreamResolver {
         }
 
         val loaded = prefetchAllMediaInternal(shikimoriId, animeTitle)
-        if (loaded.isNotEmpty()) {
-            prefetchAllMediaCache[cacheKey] = CacheEntry(loaded, System.currentTimeMillis())
-        }
+        // Cache empty results too (with a shorter TTL): without this, every re-entry into a
+        // title with no sources re-ran the entire three-provider cascade.
+        prefetchAllMediaCache[cacheKey] = CacheEntry(loaded, System.currentTimeMillis())
         return loaded
+    }
+
+    /** Snapshot of a fresh prefetch result for [shikimoriId]/[animeTitle], or null on miss. */
+    private fun cachedPrefetchedTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation>? {
+        val cacheKey = "$shikimoriId:${animeTitle.trim().lowercase()}"
+        val entry = prefetchAllMediaCache[cacheKey] ?: return null
+        val age = System.currentTimeMillis() - entry.timestamp
+        val stillValid = if (entry.data.isEmpty()) age < NEGATIVE_CACHE_TTL_MS else age < CACHE_TTL_MS
+        return entry.data.takeIf { stillValid }
+    }
+
+    private fun getCachedKodikHls(episodeLinkAbsolute: String): Map<String, String>? {
+        kodikHlsCache[episodeLinkAbsolute]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < HLS_CACHE_TTL_MS) return entry.data
+            kodikHlsCache.remove(episodeLinkAbsolute)
+        }
+        return null
     }
 
     private suspend fun prefetchAllMediaInternal(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
@@ -378,18 +405,34 @@ object AnimeStreamResolver {
         episodeNumber: Int
     ): AnimeMediaStream? = withContext(Dispatchers.IO) {
         Log.i(TAG, "[Kodik] resolveStream: id=$shikimoriId, ep=$episodeNumber, tr=$translationId")
-        val episode = fetchKodikEpisodes(shikimoriId, animeTitle, translationId).firstOrNull { it.number == episodeNumber }
-        if (episode == null) {
-            Log.w(TAG, "[Kodik] Episode $episodeNumber not found")
-            return@withContext null
+        // Fast path: prefetchAllMedia already downloaded every translation's episode links —
+        // reuse them instead of re-running the whole kodikSearch cascade on every episode click.
+        val episodeLink = cachedPrefetchedTranslations(shikimoriId, animeTitle)
+            ?.filter { it.translationId == translationId }
+            ?.flatMap { it.episodes }
+            ?.groupBy { it.number }
+            ?.map { (_, eps) -> eps.firstOrNull { !it.link.isNullOrBlank() } ?: eps.first() }
+            ?.firstOrNull { it.number == episodeNumber }
+            ?.link?.takeIf { it.isNotBlank() }
+            ?: run {
+                Log.d(TAG, "[Kodik] prefetch cache miss, falling back to search")
+                val episode = fetchKodikEpisodes(shikimoriId, animeTitle, translationId)
+                    .firstOrNull { it.number == episodeNumber }
+                if (episode == null) {
+                    Log.w(TAG, "[Kodik] Episode $episodeNumber not found")
+                    return@withContext null
+                }
+                episode.link?.takeIf { it.isNotBlank() } ?: run {
+                    Log.w(TAG, "[Kodik] Episode $episodeNumber has no link")
+                    return@withContext null
+                }
+            }
+
+        val absoluteLink = absoluteKodikUrl(episodeLink)
+        Log.d(TAG, "[Kodik] Episode link: $absoluteLink")
+        val qualities = getCachedKodikHls(absoluteLink) ?: resolveKodikHls(absoluteLink).also {
+            if (it.isNotEmpty()) kodikHlsCache[absoluteLink] = CacheEntry(it, System.currentTimeMillis())
         }
-        val episodeLink = episode.link?.takeIf { it.isNotBlank() }
-        if (episodeLink == null) {
-            Log.w(TAG, "[Kodik] Episode $episodeNumber has no link")
-            return@withContext null
-        }
-        Log.d(TAG, "[Kodik] Episode link: ${absoluteKodikUrl(episodeLink)}")
-        val qualities = resolveKodikHls(absoluteKodikUrl(episodeLink))
         Log.i(TAG, "[Kodik] HLS qualities: ${qualities.keys}")
         val url = qualities["720p"] ?: qualities["480p"] ?: qualities["360p"] ?: qualities.values.firstOrNull()
         if (url != null) {
@@ -593,7 +636,7 @@ object AnimeStreamResolver {
         }
         if (shikimoriId > 0) {
             Log.d(TAG, "[Kodik] Trying findPlayer fallback for shikimoriId=$shikimoriId")
-            fetchKodikFromFindPlayer(shikimoriId)?.let {
+            fetchKodikFromFindPlayer("shikimori_id", shikimoriId)?.let {
                 Log.i(TAG, "[Kodik] findPlayer fallback SUCCESS")
                 return listOf(it)
             }
@@ -705,7 +748,9 @@ object AnimeStreamResolver {
     private fun countKodikEpisodes(item: JSONObject): Int = extractKodikEpisodes(item).size
 
     private suspend fun fetchHtmlWithDomainFallbacks(initialUrl: String, referer: String): Pair<String, String>? {
-        val candidateDomains = listOf("https://vsh.my", "https://w.kdkonl.com", "https://kodik-api.com", "https://aniqit.com", "https://kodik.info", "https://kodikplayer.com", "https://kodi.my")
+        // aniqit.com / kodik.info / kodi.my are NXDOMAIN globally (network moved hosts) —
+        // keeping them only wasted three timeouts per extraction.
+        val candidateDomains = listOf("https://vsh.my", "https://w.kdkonl.com", "https://kodik-api.com", "https://kodikplayer.com")
         val parsedUrl = runCatching { URL(initialUrl) }.getOrNull()
         val pathAndQuery = if (parsedUrl != null) {
             parsedUrl.path + if (parsedUrl.query != null) "?${parsedUrl.query}" else ""
@@ -894,20 +939,23 @@ object AnimeStreamResolver {
             .distinct()
         Log.d(TAG, "[Aniliberty] findRelease: ${candidateAliases.size} candidate aliases: ${candidateAliases.take(5)}")
         for (base in ANILIBERTY_API) {
-            for (alias in candidateAliases) {
-                Log.d(TAG, "[Aniliberty] findRelease: trying alias=\"$alias\" on $base")
-                val summary = get("$base/api/v1/anime/releases/list?aliases=${enc(alias)}", referer = "https://anilibria.top/")
-                    ?.let { parseAniLibertyRelease(it, alias, animeTitle) } ?: run {
-                    Log.d(TAG, "[Aniliberty] findRelease: no results for alias=\"$alias\" on $base")
-                    continue
-                }
-                val detail = fetchAniLibertyReleaseDetail(base, summary.optString("alias").ifBlank { summary.optInt("id").toString() })
-                if (detail != null) {
-                    Log.i(TAG, "[Aniliberty] findRelease: FOUND by alias=\"$alias\" on $base, title=${getAniLibertyTitle(detail)}")
-                    aniLibertyReleaseCache[cacheKey] = detail
-                    return detail
-                }
+            // Probe every alias candidate concurrently instead of one-by-one: a miss costs a full
+            // round-trip, and 8 sequential misses dominated the episode-sheet load time.
+            val byAlias = kotlinx.coroutines.coroutineScope {
+                candidateAliases.map { alias ->
+                    async {
+                        Log.d(TAG, "[Aniliberty] findRelease: trying alias=\"$alias\" on $base")
+                        val summary = get("$base/api/v1/anime/releases/list?aliases=${enc(alias)}", referer = "https://anilibria.top/")
+                            ?.let { parseAniLibertyRelease(it, alias, animeTitle) } ?: return@async null
+                        fetchAniLibertyReleaseDetail(base, summary.optString("alias").ifBlank { summary.optInt("id").toString() })
+                            ?.also {
+                                Log.i(TAG, "[Aniliberty] findRelease: FOUND by alias=\"$alias\" on $base, title=${getAniLibertyTitle(it)}")
+                                aniLibertyReleaseCache[cacheKey] = it
+                            }
+                    }
+                }.firstNotNullOfOrNull { it.await() }
             }
+            if (byAlias != null) return byAlias
 
             if (animeTitle.isNotBlank()) {
                 Log.d(TAG, "[Aniliberty] findRelease: free-text search \"$animeTitle\" on $base")
@@ -1072,15 +1120,24 @@ object AnimeStreamResolver {
         }
     }.getOrNull()
 
-    private suspend fun fetchKodikFromFindPlayer(shikimoriId: Int): JSONObject? = withContext(Dispatchers.IO) {
+    /**
+     * Scrapes kodik.info/find-player by an external id. The public API refuses to return some
+     * rows (notably certain live-action series) that the site DB still serves through find-player,
+     * so this is the last-resort lookup for both movies and series.
+     */
+    suspend fun kodikFindPlayerByExternalId(idType: String, id: Int): JSONObject? = fetchKodikFromFindPlayer(idType, id)
+
+    private suspend fun fetchKodikFromFindPlayer(idType: String, id: Int): JSONObject? = withContext(Dispatchers.IO) {
+        // Site domains serve a real player page (this is also the only path that works for 18+
+        // titles, which the public API refuses to index). The kodikapi.com/kodik-api.com variants
+        // answer find-player with a token error and never worked — dropped.
         val mirrors = listOf(
-            "https://kodikapi.com/find-player?shikimori_id=$shikimoriId",
-            "https://kodik-api.com/find-player?shikimori_id=$shikimoriId",
-            "https://kodik.info/find-player?shikimori_id=$shikimoriId",
-            "https://aniqit.com/find-player?shikimori_id=$shikimoriId"
+            "https://kodik.info/find-player?$idType=$id",
+            "https://aniqit.com/find-player?$idType=$id",
+            "https://kodik.cc/find-player?$idType=$id"
         )
         for (url in mirrors) {
-            val html = get(url, referer = "https://shikimori.one/animes/$shikimoriId") ?: continue
+            val html = get(url, referer = "https://shikimori.one/") ?: continue
             extractKodikPlayerLink(html)?.let { link ->
                 return@withContext JSONObject().apply {
                     put("link", link)
@@ -1347,24 +1404,32 @@ object AnimeStreamResolver {
 
         val queries = buildAnimeSearchQueries(animeTitle).ifEmpty { listOf(animeTitle) }
         for (base in ANILIB_API) {
-            for (query in queries) {
-                val body = get("$base/api/v2/searchTitles?search=${enc(query)}", referer = "https://anilib.me/")
-                    ?: continue
-                val title = pickAniLibTitle(body, shikimoriId, animeTitle) ?: continue
-                // Resolve to a full playlist/release object so callers can read episodes + players.
-                val playlist = get("$base/api/v2/playlist?id=${title.optInt("id")}", referer = "https://anilib.me/")
-                    ?: continue
-                val release = JSONObject().apply {
-                    put("id", title.optInt("id"))
-                    put("shikiId", title.optInt("shikiId", shikimoriId))
-                    put("name", title.optString("name", animeTitle))
-                    put("ruTitle", title.optString("ruTitle", title.optString("name", animeTitle)))
-                    put("base", base)
-                    try { put("playlist", JSONArray(playlist)) } catch (e: Exception) { put("playlistRaw", playlist) }
-                }
-                anilibReleaseCache[cacheKey] = release
-                Log.i(TAG, "[AniLib] found title id=${title.optInt("id")} on $base")
-                return release
+            // Concurrent query probes (see findAniLibertyRelease): sequential misses dominated
+            // the episode sheet's wall time.
+            val found = kotlinx.coroutines.coroutineScope {
+                queries.map { query ->
+                    async {
+                        val body = get("$base/api/v2/searchTitles?search=${enc(query)}", referer = "https://anilib.me/")
+                            ?: return@async null
+                        val title = pickAniLibTitle(body, shikimoriId, animeTitle) ?: return@async null
+                        // Resolve to a full playlist/release object so callers can read episodes + players.
+                        val playlist = get("$base/api/v2/playlist?id=${title.optInt("id")}", referer = "https://anilib.me/")
+                            ?: return@async null
+                        JSONObject().apply {
+                            put("id", title.optInt("id"))
+                            put("shikiId", title.optInt("shikiId", shikimoriId))
+                            put("name", title.optString("name", animeTitle))
+                            put("ruTitle", title.optString("ruTitle", title.optString("name", animeTitle)))
+                            put("base", base)
+                            try { put("playlist", JSONArray(playlist)) } catch (e: Exception) { put("playlistRaw", playlist) }
+                        }
+                    }
+                }.firstNotNullOfOrNull { it.await() }
+            }
+            if (found != null) {
+                anilibReleaseCache[cacheKey] = found
+                Log.i(TAG, "[AniLib] found title id=${found.optInt("id")} on $base")
+                return found
             }
         }
         Log.w(TAG, "[AniLib] no release found for id=$shikimoriId, title=\"$animeTitle\"")

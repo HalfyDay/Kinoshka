@@ -180,13 +180,13 @@ class MPVView(
       MPVLib.setOptionString("gpu-context", "androidvk")
     }
 
-    // Hardware decoding. Prefer mediacodec-COPY over direct mediacodec: the non-copy path
-    // renders direct to the SurfaceView and is a prime cause of black/corrupt frames on HLS
-    // segment/format changes (the reported flicker/corruption/skip bug). Copy-decode moves
-    // frames back through the GPU vo so rendering is composited and shaders (Anime4K) run.
+    // Hardware decoding. mediacodec-COPY only: the direct (non-copy) mediacodec path renders
+    // straight to the SurfaceView and corrupts output on damaged HLS segments — picture falls
+    // apart, screen goes black for ~10s, then recovers. Copy mode routes frames through the vo,
+    // so a bad segment costs a decode error, never a corrupted GPU surface.
     MPVLib.setOptionString(
       "hwdec",
-      if (decoderPreferences.tryHWDecoding.get()) "mediacodec-copy,mediacodec,no" else "no",
+      if (decoderPreferences.tryHWDecoding.get()) "mediacodec-copy" else "no",
     )
     MPVLib.setOptionString("hwdec-codecs", "all")
 
@@ -459,7 +459,7 @@ class MPVView(
       
       if (shaderChain.isNotEmpty()) {
         // Force mediacodec-copy when GLSL shaders are active so GPU texture pipeline processes shaders.
-        MPVLib.setOptionString("hwdec", "mediacodec-copy,mediacodec,no")
+        MPVLib.setOptionString("hwdec", "mediacodec-copy")
         // OpenGL-only tuning should not be pushed onto the Vulkan backend.
         if (!useVulkan) {
           MPVLib.setOptionString("opengl-pbo", "yes")

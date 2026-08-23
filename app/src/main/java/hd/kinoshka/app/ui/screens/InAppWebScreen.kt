@@ -91,6 +91,7 @@ data class DdbbPlayer(
 // Standard HTTP client (for DDBB API - no SSL issues)
 private val httpClient by lazy {
     OkHttpClient.Builder()
+        .dns(hd.kinoshka.app.utils.DohFallbackDns)
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
@@ -187,10 +188,10 @@ private suspend fun fetchKodikEmbedUrl(shikimoriId: Int): String? = withContext(
 
 // Fallback: scrape the actual iframe src from kodik find-player page
 private suspend fun fetchKodikEmbedFromPage(shikimoriId: Int): String? = withContext(Dispatchers.IO) {
+    // kodik.cc/aniqit.com/kodik.info are NXDOMAIN globally now; these hosts still answer.
     val mirrors = listOf(
-        "https://kodik.cc/find-player?shikimori_id=$shikimoriId",
-        "https://aniqit.com/find-player?shikimori_id=$shikimoriId",
-        "https://kodik.info/find-player?shikimori_id=$shikimoriId"
+        "https://w.kdkonl.com/find-player?shikimori_id=$shikimoriId",
+        "https://vsh.my/find-player?shikimori_id=$shikimoriId"
     )
     for (url in mirrors) {
         try {
@@ -391,14 +392,15 @@ fun InAppWebScreen(
                 if (kodikUrl != null) {
                     add(DdbbPlayer("kodik_native", "Kodik (рекомендуется)", kodikUrl))
                 }
-                // Direct player URLs as fallback — loaded in main WebView frame, SSL bypass works
-                add(DdbbPlayer("aniqit", "Aniqit / Kodik (прямой)", "https://aniqit.com/find-player?shikimori_id=$shikimoriId"))
-                add(DdbbPlayer("kodik_cc", "Kodik.cc (прямой)", "https://kodik.cc/find-player?shikimori_id=$shikimoriId"))
-                add(DdbbPlayer("kodik_info", "Kodik.info (прямой)", "https://kodik.info/find-player?shikimori_id=$shikimoriId"))
+                // NOTE: aniqit.com / kodik.cc / kodik.info are NXDOMAIN globally now (the network
+                // moved to new player hosts), so static find-player links to them are gone.
+                if (isEmpty()) {
+                    add(DdbbPlayer("kodik_find_player", "Kodik (find-player)", "https://vsh.my/find-player?shikimori_id=$shikimoriId"))
+                }
             }
             ddbbPlayers = animePlayers
             if (selectedPlayer == null) {
-                selectedPlayer = animePlayers.first()
+                selectedPlayer = animePlayers.firstOrNull()
             }
             isLoadingPlayers = false
         } else if (kinopoiskId != null) {
@@ -448,7 +450,7 @@ fun InAppWebScreen(
             val currentUrl = wv.url ?: ""
             // Don't reload if already on this URL
             if (sel.iframeUrl != currentUrl) {
-                wv.loadUrl(sel.iframeUrl, sourceLoadHeaders())
+                wv.loadUrl(sel.iframeUrl, playerLoadHeaders(sel))
             }
         }
     }
@@ -664,7 +666,7 @@ fun InAppWebScreen(
                                 android.util.Log.i("InAppWeb", "Source failed, falling back to ${next.name}")
                                 view?.post {
                                     selectedPlayer = next
-                                    webViewRef?.loadUrl(next.iframeUrl, sourceLoadHeaders())
+                                    webViewRef?.loadUrl(next.iframeUrl, playerLoadHeaders(next))
                                 }
                                 return
                             }
@@ -723,7 +725,9 @@ fun InAppWebScreen(
                 // Load initial URL — always use direct loadUrl (not HTML wrapper)
                 if (savedWebViewState == null) {
                     val target = when {
-                        shikimoriId != null -> "https://aniqit.com/find-player?shikimori_id=$shikimoriId"
+                        // Anime sources resolve asynchronously (LaunchedEffect above); the dead
+                        // static find-player hosts would just render an error before the swap.
+                        shikimoriId != null -> "about:blank"
                         kinopoiskId != null && playerMode == hd.kinoshka.app.data.local.PlayerMode.SITE -> buildMirrorUrl(url, kinopoiskId)
                         kinopoiskId != null && playerMode == hd.kinoshka.app.data.local.PlayerMode.DDBB -> selectedPlayer?.iframeUrl ?: "about:blank"
                         else -> normalizeKinopoiskUrl(url)
@@ -886,7 +890,7 @@ fun InAppWebScreen(
                                         autoSourceFallbackCount = 0
                                         val wv = webViewRef
                                         if (wv != null) {
-                                            wv.loadUrl(player.iframeUrl, sourceLoadHeaders())
+                                            wv.loadUrl(player.iframeUrl, playerLoadHeaders(player))
                                         }
                                     },
                                     modifier = Modifier.fillMaxWidth()
@@ -1024,12 +1028,28 @@ private fun isVideoSourceHost(host: String): Boolean {
     return PLAYER_HOST_WHITELIST.any { h.contains(it) } && !h.contains("kinopoisk") && !h.contains("pkvbn")
 }
 
-// Referer sent with every source load. Several embed players (alloha/turbo in particular) check
-// that the frame was opened from an aggregator page and refuse to play on a cold referer.
+// Referer sent with ddbb-sourced embed loads. Several embed players check that the frame was
+// opened from an aggregator page and refuse to play on a cold referer.
 private fun sourceLoadHeaders(): Map<String, String> = mapOf(
     "Referer" to "https://ddbb.lol/",
     "Origin" to "https://ddbb.lol"
 )
+
+/**
+ * Per-source load headers. The ddbb aggregator's own embeds (collaps/turbo/veoveo) want the
+ * aggregator referer; everything else — the kinopoisk mirror, kodik find-player pages, vibix,
+ * cdnmovies, and especially ALLOHA — must load CLEAN: sending a foreign Referer/Origin to the
+ * mirror trips its anti-bot wall, and alloha gates playback ("контент недоступен в вашем
+ * регионе") when it sees an unexpected referrer.
+ */
+private fun playerLoadHeaders(player: DdbbPlayer): Map<String, String> {
+    val id = player.id.lowercase()
+    return if (id.contains("collaps") || id.contains("turbo") || id.contains("veoveo")) {
+        sourceLoadHeaders()
+    } else {
+        emptyMap()
+    }
+}
 
 private const val MAX_AUTO_SOURCE_FALLBACKS = 3
 

@@ -26,6 +26,9 @@ class KinoApplication : Application(), ImageLoaderFactory {
             )
         }
 
+        // Headless-WebView stream extractor needs an application context.
+        hd.kinoshka.app.data.source.WebViewStreamHarvester.init(this)
+
         // Initialize FastThumbnails from mpv-android-lib
         `is`.xyz.mpv.FastThumbnails.initialize(this)
     }
