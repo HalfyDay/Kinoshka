@@ -44,7 +44,9 @@ object DdbbStreamResolver {
         val url: String,
         val headers: Map<String, String>,
         val qualities: Map<String, String>,
-        val sourceName: String
+        val sourceName: String,
+        /** Voiceover tracks as (title, ready-to-play url); empty when the source has one dub. */
+        val translations: List<Pair<String, String>> = emptyList()
     )
 
     /** Sources whose embeds are worth re-resolving inside a real browser environment. */
@@ -62,7 +64,16 @@ object DdbbStreamResolver {
         if (kinopoiskId <= 0) return@withContext null
         val players = fetchPlayers(kinopoiskId)
         Log.i(TAG, "ddbb offered ${players.size} sources for kp=$kinopoiskId: ${players.map { it.first }}")
+        // Hard budget: the movie race starts playback from the winner as soon as one source
+        // succeeds, but a title where every source stalls must not hold the Watch button for
+        // minutes — a single WebView harvest alone can burn HARVEST_TIMEOUT_MS.
+        val deadline = System.currentTimeMillis() + RESOLVE_DEADLINE_MS
+        var harvestAttempted = false
         players.forEach { (type, iframeUrl) ->
+            if (System.currentTimeMillis() >= deadline) {
+                Log.w(TAG, "resolveMovieStream deadline hit, giving up before ${type.lowercase()}")
+                return@forEach
+            }
             val lowerType = type.lowercase()
 
             val html = fetchHtml(iframeUrl)
@@ -71,17 +82,22 @@ object DdbbStreamResolver {
                     if (qualities.isNotEmpty()) {
                         val bestKey = qualityPreference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
                         Log.i(TAG, "$lowerType: extracted ${qualities.size} qualities, using $bestKey")
+                        val translations = if (lowerType == "turbo") extractTurboTracks(html).map { it.first to it.second } else emptyList()
                         return@withContext DdbbStream(
                             url = qualities.getValue(bestKey),
                             headers = headers,
                             qualities = qualities,
-                            sourceName = type.replaceFirstChar { it.uppercase() }
+                            sourceName = type.replaceFirstChar { it.uppercase() },
+                            translations = translations
                         )
                     }
                 }
             }
 
-            if (lowerType in HARVESTABLE_TYPES && html != null) {
+            if (lowerType in HARVESTABLE_TYPES && html != null && !harvestAttempted) {
+                // One harvest attempt per resolve: serial headless-WebView runs over every
+                // remaining source multiply latency without materially raising hit-rate.
+                harvestAttempted = true
                 Log.i(TAG, "$lowerType: direct extraction failed, harvesting embed in a headless browser…")
                 WebViewStreamHarvester.harvest(
                     embedUrl = iframeUrl,
@@ -109,7 +125,12 @@ object DdbbStreamResolver {
 
     private const val HARVEST_TIMEOUT_MS = 15_000L
 
-    private val qualityPreference = listOf("720p", "1080p", "480p", "360p", "2160p", "240p", "Auto")
+    private const val RESOLVE_DEADLINE_MS = 20_000L
+
+    // Best-first: the resolver's default pick doubles as the player's "Auto" quality, and Auto
+    // means "start at the best variant, step down if the network can't sustain it" (the player
+    // runs a stall watchdog that walks this ladder downwards).
+    private val qualityPreference = listOf("2160p", "1080p", "720p", "480p", "360p", "240p", "Auto")
 
     private fun fetchPlayers(kinopoiskId: Int): List<Pair<String, String>> {
         for (attempt in 0..1) {
@@ -194,10 +215,13 @@ object DdbbStreamResolver {
         return null
     }
 
-    internal fun decodeTurboConfig(blob: String): String? {
+    internal fun decodeTurboConfig(blob: String): String? = findTurboWindow(blob)
+
+    /** Finds the base64 alignment whose decode actually contains stream markers. */
+    private fun findTurboWindow(blob: String): String? {
         val stripped = blob.replace(TURBO_JUNK_REGEX, "")
-        val candidates = listOf(stripped, blob)
-        for (candidate in candidates) {
+        var fuzzyFallback: String? = null
+        for (candidate in listOf(stripped, blob)) {
             val clean = candidate.filter { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
             var offset = 0
             // The real payload starts within the first ~100 base64 chars (short random prefix);
@@ -213,12 +237,19 @@ object DdbbStreamResolver {
                     QUALITY_MARKER_REGEX.containsMatchIn(decoded) &&
                     decoded.contains("https")
                 ) {
-                    return decoded
+                    // A decode at the TRUE alignment parses as the original JSON config and yields
+                    // the full quality set; a false-positive offset decodes to garbage that still
+                    // happens to contain a marker but only a partial/rotating subset — the cause of
+                    // the quality menu changing between launches. Prefer the clean JSON decode and
+                    // keep the first fuzzy match only as a fallback.
+                    val trimmed = decoded.trimStart()
+                    if (trimmed.startsWith("[") || trimmed.startsWith("{")) return decoded
+                    if (fuzzyFallback == null) fuzzyFallback = decoded
                 }
                 offset++
             }
         }
-        return null
+        return fuzzyFallback
     }
 
     /**
@@ -228,30 +259,56 @@ object DdbbStreamResolver {
      * the next alignment, making the extraction resilient to single-byte corruption.
      */
     internal fun extractTurboQualities(blob: String): Map<String, String> {
-        val stripped = blob.replace(TURBO_JUNK_REGEX, "")
-        val candidates = listOf(stripped, blob)
-        var fallback: Map<String, String>? = null
-        for (candidate in candidates) {
-            val clean = candidate.filter { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
-            var offset = 0
-            while (offset < clean.length && offset < 250) {
-                val sub = clean.substring(offset)
-                val usable = sub.substring(0, sub.length / 4 * 4)
-                val decoded = runCatching {
-                    String(java.util.Base64.getDecoder().decode(usable), Charsets.UTF_8)
-                }.getOrNull()
-                if (decoded != null && QUALITY_MARKER_REGEX.containsMatchIn(decoded) && decoded.contains("https")) {
-                    val qualities = linkedMapOf<String, String>()
-                    collectFileFieldQualities(decoded, qualities)
-                    if (qualities.isNotEmpty()) {
-                        if (qualities.size >= 2 || offset <= 100) return qualities
-                        if (fallback == null) fallback = qualities
-                    }
-                }
-                offset++
-            }
+        val decoded = findTurboWindow(blob) ?: return emptyMap()
+        val qualities = linkedMapOf<String, String>()
+        collectFileFieldQualities(decoded, qualities)
+        return qualities
+    }
+
+    private val UNESCAPE_UNICODE_REGEX = Regex("""\\u([0-9a-fA-F]{4})""")
+    private val TITLE_MARKER_REGEX = Regex("""\{"title":""")
+
+    private fun unescapeJsonUnicode(value: String): String =
+        UNESCAPE_UNICODE_REGEX.replace(value) { m -> m.groupValues[1].toInt(16).toChar().toString() }
+            .replace("\\/", "/")
+
+    /**
+     * Every voiceover track of a turbo config as (display title, best-quality url).
+     *
+     * The config is one JSON array where each element carries its own "title" and a "[q]url"
+     * file field. After decoding we lose strict JSON validity to junk-stripping corruption, so
+     * instead of parsing we associate each [quality]url match with the nearest preceding title
+     * marker positionally.
+     */
+    internal fun extractTurboTracks(blob: String): List<Pair<String, String>> {
+        val decoded = findTurboWindow(blob) ?: return emptyList()
+
+        val titlePositions = TITLE_MARKER_REGEX.findAll(decoded).map { marker ->
+            val start = marker.range.last + 1
+            val rawTail = decoded.substring(start, minOf(decoded.length, start + 300))
+            val end = Regex("""\\"|\\""").find(rawTail)?.range?.first ?: rawTail.length
+            start to unescapeJsonUnicode(rawTail.take(end)).trim()
+        }.toList()
+
+        val best = linkedMapOf<String, Pair<Int, String>>() // title -> (ladder rank, url)
+        for (match in TURBO_FILE_REGEX.findAll(decoded)) {
+            val label = match.groupValues[1].trim()
+            if (!TURBO_LABEL_REGEX.matches(label)) continue
+            val url = match.groupValues[2].replace("\\/", "/").trim()
+            if (!url.startsWith("http") || url.length < 20) continue
+
+            val owningTitle = titlePositions
+                .filter { it.first < match.range.first }
+                .maxByOrNull { it.first }
+                ?.second
+                ?.takeIf { it.isNotBlank() }
+                ?: continue
+
+            val rank = qualityPreference.indexOf(label).let { if (it < 0) Int.MAX_VALUE else it }
+            val current = best[owningTitle]
+            if (current == null || rank < current.first) best[owningTitle] = rank to url
         }
-        return fallback ?: emptyMap()
+        return best.entries.map { it.key to it.value.second }
     }
 
     private fun collectFileFieldQualities(fileField: String, qualities: MutableMap<String, String>) {

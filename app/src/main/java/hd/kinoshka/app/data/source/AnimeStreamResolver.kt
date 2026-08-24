@@ -750,7 +750,7 @@ object AnimeStreamResolver {
     private suspend fun fetchHtmlWithDomainFallbacks(initialUrl: String, referer: String): Pair<String, String>? {
         // aniqit.com / kodik.info / kodi.my are NXDOMAIN globally (network moved hosts) —
         // keeping them only wasted three timeouts per extraction.
-        val candidateDomains = listOf("https://vsh.my", "https://w.kdkonl.com", "https://kodik-api.com", "https://kodikplayer.com")
+        val candidateDomains = listOf("https://kodikplayer.com", "https://w.kdkonl.com", "https://kodik-api.com")
         val parsedUrl = runCatching { URL(initialUrl) }.getOrNull()
         val pathAndQuery = if (parsedUrl != null) {
             parsedUrl.path + if (parsedUrl.query != null) "?${parsedUrl.query}" else ""

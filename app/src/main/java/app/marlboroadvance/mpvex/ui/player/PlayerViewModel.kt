@@ -157,6 +157,19 @@ class PlayerViewModel(
   private val _currentAnimeQualityId = MutableStateFlow<String?>(null)
   val currentAnimeQualityId: StateFlow<String?> = _currentAnimeQualityId.asStateFlow()
 
+  // Multi-season series (movie-series mode): distinct season numbers for the season dropdown and
+  // the currently selected one. The episode dropdown shows only the active season's episodes.
+  private val _animeSeasons = MutableStateFlow<List<Int>>(emptyList())
+  val animeSeasons: StateFlow<List<Int>> = _animeSeasons.asStateFlow()
+
+  private val _currentAnimeSeason = MutableStateFlow<Int?>(null)
+  val currentAnimeSeason: StateFlow<Int?> = _currentAnimeSeason.asStateFlow()
+
+  fun setAnimeSeasons(seasons: List<Int>, current: Int?) {
+    _animeSeasons.value = seasons
+    _currentAnimeSeason.value = current
+  }
+
   private val _watchedEpisodesCount = MutableStateFlow(0)
   val watchedEpisodesCount: StateFlow<Int> = _watchedEpisodesCount.asStateFlow()
 
@@ -173,6 +186,7 @@ class PlayerViewModel(
   var onAnimeEpisodeSelected: ((Int) -> Unit)? = null
   var onAnimeTranslationSelected: ((String) -> Unit)? = null
   var onAnimeQualitySelected: ((String) -> Unit)? = null
+  var onAnimeSeasonSelected: ((Int) -> Unit)? = null
 
   fun setAnimeData(
     episodes: List<AnimeEpisode>,

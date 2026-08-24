@@ -191,7 +191,7 @@ private suspend fun fetchKodikEmbedFromPage(shikimoriId: Int): String? = withCon
     // kodik.cc/aniqit.com/kodik.info are NXDOMAIN globally now; these hosts still answer.
     val mirrors = listOf(
         "https://w.kdkonl.com/find-player?shikimori_id=$shikimoriId",
-        "https://vsh.my/find-player?shikimori_id=$shikimoriId"
+        "https://kodikplayer.com/find-player?shikimori_id=$shikimoriId"
     )
     for (url in mirrors) {
         try {
@@ -395,7 +395,7 @@ fun InAppWebScreen(
                 // NOTE: aniqit.com / kodik.cc / kodik.info are NXDOMAIN globally now (the network
                 // moved to new player hosts), so static find-player links to them are gone.
                 if (isEmpty()) {
-                    add(DdbbPlayer("kodik_find_player", "Kodik (find-player)", "https://vsh.my/find-player?shikimori_id=$shikimoriId"))
+                    add(DdbbPlayer("kodik_find_player", "Kodik (find-player)", "https://kodikplayer.com/find-player?shikimori_id=$shikimoriId"))
                 }
             }
             ddbbPlayers = animePlayers
@@ -425,14 +425,15 @@ fun InAppWebScreen(
                         }
                     }
                 } else {
-                    // Fallback — try Kodik embed for this kinopoisk ID, then various players
+                    // Fallback — try Kodik embed for this kinopoisk ID, then the live find-player page.
+                    // vibix.cc / cdnmovies.net are dead domains (NXDOMAIN) and only produced error
+                    // pages; kodikplayer.com is Kodik's current player host.
                     val kodikEmbed = hd.kinoshka.app.data.source.AnimeStreamResolver.fetchKodikEmbedForKinopoisk(kinopoiskId)
                     buildList {
                         if (kodikEmbed != null) {
                             add(DdbbPlayer("kodik_native", "Kodik (рекомендуется)", kodikEmbed))
                         }
-                        add(DdbbPlayer("vibix", "Vibix Player", "https://vibix.cc/embed/kinopoisk/$kinopoiskId"))
-                        add(DdbbPlayer("cdnmovies", "CDN Movies", "https://cdnmovies.net/serial/$kinopoiskId"))
+                        add(DdbbPlayer("kodik_find_player", "Kodik (find-player)", "https://kodikplayer.com/find-player?kinopoisk_id=$kinopoiskId"))
                     }
                 }
                 ddbbPlayers = ddbbList

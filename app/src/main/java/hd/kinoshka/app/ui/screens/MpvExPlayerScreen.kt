@@ -46,7 +46,12 @@ fun MpvExPlayerScreen(
             
             val preferredQuality = userStateStore.getPreferredQuality()
             val effectiveQuality = preferredQuality.takeIf { it != "Auto" && qualities.containsKey(it) } ?: "Auto"
-            val effectiveUrl = qualities[effectiveQuality] ?: streamUrl
+            // "Auto" must NOT load a literal Auto entry from the qualities map: turbo's Auto is an
+            // adaptive/master URL mpv frequently cannot open. Auto means the resolver's own pick —
+            // streamUrl is the best concrete variant per the resolver's ladder, and PlayerActivity's
+            // stall watchdog steps it down when the network can't sustain it.
+            val effectiveUrl = if (effectiveQuality == "Auto") streamUrl
+                else qualities[effectiveQuality] ?: streamUrl
 
             data = Uri.parse(effectiveUrl)
             putExtra("uri", effectiveUrl)

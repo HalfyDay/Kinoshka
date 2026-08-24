@@ -171,6 +171,114 @@ fun AnimeEpisodeDropdown(
 }
 
 @Composable
+fun AnimeSeasonDropdown(
+    seasons: List<Int>,
+    currentSeason: Int?,
+    hideBackground: Boolean,
+    onSeasonSelected: (Int) -> Unit
+) {
+    var showDialog by remember { mutableStateOf(false) }
+
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+        contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+        border = null,
+        modifier = Modifier
+            .height(45.dp)
+            .clickable { showDialog = true }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(Icons.Default.Tv, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(
+                text = if (currentSeason != null) "Сезон $currentSeason" else "Сезон",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        }
+    }
+
+    if (showDialog) {
+        Dialog(
+            onDismissRequest = { showDialog = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = true
+            )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { showDialog = false },
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .widthIn(max = 320.dp)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Text(
+                            "Выберите сезон",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(seasons) { season ->
+                                val isSelected = season == currentSeason
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        onSeasonSelected(season)
+                                        showDialog = false
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "Сезон $season",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Выбрано",
+                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun AnimeTranslationDropdown(
     translations: List<FlatTranslation>,
     currentTranslationId: String?,
@@ -372,7 +480,15 @@ fun AnimeQualityDropdown(
     }
 
     val qList = remember(qualities) {
-        (listOf("Auto") + qualities.keys.toList()).distinct()
+        // Descending numeric quality first (2160 → 240), "Auto" last — users expect 1080 at the
+        // top of the sheet, not whatever order the provider's map happened to ship in.
+        val labeled = qualities.keys
+            .filter { !it.equals("Auto", true) }
+            .sortedWith(
+                compareByDescending<String> { label -> label.filter(Char::isDigit).toIntOrNull() ?: Int.MIN_VALUE }
+                    .thenBy { it }
+            )
+        if (qualities.keys.any { it.equals("Auto", true) }) labeled + "Auto" else labeled
     }
     val selectedQ = currentQualityId ?: "Auto"
 

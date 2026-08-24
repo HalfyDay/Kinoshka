@@ -214,7 +214,9 @@ import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.MovieStreamResult
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.DdbbStreamResolver
+import hd.kinoshka.app.data.source.DdbbStreamResolver.DdbbStream
 import hd.kinoshka.app.data.source.MovieStreamResolver
+import kotlinx.coroutines.async
 import hd.kinoshka.app.data.source.KodikMovieParser
 import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
@@ -424,6 +426,7 @@ fun DetailsScreen(
                             animeTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
                             playbackSequence = playbackSequence,
                             onDismissRequest = { activePlaybackSelection = false },
+                            onWebFallback = { onOpenUrl(item.toWatchUrl()) },
                             onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
                                 var normalizedUrl = stream.url
                                 if (normalizedUrl.startsWith("//")) {
@@ -457,7 +460,20 @@ fun DetailsScreen(
                             isInteractive = isInteractive,
                             onWatch = { filmDetails ->
                                 onWatch(filmDetails)
-                                activePlaybackSelection = true
+                                // 18+ titles (хентай/эротика) have no native sources: neither the Kodik
+                                // API nor AniLiberty indexes them, so the selection sheet would only ever
+                                // show its error state. Skip it and go straight to the web player.
+                                val isAdult = item.genres.any { genre ->
+                                    val n = genre.genre?.lowercase().orEmpty()
+                                    n == "хентай" || n == "hentai" || n == "эротика" || n == "для взрослых" || n == "18+"
+                                } ||
+                                    item.ratingMpaa?.lowercase() in setOf("nc17", "x", "r18+", "18+") ||
+                                    item.ratingAgeLimits?.contains("18") == true
+                                if (isAdult) {
+                                    onOpenUrl(item.toWatchUrl())
+                                } else {
+                                    activePlaybackSelection = true
+                                }
                             },
                             onOpenUrl = onOpenUrl,
                             onOpenEditor = { showProfileEditor = true },
@@ -530,6 +546,18 @@ fun DetailsScreen(
                                                                         initialEpisode.seasonNumber,
                                                                         initialEpisode.episodeNumber
                                                                     )
+                                                                    // One voiceover entry per Kodik dub found in the catalog.
+                                                                    val voiceovers = catalog.candidates
+                                                                        .filter { !it.translationId.isNullOrBlank() }
+                                                                        .distinctBy { it.translationId }
+                                                                        .map { candidate ->
+                                                                            hd.kinoshka.app.data.model.FlatTranslation(
+                                                                                source = hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
+                                                                                translationId = candidate.translationId!!,
+                                                                                title = candidate.translationTitle ?: "Озвучка ${candidate.translationId}",
+                                                                                episodes = emptyList()
+                                                                            )
+                                                                        }
                                                                     val seriesContext = hd.kinoshka.app.data.model.MovieSeriesPlaybackContext(
                                                                         request = request,
                                                                         candidates = catalog.candidates,
@@ -549,8 +577,8 @@ fun DetailsScreen(
                                                                          item.kinopoiskId,
                                                                          "KODIK",
                                                                          emptyList(),
-                                                                         emptyList(),
-                                                                         "",
+                                                                         voiceovers,
+                                                                         voiceovers.firstOrNull()?.translationId ?: "",
                                                                          seriesContext
                                                                      )
                                                                 } else {
@@ -573,6 +601,24 @@ fun DetailsScreen(
                                                                     }
                                                                 if (harvested != null) {
                                                                     Log.i("DetailsScreen", "Series native via ddbb/${harvested.sourceName}")
+                                                                    // ddbb embeds carry no episode metadata, but turbo
+                                                                    // tracks are dubs with direct URLs: surface them as
+                                                                    // voiceovers so the player at least offers dub switching
+                                                                    // (QUALITY_ONLY_MOVIE mode handles the swap).
+                                                                    val ddbbVoiceovers = harvested.translations.map { (title, url) ->
+                                                                        hd.kinoshka.app.data.model.FlatTranslation(
+                                                                            source = hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
+                                                                            translationId = title,
+                                                                            title = title,
+                                                                            episodes = listOf(
+                                                                                hd.kinoshka.app.data.model.AnimeEpisode(
+                                                                                    number = 1,
+                                                                                    title = title,
+                                                                                    link = url
+                                                                                )
+                                                                            )
+                                                                        )
+                                                                    }
                                                                     onOpenNativePlayer(
                                                                         harvested.url,
                                                                         harvested.headers,
@@ -584,8 +630,8 @@ fun DetailsScreen(
                                                                         item.kinopoiskId,
                                                                         "KODIK",
                                                                         emptyList(),
-                                                                        emptyList(),
-                                                                        "",
+                                                                        ddbbVoiceovers,
+                                                                        ddbbVoiceovers.firstOrNull()?.translationId ?: "",
                                                                         null
                                                                     )
                                                                 } else {
@@ -595,11 +641,27 @@ fun DetailsScreen(
                                                             }
                                                         }
                                                     } else {
-                                                        when (val result = MovieStreamResolver.resolveMovie(request)) {
-                                                            is MovieStreamResult.Success -> onOpenNativePlayer(
-                                                                result.stream.url,
-                                                                result.stream.headers,
-                                                                result.stream.qualities,
+                                                        // Race Kodik against the ddbb aggregator in parallel.
+                                                        // ddbb (turbo/collaps) normally resolves in 1-2s while a
+                                                        // Kodik miss costs a full title-query cascade — starting
+                                                        // them together cuts the common case to the faster source
+                                                        // instead of paying both serially.
+                                                        val ddbbDeferred = scope.async(kotlinx.coroutines.Dispatchers.IO) {
+                                                            request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
+                                                                runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
+                                                                    .onFailure { Log.w("DetailsScreen", "ddbb race failed", it) }
+                                                                    .getOrNull()
+                                                            }
+                                                        }
+                                                        val kodikDeferred = scope.async(kotlinx.coroutines.Dispatchers.IO) {
+                                                            MovieStreamResolver.resolveMovie(request)
+                                                        }
+                                                        val outcome: MovieOutcome = awaitFirstMovieOutcome(kodikDeferred, ddbbDeferred)
+                                                        when (val o = outcome) {
+                                                            is MovieOutcome.FromKodik -> onOpenNativePlayer(
+                                                                o.result.stream.url,
+                                                                o.result.stream.headers,
+                                                                o.result.stream.qualities,
                                                                 filmTitle,
                                                                 1,
                                                                 filmTitle,
@@ -607,22 +669,54 @@ fun DetailsScreen(
                                                                 item.kinopoiskId,
                                                                 "KODIK",
                                                                 emptyList(),
-                                                                emptyList(),
-                                                                "",
+                                                                o.result.translations,
+                                                                o.result.translations.firstOrNull()?.translationId ?: "",
                                                                 null
                                                             )
-                                                            is MovieStreamResult.Unavailable -> {
+                                                            is MovieOutcome.FromDdbb -> onOpenNativePlayer(
+                                                                o.stream.url,
+                                                                o.stream.headers,
+                                                                o.stream.qualities,
+                                                                filmTitle,
+                                                                1,
+                                                                filmTitle,
+                                                                0,
+                                                                item.kinopoiskId,
+                                                                o.stream.sourceName.uppercase().take(10),
+                                                                emptyList(),
+                                                                o.stream.translations.map { (title, url) ->
+                                                                    hd.kinoshka.app.data.model.FlatTranslation(
+                                                                        source = hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
+                                                                        translationId = title,
+                                                                        title = title,
+                                                                        episodes = listOf(
+                                                                            hd.kinoshka.app.data.model.AnimeEpisode(
+                                                                                number = 1,
+                                                                                title = title,
+                                                                                link = url
+                                                                            )
+                                                                        )
+                                                                    )
+                                                                },
+                                                                o.stream.translations.firstOrNull()?.first ?: "",
+                                                                null
+                                                            )
+                                                            is MovieOutcome.Failed -> {
                                                                 // Log alongside the Toast: a transient toast is often missed,
                                                                 // leaving no trace of why playback fell back to the web player.
                                                                 Log.w(
                                                                     "DetailsScreen",
-                                                                    "Movie stream unavailable for kinopoiskId=${item.kinopoiskId}, reason=${result.reason}"
+                                                                    "Movie stream unavailable for kinopoiskId=${item.kinopoiskId}, reason=${o.failure.reason}"
                                                                 )
-                                                                Toast.makeText(ctx, "${result.reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
+                                                                Toast.makeText(ctx, "${o.failure.reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
                                                                 onOpenUrl(item.toWatchUrl())
                                                             }
                                                         }
                                                     }
+                                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                                    // Leaving the screen mid-resolve must not fire the
+                                                    // web-player fallback below.
+                                                    throw e
                                                 } catch (e: Exception) {
                                                     // Without this the try/finally only restored isInteractive: an IOException
                                                     // from the resolver left the Watch button silently doing nothing.
@@ -1405,8 +1499,10 @@ private fun RoundedPlayIcon(modifier: Modifier = Modifier, color: Color = Color.
 /**
  * Blocking overlay shown while the native-player branch searches Kodik/ddbb for a stream.
  * Replaces the old one-shot toast: stream lookups regularly take 5-20 seconds and the toast
- * vanished long before any result was visible.
+ * vanished long before any result was visible. Uses the same morphing-shape LoadingIndicator
+ * as the mpvEx player buffer spinner, at the same size, for a consistent look.
  */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun StreamResolvingOverlay(title: String) {
     Box(
@@ -1420,7 +1516,7 @@ private fun StreamResolvingOverlay(title: String) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            hd.kinoshka.app.ui.components.KinoLoadingIndicator()
+            androidx.compose.material3.LoadingIndicator(modifier = Modifier.size(96.dp))
             Text(
                 text = "Ищем поток…",
                 style = MaterialTheme.typography.titleMedium,
@@ -2467,7 +2563,7 @@ private fun FilmDetails.toWatchUrl(): String {
         val shikimoriId = kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
         // Host is a placeholder: InAppWebScreen detects shikimori_id and resolves the live Kodik
         // embed via its own API lookup (the old kodik.info domain is NXDOMAIN globally now).
-        return "https://vsh.my/find-player?shikimori_id=$shikimoriId"
+        return "https://kodikplayer.com/find-player?shikimori_id=$shikimoriId"
     }
     val web = webUrl.orEmpty().trim()
     if (web.isNotBlank()) {
@@ -3543,6 +3639,48 @@ private fun DetailRow(label: String, value: String) {
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1.2f)
         )
+    }
+}
+
+/** Outcome of the parallel Kodik-vs-ddbb movie race. */
+private sealed interface MovieOutcome {
+    data class FromKodik(val result: MovieStreamResult.Success) : MovieOutcome
+    data class FromDdbb(val stream: DdbbStream) : MovieOutcome
+    data class Failed(val failure: MovieStreamResult.Unavailable) : MovieOutcome
+}
+
+/**
+ * True race between the Kodik catalog and the ddbb aggregator: resolves as soon as EITHER
+ * source produces a playable stream and cancels the loser. Previously Kodik's full search
+ * cascade ran to completion before ddbb was even consulted, serially paying both latencies
+ * on every fallback (15-45s worst case before the player opened).
+ */
+private suspend fun awaitFirstMovieOutcome(
+    kodikDeferred: kotlinx.coroutines.Deferred<MovieStreamResult>,
+    ddbbDeferred: kotlinx.coroutines.Deferred<DdbbStream?>,
+): MovieOutcome {
+    while (true) {
+        if (kodikDeferred.isCompleted && kodikDeferred.await() is MovieStreamResult.Success) {
+            ddbbDeferred.cancel()
+            @Suppress("UNCHECKED_CAST")
+            return MovieOutcome.FromKodik(kodikDeferred.await() as MovieStreamResult.Success)
+        }
+        if (ddbbDeferred.isCompleted && ddbbDeferred.await() != null) {
+            kodikDeferred.cancel()
+            return MovieOutcome.FromDdbb(ddbbDeferred.await()!!)
+        }
+        if (kodikDeferred.isCompleted && ddbbDeferred.isCompleted) {
+            val kodik = kodikDeferred.await()
+            return if (kodik is MovieStreamResult.Success) {
+                MovieOutcome.FromKodik(kodik)
+            } else {
+                MovieOutcome.Failed(kodik as MovieStreamResult.Unavailable)
+            }
+        }
+        kotlinx.coroutines.selects.select<Unit> {
+            kodikDeferred.onAwait { }
+            ddbbDeferred.onAwait { }
+        }
     }
 }
 
