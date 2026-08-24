@@ -270,6 +270,12 @@ class PlayerActivity :
   private var currentAnimeStream: AnimeMediaStream? = null
   private var movieSeriesContext: MovieSeriesPlaybackContext? = null
 
+  // Auto-quality watchdog: while the quality selector sits on "Auto", poll mpv's demuxer cache;
+  // sustained stalls step the stream down the quality ladder (best-first) preserving position.
+  private var qualityWatchdogJob: kotlinx.coroutines.Job? = null
+  private var currentPlayingUrl: String? = null
+  private var autoStallStrikes = 0
+
   /**
    * Thermal and performance monitoring
    */
@@ -1259,6 +1265,11 @@ class PlayerActivity :
     }
 
     if (episodes.isNotEmpty() || translations.isNotEmpty()) {
+      // Seasons are a movie-series-only concept; clear stale state from a previous singleTask reuse.
+      viewModel.setAnimeSeasons(emptyList(), null)
+      viewModel.onAnimeSeasonSelected = null
+      // The anime path re-resolves streams on quality change — the URL watchdog is movie-only.
+      qualityWatchdogJob?.cancel()
       viewModel.setAnimeData(episodes, translations, currentEp, currentTr, qualities, currentQ)
       val shikimoriId = extras.getInt("anime_shikimori_id", 0)
       if (shikimoriId > 0) {
@@ -1365,20 +1376,78 @@ class PlayerActivity :
     val stream = currentAnimeStream ?: return
     if (stream.qualities.isEmpty()) return
     val currentQuality = extras.getString("anime_current_quality") ?: "Auto"
-    viewModel.setAnimeData(emptyList(), emptyList(), null, null, stream.qualities, currentQuality)
+
+    // Voiceover options ride in as FlatTranslations whose single episode link is either a ready
+    // CDN url (turbo) or a raw Kodik player link that needs lazy HLS extraction on switch.
+    val translations = extras.getString("anime_translations")
+      ?.takeIf { it.isNotBlank() }
+      ?.let { runCatching { Json.decodeFromString<List<FlatTranslation>>(it) }.getOrDefault(emptyList()) }
+      .orEmpty()
+
+    viewModel.setAnimeSeasons(emptyList(), null)
+    viewModel.onAnimeSeasonSelected = null
+    viewModel.setAnimeData(emptyList(), translations, null, translations.firstOrNull()?.translationId, stream.qualities, currentQuality)
     viewModel.onAnimeEpisodeSelected = null
-    viewModel.onAnimeTranslationSelected = null
+    // The activity loaded the intent URL (MpvExPlayerScreen already resolved Auto to the
+    // resolver's best concrete variant) — remember it so the watchdog knows the current rung.
+    currentPlayingUrl = if (currentQuality == "Auto") stream.url
+      else stream.qualities[currentQuality] ?: stream.url
+    startAutoQualityWatchdog()
+    viewModel.onAnimeTranslationSelected = translationSelected@{ trId ->
+      val track = translations.firstOrNull { it.translationId == trId } ?: return@translationSelected
+      val link = track.episodes.firstOrNull()?.link.orEmpty()
+      if (link.isBlank()) return@translationSelected
+      viewModel.setLoadingStream(true)
+      lifecycleScope.launch(Dispatchers.IO) {
+        val resolvedUrl = resolveVoiceoverLink(link)
+        withContext(Dispatchers.Main) {
+          viewModel.setLoadingStream(false)
+          if (resolvedUrl != null) {
+            fileName = "${intent.getStringExtra("title")?.substringBefore(" •").orEmpty().ifBlank { "Фильм" }} • ${track.title}"
+            mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(resolvedUrl), fileName)
+            MPVLib.setPropertyString("media-title", fileName)
+            currentPlayingUrl = resolvedUrl
+            MPVLib.command("loadfile", resolvedUrl, "replace")
+          } else {
+            Toast.makeText(this@PlayerActivity, "Не удалось открыть выбранную озвучку", Toast.LENGTH_SHORT).show()
+          }
+        }
+      }
+    }
     viewModel.onAnimeQualitySelected = qualitySelected@{ quality ->
       val activeStream = currentAnimeStream ?: return@qualitySelected
       if (quality == viewModel.currentAnimeQualityId.value) return@qualitySelected
       pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
       UserStateStore(this).setPreferredQuality(quality)
+      // "Auto" must mean the resolver's default (activeStream.url): a literal Auto entry in a
+      // turbo qualities map is an adaptive/master URL mpv often cannot open.
       val effectiveQuality = quality.takeIf { it != "Auto" && activeStream.qualities.containsKey(it) } ?: "Auto"
-      val url = activeStream.qualities[effectiveQuality] ?: activeStream.url
+      val url = if (effectiveQuality == "Auto") activeStream.url
+        else activeStream.qualities[effectiveQuality] ?: activeStream.url
       applyHttpHeaders(activeStream.headers)
-      viewModel.setAnimeData(emptyList(), emptyList(), null, null, activeStream.qualities, effectiveQuality)
+      viewModel.setAnimeData(emptyList(), translations, null, viewModel.currentAnimeTranslationId.value, activeStream.qualities, effectiveQuality)
+      currentPlayingUrl = url
+      startAutoQualityWatchdog()
       MPVLib.command("loadfile", url, "replace")
     }
+  }
+
+  /**
+   * Voiceover links come in two flavours: ready CDN urls (turbo/ddbb) play directly, raw Kodik
+   * player links go through the HLS extractor with the same ladder the anime path uses.
+   */
+  private suspend fun resolveVoiceoverLink(link: String): String? {
+    val looksKodik = listOf("kodik", "vsh.my", "kdkonl", "aniqit", "kodi.my", "/seria/", "/video/")
+      .any { link.contains(it, ignoreCase = true) }
+    if (!looksKodik) return link
+    val qualities = runCatching {
+      AnimeStreamResolver.resolveKodikHls(AnimeStreamResolver.absoluteKodikUrl(link))
+    }.getOrDefault(emptyMap())
+    val preference = listOf("720p", "1080p", "480p", "360p", "2160p", "240p")
+    return preference.firstOrNull { qualities.containsKey(it) }
+      ?.let { qualities[it] }
+      ?: qualities.values.firstOrNull()
+      ?: link
   }
 
   private fun setMovieSeriesExtras(extras: Bundle?) {
@@ -1393,17 +1462,36 @@ class PlayerActivity :
         number = episode.playerEpisodeKey,
         title = "Сезон ${episode.seasonNumber}, серия ${episode.episodeNumber}",
         link = episode.playerUrl,
+        season = episode.seasonNumber,
       )
     }
     val currentQuality = extras.getString("anime_current_quality") ?: "Auto"
+    // Voiceover options from the Kodik candidates — the dropdown re-resolves the CURRENT episode
+    // under the chosen dub instead of reloading anything.
+    val translations = extras.getString("anime_translations")
+      ?.takeIf { it.isNotBlank() }
+      ?.let { runCatching { Json.decodeFromString<List<FlatTranslation>>(it) }.getOrDefault(emptyList()) }
+      .orEmpty()
+    val currentTranslationId = translations.firstOrNull()?.translationId
+
     viewModel.setAnimeData(
       uiEpisodes,
-      emptyList(),
+      translations,
       context.currentEpisode.playerEpisodeKey,
-      null,
+      currentTranslationId,
       currentAnimeStream?.qualities.orEmpty(),
       currentQuality,
     )
+
+    // Season dropdown: distinct seasons from the episode metadata; picking a season only
+    // re-filters the episode list (no playback change) until an episode is chosen.
+    val seasons = context.episodes.map { it.seasonNumber }.distinct().sorted()
+    viewModel.setAnimeSeasons(seasons, context.currentEpisode.seasonNumber)
+    viewModel.onAnimeSeasonSelected = seasonSelected@{ season ->
+      if (season == viewModel.currentAnimeSeason.value) return@seasonSelected
+      viewModel.setAnimeSeasons(seasons, season)
+    }
+    startAutoQualityWatchdog()
 
     viewModel.onAnimeEpisodeSelected = episodeSelected@{ episodeKey ->
       val activeContext = movieSeriesContext ?: return@episodeSelected
@@ -1414,12 +1502,19 @@ class PlayerActivity :
       viewModel.setLoadingStream(true)
       pendingSeekPosition = null
       lifecycleScope.launch(Dispatchers.IO) {
-        val result = MovieStreamResolver.resolveEpisode(activeContext.request, selected, activeContext.candidates)
+        val result = MovieStreamResolver.resolveEpisode(
+          activeContext.request, selected, activeContext.candidates,
+          translationId = viewModel.currentAnimeTranslationId.value,
+        )
         withContext(Dispatchers.Main) {
           if (result is MovieStreamResult.Success) {
             val updatedContext = activeContext.copy(currentEpisode = selected)
             movieSeriesContext = updatedContext
             currentAnimeStream = result.stream
+            viewModel.setAnimeSeasons(
+              updatedContext.episodes.map { it.seasonNumber }.distinct().sorted(),
+              selected.seasonNumber,
+            )
             UserStateStore(this@PlayerActivity).updateSeriesProgress(
               updatedContext.kinopoiskId,
               selected.seasonNumber,
@@ -1428,6 +1523,31 @@ class PlayerActivity :
             applyMovieSeriesStream(result.stream, updatedContext, UserStateStore(this@PlayerActivity).getPreferredQuality())
           } else {
             Toast.makeText(this@PlayerActivity, "Не удалось открыть выбранную серию", Toast.LENGTH_SHORT).show()
+          }
+          viewModel.setLoadingStream(false)
+        }
+      }
+    }
+
+    viewModel.onAnimeTranslationSelected = translationSelected@{ trId ->
+      val activeContext = movieSeriesContext ?: return@translationSelected
+      if (trId == viewModel.currentAnimeTranslationId.value) return@translationSelected
+      // Commit progress of the outgoing stream, then re-resolve the SAME episode under the new dub.
+      flushOutgoingEpisodeProgress()
+      viewModel.setLoadingStream(true)
+      pendingSeekPosition = null
+      lifecycleScope.launch(Dispatchers.IO) {
+        val result = MovieStreamResolver.resolveEpisode(
+          activeContext.request, activeContext.currentEpisode, activeContext.candidates,
+          translationId = trId,
+        )
+        withContext(Dispatchers.Main) {
+          if (result is MovieStreamResult.Success) {
+            movieSeriesContext = activeContext
+            currentAnimeStream = result.stream
+            applyMovieSeriesStream(result.stream, activeContext, UserStateStore(this@PlayerActivity).getPreferredQuality(), trId)
+          } else {
+            Toast.makeText(this@PlayerActivity, "Озвучка недоступна для этой серии", Toast.LENGTH_SHORT).show()
           }
           viewModel.setLoadingStream(false)
         }
@@ -1448,9 +1568,13 @@ class PlayerActivity :
     stream: AnimeMediaStream,
     context: MovieSeriesPlaybackContext,
     requestedQuality: String,
+    translationId: String? = null,
   ) {
     val effectiveQuality = requestedQuality.takeIf { it != "Auto" && stream.qualities.containsKey(it) } ?: "Auto"
-    val url = stream.qualities[effectiveQuality] ?: stream.url
+    // Same Auto guard as setQualityOnlyMovieExtras: a literal Auto entry can be an unplayable
+    // master URL — fall back to the stream's own default instead.
+    val url = if (effectiveQuality == "Auto") stream.url
+      else stream.qualities[effectiveQuality] ?: stream.url
     val episode = context.currentEpisode
     fileName = "${context.displayTitle} • S${episode.seasonNumber}E${episode.episodeNumber}"
     mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(url), fileName)
@@ -1458,9 +1582,23 @@ class PlayerActivity :
     applyAnimeTransportOptions(false)
     applyHttpHeaders(stream.headers)
     val uiEpisodes = context.episodes.map {
-      AnimeEpisode(it.playerEpisodeKey, "Сезон ${it.seasonNumber}, серия ${it.episodeNumber}", it.playerUrl)
+      AnimeEpisode(it.playerEpisodeKey, "Сезон ${it.seasonNumber}, серия ${it.episodeNumber}", it.playerUrl, it.seasonNumber)
     }
-    viewModel.setAnimeData(uiEpisodes, emptyList(), episode.playerEpisodeKey, null, stream.qualities, effectiveQuality)
+    // Preserve the dub list and highlight: wiping translations here used to make the voiceover
+    // dropdown vanish after the first episode/quality switch.
+    viewModel.setAnimeData(
+      uiEpisodes,
+      viewModel.animeTranslations.value,
+      episode.playerEpisodeKey,
+      translationId ?: viewModel.currentAnimeTranslationId.value,
+      stream.qualities,
+      effectiveQuality,
+    )
+    viewModel.setAnimeSeasons(
+      context.episodes.map { it.seasonNumber }.distinct().sorted(),
+      episode.seasonNumber,
+    )
+    currentPlayingUrl = url
     MPVLib.command("loadfile", url, "replace")
   }
 
@@ -1499,6 +1637,51 @@ class PlayerActivity :
     val options = if (disableHttpReuse) "http_persistent=0,http_multiple=0" else ""
     val result = MPVLib.setPropertyString("demuxer-lavf-o", options)
     Log.d(TAG, "Anime transport HTTP reuse ${if (disableHttpReuse) "disabled" else "reset"}: result=$result")
+  }
+
+  /** Concrete qualities of [stream] sorted best-first (Auto excluded). */
+  private fun orderedConcreteQualities(qualities: Map<String, String>): List<Pair<String, String>> =
+    qualities.entries
+      .filter { it.key != "Auto" }
+      .sortedByDescending { it.key.removeSuffix("p").toIntOrNull() ?: 0 }
+      .map { it.key to it.value }
+
+  /**
+   * Watches playback while the quality selector is on "Auto": three consecutive 2s samples with
+   * under ~1.5s of buffered-ahead video mean the network can't sustain the current variant, so
+   * step one rung down the ladder (position preserved via pendingSeekPosition). A concrete user
+   * choice disables the watchdog until Auto is picked again.
+   */
+  private fun startAutoQualityWatchdog() {
+    qualityWatchdogJob?.cancel()
+    autoStallStrikes = 0
+    qualityWatchdogJob = lifecycleScope.launch {
+      while (isActive) {
+        kotlinx.coroutines.delay(2000)
+        if (viewModel.currentAnimeQualityId.value != "Auto") continue
+        val stream = currentAnimeStream ?: continue
+        val ladder = orderedConcreteQualities(stream.qualities)
+        if (ladder.size < 2) continue
+        val pos = MPVLib.getPropertyDouble("time-pos") ?: continue
+        if (pos <= 0) continue // still opening the file
+        val cacheAhead = (MPVLib.getPropertyDouble("demuxer-cache-time") ?: 0.0) - pos
+        autoStallStrikes = if (cacheAhead < 1.5) autoStallStrikes + 1 else 0
+        if (autoStallStrikes < 3) continue
+        autoStallStrikes = 0
+        val currentUrl = currentPlayingUrl
+        val idx = ladder.indexOfFirst { it.second == currentUrl }
+        if (idx < 0) continue
+        val next = ladder.getOrNull(idx + 1) ?: run {
+          Log.i(TAG, "Auto watchdog: already at the lowest quality (${ladder.last().first})")
+          return@launch
+        }
+        Log.i(TAG, "Auto watchdog: ${ladder[idx].first} stalls, stepping down to ${next.first}")
+        pendingSeekPosition = MPVLib.getPropertyDouble("time-pos")
+        currentPlayingUrl = next.second
+        MPVLib.command("loadfile", next.second, "replace")
+        Toast.makeText(this@PlayerActivity, "Auto: качество снижено до ${next.first}", Toast.LENGTH_SHORT).show()
+      }
+    }
   }
 
   private fun applyHttpHeaders(headers: Map<String, String>) {

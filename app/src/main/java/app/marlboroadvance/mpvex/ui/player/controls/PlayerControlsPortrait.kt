@@ -35,6 +35,7 @@ import app.marlboroadvance.mpvex.ui.player.Sheets
 import app.marlboroadvance.mpvex.ui.player.VideoAspect
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeEpisodeDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeQualityDropdown
+import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeSeasonDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeShaderControl
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeTranslationDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
@@ -60,6 +61,10 @@ fun TopPlayerControlsPortrait(
   val currentEpisode by viewModel.currentAnimeEpisodeNumber.collectAsState()
   val currentTranslationId by viewModel.currentAnimeTranslationId.collectAsState()
   val currentQualityId by viewModel.currentAnimeQualityId.collectAsState()
+  val animeSeasons by viewModel.animeSeasons.collectAsState()
+  val currentAnimeSeason by viewModel.currentAnimeSeason.collectAsState()
+  // Multi-season series show only the active season's episodes in the dropdown.
+  val visibleEpisodes = animeEpisodes.filter { it.season == null || it.season == currentAnimeSeason }
 
   Column {
     Row(
@@ -153,14 +158,22 @@ fun TopPlayerControlsPortrait(
       AnimeShaderControl(hideBackground = hideBackground, viewModel = viewModel)
     }
     
-    if (animeEpisodes.isNotEmpty() || animeTranslations.isNotEmpty() || animeQualities.isNotEmpty()) {
+    if (visibleEpisodes.isNotEmpty() || animeTranslations.isNotEmpty() || animeQualities.isNotEmpty()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = MaterialTheme.spacing.medium, vertical = MaterialTheme.spacing.extraSmall),
             horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)
         ) {
-            if (animeEpisodes.isNotEmpty()) {
+            if (animeSeasons.size > 1) {
+                AnimeSeasonDropdown(
+                    seasons = animeSeasons,
+                    currentSeason = currentAnimeSeason,
+                    hideBackground = hideBackground,
+                    onSeasonSelected = { viewModel.onAnimeSeasonSelected?.invoke(it) }
+                )
+            }
+            if (visibleEpisodes.isNotEmpty()) {
                 AnimeEpisodeDropdown(
-                    episodes = animeEpisodes,
+                    episodes = visibleEpisodes,
                     currentEpisode = currentEpisode,
                     hideBackground = hideBackground,
                     viewModel = viewModel,

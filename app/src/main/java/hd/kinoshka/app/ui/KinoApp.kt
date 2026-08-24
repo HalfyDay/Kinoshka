@@ -391,7 +391,11 @@ fun KinoApp() {
                                  onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
                                      val mode = when {
                                          seriesContext != null -> NativePlaybackMode.MOVIE_SERIES
-                                         episodes.isEmpty() && translations.isEmpty() && shikimoriId == 0 -> NativePlaybackMode.QUALITY_ONLY_MOVIE
+                                         // Voiceover-only launches (kodik/ddbb movies and ddbb series
+                                         // fallbacks): translations carry direct or lazily-resolved
+                                         // links, handled by setQualityOnlyMovieExtras. Episodes stay
+                                         // the ANIME/MOVIE_SERIES discriminator, not translations.
+                                         episodes.isEmpty() && shikimoriId == 0 -> NativePlaybackMode.QUALITY_ONLY_MOVIE
                                          else -> NativePlaybackMode.ANIME
                                      }
                                      activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext, mode)

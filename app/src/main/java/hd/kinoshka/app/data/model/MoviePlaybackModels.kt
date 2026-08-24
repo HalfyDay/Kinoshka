@@ -88,7 +88,9 @@ sealed interface MovieCatalogResult {
 sealed interface MovieStreamResult {
     data class Success(
         val stream: AnimeMediaStream,
-        val episode: MovieEpisodeRef? = null
+        val episode: MovieEpisodeRef? = null,
+        /** Voiceover options for the player's dropdown: title + a resolvable link each. */
+        val translations: List<FlatTranslation> = emptyList()
     ) : MovieStreamResult
 
     data class Unavailable(val reason: MoviePlaybackFailure) : MovieStreamResult

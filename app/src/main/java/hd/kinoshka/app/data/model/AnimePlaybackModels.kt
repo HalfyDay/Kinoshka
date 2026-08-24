@@ -29,7 +29,10 @@ data class AnimeEpisode(
     val number: Int,
     val title: String? = null,
     val link: String? = null,
-    val id: Int? = null
+    val id: Int? = null,
+    // Season number for multi-season series (movie-series mode). Null for plain anime episodes;
+    // the player's season dropdown groups on this when more than one distinct value exists.
+    val season: Int? = null
 )
 
 @Serializable

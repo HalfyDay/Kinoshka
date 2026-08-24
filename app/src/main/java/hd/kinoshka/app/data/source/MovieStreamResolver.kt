@@ -41,48 +41,55 @@ object MovieStreamResolver {
         MovieCatalogResult.Available(playable)
     }
 
+    /**
+     * Kodik-only movie resolution. The ddbb fallback lives in the CALLER ([DdbbStreamResolver]),
+     * which races it in parallel — running it here serially added its full latency on top of
+     * Kodik's for every title Kodik could not serve.
+     */
     suspend fun resolveMovie(request: MoviePlaybackRequest): MovieStreamResult = withContext(Dispatchers.IO) {
-        val kodikResult: MovieStreamResult = when (val catalog = loadCatalog(request)) {
+        when (val catalog = loadCatalog(request)) {
             is MovieCatalogResult.Unavailable -> MovieStreamResult.Unavailable(catalog.reason)
             is MovieCatalogResult.Available -> {
                 val references = catalog.candidates.flatMap { candidate -> movieReferences(candidate).map { candidate to it } }
-                resolveReferences(references, null)
+                val base = resolveReferences(references, null)
+                if (base is MovieStreamResult.Success && catalog.candidates.size > 1) {
+                    // Voiceover options for the player dropdown: each dub's own player link is kept
+                    // raw and extracted lazily on switch, so startup stays fast.
+                    val translations = catalog.candidates
+                        .filter { !it.topLevelPlayerUrl.isNullOrBlank() }
+                        .distinctBy { it.translationId ?: it.translationTitle ?: "default" }
+                        .map { candidate ->
+                            hd.kinoshka.app.data.model.FlatTranslation(
+                                source = hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
+                                translationId = candidate.translationId ?: candidate.translationTitle ?: "default",
+                                title = candidate.translationTitle ?: "Озвучка ${candidate.translationId ?: "default"}",
+                                episodes = listOf(
+                                    hd.kinoshka.app.data.model.AnimeEpisode(
+                                        number = 1,
+                                        title = candidate.translationTitle,
+                                        link = candidate.topLevelPlayerUrl
+                                    )
+                                )
+                            )
+                        }
+                    base.copy(translations = translations)
+                } else base
             }
         }
-        if (kodikResult is MovieStreamResult.Success) return@withContext kodikResult
-
-        // Kodik does not index most live-action films, and its player obfuscation breaks now and
-        // then; the ddbb aggregator (same sources the in-app web player uses) covers the gap with
-        // collaps/turbo embeds that expose direct HLS/MP4.
-        request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
-            runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
-                .onFailure { Log.w(TAG, "ddbb fallback failed", it) }
-                .getOrNull()
-                ?.let { stream ->
-                    Log.i(TAG, "ddbb fallback succeeded via ${stream.sourceName}")
-                    return@withContext MovieStreamResult.Success(
-                        AnimeMediaStream(
-                            url = stream.url,
-                            qualities = stream.qualities,
-                            headers = stream.headers,
-                            quality = stream.qualities.keys.firstOrNull() ?: "Auto"
-                        ),
-                        null
-                    )
-                }
-        }
-        kodikResult
     }
 
     suspend fun resolveEpisode(
         request: MoviePlaybackRequest,
         episode: MovieEpisodeRef,
-        candidates: List<KodikMovieCandidate>? = null
+        candidates: List<KodikMovieCandidate>? = null,
+        translationId: String? = null
     ): MovieStreamResult = withContext(Dispatchers.IO) {
-        val available = candidates ?: when (val catalog = loadCatalog(request)) {
+        val available0 = candidates ?: when (val catalog = loadCatalog(request)) {
             is MovieCatalogResult.Available -> catalog.candidates
             is MovieCatalogResult.Unavailable -> return@withContext MovieStreamResult.Unavailable(catalog.reason)
         }
+        // Voiceover switching narrows the candidate pool to one dub before episode matching.
+        val available = translationId?.let { trId -> available0.filter { it.translationId == trId }.ifEmpty { available0 } } ?: available0
         val references = available.flatMap { candidate ->
             candidate.episodes
                 .filter { it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber }
@@ -138,9 +145,10 @@ object MovieStreamResolver {
             )
         }
         // Title queries are heuristic and cost one request each: only spend them when the
-        // authoritative lookups produced nothing.
+        // authoritative lookups produced nothing, and cap the variants — the ddbb race covers
+        // titles Kodik's fuzzy search would only find deep into the list anyway.
         if (allAccepted.isEmpty()) {
-            request.titles.distinctBy(KodikMovieParser::normalizeTitle).forEach { title ->
+            request.titles.distinctBy(KodikMovieParser::normalizeTitle).take(3).forEach { title ->
                 evaluate(
                     AnimeStreamResolver.kodikSearchMovieByTitle(title),
                     KodikMovieParser.MatchOrigin.TITLE

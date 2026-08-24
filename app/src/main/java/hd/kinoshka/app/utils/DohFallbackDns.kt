@@ -37,7 +37,7 @@ object DohFallbackDns : Dns {
     // whose answers come from resolvers that don't apply such blocklists.
     private val forcedDohHosts = setOf(
         "kodik.info", "aniqit.com", "kodik.cc", "kodikplayer.com", "kodi.my",
-        "kodikapi.com", "kodik-api.com", "vsh.my", "w.kdkonl.com"
+        "kodikapi.com", "kodik-api.com", "kodikplayer.com", "w.kdkonl.com"
     )
 
     override fun lookup(hostname: String): List<InetAddress> {

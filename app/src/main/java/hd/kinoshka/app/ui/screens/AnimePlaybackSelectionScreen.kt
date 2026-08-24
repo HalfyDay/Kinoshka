@@ -113,9 +113,13 @@ fun AnimePlaybackSelectionScreen(
         isLoading = true
         errorMessage = null
         try {
+            // Translations with zero episodes (e.g. Kodik's find-player stub for 18+ titles the
+            // public API refuses to index) are not usable content — treat them as "nothing found"
+            // so the user gets the error state with the web-player escape hatch, not an empty list.
             allTranslations = AnimeStreamResolver.prefetchAllMedia(shikimoriId, animeTitle)
+                .filter { it.episodes.isNotEmpty() }
             if (allTranslations.isEmpty()) {
-                errorMessage = "Не удалось найти видео для этого аниме."
+                errorMessage = "Не удалось найти видео для этого аниме.\nДля 18+ тайтлов используйте веб-плеер."
             }
             isLoading = false
         } catch (e: Exception) {
@@ -367,8 +371,9 @@ fun AnimePlaybackSelectionScreen(
                                         scope.launch {
                                             try {
                                                 allTranslations = AnimeStreamResolver.prefetchAllMedia(shikimoriId, animeTitle)
+                                                    .filter { it.episodes.isNotEmpty() }
                                                 if (allTranslations.isEmpty()) {
-                                                    errorMessage = "Не удалось найти видео для этого аниме."
+                                                    errorMessage = "Не удалось найти видео для этого аниме.\nДля 18+ тайтлов используйте веб-плеер."
                                                 }
                                                 isLoading = false
                                             } catch (e: Exception) {
