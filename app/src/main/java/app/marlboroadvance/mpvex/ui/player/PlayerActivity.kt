@@ -1602,7 +1602,7 @@ class PlayerActivity :
    */
   private fun voiceoverHeadersFor(track: FlatTranslation): Map<String, String> {
     val link = track.episodes.firstOrNull()?.link.orEmpty()
-    val looksKodik = listOf("kodik", "vsh.my", "kdkonl", "aniqit", "kodi.my", "/seria/", "/video/")
+    val looksKodik = listOf("kodik", "vsh.my", "kdkonl", "aniqit", "kodi.my", "obrut.show", "/seria/", "/video/")
       .any { link.contains(it, ignoreCase = true) }
     if (looksKodik) return AnimeStreamResolver.kodikPlaybackHeaders()
     intent.getIntExtra("movie_kinopoisk_id", 0)
@@ -1715,8 +1715,27 @@ class PlayerActivity :
     updateAutoRungHint(stream.qualities, currentPlayingUrl)
     startAutoQualityWatchdog()
     resetStreamLoadRetries()
-    beginTrackedStreamLoad(retry = { loadPreparedQomVoiceover(track, stream, translations) })
+    beginTrackedStreamLoad(retry = { retryQomVoiceoverLoad(track, translations) })
     MPVLib.command("loadfile", currentPlayingUrl!!, "replace")
+  }
+
+  /**
+   * END_FILE-error retry for a prepared QOM voiceover: its ladder urls can be dead (dated CDN
+   * tokens). Replaying the SAME prepared stream just burned the retry budget on an identical
+   * 404 — evict the memoized ddbb data for this title, drop the prepared row and re-extract
+   * the dub's raw link lazily for a genuinely fresh url.
+   */
+  private fun retryQomVoiceoverLoad(track: FlatTranslation, translations: List<FlatTranslation>) {
+    intent.getIntExtra("movie_kinopoisk_id", 0).takeIf { it > 0 }?.let { kpId ->
+      DdbbStreamResolver.evictResolveCache(kpId)
+      hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.remove(kpId, track.translationId)
+    }
+    val link = track.episodes.firstOrNull()?.link.orEmpty()
+    if (link.isBlank()) {
+      finishStreamLoadIndicator()
+      return
+    }
+    loadQomVoiceover(track, link, translations)
   }
 
   /**
@@ -1729,9 +1748,11 @@ class PlayerActivity :
    */
   private suspend fun resolveVoiceoverLink(link: String): String? =
     kotlinx.coroutines.withTimeoutOrNull(VOICEOVER_RESOLVE_TIMEOUT_MS) {
-      // Direct media files play as-is; only Kodik player pages need HLS extraction.
+      // Direct media files play as-is; Kodik player pages AND collaps/obrut api links
+      // (extensionless stream/… urls with dated tokens) need HLS extraction — playing those
+      // raw fed mpv a link that 404'd ("switching voiceover hangs").
       if (link.contains(".mp4") || link.contains(".m3u8") || link.contains(".webm")) return@withTimeoutOrNull link
-      val looksKodik = listOf("kodik", "vsh.my", "kdkonl", "aniqit", "kodi.my", "/seria/", "/video/").any { link.contains(it, ignoreCase = true) }
+      val looksKodik = listOf("kodik", "vsh.my", "kdkonl", "aniqit", "kodi.my", "obrut.show", "/seria/", "/video/").any { link.contains(it, ignoreCase = true) }
       if (!looksKodik) return@withTimeoutOrNull link
       val qualities = runCatching {
         AnimeStreamResolver.resolveKodikHls(AnimeStreamResolver.absoluteKodikUrl(link))

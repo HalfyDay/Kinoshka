@@ -249,7 +249,12 @@ object DdbbStreamResolver {
      * burned the whole retry budget on an identical failure ("фильм иногда не запускается").
      */
     fun evictResolveCache(kinopoiskId: Int) {
-        if (kinopoiskId > 0) resolveCache.remove(kinopoiskId)
+        if (kinopoiskId > 0) {
+            resolveCache.remove(kinopoiskId)
+            // The turbo catalog's ladders/voiceover links share the same dated CDN tokens —
+            // serving them to a retry just re-hands the expired urls.
+            turboCatalogs.remove(kinopoiskId)
+        }
     }
 
 

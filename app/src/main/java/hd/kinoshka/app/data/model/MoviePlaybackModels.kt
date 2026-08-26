@@ -153,6 +153,15 @@ object MovieVoiceoverStreamStore {
         if (kinopoiskId > 0) streams[kinopoiskId] = value
     }
 
+    /** Drops a single prepared dub (dead-url retry): the rest keep their instant switches. */
+    fun remove(kinopoiskId: Int, translationId: String) {
+        if (kinopoiskId <= 0) return
+        val remaining = streams[kinopoiskId] ?: return
+        if (remaining.containsKey(translationId)) {
+            streams[kinopoiskId] = remaining - translationId
+        }
+    }
+
     fun get(kinopoiskId: Int): Map<String, AnimeMediaStream> =
         kinopoiskId.takeIf { it > 0 }?.let { streams[it] }.orEmpty()
 }

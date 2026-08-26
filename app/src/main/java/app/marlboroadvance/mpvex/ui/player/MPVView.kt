@@ -216,6 +216,11 @@ class MPVView(
     MPVLib.setOptionString("msg-level", "all=$logLevel")
 
     MPVLib.setPropertyBoolean("keep-open", true)
+    // libmpv defaults to idle=no: a FAILED loadfile (404 CDN, expired cache link) emptied the
+    // playlist, terminated the whole core ("event: shutdown") and every subsequent loadfile /
+    // auto-retry became a silent no-op — the loading overlay spun forever. idle=yes keeps the
+    // core alive after failures so retries can issue new loadfiles.
+    MPVLib.setOptionString("idle", "yes")
     MPVLib.setPropertyBoolean("input-default-bindings", true)
 
     MPVLib.setOptionString("tls-verify", "yes")
