@@ -326,12 +326,16 @@ object MovieNativeLauncher {
             }
         }
         val persistedTranslations = persistedCache?.rows.orEmpty().map { row ->
+            // Gson bypasses Kotlin defaults: rows written BEFORE a field existed come back as
+            // runtime-null Strings ("FlatTranslation <init>, parameter type" NPE was live).
+            // Normalize every optional field at the read boundary.
             FlatTranslation(
-                source = runCatching { AnimeSourceType.valueOf(row.source) }.getOrDefault(AnimeSourceType.KODIK),
-                translationId = row.id,
-                title = row.title,
-                type = row.type,
-                episodes = listOf(AnimeEpisode(number = 1, title = row.title, link = row.link))
+                source = runCatching { AnimeSourceType.valueOf(row.source ?: "") }
+                    .getOrDefault(AnimeSourceType.KODIK),
+                translationId = row.id.orEmpty().ifBlank { row.link?.hashCode()?.toString() ?: "default" },
+                title = row.title.orEmpty().ifBlank { "Озвучка" },
+                type = row.type ?: "voice",
+                episodes = listOf(AnimeEpisode(number = 1, title = row.title, link = row.link.orEmpty()))
             )
         }
 
