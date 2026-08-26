@@ -6,8 +6,22 @@ import kotlinx.serialization.Serializable
 enum class AnimeSourceType(val displayName: String, val description: String) {
     KODIK("Kodik", "Большой каталог озвучек и субтитров"),
     ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p"),
-    ANILIB("AniLib", "Каталог AniLib (animelib.org), озвучки по командам")
+    ANILIB("AniLib", "Каталог AniLib (animelib.org), озвучки по командам"),
+    /** Direct CDN links (ddbb aggregator: turbo/collaps/alloha/veoveo). Movie/QOM rows only —
+     *  never offered by the anime picker (see ANIME_PICKER_SOURCES). */
+    DDBB("DDBB", "Прямые ссылки Turbo/Collaps/Alloha/Veoveo")
 }
+
+/** Sources the anime selection screen races/loads; DDBB is movie-playback-only. */
+val ANIME_PICKER_SOURCES: List<AnimeSourceType> =
+    listOf(AnimeSourceType.KODIK, AnimeSourceType.ANILIBERTY, AnimeSourceType.ANILIB)
+
+/**
+ * Shared quality preference, best first: the default pick for any ladder (Kodik HLS, ddbb
+ * direct, lazy voiceover resolve). One constant so resolvers and the player agree on "max".
+ */
+val QUALITY_PREFERENCE_DESC: List<String> =
+    listOf("2160p", "1440p", "1080p", "720p", "480p", "360p", "240p")
 
 @Serializable
 data class AnimeSource(

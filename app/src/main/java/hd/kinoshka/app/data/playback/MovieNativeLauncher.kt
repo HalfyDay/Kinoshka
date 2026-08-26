@@ -17,6 +17,7 @@ import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
 import hd.kinoshka.app.data.model.KodikMovieCandidate
 import hd.kinoshka.app.data.model.MovieEpisodeRef
 import hd.kinoshka.app.data.model.MovieStreamResult
+import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import hd.kinoshka.app.data.model.canonicalSeriesEpisodes
 import hd.kinoshka.app.data.model.selectInitialSeriesEpisode
 import hd.kinoshka.app.data.source.DdbbStreamResolver
@@ -81,6 +82,7 @@ object MovieNativeLauncher {
         }
 
     private suspend fun resolveSeries(request: MoviePlaybackRequest, profile: UserFilmProfile?): NativeLaunchPayload = coroutineScope {
+        val raceStartMs = System.currentTimeMillis()
         val ddbbSeriesDeferred = async {
             request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
                 runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
@@ -91,76 +93,105 @@ object MovieNativeLauncher {
         val catalogDeferred = async { MovieStreamResolver.loadCatalog(request) }
         when (val outcome = awaitFirstSeriesOutcome(catalogDeferred, ddbbSeriesDeferred)) {
             is SeriesOutcome.FromKodik -> {
-                val catalog = outcome.catalog
-                val episodes = canonicalSeriesEpisodes(catalog.candidates)
-                // find-player-discovered rows expose only a whole-title player link; present them
-                // as a single S1E1 entry so native playback can start.
-                val effectiveEpisodes = episodes.ifEmpty {
-                    listOf(MovieEpisodeRef(1, 1, "Серия 1", catalog.candidates.firstOrNull()?.topLevelPlayerUrl.orEmpty()))
-                }
-                val initialEpisode = selectInitialSeriesEpisode(effectiveEpisodes, profile)
-                val result = initialEpisode?.let {
-                    MovieStreamResolver.resolveEpisode(request, it, catalog.candidates)
-                }
-                if (result is MovieStreamResult.Success && initialEpisode != null) {
-                    // One voiceover entry per Kodik dub found in the catalog.
-                    val voiceovers = catalog.candidates
-                        .filter { !it.translationId.isNullOrBlank() }
-                        .distinctBy { it.translationId }
-                        .map { candidate ->
-                            FlatTranslation(
-                                source = AnimeSourceType.KODIK,
-                                translationId = candidate.translationId!!,
-                                title = candidate.translationTitle ?: "Озвучка ${candidate.translationId}",
-                                episodes = emptyList()
-                            )
-                        }
-                    val seriesContext = MovieSeriesPlaybackContext(
-                        request = request,
-                        candidates = catalog.candidates,
-                        episodes = effectiveEpisodes,
-                        currentEpisode = initialEpisode,
-                        kinopoiskId = request.kinopoiskId ?: 0,
-                        displayTitle = request.titles.firstOrNull() ?: "Фильм"
-                    )
-                    NativeLaunchPayload.MovieSeries(seriesContext, result.stream)
-                } else {
-                    val reason = (result as? MovieStreamResult.Unavailable)?.reason
-                        ?: MoviePlaybackFailure.NO_PLAYABLE_REFERENCES
-                    Log.i(TAG, "series kodik unplayable: $reason")
-                    NativeLaunchPayload.Failed(reason)
-                }
+                ddbbSeriesDeferred.cancel()
+                Log.i(TAG, "series race winner=kodik at ${System.currentTimeMillis() - raceStartMs}ms")
+                kodikSeriesPayload(request, outcome.catalog, profile)
             }
             is SeriesOutcome.FromDdbb -> {
                 val harvested = outcome.stream
-                Log.i(TAG, "Series native via ddbb/${harvested.sourceName}")
-                val context = buildDdbbSeriesContext(request, harvested, profile)
-                if (context != null) {
-                    val ep = context.currentEpisode
-                    val stream = AnimeMediaStream(
-                        url = ep.playerUrl,
-                        headers = harvested.headers,
-                        qualities = DdbbStreamResolver.directQualities(context.kinopoiskId, ep.playerUrl).orEmpty()
-                    )
-                    NativeLaunchPayload.MovieSeries(context, stream)
+                // Episode-coverage guard: Kodik often indexes more seasons/episodes than ddbb's
+                // turbo config. If Kodik's catalog is ALREADY resolved (no extra wait) and its
+                // episode union is strictly broader, keep the Kodik structure.
+                val kodikCatalog = catalogDeferred
+                    .takeIf { it.isCompleted }
+                    ?.let { runCatching { it.await() }.getOrNull() as? MovieCatalogResult.Available }
+                catalogDeferred.cancel()
+                val ddbbEpisodeCount = harvested.episodeTracks
+                    .distinctBy { it.seasonNumber to it.episodeNumber }.size
+                val kodikEpisodeCount = kodikCatalog?.let { canonicalSeriesEpisodes(it.candidates).size } ?: 0
+                if (kodikCatalog != null && kodikEpisodeCount > ddbbEpisodeCount) {
+                    Log.i(TAG, "series race winner=ddbb at ${System.currentTimeMillis() - raceStartMs}ms, but kodik structure broader ($kodikEpisodeCount > $ddbbEpisodeCount eps) → kodik")
+                    kodikSeriesPayload(request, kodikCatalog, profile)
                 } else {
-                    // Embed without episode structure: voiceover-only playback (ddbb rows only —
-                    // the series race never carried a Kodik stream to merge).
-                    NativeLaunchPayload.QualityOnlyMovie(
-                        AnimeMediaStream(
-                            url = harvested.url,
+                    Log.i(TAG, "series race winner=ddbb/${harvested.sourceName} at ${System.currentTimeMillis() - raceStartMs}ms (ddbb eps=$ddbbEpisodeCount, kodik eps=$kodikEpisodeCount)")
+                    val context = buildDdbbSeriesContext(request, harvested, profile)
+                    if (context != null) {
+                        val ep = context.currentEpisode
+                        val stream = AnimeMediaStream(
+                            url = ep.playerUrl,
                             headers = harvested.headers,
-                            qualities = harvested.qualities
-                        ),
-                        stableMovieTranslations(request, harvested, emptyList())
-                    )
+                            qualities = DdbbStreamResolver.directQualities(context.kinopoiskId, ep.playerUrl).orEmpty()
+                        )
+                        NativeLaunchPayload.MovieSeries(context, stream)
+                    } else {
+                        // Embed without episode structure: voiceover-only playback (ddbb rows only —
+                        // the series race never carried a Kodik stream to merge).
+                        NativeLaunchPayload.QualityOnlyMovie(
+                            AnimeMediaStream(
+                                url = harvested.url,
+                                headers = harvested.headers,
+                                qualities = harvested.qualities
+                            ),
+                            stableMovieTranslations(request, harvested, emptyList())
+                        )
+                    }
                 }
             }
-            is SeriesOutcome.Failed -> NativeLaunchPayload.Failed(outcome.reason)
+            is SeriesOutcome.Failed -> {
+                catalogDeferred.cancel()
+                ddbbSeriesDeferred.cancel()
+                NativeLaunchPayload.Failed(outcome.reason)
+            }
+        }
+    }
+
+    private suspend fun kodikSeriesPayload(
+        request: MoviePlaybackRequest,
+        catalog: MovieCatalogResult.Available,
+        profile: UserFilmProfile?,
+    ): NativeLaunchPayload = coroutineScope {
+        val episodes = canonicalSeriesEpisodes(catalog.candidates)
+        // find-player-discovered rows expose only a whole-title player link; present them
+        // as a single S1E1 entry so native playback can start.
+        val effectiveEpisodes = episodes.ifEmpty {
+            listOf(MovieEpisodeRef(1, 1, "Серия 1", catalog.candidates.firstOrNull()?.topLevelPlayerUrl.orEmpty()))
+        }
+        val initialEpisode = selectInitialSeriesEpisode(effectiveEpisodes, profile)
+        val result = initialEpisode?.let {
+            MovieStreamResolver.resolveEpisode(request, it, catalog.candidates)
+        }
+        if (result is MovieStreamResult.Success && initialEpisode != null) {
+            // One voiceover entry per Kodik dub found in the catalog.
+            val voiceovers = catalog.candidates
+                .filter { !it.translationId.isNullOrBlank() }
+                .distinctBy { it.translationId }
+                .map { candidate ->
+                    FlatTranslation(
+                        source = AnimeSourceType.KODIK,
+                        translationId = candidate.translationId!!,
+                        title = candidate.translationTitle ?: "Озвучка ${candidate.translationId}",
+                        episodes = emptyList()
+                    )
+                }
+            val seriesContext = MovieSeriesPlaybackContext(
+                request = request,
+                candidates = catalog.candidates,
+                episodes = effectiveEpisodes,
+                currentEpisode = initialEpisode,
+                kinopoiskId = request.kinopoiskId ?: 0,
+                displayTitle = request.titles.firstOrNull() ?: "Фильм"
+            )
+            NativeLaunchPayload.MovieSeries(seriesContext, result.stream)
+        } else {
+            val reason = (result as? MovieStreamResult.Unavailable)?.reason
+                ?: MoviePlaybackFailure.NO_PLAYABLE_REFERENCES
+            Log.i(TAG, "series kodik unplayable: $reason")
+            NativeLaunchPayload.Failed(reason)
         }
     }
 
     private suspend fun resolveMovie(request: MoviePlaybackRequest, stateStore: UserStateStore?): NativeLaunchPayload = coroutineScope {
+        val raceStartMs = System.currentTimeMillis()
         val ddbbDeferred = async {
             request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
                 runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
@@ -169,7 +200,9 @@ object MovieNativeLauncher {
             }
         }
         val kodikDeferred = async { MovieStreamResolver.resolveMovie(request) }
-        when (val outcome = awaitFirstMovieOutcome(kodikDeferred, ddbbDeferred)) {
+        val outcome = awaitFirstMovieOutcome(kodikDeferred, ddbbDeferred)
+        Log.i(TAG, "movie race winner=${when (outcome) { is MovieOutcome.FromDdbb -> "ddbb"; is MovieOutcome.FromKodik -> "kodik"; is MovieOutcome.Failed -> "none" }} at ${System.currentTimeMillis() - raceStartMs}ms")
+        when (outcome) {
             is MovieOutcome.FromKodik -> {
                 // The loser is NOT cancelled by the race anymore: a short grace window lets BOTH
                 // dub catalogs feed the dropdown. Winner-dependent lists (kodik-only on one
@@ -204,7 +237,12 @@ object MovieNativeLauncher {
         }
     }
 
-    /** Resolve every offered dub before opening PlayerActivity; failed rows are not advertised. */
+    /**
+     * Resolve every offered dub before opening PlayerActivity; failed rows are not advertised.
+     * A Kodik row whose HLS extraction yields nothing is KEPT (unprepared): the player's lazy
+     * [hd.kinoshka.app...loadQomVoiceover] path re-resolves it on switch instead of the row
+     * silently vanishing from the dropdown.
+     */
     private suspend fun readyQualityMovie(
         launchStream: AnimeMediaStream,
         translations: List<FlatTranslation>,
@@ -218,27 +256,35 @@ object MovieNativeLauncher {
                 // the authoritative marker that this is already a direct stream.
                 val turboLadder = DdbbStreamResolver.cachedLadderFor(rawUrl)
                 val direct = turboLadder != null || rawUrl.contains(".mp4", true) || rawUrl.contains(".m3u8", true) || rawUrl.contains(".webm", true)
-                val stream = if (direct) {
-                    val ladder = turboLadder.orEmpty()
-                    AnimeMediaStream(rawUrl, ladder, launchStream.headers)
+                if (direct) {
+                    val ladder = turboLadder.orEmpty().ifEmpty { mapOf("Auto" to rawUrl) }
+                    translation to AnimeMediaStream(rawUrl, ladder, launchStream.headers)
                 } else {
                     val ladder = runCatching {
                         AnimeStreamResolver.resolveKodikHls(AnimeStreamResolver.absoluteKodikUrl(rawUrl))
                     }.getOrDefault(emptyMap())
-                    val url = listOf("1080p", "720p", "480p", "360p", "240p")
-                        .firstNotNullOfOrNull { ladder[it] } ?: ladder.values.firstOrNull()
-                    url?.let { AnimeMediaStream(it, ladder, AnimeStreamResolver.kodikPlaybackHeaders()) }
-                } ?: return@async null
-                translation to stream
+                    val url = QUALITY_PREFERENCE_DESC.firstNotNullOfOrNull { ladder[it] } ?: ladder.values.firstOrNull()
+                    if (url != null) {
+                        translation to AnimeMediaStream(url, ladder, AnimeStreamResolver.kodikPlaybackHeaders())
+                    } else {
+                        // No ladder this time: keep the row unprepared — the player lazy-resolves
+                        // the raw player link when the user actually picks this dub.
+                        translation to null
+                    }
+                }
             }
         }.awaitAll().filterNotNull()
-        val streams = ready.associate { it.first.translationId to it.second }
+        val streams = ready.mapNotNull { it.second?.let { stream -> it.first.translationId to stream } }.toMap()
         val rows = ready.map { it.first }
         val initialRow = rows.firstOrNull { streams[it.translationId]?.url == launchStream.url }
         val initial = initialRow?.let { streams[it.translationId] }
-            ?: streams[rows.firstOrNull()?.translationId]
+            ?: streams[rows.firstOrNull { streams[it.translationId] != null }?.translationId]
             ?: launchStream
         val orderedRows = initialRow?.let { first -> listOf(first) + rows.filterNot { it.translationId == first.translationId } } ?: rows
+        val ladderSummary = rows.joinToString { row ->
+            "${row.source.name}:${row.title.take(24)}=${streams[row.translationId]?.qualities?.keys?.joinToString("/") ?: "lazy"}"
+        }
+        Log.i(TAG, "readyQualityMovie: rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), kp=$kinopoiskId, ladders: $ladderSummary")
         NativeLaunchPayload.QualityOnlyMovie(initial, orderedRows, streams)
     }
 
@@ -279,7 +325,7 @@ object MovieNativeLauncher {
         }
         val persistedTranslations = persistedCache?.rows.orEmpty().map { row ->
             FlatTranslation(
-                source = AnimeSourceType.KODIK,
+                source = runCatching { AnimeSourceType.valueOf(row.source) }.getOrDefault(AnimeSourceType.KODIK),
                 translationId = row.id,
                 title = row.title,
                 episodes = listOf(AnimeEpisode(number = 1, title = row.title, link = row.link))
@@ -288,7 +334,7 @@ object MovieNativeLauncher {
 
         val ddbbRows = ddbbStream?.translations.orEmpty().map { (title, url) ->
             FlatTranslation(
-                source = AnimeSourceType.KODIK,
+                source = AnimeSourceType.DDBB,
                 translationId = title,
                 title = title,
                 episodes = listOf(AnimeEpisode(number = 1, title = title, link = url))
@@ -309,7 +355,8 @@ object MovieNativeLauncher {
                         if (link.isBlank()) null else CachedMovieVoiceover(
                             id = tr.translationId,
                             title = tr.title,
-                            link = link
+                            link = link,
+                            source = tr.source.name
                         )
                     }
                 )
@@ -342,6 +389,9 @@ object MovieNativeLauncher {
     private const val DDBB_GRACE_MS = 3_500L
     private const val KODIK_GRACE_MS = 4_000L
 
+    /** ddbb's absolute-priority window: how long a ready Kodik result waits for ddbb to still win. */
+    internal const val DDBB_WIN_GRACE_MS = 3_000L
+
     /** Outcome of the parallel Kodik-catalog-vs-ddbb series race. */
     internal sealed interface SeriesOutcome {
         data class FromKodik(val catalog: MovieCatalogResult.Available) : SeriesOutcome
@@ -349,38 +399,37 @@ object MovieNativeLauncher {
         data class Failed(val reason: MoviePlaybackFailure) : SeriesOutcome
     }
 
+    /**
+     * ddbb-first series race (same priority as [awaitFirstMovieOutcome]): ddbb wins whenever it
+     * yields a stream; a ready Kodik catalog waits [DDBB_WIN_GRACE_MS] for ddbb before it may
+     * take over. Episode-coverage comparison against Kodik happens in the caller. The loser is
+     * not cancelled here so the caller can still consult it.
+     */
     internal suspend fun awaitFirstSeriesOutcome(
         catalogDeferred: kotlinx.coroutines.Deferred<MovieCatalogResult>,
         ddbbDeferred: kotlinx.coroutines.Deferred<DdbbStream?>,
     ): SeriesOutcome {
         while (true) {
+            if (ddbbDeferred.isCompleted && ddbbDeferred.await() != null) {
+                return SeriesOutcome.FromDdbb(ddbbDeferred.await()!!)
+            }
             if (catalogDeferred.isCompleted) {
                 when (val catalog = catalogDeferred.await()) {
                     is MovieCatalogResult.Available -> {
-                        ddbbDeferred.cancel()
+                        // Same absolute-priority window as the movie race: a ready Kodik catalog
+                        // waits briefly for ddbb before it may take over.
+                        val ddbb = kotlinx.coroutines.withTimeoutOrNull(DDBB_WIN_GRACE_MS) {
+                            runCatching { ddbbDeferred.await() }.getOrNull()
+                        }
+                        if (ddbb != null) return SeriesOutcome.FromDdbb(ddbb)
                         return SeriesOutcome.FromKodik(catalog)
                     }
                     is MovieCatalogResult.Unavailable -> {
-                        if (ddbbDeferred.isCompleted) {
-                            val stream = ddbbDeferred.await()
-                            return if (stream != null) SeriesOutcome.FromDdbb(stream)
-                            else SeriesOutcome.Failed(catalog.reason)
-                        }
+                        // Kodik already failed: await ddbb directly instead of busy-spinning.
+                        val stream = runCatching { ddbbDeferred.await() }.getOrNull()
+                        return if (stream != null) SeriesOutcome.FromDdbb(stream)
+                        else SeriesOutcome.Failed(catalog.reason)
                     }
-                }
-            }
-            if (ddbbDeferred.isCompleted && ddbbDeferred.await() != null) {
-                catalogDeferred.cancel()
-                return SeriesOutcome.FromDdbb(ddbbDeferred.await()!!)
-            }
-            if (catalogDeferred.isCompleted && ddbbDeferred.isCompleted) {
-                return when {
-                    catalogDeferred.await() is MovieCatalogResult.Available ->
-                        SeriesOutcome.FromKodik(catalogDeferred.await() as MovieCatalogResult.Available)
-                    ddbbDeferred.await() != null -> SeriesOutcome.FromDdbb(ddbbDeferred.await()!!)
-                    catalogDeferred.await() is MovieCatalogResult.Unavailable ->
-                        SeriesOutcome.Failed((catalogDeferred.await() as MovieCatalogResult.Unavailable).reason)
-                    else -> SeriesOutcome.Failed(MoviePlaybackFailure.NO_PROVIDER_RESULTS)
                 }
             }
             select<Unit> {
@@ -398,34 +447,39 @@ object MovieNativeLauncher {
     }
 
     /**
-     * True race between the Kodik catalog and the ddbb aggregator: resolves as soon as EITHER
-     * source produces a playable stream. Previously Kodik's full search cascade ran to
-     * completion before ddbb was even consulted, serially paying both latencies on every
-     * fallback (15-45s worst case before the player opened).
-     *
-     * The LOSER IS NOT CANCELLED here anymore: callers hold a grace window over it so both dub
-     * catalogs can merge into the voiceover dropdown (winner-dependent lists were the "different
-     * translations every launch" bug). Callers cancel after their window.
+     * ddbb-first race: DDBB wins whenever it produces a stream within its window. Only when
+     * Kodik is already successful AND ddbb still hasn't finished does Kodik get the outcome —
+     * after waiting [DDBB_WIN_GRACE_MS] more for ddbb (direct links with 1080p beat Kodik's
+     * 720p-first HLS). The LOSER IS NOT CANCELLED here: callers hold a grace window over it so
+     * both dub catalogs can merge into the voiceover dropdown (winner-dependent lists were the
+     * "different translations every launch" bug). Callers cancel after their window.
      */
     internal suspend fun awaitFirstMovieOutcome(
         kodikDeferred: kotlinx.coroutines.Deferred<MovieStreamResult>,
         ddbbDeferred: kotlinx.coroutines.Deferred<DdbbStream?>,
     ): MovieOutcome {
         while (true) {
-            if (kodikDeferred.isCompleted && kodikDeferred.await() is MovieStreamResult.Success) {
-                @Suppress("UNCHECKED_CAST")
-                return MovieOutcome.FromKodik(kodikDeferred.await() as MovieStreamResult.Success)
-            }
             if (ddbbDeferred.isCompleted && ddbbDeferred.await() != null) {
                 return MovieOutcome.FromDdbb(ddbbDeferred.await()!!)
             }
-            if (kodikDeferred.isCompleted && ddbbDeferred.isCompleted) {
+            if (kodikDeferred.isCompleted) {
                 val kodik = kodikDeferred.await()
-                return if (kodik is MovieStreamResult.Success) {
-                    MovieOutcome.FromKodik(kodik)
-                } else {
-                    MovieOutcome.Failed(kodik as MovieStreamResult.Unavailable)
+                if (kodik is MovieStreamResult.Success) {
+                    // Kodik ready but ddbb still pending: ddbb keeps absolute priority for a short
+                    // window before Kodik may take over.
+                    val ddbb = kotlinx.coroutines.withTimeoutOrNull(DDBB_WIN_GRACE_MS) {
+                        runCatching { ddbbDeferred.await() }.getOrNull()
+                    }
+                    @Suppress("UNCHECKED_CAST")
+                    return if (ddbb != null) MovieOutcome.FromDdbb(ddbb)
+                    else MovieOutcome.FromKodik(kodik as MovieStreamResult.Success)
                 }
+                // Kodik already failed: awaiting ddbb directly — looping back through select
+                // would busy-spin on the already-completed Kodik deferral.
+                val ddbb = runCatching { ddbbDeferred.await() }.getOrNull()
+                @Suppress("UNCHECKED_CAST")
+                return ddbb?.let { MovieOutcome.FromDdbb(it) }
+                    ?: MovieOutcome.Failed(kodik as MovieStreamResult.Unavailable)
             }
             select<Unit> {
                 kodikDeferred.onAwait { }

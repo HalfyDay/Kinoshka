@@ -8,6 +8,7 @@ import hd.kinoshka.app.data.model.MovieEpisodeRef
 import hd.kinoshka.app.data.model.MoviePlaybackFailure
 import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.MovieStreamResult
+import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
@@ -236,10 +237,9 @@ object MovieStreamResolver {
                 Log.w(TAG, "Candidate ${index + 1} extraction failed: ${it.javaClass.simpleName}")
             }.getOrDefault(emptyMap())
             if (qualities.isNotEmpty()) {
-                // Prefer 720p for bandwidth, consistent with the anime paths, then walk a deterministic ladder
-                // so 2160p/360p/240p/Auto still resolve instead of depending on map insertion order.
-                val preference = listOf("720p", "1080p", "480p", "360p", "2160p", "240p")
-                val bestKey = preference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
+                // Max quality first (shared ladder constant), then a deterministic walk so
+                // unknown variants still resolve instead of depending on map insertion order.
+                val bestKey = QUALITY_PREFERENCE_DESC.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
                 val url = qualities.getValue(bestKey)
                 Log.i(TAG, "Resolved candidate ${index + 1}/${references.size} at $bestKey")
                 return MovieStreamResult.Success(

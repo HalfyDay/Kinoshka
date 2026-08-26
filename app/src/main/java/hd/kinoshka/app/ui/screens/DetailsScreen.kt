@@ -692,45 +692,62 @@ fun DetailsScreen(
                                     profile = state.userProfile,
                                     seasons = state.seasons,
                                     onWatch = {
-                                        isInteractive = false
                                         if (
                                             playerMode == hd.kinoshka.app.data.local.PlayerMode.MPVEX &&
                                             onOpenNativePlayer != null
                                         ) {
                                             val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
                                             val request = item.toMoviePlaybackRequest()
-                                            // Do not create PlayerActivity until the complete native launch
-                                            // payload is ready. PENDING_MOVIE made an empty player appear first
-                                            // and then mutate its voiceover/quality state under the user.
-                                            scope.launch {
-                                                when (val payload = withContext(Dispatchers.IO) {
-                                                    MovieNativeLauncher.resolve(
-                                                        request,
-                                                        state.userProfile,
-                                                        UserStateStore(context)
+                                            if (item.kinopoiskId > 0) {
+                                                // Instant open: PlayerActivity starts NOW under its loading
+                                                // overlay and runs the Kodik↔ddbb race itself (PENDING_MOVIE).
+                                                // Blocking on the full resolve here left the details page
+                                                // frozen behind a dead button for seconds.
+                                                hd.kinoshka.app.data.model.PendingMovieRequestStore.put(
+                                                    item.kinopoiskId,
+                                                    hd.kinoshka.app.data.model.PendingMovieRequestStore.PendingMovieLaunch(
+                                                        request = request,
+                                                        displayTitle = filmTitle,
+                                                        webFallbackUrl = item.toWatchUrl()
                                                     )
-                                                }) {
-                                                    is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
-                                                        MovieVoiceoverStreamStore.put(item.kinopoiskId, payload.preparedStreams)
-                                                        val selected = payload.translations.firstOrNull()?.translationId.orEmpty()
-                                                        onOpenNativePlayer?.invoke(
-                                                            payload.stream.url, payload.stream.headers, payload.stream.qualities,
-                                                            filmTitle, 1, filmTitle, 0, item.kinopoiskId, "MOVIE",
-                                                            emptyList(), payload.translations, selected, null
+                                                )
+                                                onOpenNativePlayer?.invoke(
+                                                    "", emptyMap(), emptyMap(),
+                                                    filmTitle, 1, filmTitle, 0, item.kinopoiskId, "PENDING",
+                                                    emptyList(), emptyList(), "", null
+                                                )
+                                            } else {
+                                                // No lookup id: PendingMovieRequestStore cannot hand off the
+                                                // request, so fall back to the blocking pre-resolve.
+                                                scope.launch {
+                                                    when (val payload = withContext(Dispatchers.IO) {
+                                                        MovieNativeLauncher.resolve(
+                                                            request,
+                                                            state.userProfile,
+                                                            UserStateStore(context)
                                                         )
+                                                    }) {
+                                                        is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
+                                                            MovieVoiceoverStreamStore.put(item.kinopoiskId, payload.preparedStreams)
+                                                            val selected = payload.translations.firstOrNull()?.translationId.orEmpty()
+                                                            onOpenNativePlayer?.invoke(
+                                                                payload.stream.url, payload.stream.headers, payload.stream.qualities,
+                                                                filmTitle, 1, filmTitle, 0, item.kinopoiskId, "MOVIE",
+                                                                emptyList(), payload.translations, selected, null
+                                                            )
+                                                        }
+                                                        is MovieNativeLauncher.NativeLaunchPayload.MovieSeries -> {
+                                                            val episode = payload.context.currentEpisode
+                                                            onOpenNativePlayer?.invoke(
+                                                                payload.stream.url, payload.stream.headers, payload.stream.qualities,
+                                                                filmTitle, episode.playerEpisodeKey, episode.title.orEmpty(), 0,
+                                                                item.kinopoiskId, "MOVIE", emptyList(), emptyList(), "",
+                                                                payload.context
+                                                            )
+                                                        }
+                                                        is MovieNativeLauncher.NativeLaunchPayload.Failed -> onOpenUrl(item.toWatchUrl())
                                                     }
-                                                    is MovieNativeLauncher.NativeLaunchPayload.MovieSeries -> {
-                                                        val episode = payload.context.currentEpisode
-                                                        onOpenNativePlayer?.invoke(
-                                                            payload.stream.url, payload.stream.headers, payload.stream.qualities,
-                                                            filmTitle, episode.playerEpisodeKey, episode.title.orEmpty(), 0,
-                                                            item.kinopoiskId, "MOVIE", emptyList(), emptyList(), "",
-                                                            payload.context
-                                                        )
-                                                    }
-                                                    is MovieNativeLauncher.NativeLaunchPayload.Failed -> onOpenUrl(item.toWatchUrl())
                                                 }
-                                                isInteractive = true
                                             }
                                         } else {
                                             onWatch(item)

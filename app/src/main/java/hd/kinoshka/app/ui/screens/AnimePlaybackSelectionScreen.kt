@@ -167,7 +167,7 @@ fun AnimePlaybackSelectionScreen(
 
     /** Launches sources that are neither loading nor loaded — initial open and «Повторить». */
     fun startPendingSources() {
-        AnimeSourceType.entries.forEach { src ->
+        ANIME_PICKER_SOURCES.forEach { src ->
             val state = sourceStatesFlow.value[src]
             if (state !is SourceLoadState.Loading && state !is SourceLoadState.Ready) {
                 startSource(src)
@@ -228,7 +228,7 @@ fun AnimePlaybackSelectionScreen(
     val activeResumeSuggestion = if (currentStepIndex == 0) resumeSuggestion else null
 
     // Full error state only when every source has settled and none produced usable content.
-    val allSourcesSettled = AnimeSourceType.entries.all { sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Failed }
+    val allSourcesSettled = ANIME_PICKER_SOURCES.all { sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Failed }
     val isLoadingSources = sourceStates.values.any { it is SourceLoadState.Loading }
     val errorMessage = if (allSourcesSettled && !isLoadingSources && allTranslations.isEmpty()) {
         "Не удалось найти видео для этого аниме.\nДля 18+ тайтлов используйте веб-плеер."
@@ -437,7 +437,7 @@ fun AnimePlaybackSelectionScreen(
 
                 // Slim progress strip: the page is usable while sources are still resolving.
                 androidx.compose.animation.AnimatedVisibility(visible = isLoadingSources) {
-                    val settled = AnimeSourceType.entries.count { sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Failed }
+                    val settled = ANIME_PICKER_SOURCES.count { sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Failed }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -450,7 +450,7 @@ fun AnimePlaybackSelectionScreen(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "Загрузка источников… $settled/${AnimeSourceType.entries.size}",
+                            text = "Загрузка источников… $settled/${ANIME_PICKER_SOURCES.size}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -737,7 +737,7 @@ private fun SelectTranslationStep(
         item {
             // Source chips (previous style). "Все" stays first; used sources rise by recency.
             val sources = remember(allTranslations, playbackUsage) {
-                val available = AnimeSourceType.entries.filter { src ->
+                val available = ANIME_PICKER_SOURCES.filter { src ->
                     allTranslations.any { it.source == src }
                 }
                 val ranked = available.sortedWith(
@@ -764,7 +764,7 @@ private fun SelectTranslationStep(
 
         // Sources still resolving or failed — shown as compact rows above the results so the
         // page explains itself instead of silently hiding providers (18+ source-page pattern).
-        val pendingSources = AnimeSourceType.entries.mapNotNull { src ->
+        val pendingSources = ANIME_PICKER_SOURCES.mapNotNull { src ->
             when (val state = sourceStates[src]) {
                 is SourceLoadState.Loading -> src to null
                 is SourceLoadState.Failed -> src to state.message

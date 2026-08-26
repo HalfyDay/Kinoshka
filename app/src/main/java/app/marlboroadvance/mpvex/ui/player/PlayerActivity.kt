@@ -72,6 +72,7 @@ import hd.kinoshka.app.data.model.MovieEpisodeRef
 import hd.kinoshka.app.data.model.MovieStreamResult
 import hd.kinoshka.app.data.model.NativePlaybackMode
 import hd.kinoshka.app.data.model.PendingMovieRequestStore
+import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import hd.kinoshka.app.data.playback.MovieNativeLauncher
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.DdbbStreamResolver
@@ -1441,7 +1442,9 @@ class PlayerActivity :
     // Use the episode/translation the user picked on the source page — not just the first one.
     val selectedTranslationId = extras.getString("anime_current_translation_id")
       ?: translations.firstOrNull()?.translationId
-    Log.i(TAG, "QOM extras: mode=${extras.getString("playback_mode")}, translations=${translations.size}, qualities=${stream.qualities.keys}")
+    val bySource = translations.groupBy { it.source }.entries
+      .joinToString { (src, rows) -> "${src.name}=${rows.size}" }
+    Log.i(TAG, "QOM extras: mode=${extras.getString("playback_mode")}, translations=${translations.size} ($bySource), qualities=${stream.qualities.keys}")
     applyQualityOnlyMovieSetup(stream, translations, selectedTranslationId, currentQuality)
   }
 
@@ -1651,6 +1654,11 @@ class PlayerActivity :
             // The QOM quality-switch closure reads the field, not the parameter.
             currentAnimeStream = payload.stream
             effectiveNativePlaybackMode = NativePlaybackMode.QUALITY_ONLY_MOVIE
+            // Same handoff the blocking launch path performs: prepared per-dub ladders let
+            // voiceover switches play instantly instead of re-resolving.
+            launch.request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
+              hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.put(kpId, payload.preparedStreams)
+            }
             applyQualityOnlyMovieSetup(
               payload.stream,
               payload.translations,
@@ -1728,8 +1736,7 @@ class PlayerActivity :
       val qualities = runCatching {
         AnimeStreamResolver.resolveKodikHls(AnimeStreamResolver.absoluteKodikUrl(link))
       }.getOrDefault(emptyMap())
-      val preference = listOf("720p", "1080p", "480p", "360p", "2160p", "240p")
-      preference.firstOrNull { qualities.containsKey(it) }?.let { qualities[it] }
+      QUALITY_PREFERENCE_DESC.firstOrNull { qualities.containsKey(it) }?.let { qualities[it] }
         ?: qualities.values.firstOrNull()
         // Extraction produced nothing playable — a raw player-page link is NOT a fallback.
         ?: null

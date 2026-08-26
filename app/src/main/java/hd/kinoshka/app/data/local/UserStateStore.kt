@@ -115,7 +115,9 @@ data class PlaybackUsageStats(
 data class CachedMovieVoiceover(
     val id: String,
     val title: String,
-    val link: String
+    val link: String,
+    /** AnimeSourceType.name of the row's provider; older caches deserialize as KODIK. */
+    val source: String = "KODIK"
 )
 
 /** Persisted merged voiceover list of one movie; [savedAtMs] bounds url validity. */
