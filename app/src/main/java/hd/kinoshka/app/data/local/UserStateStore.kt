@@ -117,7 +117,9 @@ data class CachedMovieVoiceover(
     val title: String,
     val link: String,
     /** AnimeSourceType.name of the row's provider; older caches deserialize as KODIK. */
-    val source: String = "KODIK"
+    val source: String = "KODIK",
+    /** "voice" | "orig" | "sub" — kind of track; older caches deserialize as voice. */
+    val type: String = "voice"
 )
 
 /** Persisted merged voiceover list of one movie; [savedAtMs] bounds url validity. */

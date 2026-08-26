@@ -422,7 +422,13 @@ fun AnimeTranslationDropdown(
                                                 color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "${tr.source.displayName} • ${if (tr.type == "voice") "Озвучка" else "Субтитры"}",
+                                                text = "${tr.source.displayName} • ${
+                                                    when (tr.type) {
+                                                        "voice" -> "Озвучка"
+                                                        "orig" -> "Оригинал (без перевода)"
+                                                        else -> "Субтитры"
+                                                    }
+                                                }",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant
                                             )
