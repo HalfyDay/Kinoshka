@@ -1597,6 +1597,50 @@ class PlayerActivity :
   }
 
   /**
+   * The dub the user actually played before (most recent wins, then most used) among
+   * [translations] — or null when nothing is remembered yet. Unlike [preferredTranslationId]
+   * it never falls back to a list position: "no memory" must keep today's default pick.
+   */
+  private fun rememberedDubId(translations: List<FlatTranslation>): String? {
+    if (translations.isEmpty()) return null
+    val dubs = UserStateStore(this).getPlaybackUsage().dubs
+    return translations
+      .filter { (dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L) > 0L }
+      .maxWithOrNull(
+        compareByDescending<FlatTranslation> { dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L }
+          .thenByDescending { dubs[it.title.trim().lowercase()]?.count ?: 0 }
+      )?.translationId
+  }
+
+  /**
+   * Starts a movie on the remembered favorite dub instead of the race winner's default row
+   * (prepared ladder plays at once; unresolved rows lazy-extract). Returns true when it issued
+   * its own loadfile — the caller must skip its default loadfile then.
+   */
+  private fun startQomOnRememberedDub(
+    payload: MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie,
+  ): Boolean {
+    val rememberedId = rememberedDubId(payload.translations) ?: return false
+    // readyQualityMovie orders the winner's own row first — that row is already playing.
+    if (rememberedId == payload.translations.firstOrNull()?.translationId) return false
+    val track = payload.translations.firstOrNull { it.translationId == rememberedId } ?: return false
+    val kpId = intent.getIntExtra("movie_kinopoisk_id", 0)
+    val prepared = if (kpId > 0) {
+      hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(kpId)[rememberedId]
+    } else null
+    if (prepared != null) {
+      loadPreparedQomVoiceover(track, prepared, payload.translations)
+      return true
+    }
+    val link = track.episodes.firstOrNull()?.link
+    if (!link.isNullOrBlank()) {
+      loadQomVoiceover(track, link, payload.translations)
+      return true
+    }
+    return false
+  }
+
+  /**
    * Headers required by the voiceover's provider: raw Kodik links need kodik playback headers,
    * direct turbo/ddbb urls need their embed Referer (the launch stream's headers only match the
    * provider that won startup — cross-provider switches used to 403 silently).
@@ -1681,6 +1725,9 @@ class PlayerActivity :
             mediaIdentifier = stableKinoshkaIdentifier()
               ?: getMediaIdentifierFromUri(Uri.parse(resolvedUrl), fileName)
             MPVLib.setPropertyString("media-title", fileName)
+            // Favorite-dub start: play the remembered dub right away (its own tracked load);
+            // only fall through to the winner's default url when nothing is remembered.
+            if (startQomOnRememberedDub(payload)) return@withContext
             // Tracked: a dead CDN url auto re-resolves instead of ending in a black screen.
             beginTrackedStreamLoad(retry = { retryPendingResolve(launch, isRetry = true) })
             MPVLib.command("loadfile", resolvedUrl, "replace")
@@ -1693,12 +1740,32 @@ class PlayerActivity :
               payload.context.currentEpisode.seasonNumber,
               payload.context.currentEpisode.episodeNumber
             )
+            // Favorite-dub start for DIRECT (ddbb/turbo) catalogs: each candidate carries its
+            // own urls, so the remembered dub's episode link can be swapped in for free. When
+            // the favorite doesn't cover this episode the picker substitutes another dub (and
+            // applyMovieSeriesStream re-points the highlight to whatever really plays).
+            var seriesStream = payload.stream
+            var seriesContext = payload.context
+            var seriesTrId: String? = null
+            if (payload.context.isDirectSource) {
+              val rememberedId = rememberedDubId(seriesTranslationsFor(payload.context, payload.context.currentEpisode))
+              if (rememberedId != null) {
+                pickDirectSeriesStream(payload.context, payload.context.currentEpisode, rememberedId, allowFallback = true)
+                  ?.let { picked ->
+                    seriesStream = picked.first
+                    seriesTrId = picked.second
+                    seriesContext = payload.context.copy(
+                      currentEpisode = payload.context.currentEpisode.copy(playerUrl = picked.first.url)
+                    )
+                  }
+              }
+            }
             // applyMovieSeriesStream issues loadfile itself; the overlay clears on FILE_LOADED.
             beginTrackedStreamLoad(retry = {
               launch.request.kinopoiskId?.takeIf { it > 0 }?.let { DdbbStreamResolver.evictResolveCache(it) }
               applyMovieSeriesStream(payload.stream, payload.context, UserStateStore(this@PlayerActivity).getPreferredQuality())
             })
-            applyMovieSeriesStream(payload.stream, payload.context, UserStateStore(this@PlayerActivity).getPreferredQuality())
+            applyMovieSeriesStream(seriesStream, seriesContext, UserStateStore(this@PlayerActivity).getPreferredQuality(), seriesTrId)
           }
           is MovieNativeLauncher.NativeLaunchPayload.Failed -> {
             finishStreamLoadIndicator()
@@ -1814,7 +1881,10 @@ class PlayerActivity :
     // whole series, but each dub covers its own episode subset — offering the rest produced
     // "unavailable voiceover" picks.
     val translations = seriesTranslationsFor(context, context.currentEpisode)
-    val currentTranslationId = translations.firstOrNull()?.translationId
+    // Preferred-start (ddbb only): highlight + usage record follow the remembered favorite
+    // dub; kodik contexts can't attribute the resolved stream to a dub, so they keep first.
+    val currentTranslationId = (if (context.isDirectSource) rememberedDubId(translations) else null)
+      ?: translations.firstOrNull()?.translationId
     // Launch-time usage: the dub the title starts under counts toward the preference memory.
     currentTranslationId?.let { trId ->
       context.candidates.firstOrNull { it.translationId == trId }?.let { dub ->
