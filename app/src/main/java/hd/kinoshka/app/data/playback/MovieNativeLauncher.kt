@@ -277,9 +277,11 @@ object MovieNativeLauncher {
         val streams = ready.mapNotNull { it.second?.let { stream -> it.first.translationId to stream } }.toMap()
         val rows = ready.map { it.first }
         val initialRow = rows.firstOrNull { streams[it.translationId]?.url == launchStream.url }
-        val initial = initialRow?.let { streams[it.translationId] }
-            ?: streams[rows.firstOrNull { streams[it.translationId] != null }?.translationId]
-            ?: launchStream
+        // CRITICAL: no prepared match → play the WINNER stream itself, never an arbitrary
+        // prepared row. Falling back to the first prepared row started a stale cached Kodik
+        // dub (yesterday's url, wrong headers) even though ddbb had just won with a fresh
+        // 1080p turbo link (kp=5457758 ended in END_FILE error loops).
+        val initial = initialRow?.let { streams[it.translationId] } ?: launchStream
         val orderedRows = initialRow?.let { first -> listOf(first) + rows.filterNot { it.translationId == first.translationId } } ?: rows
         val ladderSummary = rows.joinToString { row ->
             "${row.source.name}:${row.title.take(24)}=${streams[row.translationId]?.qualities?.keys?.joinToString("/") ?: "lazy"}"
@@ -340,7 +342,14 @@ object MovieNativeLauncher {
                 episodes = listOf(AnimeEpisode(number = 1, title = title, link = url))
             )
         }
-        val merged = (sessionTranslations + persistedTranslations + ddbbRows + kodikTranslations.sortedBy { it.title.lowercase() })
+        // Dedup keeps the FIRST row per normalized title, so FRESH sources must come first:
+        // putting caches ahead let yesterday's KODIK-marked copies shadow today's turbo rows
+        // entirely (kp=5457758 logged "ddbb=0" with 4 turbo dubs harvested). Fresh-first also
+        // replaces expired cached links with just-resolved ones; the list stays deterministic
+        // because the session cache is merged into the same union afterwards.
+        val merged = (ddbbRows +
+            kodikTranslations.sortedBy { it.title.lowercase() } +
+            sessionTranslations + persistedTranslations)
             .distinctBy { normalizeDubKey(it.title) }
         if (persistKey != null) {
             translationCache[persistKey] = merged to System.currentTimeMillis()
@@ -387,7 +396,11 @@ object MovieNativeLauncher {
 
     /** How long the winner waits for the loser's dub catalog before starting playback. */
     private const val DDBB_GRACE_MS = 3_500L
-    private const val KODIK_GRACE_MS = 4_000L
+
+    /** kp=5457758: Kodik's cascade finished ~600ms AFTER the old 4s window and its dubs were
+     *  then reconstructed from yesterday's persisted cache. 6.5s lets the fresh catalog join
+     *  the dropdown directly; the player shows its loading overlay meanwhile anyway. */
+    private const val KODIK_GRACE_MS = 6_500L
 
     /** ddbb's absolute-priority window: how long a ready Kodik result waits for ddbb to still win. */
     internal const val DDBB_WIN_GRACE_MS = 3_000L
