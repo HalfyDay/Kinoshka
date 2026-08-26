@@ -325,7 +325,9 @@ object MovieNativeLauncher {
                 cache.rows.isNotEmpty() && System.currentTimeMillis() - cache.savedAtMs < PERSISTED_VOICEOVERS_TTL_MS
             }
         }
-        val persistedTranslations = persistedCache?.rows.orEmpty().map { row ->
+        // Cached rows also pass the classifier: yesterday's "Субтитры · X"/"Оригинал (без
+        // перевода)" displays must fold onto today's clean "X"/"Оригинаl" rows.
+        val persistedTranslations = relabelDubTracks(persistedCache?.rows.orEmpty().map { row ->
             // Gson bypasses Kotlin defaults: rows written BEFORE a field existed come back as
             // runtime-null Strings ("FlatTranslation <init>, parameter type" NPE was live).
             // Normalize every optional field at the read boundary.
@@ -337,7 +339,7 @@ object MovieNativeLauncher {
                 type = row.type ?: "voice",
                 episodes = listOf(AnimeEpisode(number = 1, title = row.title, link = row.link.orEmpty()))
             )
-        }
+        })
 
         // Fresh inputs pass the classifier BEFORE dedup so "Original"/"…Subt" rows from
         // different providers collapse into one relabeled row instead of competing as dubs.
@@ -350,13 +352,15 @@ object MovieNativeLauncher {
             )
         })
         val freshKodikRows = relabelDubTracks(kodikTranslations.sortedBy { it.title.lowercase() })
-        // Dedup keeps the FIRST row per normalized title, so FRESH sources must come first:
-        // putting caches ahead let yesterday's KODIK-marked copies shadow today's turbo rows
-        // entirely (kp=5457758 logged "ddbb=0" with 4 turbo dubs harvested). Fresh-first also
-        // replaces expired cached links with just-resolved ones; the list stays deterministic
-        // because the session cache is merged into the same union afterwards.
+        // Dedup keeps the FIRST row per kind-folded title key, so FRESH sources must come
+        // first: putting caches ahead let yesterday's KODIK-marked copies shadow today's turbo
+        // rows entirely (kp=5457758 logged "ddbb=0" with 4 turbo dubs harvested). The kind-
+        // aware key folds "Original"/«Оригинал»/"Оригинал (без перевода)" into one orig row
+        // and "X.Subt"/"Субтитры · X" into one sub row, while a voice dub named like the
+        // subtitle studio stays separate ("sub:"-prefix). Fresh-first also replaces expired
+        // cached links; determinism survives because the session cache joins the same union.
         val merged = (ddbbRows + freshKodikRows + sessionTranslations + persistedTranslations)
-            .distinctBy { normalizeDubKey(it.title) }
+            .distinctBy { dubGroupKey(it.title) }
         if (persistKey != null) {
             translationCache[persistKey] = merged to System.currentTimeMillis()
         }
@@ -389,35 +393,44 @@ object MovieNativeLauncher {
     private val SUB_TRACK_HINTS = listOf(".subt", "субтитр", "subtitle", "(subs", " subs")
     private val ORIG_TRACK_HINTS = listOf("orig", "оригинал")
 
+    private val SUB_TOKEN_REGEX =
+        Regex("(?i)[.·\\s–—-]*(subtitles?|subt(?:itres)?|subs|субтитры?)")
+    // Strips the provider word AND the transitional "(без перевода)" suffix older app builds
+    // wrote into cached titles, so yesterday's rows fold onto today's fresh ones.
+    private val ORIG_TOKEN_REGEX =
+        Regex("(?i)\\(\\s*без\\s*перевода\\s*\\)|originals?|оригинал")
+
     /**
-     * Splits a merged dub title into (display title, FlatTranslation.type). Undubbed audio and
-     * subtitle tracks used to sit in the dropdown among regular dubs ("Original",
-     * "FSG Baddest Females.Subt") and read as voiceovers.
+     * Splits a raw dub title into (clean base, FlatTranslation.type). Display name stays FREE
+     * of the kind — the row's subtitle line ("Озвучка/Субтитры/Оригинал") carries it already;
+     * duplicating it inside the title doubled every label visually.
      */
-    internal fun classifyDubTrack(title: String): Pair<String, String> {
+    internal fun splitDubTrack(title: String): Pair<String, String> {
         val lower = title.lowercase()
         return when {
-            SUB_TRACK_HINTS.any { it in lower } -> {
-                val base = title
-                    .replace(Regex("(?i)[.·\\s–—-]*\\b(subtitles?|subt(?:itres|itolo)?|субтитры?)\\b"), "")
-                    .replace(Regex("\\s*[(·|]\\s*(subs|субт)\\s*[)]"), "")
-                    .trim('.', ' ', '-', '·', '|')
-                "Субтитры · ${base.ifBlank { title.trim() }}" to "sub"
-            }
-            ORIG_TRACK_HINTS.any { it in lower } -> {
-                val base = title.replace(Regex("(?i)\\b(originals?|оригинал)\\b"), "")
-                    .trim(' ', '-', '|', '(', ')')
-                if (base.isBlank()) "Оригинал (без перевода)" to "orig"
-                else "$base · оригинал (без перевода)" to "orig"
-            }
+            SUB_TRACK_HINTS.any { it in lower } ->
+                title.replace(SUB_TOKEN_REGEX, "")
+                    .trim('.', ' ', '-', '·', '|').let { it.ifBlank { "Субтитры" } } to "sub"
+            ORIG_TRACK_HINTS.any { it in lower } ->
+                title.replace(ORIG_TOKEN_REGEX, "")
+                    .replace(Regex("\\s{2,}"), " ")
+                    .trim(' ', '-', '·', '|', '.', '(', ')')
+                    .let { it.ifBlank { "Оригинал" } } to "orig"
             else -> title to "voice"
         }
     }
 
-    /** Applies [classifyDubTrack] over the whole list — one choke point for movie dropdown rows. */
+    /** Dedup key folded by track kind: "Original"(kodik) ≡ "Original"(ddbb) ≡ «Оригинал»,
+     *  while same-named voice and subtitle tracks never collapse ("kind:"-prefixed stems). */
+    private fun dubGroupKey(title: String): String {
+        val (base, kind) = splitDubTrack(title)
+        return "$kind:${normalizeDubKey(base)}"
+    }
+
+    /** Applies [splitDubTrack] over the whole list — one choke point for movie dropdown rows. */
     private fun relabelDubTracks(rows: List<FlatTranslation>): List<FlatTranslation> =
         rows.map { tr ->
-            val (display, kind) = classifyDubTrack(tr.title)
+            val (display, kind) = splitDubTrack(tr.title)
             if (kind == tr.type && display == tr.title) tr else tr.copy(title = display, type = kind)
         }
 
