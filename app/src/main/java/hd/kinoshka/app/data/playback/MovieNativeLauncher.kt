@@ -330,26 +330,28 @@ object MovieNativeLauncher {
                 source = runCatching { AnimeSourceType.valueOf(row.source) }.getOrDefault(AnimeSourceType.KODIK),
                 translationId = row.id,
                 title = row.title,
+                type = row.type,
                 episodes = listOf(AnimeEpisode(number = 1, title = row.title, link = row.link))
             )
         }
 
-        val ddbbRows = ddbbStream?.translations.orEmpty().map { (title, url) ->
+        // Fresh inputs pass the classifier BEFORE dedup so "Original"/"…Subt" rows from
+        // different providers collapse into one relabeled row instead of competing as dubs.
+        val ddbbRows = relabelDubTracks(ddbbStream?.translations.orEmpty().map { (title, url) ->
             FlatTranslation(
                 source = AnimeSourceType.DDBB,
                 translationId = title,
                 title = title,
                 episodes = listOf(AnimeEpisode(number = 1, title = title, link = url))
             )
-        }
+        })
+        val freshKodikRows = relabelDubTracks(kodikTranslations.sortedBy { it.title.lowercase() })
         // Dedup keeps the FIRST row per normalized title, so FRESH sources must come first:
         // putting caches ahead let yesterday's KODIK-marked copies shadow today's turbo rows
         // entirely (kp=5457758 logged "ddbb=0" with 4 turbo dubs harvested). Fresh-first also
         // replaces expired cached links with just-resolved ones; the list stays deterministic
         // because the session cache is merged into the same union afterwards.
-        val merged = (ddbbRows +
-            kodikTranslations.sortedBy { it.title.lowercase() } +
-            sessionTranslations + persistedTranslations)
+        val merged = (ddbbRows + freshKodikRows + sessionTranslations + persistedTranslations)
             .distinctBy { normalizeDubKey(it.title) }
         if (persistKey != null) {
             translationCache[persistKey] = merged to System.currentTimeMillis()
@@ -365,7 +367,8 @@ object MovieNativeLauncher {
                             id = tr.translationId,
                             title = tr.title,
                             link = link,
-                            source = tr.source.name
+                            source = tr.source.name,
+                            type = tr.type
                         )
                     }
                 )
@@ -376,6 +379,43 @@ object MovieNativeLauncher {
 
     private fun normalizeDubKey(title: String): String =
         title.trim().lowercase().replace(Regex("[^a-zа-яё0-9]+"), "")
+
+    // Provider labels that actually mean a non-dub track: turbo marks subtitle dubs with a
+    // ".Subt"/"·субтитры" suffix, and both Kodik and turbo name the undubbed audio "Original".
+    private val SUB_TRACK_HINTS = listOf(".subt", "субтитр", "subtitle", "(subs", " subs")
+    private val ORIG_TRACK_HINTS = listOf("orig", "оригинал")
+
+    /**
+     * Splits a merged dub title into (display title, FlatTranslation.type). Undubbed audio and
+     * subtitle tracks used to sit in the dropdown among regular dubs ("Original",
+     * "FSG Baddest Females.Subt") and read as voiceovers.
+     */
+    internal fun classifyDubTrack(title: String): Pair<String, String> {
+        val lower = title.lowercase()
+        return when {
+            SUB_TRACK_HINTS.any { it in lower } -> {
+                val base = title
+                    .replace(Regex("(?i)[.·\\s–—-]*\\b(subtitles?|subt(?:itres|itolo)?|субтитры?)\\b"), "")
+                    .replace(Regex("\\s*[(·|]\\s*(subs|субт)\\s*[)]"), "")
+                    .trim('.', ' ', '-', '·', '|')
+                "Субтитры · ${base.ifBlank { title.trim() }}" to "sub"
+            }
+            ORIG_TRACK_HINTS.any { it in lower } -> {
+                val base = title.replace(Regex("(?i)\\b(originals?|оригинал)\\b"), "")
+                    .trim(' ', '-', '|', '(', ')')
+                if (base.isBlank()) "Оригинал (без перевода)" to "orig"
+                else "$base · оригинал (без перевода)" to "orig"
+            }
+            else -> title to "voice"
+        }
+    }
+
+    /** Applies [classifyDubTrack] over the whole list — one choke point for movie dropdown rows. */
+    private fun relabelDubTracks(rows: List<FlatTranslation>): List<FlatTranslation> =
+        rows.map { tr ->
+            val (display, kind) = classifyDubTrack(tr.title)
+            if (kind == tr.type && display == tr.title) tr else tr.copy(title = display, type = kind)
+        }
 
     private fun translationCacheKey(request: MoviePlaybackRequest): String? {
         val kpId = request.kinopoiskId?.takeIf { it > 0 }
