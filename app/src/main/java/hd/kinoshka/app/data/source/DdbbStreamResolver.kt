@@ -1,6 +1,7 @@
 package hd.kinoshka.app.data.source
 
 import android.util.Log
+import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -140,15 +141,24 @@ object DdbbStreamResolver {
                         // the audio track. Default dub = first row of the merged list.
                         val defaultDubUrl = translations.firstOrNull()?.second
                         val defaultLadder = defaultDubUrl?.let { perDubLadders[it] }
+                        // Corrupted base64 phase windows hand out urls that look valid but 404
+                        // (live log kp=5457758: fresh token, instant HTTP 404). The winner is
+                        // probed; on failure the search walks DOWN the ladder and ACROSS the
+                        // other dubs until something actually answers.
+                        val chosen = pickPlayableLaunch(
+                            defaultUrl = defaultDubUrl ?: qualities.getValue(bestKey),
+                            defaultLadder = defaultLadder ?: qualities,
+                            candidateLadders = perDubLadders,
+                            headers = headers
+                        )
+                        val chosenLadder = linkedMapOf<String, String>().apply {
+                            directLadderPreference.forEach { q -> chosen.ladder[q]?.let { put(q, it) } }
+                            chosen.ladder.forEach { (q, u) -> if (!containsKey(q)) put(q, u) }
+                        }
                         return@withContext DdbbStream(
-                            url = defaultDubUrl ?: qualities.getValue(bestKey),
+                            url = chosen.url,
                             headers = headers,
-                            qualities = defaultLadder?.let { ladder ->
-                                linkedMapOf<String, String>().apply {
-                                    directLadderPreference.forEach { q -> ladder[q]?.let { put(q, it) } }
-                                    ladder.forEach { (q, u) -> if (!containsKey(q)) put(q, u) }
-                                }
-                            } ?: qualities,
+                            qualities = chosenLadder,
                             sourceName = type.replaceFirstChar { it.uppercase() },
                             translations = translations,
                             episodeTracks = serialParse.tracks
@@ -189,6 +199,83 @@ object DdbbStreamResolver {
     private const val HARVEST_TIMEOUT_MS = 15_000L
 
     private const val RESOLVE_DEADLINE_MS = 20_000L
+
+    /** Bounded probe budget: worst case (every candidate dead) adds ~2-3s to startup. */
+    private const val LAUNCH_PROBE_MAX_ATTEMPTS = 8
+    private const val LAUNCH_PROBE_TIMEOUT_MS = 2_500L
+
+    /**
+     * 2-byte Range GET against a direct CDN url with the playback headers. Returns true on any
+     * <400 answer — content-type/body are irrelevant, we only need the token to be alive.
+     */
+    private fun validateDirectUrl(url: String, headers: Map<String, String>): Boolean =
+        runCatching {
+            val builder = Request.Builder()
+                .url(url)
+                .header("Range", "bytes=0-1")
+                .header("User-Agent", USER_AGENT)
+            headers.forEach { (k, v) ->
+                if (!k.equals("User-Agent", ignoreCase = true)) {
+                    try { builder.header(k, v) } catch (_: IllegalArgumentException) { }
+                }
+            }
+            httpClient.newBuilder()
+                .connectTimeout(LAUNCH_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .readTimeout(LAUNCH_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .callTimeout(LAUNCH_PROBE_TIMEOUT_MS * 2, TimeUnit.MILLISECONDS)
+                .build()
+                .newCall(builder.build())
+                .execute()
+                .use { response -> response.code < 400 }
+        }.getOrDefault(false)
+
+    /** Cheap local ranking mirroring [directLadderPreference] without re-encoding entries. */
+    private val probeQualityOrder = QUALITY_PREFERENCE_DESC.filter { it != "1440p" }
+
+    private data class LaunchChoice(val url: String, val ladder: Map<String, String>)
+
+    /**
+     * Chooses the START stream by probing candidates in priority order:
+     * 1) preferred default url (+ its ladder rungs top-down),
+     * 2) every other dub's ladder rungs top-down.
+     * The first candidate that answers HTTP<400 wins; the returned ladder stays the FULL
+     * winner's ladder so quality switching keeps every rung visible.
+     */
+    private suspend fun pickPlayableLaunch(
+        defaultUrl: String,
+        defaultLadder: Map<String, String>,
+        candidateLadders: Map<String, Map<String, String>>,
+        headers: Map<String, String>,
+    ): LaunchChoice = withContext(Dispatchers.IO) {
+        var attempts = 0
+        // Default first: its own best-rung preference then walk down; identity handled via
+        // visiting its ladder exactly once before the other dubs.
+        val ordered = LinkedHashMap<String, Map<String, String>>()
+        ordered[defaultUrl] = defaultLadder.ifEmpty { mapOf("Auto" to defaultUrl) }
+        for ((bestUrl, ladder) in candidateLadders) {
+            if (!ordered.containsKey(bestUrl)) ordered[bestUrl] = ladder
+        }
+        if (!ordered.containsKey(defaultUrl)) return@withContext LaunchChoice(defaultUrl, defaultLadder)
+
+        for ((base, ladder) in ordered) {
+            if (attempts >= LAUNCH_PROBE_MAX_ATTEMPTS) break
+            // Probe top-down through this dub's rungs, falling back to the base itself.
+            val candidates = (probeQualityOrder.mapNotNull { q -> ladder[q] } + base).distinct()
+            for (url in candidates) {
+                if (attempts >= LAUNCH_PROBE_MAX_ATTEMPTS) break
+                attempts += 1
+                if (validateDirectUrl(url, headers)) {
+                    Log.i(TAG, "launch probe OK after $attempts attempt(s): ${url.take(90)}")
+                    return@withContext LaunchChoice(url, ladder)
+                }
+                Log.w(TAG, "launch probe dead ($attempts): ${url.take(90)}")
+            }
+        }
+        // Everything dead (or budget spent): hand back the original default and let the
+        // player's tracked retry handle it — probing cannot block playback entirely.
+        Log.w(TAG, "launch probe exhausted ($attempts attempts), using default url")
+        LaunchChoice(defaultUrl, defaultLadder)
+    }
 
     // --- Session caches -------------------------------------------------------------------
     // Re-entering a title (Watch → back → Watch, or episode switches in the player) must not

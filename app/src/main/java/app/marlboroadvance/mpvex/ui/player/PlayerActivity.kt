@@ -1473,8 +1473,8 @@ class PlayerActivity :
     viewModel.onAnimeEpisodeSelected = null
     // The activity loaded the intent URL (MpvExPlayerScreen already resolved Auto to the
     // resolver's best concrete variant) — remember it so the watchdog knows the current rung.
-    currentPlayingUrl = if (currentQuality == "Auto") stream.url
-      else stream.qualities[currentQuality] ?: stream.url
+    currentPlayingUrl = if (currentQuality != "Auto") stream.qualities[currentQuality] ?: stream.url
+      else autoQualityRungUrl(stream)
     updateAutoRungHint(stream.qualities, currentPlayingUrl)
     startAutoQualityWatchdog()
     viewModel.onAnimeTranslationSelected = translationSelected@{ trId ->
@@ -1513,11 +1513,12 @@ class PlayerActivity :
     val activeStream = qomActiveStream ?: currentAnimeStream ?: return
     pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
     UserStateStore(this).setPreferredQuality(quality)
-    // "Auto" must mean the resolver's default (activeStream.url): a literal Auto entry in a
-    // turbo qualities map is an adaptive/master URL mpv often cannot open.
+    // "Auto" must mean the resolver's best concrete variant (see [autoQualityRungUrl]): a
+    // literal Auto entry in a turbo qualities map is an adaptive/master URL mpv often cannot
+    // open, and a raw base url is a signed token that can 404.
     val effectiveQuality = quality.takeIf { it != "Auto" && activeStream.qualities.containsKey(it) } ?: "Auto"
-    val url = if (effectiveQuality == "Auto") activeStream.url
-      else activeStream.qualities[effectiveQuality] ?: activeStream.url
+    val url = if (effectiveQuality != "Auto") activeStream.qualities[effectiveQuality] ?: activeStream.url
+      else autoQualityRungUrl(activeStream)
     applyHttpHeaders(activeStream.headers)
     viewModel.setAnimeData(emptyList(), viewModel.animeTranslations.value, null, viewModel.currentAnimeTranslationId.value, activeStream.qualities, effectiveQuality)
     updateAutoRungHint(activeStream.qualities, url)
@@ -1611,6 +1612,14 @@ class PlayerActivity :
       ?.let { return it }
     return currentAnimeStream?.headers ?: AnimeStreamResolver.kodikPlaybackHeaders()
   }
+
+  /**
+   * "Auto" must mean the BEST CONCRETE rung of the active ladder, never the stream's raw
+   * base url and never a literal "Auto"/master entry (turbo masters are links mpv cannot
+   * open; turbo bases are raw signed tokens that intermittently 404 — live log kp=5457758).
+   */
+  private fun autoQualityRungUrl(stream: AnimeMediaStream): String =
+    QUALITY_PREFERENCE_DESC.firstNotNullOfOrNull { q -> stream.qualities[q] } ?: stream.url
 
   /**
    * PENDING_MOVIE: the player opened before any stream existed. Pull the resolve request from
@@ -1709,7 +1718,8 @@ class PlayerActivity :
     val quality = UserStateStore(this).getPreferredQuality()
       .takeIf { it != "Auto" && stream.qualities.containsKey(it) } ?: "Auto"
     qomActiveStream = stream
-    currentPlayingUrl = if (quality == "Auto") stream.url else stream.qualities[quality] ?: stream.url
+    currentPlayingUrl = if (quality != "Auto") stream.qualities[quality] ?: stream.url
+      else autoQualityRungUrl(stream)
     applyHttpHeaders(stream.headers)
     viewModel.setAnimeData(emptyList(), translations, null, track.translationId, stream.qualities, quality)
     updateAutoRungHint(stream.qualities, currentPlayingUrl)
