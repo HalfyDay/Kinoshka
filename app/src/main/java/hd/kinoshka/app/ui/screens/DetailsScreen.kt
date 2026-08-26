@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.graphics.SolidColor
@@ -151,6 +152,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Add
@@ -164,6 +166,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -205,6 +208,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import hd.kinoshka.app.data.local.UserFilmProfile
 import hd.kinoshka.app.data.local.UserFilmStatus
+import hd.kinoshka.app.data.local.UserStateStore
+import hd.kinoshka.app.data.playback.MovieNativeLauncher
+import hd.kinoshka.app.data.model.MovieVoiceoverStreamStore
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmLinkItem
@@ -214,7 +220,8 @@ import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.MovieStreamResult
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.DdbbStreamResolver
-import hd.kinoshka.app.data.source.DdbbStreamResolver.DdbbStream
+import hd.kinoshka.app.data.source.HentaiStream
+import hd.kinoshka.app.data.source.HentaiStreamResolver
 import hd.kinoshka.app.data.source.MovieStreamResolver
 import kotlinx.coroutines.async
 import hd.kinoshka.app.data.source.KodikMovieParser
@@ -275,9 +282,15 @@ fun DetailsScreen(
     var showDnsSheet by remember { mutableStateOf(false) }
     var isInteractive by remember { mutableStateOf(true) }
     var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
-    // Full-screen resolving overlay: shown while the native-player branch hunts for a stream,
-    // replacing the old transient toast that was easy to miss during long Kodik/ddbb lookups.
-    var streamResolvingTitle by remember(filmId) { mutableStateOf<String?>(null) }
+    // 18+ titles open a full-screen source page (like the anime selection screen): every provider
+    // resolves in parallel — loading spinners, retry buttons and episode lists per source.
+    var activeHentaiSelection by remember(filmId) { mutableStateOf(false) }
+    var hentaiSources by remember(filmId) {
+        mutableStateOf<Map<hd.kinoshka.app.data.source.HentaiProvider, HentaiSourceState>>(emptyMap())
+    }
+    val hentaiJobs = remember(filmId) {
+        mutableMapOf<hd.kinoshka.app.data.source.HentaiProvider, kotlinx.coroutines.Job>()
+    }
 
     LaunchedEffect(filmId) {
         load(filmId)
@@ -285,6 +298,11 @@ fun DetailsScreen(
 
     BackHandler {
         when {
+            activeHentaiSelection -> {
+                hentaiJobs.values.forEach { it.cancel() }
+                hentaiJobs.clear()
+                activeHentaiSelection = false
+            }
             activePlaybackSelection -> activePlaybackSelection = false
             selectedCharacterId != null -> selectedCharacterId = null
             previewPosterUrl != null -> {
@@ -415,62 +433,37 @@ fun DetailsScreen(
                         .graphicsLayer { alpha = contentAlpha }
                 ) {
                     if (isAnime) {
-                    if (activePlaybackSelection) {
-                        val shikimoriId = if (item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
-                            item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
-                        } else {
-                            0
-                        }
-                        AnimePlaybackSelectionScreen(
-                            shikimoriId = shikimoriId,
-                            animeTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
-                            playbackSequence = playbackSequence,
-                            onDismissRequest = { activePlaybackSelection = false },
-                            onWebFallback = { onOpenUrl(item.toWatchUrl()) },
-                            onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
-                                var normalizedUrl = stream.url
-                                if (normalizedUrl.startsWith("//")) {
-                                    normalizedUrl = "https:$normalizedUrl"
-                                }
-                                if (normalizedUrl.startsWith("http", ignoreCase = true)) {
-                                    onOpenNativePlayer?.invoke(
-                                        normalizedUrl,
-                                        stream.headers,
-                                        stream.qualities,
-                                        item.nameRu ?: item.nameOriginal ?: "Аниме",
-                                        epNum,
-                                        epTitle,
-                                        shikimoriId,
-                                        item.kinopoiskId,
-                                        source.name,
-                                        episodes,
-                                        translations,
-                                        trId,
-                                        null
-                                    )
-                                } else {
-                                    throw IllegalArgumentException("Некорректная ссылка на видеопоток: $normalizedUrl")
-                                }
-                            },
-                        )
-                    } else {
-                        AnimeDetailsLayout(
+                    AnimeDetailsLayout(
                             scrollState = scrollState,
                             state = state,
                             isInteractive = isInteractive,
                             onWatch = { filmDetails ->
                                 onWatch(filmDetails)
-                                // 18+ titles (хентай/эротика) have no native sources: neither the Kodik
-                                // API nor AniLiberty indexes them, so the selection sheet would only ever
-                                // show its error state. Skip it and go straight to the web player.
+                                // 18+ titles (хентай/эротика) have no selection-sheet sources: neither
+                                // the Kodik API nor AniLiberty indexes them, so skip the sheet.
                                 val isAdult = item.genres.any { genre ->
                                     val n = genre.genre?.lowercase().orEmpty()
-                                    n == "хентай" || n == "hentai" || n == "эротика" || n == "для взрослых" || n == "18+"
+                                    n.contains("хентай") || n.contains("hentai") || n.contains("эротик") ||
+                                        n.contains("для взрослых") || n.contains("18+") || n.contains("adult") ||
+                                        n.contains("ecchi") || n.contains("этти")
                                 } ||
-                                    item.ratingMpaa?.lowercase() in setOf("nc17", "x", "r18+", "18+") ||
-                                    item.ratingAgeLimits?.contains("18") == true
+                                    item.ratingMpaa?.lowercase() in setOf("nc17", "x", "r18+", "18+", "nr") ||
+                                    item.ratingAgeLimits?.contains("18") == true ||
+                                    hd.kinoshka.app.data.source.HentaiStreamResolver.isKnownHentai(
+                                        item.nameOriginal ?: item.nameEn, item.nameRu
+                                    )
                                 if (isAdult) {
-                                    onOpenUrl(item.toWatchUrl())
+                                    if (
+                                        playerMode == hd.kinoshka.app.data.local.PlayerMode.MPVEX &&
+                                        onOpenNativePlayer != null
+                                    ) {
+                                        // Like anime, open a source sheet first: hentai providers differ
+                                        // in RF reachability, so the user picks one explicitly (VPN rows
+                                        // are badged instead of silently timing out in the background).
+                                        activeHentaiSelection = true
+                                    } else {
+                                        onOpenUrl(item.toWatchUrl())
+                                    }
                                 } else {
                                     activePlaybackSelection = true
                                 }
@@ -489,10 +482,194 @@ fun DetailsScreen(
                                 previewPosterUrl = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview
                             },
                             onOpenCharacter = { charId -> selectedCharacterId = charId },
-                            onOpenGenre = onOpenGenre
+                            onOpenGenre = onOpenGenre,
+                            // Превью 18+ тайтла играет нативный плеер как одиночный ролик
+                            // (shikimoriId=0 + без эпизодов → QUALITY_ONLY_MOVIE).
+                            onPlayTrailer = { url ->
+                                if (url.startsWith("http")) {
+                                    onOpenNativePlayer?.invoke(
+                                        url,
+                                        mapOf(
+                                            "User-Agent" to hd.kinoshka.app.data.source.HentaiStreamResolver.HENTAI_USER_AGENT
+                                        ),
+                                        emptyMap(),
+                                        item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                        1,
+                                        "Превью",
+                                        0,
+                                        item.kinopoiskId,
+                                        "Превью",
+                                        emptyList(),
+                                        emptyList(),
+                                        "",
+                                        null
+                                    )
+                                }
+                            }
                         )
-                    }
+                        // Шит поверх живого DetailsLayout (не вместо): демонтаж всего экрана на
+                        // время выбора источника давал ~4с фриза на открытие и на закрытие.
+                        if (activePlaybackSelection) {
+                            val shikimoriId = if (item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
+                                item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                            } else {
+                                0
+                            }
+                            AnimePlaybackSelectionScreen(
+                                shikimoriId = shikimoriId,
+                                kinopoiskId = item.kinopoiskId,
+                                animeTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                playbackSequence = playbackSequence,
+                                onDismissRequest = { activePlaybackSelection = false },
+                                onWebFallback = { onOpenUrl(item.toWatchUrl()) },
+                                onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
+                                    var normalizedUrl = stream.url
+                                    if (normalizedUrl.startsWith("//")) {
+                                        normalizedUrl = "https:$normalizedUrl"
+                                    }
+                                    if (normalizedUrl.startsWith("http", ignoreCase = true)) {
+                                        onOpenNativePlayer?.invoke(
+                                            normalizedUrl,
+                                            stream.headers,
+                                            stream.qualities,
+                                            item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                            epNum,
+                                            epTitle,
+                                            shikimoriId,
+                                            item.kinopoiskId,
+                                            source.name,
+                                            episodes,
+                                            translations,
+                                            trId,
+                                            null
+                                        )
+                                    } else {
+                                        throw IllegalArgumentException("Некорректная ссылка на видеопоток: $normalizedUrl")
+                                    }
+                                },
+                            )
+                        }
+                        if (activeHentaiSelection) {
+                            // Cached episode lists from earlier successful resolutions — shown
+                            // while providers re-check their lists (VPN sites can be slow).
+                            val hentaiBackups = remember(filmId) {
+                                hd.kinoshka.app.data.source.HentaiProvider.entries.associateWith { provider ->
+                                    hd.kinoshka.app.data.source.HentaiStreamResolver.backupFor(
+                                        provider,
+                                        item.nameOriginal ?: item.nameEn,
+                                        item.nameRu
+                                    )
+                                }
+                            }
+                            // Kick off every provider once when the page opens; failures stay on
+                            // their card with a retry button instead of blocking the others.
+                            fun startHentaiProvider(provider: hd.kinoshka.app.data.source.HentaiProvider) {
+                                if (hentaiJobs[provider]?.isActive == true) return
+                                hentaiJobs[provider]?.cancel()
+                                hentaiSources = hentaiSources + (provider to HentaiSourceState.Loading)
+                                hentaiJobs[provider] = scope.launch {
+                                    val state = try {
+                                        val stream = HentaiStreamResolver.resolveFor(
+                                            provider,
+                                            item.nameOriginal ?: item.nameEn,
+                                            item.nameRu
+                                        )
+                                        if (stream != null) HentaiSourceState.Ready(stream)
+                                        else HentaiSourceState.Failed("Ничего не найдено")
+                                    } catch (e: kotlinx.coroutines.CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        Log.w("DetailsScreen", "Hentai ${provider.name} failed", e)
+                                        HentaiSourceState.Failed(
+                                            when (e) {
+                                                is java.net.SocketTimeoutException -> "Таймаут — источник недоступен. Включите VPN"
+                                                else -> "Ошибка: ${e.javaClass.simpleName}"
+                                            }
+                                        )
+                                    }
+                                    hentaiSources = hentaiSources + (provider to state)
+                                }
+                            }
+                            LaunchedEffect(activeHentaiSelection, filmId) {
+                                hd.kinoshka.app.data.source.HentaiProvider.entries.forEach { provider ->
+                                    val current = hentaiSources[provider]
+                                    if (current !is HentaiSourceState.Loading && current !is HentaiSourceState.Ready) {
+                                        startHentaiProvider(provider)
+                                    }
+                                }
+                            }
+                            fun playHentai(
+                                stream: HentaiStream,
+                                url: String,
+                                label: String,
+                                provider: hd.kinoshka.app.data.source.HentaiProvider
+                            ) {
+                                // Multi-episode entries become a voiceover-style series switcher;
+                                // the picked episode is preselected in the player.
+                                val seriesVoiceovers = stream.episodes.mapIndexed { index, entry ->
+                                    val (epLabel, epUrl) = entry
+                                    hd.kinoshka.app.data.model.FlatTranslation(
+                                        source = hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
+                                        translationId = epLabel,
+                                        title = epLabel,
+                                        episodes = listOf(
+                                            hd.kinoshka.app.data.model.AnimeEpisode(
+                                                number = index + 1,
+                                                title = epLabel,
+                                                link = epUrl
+                                            )
+                                        )
+                                    )
+                                }
+                                // shikimoriId=0 + empty episodes → QUALITY_ONLY_MOVIE.
+                                onOpenNativePlayer?.invoke(
+                                    url,
+                                    stream.headers,
+                                    stream.qualities,
+                                    item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                    1,
+                                    label,
+                                    0,
+                                    item.kinopoiskId,
+                                    provider.name.take(10),
+                                    emptyList(),
+                                    seriesVoiceovers,
+                                    label,
+                                    null
+                                )
+                            }
+                            HentaiSourceScreen(
+                                filmTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                states = hentaiSources,
+                                backups = hentaiBackups,
+                                onBack = {
+                                    hentaiJobs.values.forEach { it.cancel() }
+                                    hentaiJobs.clear()
+                                    activeHentaiSelection = false
+                                },
+                                onRetry = ::startHentaiProvider,
+                                onPlay = ::playHentai
+                            )
+                        }
                 } else {
+                    // Warm both native sources while the user reads the card: pressing Watch then
+                    // hits warm caches instead of paying the full resolve latency. Scoped to this
+                    // screen — leaving the page cancels whatever is still in flight.
+                    LaunchedEffect(item.kinopoiskId, item.imdbId, item.serial, item.type) {
+                        val warmRequest = item.toMoviePlaybackRequest()
+                        val warmKpId = warmRequest.kinopoiskId ?: return@LaunchedEffect
+                        if (warmRequest.kind == MovieContentKind.UNKNOWN) return@LaunchedEffect
+                        kotlinx.coroutines.coroutineScope {
+                            launch(kotlinx.coroutines.Dispatchers.IO) {
+                                runCatching { MovieStreamResolver.loadCatalog(warmRequest) }
+                                    .onFailure { Log.d("DetailsScreen", "prefetch kodik: ${it.javaClass.simpleName}") }
+                            }
+                            launch(kotlinx.coroutines.Dispatchers.IO) {
+                                runCatching { DdbbStreamResolver.resolveMovieStream(warmKpId) }
+                                    .onFailure { Log.d("DetailsScreen", "prefetch ddbb: ${it.javaClass.simpleName}") }
+                            }
+                        }
+                    }
                     LazyColumn(
                         state = scrollState,
                         modifier = Modifier.fillMaxSize(),
@@ -516,223 +693,47 @@ fun DetailsScreen(
                                     seasons = state.seasons,
                                     onWatch = {
                                         isInteractive = false
-                                        onWatch(item)
                                         if (
                                             playerMode == hd.kinoshka.app.data.local.PlayerMode.MPVEX &&
                                             onOpenNativePlayer != null
                                         ) {
                                             val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
                                             val request = item.toMoviePlaybackRequest()
-                                            val ctx = context
-                                            streamResolvingTitle = filmTitle
+                                            // Do not create PlayerActivity until the complete native launch
+                                            // payload is ready. PENDING_MOVIE made an empty player appear first
+                                            // and then mutate its voiceover/quality state under the user.
                                             scope.launch {
-                                                try {
-                                                    if (request.kind == MovieContentKind.SERIES) {
-                                                        when (val catalog = MovieStreamResolver.loadCatalog(request)) {
-                                                            is hd.kinoshka.app.data.model.MovieCatalogResult.Available -> {
-                                                                val episodes = hd.kinoshka.app.data.model.canonicalSeriesEpisodes(catalog.candidates)
-                                                                // find-player-discovered rows expose only a whole-title player link;
-                                                                // present them as a single S1E1 entry so native playback can start.
-                                                                val effectiveEpisodes = episodes.ifEmpty {
-                                                                    listOf(hd.kinoshka.app.data.model.MovieEpisodeRef(1, 1, "Серия 1", catalog.candidates.firstOrNull()?.topLevelPlayerUrl.orEmpty()))
-                                                                }
-                                                                val initialEpisode = hd.kinoshka.app.data.model.selectInitialSeriesEpisode(effectiveEpisodes, state.userProfile)
-                                                                val result = initialEpisode?.let {
-                                                                    MovieStreamResolver.resolveEpisode(request, it, catalog.candidates)
-                                                                }
-                                                                if (result is MovieStreamResult.Success && initialEpisode != null) {
-                                                                    hd.kinoshka.app.data.local.UserStateStore(ctx).updateSeriesProgress(
-                                                                        item.kinopoiskId,
-                                                                        initialEpisode.seasonNumber,
-                                                                        initialEpisode.episodeNumber
-                                                                    )
-                                                                    // One voiceover entry per Kodik dub found in the catalog.
-                                                                    val voiceovers = catalog.candidates
-                                                                        .filter { !it.translationId.isNullOrBlank() }
-                                                                        .distinctBy { it.translationId }
-                                                                        .map { candidate ->
-                                                                            hd.kinoshka.app.data.model.FlatTranslation(
-                                                                                source = hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
-                                                                                translationId = candidate.translationId!!,
-                                                                                title = candidate.translationTitle ?: "Озвучка ${candidate.translationId}",
-                                                                                episodes = emptyList()
-                                                                            )
-                                                                        }
-                                                                    val seriesContext = hd.kinoshka.app.data.model.MovieSeriesPlaybackContext(
-                                                                        request = request,
-                                                                        candidates = catalog.candidates,
-                                                                        episodes = effectiveEpisodes,
-                                                                        currentEpisode = initialEpisode,
-                                                                        kinopoiskId = item.kinopoiskId,
-                                                                        displayTitle = filmTitle
-                                                                    )
-                                                                     onOpenNativePlayer(
-                                                                         result.stream.url,
-                                                                         result.stream.headers,
-                                                                         result.stream.qualities,
-                                                                         filmTitle,
-                                                                         initialEpisode.playerEpisodeKey,
-                                                                         "S${initialEpisode.seasonNumber}E${initialEpisode.episodeNumber}",
-                                                                         0,
-                                                                         item.kinopoiskId,
-                                                                         "KODIK",
-                                                                         emptyList(),
-                                                                         voiceovers,
-                                                                         voiceovers.firstOrNull()?.translationId ?: "",
-                                                                         seriesContext
-                                                                     )
-                                                                } else {
-                                                                    val reason = (result as? MovieStreamResult.Unavailable)?.reason
-                                                                        ?: hd.kinoshka.app.data.model.MoviePlaybackFailure.NO_PLAYABLE_REFERENCES
-                                                                    Toast.makeText(ctx, "${reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
-                                                                    onOpenUrl(item.toWatchUrl())
-                                                                }
-                                                            }
-                                                            is hd.kinoshka.app.data.model.MovieCatalogResult.Unavailable -> {
-                                                                // Kodik's API simply does not index some series
-                                                                // (Rick and Morty among them); their ddbb embeds still
-                                                                // play though — harvest a default-episode stream
-                                                                // natively before giving up to the web player.
-                                                                val harvested = request.kinopoiskId?.takeIf { it > 0 }
-                                                                    ?.let { kpId ->
-                                                                        runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
-                                                                            .onFailure { Log.w("DetailsScreen", "ddbb series fallback failed", it) }
-                                                                            .getOrNull()
-                                                                    }
-                                                                if (harvested != null) {
-                                                                    Log.i("DetailsScreen", "Series native via ddbb/${harvested.sourceName}")
-                                                                    // ddbb embeds carry no episode metadata, but turbo
-                                                                    // tracks are dubs with direct URLs: surface them as
-                                                                    // voiceovers so the player at least offers dub switching
-                                                                    // (QUALITY_ONLY_MOVIE mode handles the swap).
-                                                                    val ddbbVoiceovers = harvested.translations.map { (title, url) ->
-                                                                        hd.kinoshka.app.data.model.FlatTranslation(
-                                                                            source = hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
-                                                                            translationId = title,
-                                                                            title = title,
-                                                                            episodes = listOf(
-                                                                                hd.kinoshka.app.data.model.AnimeEpisode(
-                                                                                    number = 1,
-                                                                                    title = title,
-                                                                                    link = url
-                                                                                )
-                                                                            )
-                                                                        )
-                                                                    }
-                                                                    onOpenNativePlayer(
-                                                                        harvested.url,
-                                                                        harvested.headers,
-                                                                        harvested.qualities,
-                                                                        filmTitle,
-                                                                        1,
-                                                                        filmTitle,
-                                                                        0,
-                                                                        item.kinopoiskId,
-                                                                        "KODIK",
-                                                                        emptyList(),
-                                                                        ddbbVoiceovers,
-                                                                        ddbbVoiceovers.firstOrNull()?.translationId ?: "",
-                                                                        null
-                                                                    )
-                                                                } else {
-                                                                    Toast.makeText(ctx, "${catalog.reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
-                                                                    onOpenUrl(item.toWatchUrl())
-                                                                }
-                                                            }
-                                                        }
-                                                    } else {
-                                                        // Race Kodik against the ddbb aggregator in parallel.
-                                                        // ddbb (turbo/collaps) normally resolves in 1-2s while a
-                                                        // Kodik miss costs a full title-query cascade — starting
-                                                        // them together cuts the common case to the faster source
-                                                        // instead of paying both serially.
-                                                        val ddbbDeferred = scope.async(kotlinx.coroutines.Dispatchers.IO) {
-                                                            request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
-                                                                runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
-                                                                    .onFailure { Log.w("DetailsScreen", "ddbb race failed", it) }
-                                                                    .getOrNull()
-                                                            }
-                                                        }
-                                                        val kodikDeferred = scope.async(kotlinx.coroutines.Dispatchers.IO) {
-                                                            MovieStreamResolver.resolveMovie(request)
-                                                        }
-                                                        val outcome: MovieOutcome = awaitFirstMovieOutcome(kodikDeferred, ddbbDeferred)
-                                                        when (val o = outcome) {
-                                                            is MovieOutcome.FromKodik -> onOpenNativePlayer(
-                                                                o.result.stream.url,
-                                                                o.result.stream.headers,
-                                                                o.result.stream.qualities,
-                                                                filmTitle,
-                                                                1,
-                                                                filmTitle,
-                                                                0,
-                                                                item.kinopoiskId,
-                                                                "KODIK",
-                                                                emptyList(),
-                                                                o.result.translations,
-                                                                o.result.translations.firstOrNull()?.translationId ?: "",
-                                                                null
-                                                            )
-                                                            is MovieOutcome.FromDdbb -> onOpenNativePlayer(
-                                                                o.stream.url,
-                                                                o.stream.headers,
-                                                                o.stream.qualities,
-                                                                filmTitle,
-                                                                1,
-                                                                filmTitle,
-                                                                0,
-                                                                item.kinopoiskId,
-                                                                o.stream.sourceName.uppercase().take(10),
-                                                                emptyList(),
-                                                                o.stream.translations.map { (title, url) ->
-                                                                    hd.kinoshka.app.data.model.FlatTranslation(
-                                                                        source = hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
-                                                                        translationId = title,
-                                                                        title = title,
-                                                                        episodes = listOf(
-                                                                            hd.kinoshka.app.data.model.AnimeEpisode(
-                                                                                number = 1,
-                                                                                title = title,
-                                                                                link = url
-                                                                            )
-                                                                        )
-                                                                    )
-                                                                },
-                                                                o.stream.translations.firstOrNull()?.first ?: "",
-                                                                null
-                                                            )
-                                                            is MovieOutcome.Failed -> {
-                                                                // Log alongside the Toast: a transient toast is often missed,
-                                                                // leaving no trace of why playback fell back to the web player.
-                                                                Log.w(
-                                                                    "DetailsScreen",
-                                                                    "Movie stream unavailable for kinopoiskId=${item.kinopoiskId}, reason=${o.failure.reason}"
-                                                                )
-                                                                Toast.makeText(ctx, "${o.failure.reason.userMessage()}, открываю веб-плеер", Toast.LENGTH_SHORT).show()
-                                                                onOpenUrl(item.toWatchUrl())
-                                                            }
-                                                        }
-                                                    }
-                                                } catch (e: kotlinx.coroutines.CancellationException) {
-                                                    // Leaving the screen mid-resolve must not fire the
-                                                    // web-player fallback below.
-                                                    throw e
-                                                } catch (e: Exception) {
-                                                    // Without this the try/finally only restored isInteractive: an IOException
-                                                    // from the resolver left the Watch button silently doing nothing.
-                                                    Log.w(
-                                                        "DetailsScreen",
-                                                        "Stream resolution failed for kinopoiskId=${item.kinopoiskId}, falling back to web player",
-                                                        e
+                                                when (val payload = withContext(Dispatchers.IO) {
+                                                    MovieNativeLauncher.resolve(
+                                                        request,
+                                                        state.userProfile,
+                                                        UserStateStore(context)
                                                     )
-                                                    Toast.makeText(ctx, "Не удалось получить поток, открываю веб-плеер", Toast.LENGTH_SHORT).show()
-                                                    onOpenUrl(item.toWatchUrl())
-                                                } finally {
-                                                    isInteractive = true
-                                                    streamResolvingTitle = null
+                                                }) {
+                                                    is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
+                                                        MovieVoiceoverStreamStore.put(item.kinopoiskId, payload.preparedStreams)
+                                                        val selected = payload.translations.firstOrNull()?.translationId.orEmpty()
+                                                        onOpenNativePlayer?.invoke(
+                                                            payload.stream.url, payload.stream.headers, payload.stream.qualities,
+                                                            filmTitle, 1, filmTitle, 0, item.kinopoiskId, "MOVIE",
+                                                            emptyList(), payload.translations, selected, null
+                                                        )
+                                                    }
+                                                    is MovieNativeLauncher.NativeLaunchPayload.MovieSeries -> {
+                                                        val episode = payload.context.currentEpisode
+                                                        onOpenNativePlayer?.invoke(
+                                                            payload.stream.url, payload.stream.headers, payload.stream.qualities,
+                                                            filmTitle, episode.playerEpisodeKey, episode.title.orEmpty(), 0,
+                                                            item.kinopoiskId, "MOVIE", emptyList(), emptyList(), "",
+                                                            payload.context
+                                                        )
+                                                    }
+                                                    is MovieNativeLauncher.NativeLaunchPayload.Failed -> onOpenUrl(item.toWatchUrl())
                                                 }
+                                                isInteractive = true
                                             }
                                         } else {
+                                            onWatch(item)
                                             onOpenUrl(item.toWatchUrl())
                                         }
                                     },
@@ -861,10 +862,6 @@ fun DetailsScreen(
                 startIndex = imageViewerStartIndex,
                 onDismiss = { imageViewerStartIndex = -1 }
             )
-        }
-
-        streamResolvingTitle?.let { resolvingTitle ->
-            StreamResolvingOverlay(title = resolvingTitle)
         }
 
         if (showProfileEditor && state.item != null) {
@@ -1496,48 +1493,9 @@ private fun RoundedPlayIcon(modifier: Modifier = Modifier, color: Color = Color.
 
 
 
-/**
- * Blocking overlay shown while the native-player branch searches Kodik/ddbb for a stream.
- * Replaces the old one-shot toast: stream lookups regularly take 5-20 seconds and the toast
- * vanished long before any result was visible. Uses the same morphing-shape LoadingIndicator
- * as the mpvEx player buffer spinner, at the same size, for a consistent look.
- */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun StreamResolvingOverlay(title: String) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.72f))
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
-            androidx.compose.material3.LoadingIndicator(modifier = Modifier.size(96.dp))
-            Text(
-                text = "Ищем поток…",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = Color.White
-            )
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.65f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 40.dp)
-            )
-        }
-    }
-}
-
 @Composable
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
-private fun UserProfileEditorSheet(
+internal fun UserProfileEditorSheet(
     item: FilmDetails,
     animeDetails: hd.kinoshka.app.data.model.ShikimoriAnimeDetails?,
     seasons: List<SeasonItem>,
@@ -2215,6 +2173,8 @@ private fun HorizontalFilmsCard(
 @Composable
 private fun ImagesCard(
     images: List<FilmImageItem>,
+    trailer: hd.kinoshka.app.data.source.HentaiStreamResolver.HentaiTrailer? = null,
+    onPlayTrailer: (String) -> Unit = {},
     onPreview: (Int) -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -2231,7 +2191,7 @@ private fun ImagesCard(
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
-        if (images.isEmpty()) {
+        if (images.isEmpty() && trailer == null) {
             LazyRow(
                 state = listState,
                 flingBehavior = snapFling,
@@ -2253,6 +2213,15 @@ private fun ImagesCard(
                 flingBehavior = snapFling,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                // Превью 18+ тайтла — первой ячейкой, без автозапуска: постер + Play.
+                if (trailer != null) {
+                    item(key = "trailer") {
+                        TrailerCard(
+                            trailer = trailer,
+                            onPlay = { onPlayTrailer(trailer.previewUrl) }
+                        )
+                    }
+                }
                 // itemsIndexed: indexOf() matched by structural equality, so duplicate frames
                 // all resolved to the first occurrence and opened the wrong image (plus O(n^2) scan).
                 // take(24) preserves order, so the sublist index equals the images index for 0..23.
@@ -2278,6 +2247,67 @@ private fun ImagesCard(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .aspectRatio(16f / 9f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrailerCard(
+    trailer: hd.kinoshka.app.data.source.HentaiStreamResolver.HentaiTrailer,
+    onPlay: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .width(220.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable { onPlay() }
+    ) {
+        ElevatedCard(
+            shape = RoundedCornerShape(14.dp),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
+        ) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                KinoshkaAsyncImage(
+                    model = trailer.posterUrl ?: trailer.previewUrl,
+                    contentDescription = "Превью",
+                    contentScale = ContentScale.Crop,
+                    fadeDurationMs = 1200,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                )
+                // Затемнение, чтобы Play читался на любом постере.
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(Color.Black.copy(alpha = 0.28f))
+                )
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = Color.Black.copy(alpha = 0.55f),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = "Превью",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
@@ -2656,7 +2686,8 @@ private fun AnimeDetailsLayout(
     onPreviewImage: (Int) -> Unit,
     onPosterClick: (Offset) -> Unit,
     onOpenCharacter: (Int) -> Unit,
-    onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null
+    onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null,
+    onPlayTrailer: (String) -> Unit = {}
 ) {
     val item = state.item ?: return
     val anime = state.animeDetails
@@ -2847,6 +2878,8 @@ private fun AnimeDetailsLayout(
         item {
             ImagesCard(
                 images = state.images,
+                trailer = state.trailer,
+                onPlayTrailer = onPlayTrailer,
                 onPreview = onPreviewImage
             )
         }
@@ -3642,48 +3675,6 @@ private fun DetailRow(label: String, value: String) {
     }
 }
 
-/** Outcome of the parallel Kodik-vs-ddbb movie race. */
-private sealed interface MovieOutcome {
-    data class FromKodik(val result: MovieStreamResult.Success) : MovieOutcome
-    data class FromDdbb(val stream: DdbbStream) : MovieOutcome
-    data class Failed(val failure: MovieStreamResult.Unavailable) : MovieOutcome
-}
-
-/**
- * True race between the Kodik catalog and the ddbb aggregator: resolves as soon as EITHER
- * source produces a playable stream and cancels the loser. Previously Kodik's full search
- * cascade ran to completion before ddbb was even consulted, serially paying both latencies
- * on every fallback (15-45s worst case before the player opened).
- */
-private suspend fun awaitFirstMovieOutcome(
-    kodikDeferred: kotlinx.coroutines.Deferred<MovieStreamResult>,
-    ddbbDeferred: kotlinx.coroutines.Deferred<DdbbStream?>,
-): MovieOutcome {
-    while (true) {
-        if (kodikDeferred.isCompleted && kodikDeferred.await() is MovieStreamResult.Success) {
-            ddbbDeferred.cancel()
-            @Suppress("UNCHECKED_CAST")
-            return MovieOutcome.FromKodik(kodikDeferred.await() as MovieStreamResult.Success)
-        }
-        if (ddbbDeferred.isCompleted && ddbbDeferred.await() != null) {
-            kodikDeferred.cancel()
-            return MovieOutcome.FromDdbb(ddbbDeferred.await()!!)
-        }
-        if (kodikDeferred.isCompleted && ddbbDeferred.isCompleted) {
-            val kodik = kodikDeferred.await()
-            return if (kodik is MovieStreamResult.Success) {
-                MovieOutcome.FromKodik(kodik)
-            } else {
-                MovieOutcome.Failed(kodik as MovieStreamResult.Unavailable)
-            }
-        }
-        kotlinx.coroutines.selects.select<Unit> {
-            kodikDeferred.onAwait { }
-            ddbbDeferred.onAwait { }
-        }
-    }
-}
-
 private fun FilmDetails.toMoviePlaybackRequest(): MoviePlaybackRequest {
     val normalizedType = type.orEmpty().trim().uppercase().replace('-', '_').replace(' ', '_')
     return MoviePlaybackRequest(
@@ -4422,3 +4413,354 @@ private fun NextEpisodeCountdownCard(
 }
 
 
+
+
+/**
+ * Per-provider resolution state for the 18+ source page.
+ */
+sealed class HentaiSourceState {
+    data object Loading : HentaiSourceState()
+    data class Ready(val stream: hd.kinoshka.app.data.source.HentaiStream) : HentaiSourceState()
+    data class Failed(val message: String) : HentaiSourceState()
+}
+
+/**
+ * Full-screen 18+ source picker styled after AnimePlaybackSelectionScreen: same dialog wrapper,
+ * app bar and list-row language. Providers resolve in parallel; each card shows its own status
+ * (spinner / retry / episodes) without blocking the others.
+ */
+@Composable
+private fun HentaiSourceScreen(
+    filmTitle: String,
+    states: Map<hd.kinoshka.app.data.source.HentaiProvider, HentaiSourceState>,
+    backups: Map<hd.kinoshka.app.data.source.HentaiProvider, hd.kinoshka.app.data.source.HentaiStream?> = emptyMap(),
+    onBack: () -> Unit,
+    onRetry: (hd.kinoshka.app.data.source.HentaiProvider) -> Unit,
+    onPlay: (
+        stream: hd.kinoshka.app.data.source.HentaiStream,
+        url: String,
+        label: String,
+        provider: hd.kinoshka.app.data.source.HentaiProvider
+    ) -> Unit
+) {
+    Dialog(
+        onDismissRequest = onBack,
+        // Окно диалога должно рисоваться ПОД системными барами: с дефолтным
+        // decorFitsSystemWindows=true сверху и снизу остаётся зазор с фономDetails-экрана.
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 12.dp)
+                    ) {
+                        Text(
+                            text = filmTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Выбор источника и серии",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                    }
+                }
+
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    val grouped = hd.kinoshka.app.data.source.HentaiProvider.entries.groupBy { it.language }
+                    grouped.forEach { (language, providers) ->
+                        item(key = "lang_header_$language") {
+                            Text(
+                                text = if (language == "RU") "🇷🇺 Русские" else "🌐 Зарубежные",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(top = 16.dp, bottom = 4.dp, start = 20.dp, end = 16.dp)
+                            )
+                        }
+                        providers.forEach { provider ->
+                            item(key = provider.name) {
+                                val state = states[provider]
+                            // Section header — same pattern as source groups in the anime sheet.
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 12.dp, bottom = 4.dp, start = 20.dp, end = 16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = provider.displayName,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (provider.needsVpn) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                                        ) {
+                                            Text(
+                                                text = "VPN",
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                                when (state) {
+                                    is HentaiSourceState.Loading -> CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    is HentaiSourceState.Ready -> Text(
+                                        text = if (state.stream.episodes.isNotEmpty())
+                                            "${state.stream.episodes.size} сер."
+                                        else "Фильм",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    is HentaiSourceState.Failed -> Text(
+                                        text = "Ошибка",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    null -> {}
+                                }
+                            }
+                            when (val st = state) {
+                                is HentaiSourceState.Loading -> {
+                                    // Пока провайдер перепроверяет список — показываем сохранённый
+                                    // (уже проигрываемый) список серий вместо пустого спиннера.
+                                    val backup = backups[provider]
+                                    if (backup != null) {
+                                        HentaiBackupRows(backup, provider, onPlay)
+                                        Text(
+                                            text = "Обновляем список…",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(start = 32.dp, top = 2.dp, bottom = 6.dp)
+                                        )
+                                    } else {
+                                        HentaiLoadingRow()
+                                    }
+                                }
+                                is HentaiSourceState.Failed -> {
+                                    val backup = backups[provider]
+                                    if (backup != null) {
+                                        Text(
+                                            text = "Не удалось обновить (${st.message}) — сохранённый список:",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(start = 32.dp, top = 4.dp, bottom = 4.dp)
+                                        )
+                                        HentaiBackupRows(backup, provider, onPlay)
+                                    } else {
+                                        HentaiFailedRow(
+                                            message = st.message,
+                                            onRetry = { onRetry(provider) }
+                                        )
+                                    }
+                                }
+                                is HentaiSourceState.Ready -> {
+                                    val stream = st.stream
+                                    if (stream.episodes.isNotEmpty()) {
+                                        stream.episodes.forEachIndexed { _, episode ->
+                                            HentaiEpisodeRow(
+                                                label = episode.first,
+                                                subtitle = "Прямая ссылка",
+                                                onClick = { onPlay(stream, episode.second, episode.first, provider) }
+                                            )
+                                        }
+                                    } else {
+                                        HentaiEpisodeRow(
+                                            label = "Смотреть",
+                                            subtitle = stream.qualities.keys.minOrNull()?.let { "До $it" }
+                                                ?: "Прямая ссылка",
+                                            onClick = { onPlay(stream, stream.url, "Фильм", provider) }
+                                        )
+                                    }
+                                }
+                                null -> {}
+                            }
+                        }
+                    }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HentaiBackupRows(
+    stream: hd.kinoshka.app.data.source.HentaiStream,
+    provider: hd.kinoshka.app.data.source.HentaiProvider,
+    onPlay: (
+        stream: hd.kinoshka.app.data.source.HentaiStream,
+        url: String,
+        label: String,
+        provider: hd.kinoshka.app.data.source.HentaiProvider
+    ) -> Unit
+) {
+    if (stream.episodes.isNotEmpty()) {
+        stream.episodes.forEach { episode ->
+            HentaiEpisodeRow(
+                label = episode.first,
+                subtitle = "Кэш · прямая ссылка",
+                onClick = { onPlay(stream, episode.second, episode.first, provider) }
+            )
+        }
+    } else {
+        HentaiEpisodeRow(
+            label = "Смотреть",
+            subtitle = "Кэш · " + (stream.qualities.keys.minOrNull()?.let { "до $it" } ?: "прямая ссылка"),
+            onClick = { onPlay(stream, stream.url, "Фильм", provider) }
+        )
+    }
+}
+
+@Composable
+private fun HentaiLoadingRow() {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            Spacer(modifier = Modifier.width(14.dp))
+            Text(
+                text = "Загрузка…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun HentaiFailedRow(message: String, onRetry: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.errorContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onRetry) { Text("Повторить") }
+        }
+    }
+}
+
+@Composable
+private fun HentaiEpisodeRow(label: String, subtitle: String, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}

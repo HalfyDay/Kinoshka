@@ -7,9 +7,14 @@ import hd.kinoshka.app.data.model.AnimeSource
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.AnimeTranslation
 import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.qualityRank
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -24,6 +29,9 @@ import java.util.concurrent.TimeUnit
 object AnimeStreamResolver {
 
     private const val TAG = "AnimeStreamResolver"
+    // Kodik's de-facto top variant (resolveStream also prefers the 720p track); used as the
+    // quality-badge fallback when a player link carries no explicit quality tag.
+    private const val KODIK_DEFAULT_QUALITY = "720p"
 
     private val KODIK_TOKEN_FALLBACKS = listOf(
         "56a768d08f43091901c44b54fe970049",
@@ -42,12 +50,15 @@ object AnimeStreamResolver {
         "https://api.anilibria.tv"
     )
 
-    // AniLib (AniLibria v2 API) — a distinct source mirror set, kept separate from ANILIBERTY
-    // (which uses the v1 API). Surfacing both gives the user a fallback when one is down.
+    // AniLib (animelib.org) — отдельный источник, НЕ путать с AniLiberty (anilibria.top, v1 API выше).
+    // Старый домен anilib.me закрыт в РФ на TLS-уровне, зеркала anilib.top/anilib.club мертвы,
+    // а сам сайт переехал на animelib.org. Его Cloudflare WAF гео-блокирует РФ, но API-домен
+    // api.animelib.org живёт на DDoS-Guard и отвечает (проверено 2026-08).
+    // Новое REST API: /api/anime?search= → /api/episodes?anime_id= → /api/episodes/<id>
+    // c players[] (team, translation_type Озвучка/Субтитры, src = ссылка на Kodik-плеер),
+    // HLS достаётся уже имеющимся resolveKodikHls.
     private val ANILIB_API = listOf(
-        "https://api.anilibria.tv",
-        "https://api.anilibria.pro",
-        "https://anilibria.top"
+        "https://api.animelib.org"
     )
 
     private const val USER_AGENT =
@@ -78,8 +89,16 @@ object AnimeStreamResolver {
     private data class CacheEntry<T>(val data: T, val timestamp: Long)
 
     private val prefetchAllMediaCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<FlatTranslation>>>()
+    // Per-source prefetch results ("KODIK:12:violet"), feeding the progressive selection page:
+    // each source renders as soon as its own network roundtrip finishes instead of waiting for
+    // the slowest of the three.
+    private val sourceMediaCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<FlatTranslation>>>()
     private val resolveStreamCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<AnimeMediaStream>>()
     private val aniLibertyReleaseCache = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
+    // AniLib: episode details (/api/v2/episode) fetched during prefetch. resolveStream reads the
+    // SAME cached json, so "v<i>|<label>"/"s<i>|<label>" translation ids stay aligned with the
+    // players array that produced them.
+    private val anilibEpisodeCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<JSONObject>>()
     // Resolved Kodik HLS link sets keyed by episode link: re-picking an episode previously cost
     // the whole 3-25 request scrape again.
     private val kodikHlsCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<Map<String, String>>>()
@@ -108,12 +127,42 @@ object AnimeStreamResolver {
                 ?: episode.optInt("sort_order").takeIf { it > 0 }
                 ?: episode.optInt("id").takeIf { it > 0 }
                 ?: return@mapNotNull null
-            val title = episode.optString("name").ifBlank {
-                episode.optString("name_english").ifBlank { "Серия $number" }
+            val title = episode.optCleanString("name").ifBlank {
+                episode.optCleanString("name_english").ifBlank { "Серия $number" }
             }
-            AnimeEpisode(number = number, title = title, id = episode.optInt("id").takeIf { it > 0 })
+            val maxQuality = when {
+                episode.optString("hls_1080").isNotBlank() -> "1080p"
+                episode.optString("hls_720").isNotBlank() -> "720p"
+                else -> null
+            }
+            AnimeEpisode(number = number, title = title, id = episode.optInt("id").takeIf { it > 0 }, maxQuality = maxQuality)
         }.distinctBy { it.number }.sortedBy { it.number }.toList()
     }
+
+    /**
+     * Best-quality hint carried in a Kodik player link path ("…/seria/…/720p"): the tag is
+     * the provider's top variant for that entry. Returns e.g. "720p"; [fallback] applies when
+     * the path carries no quality segment (some API rows return bare links).
+     */
+    internal fun qualityFromLink(link: String?, fallback: String? = null): String? {
+        val qualityTag = Regex("""^(2160|1440|1080|720|480|360|240)p?$""", RegexOption.IGNORE_CASE)
+        return link?.substringBefore('?')?.substringBefore('#')
+            ?.split('/')?.lastOrNull { qualityTag.matches(it) }
+            ?.let { "${it.lowercase().removeSuffix("p")}p" }
+            ?: fallback
+    }
+
+    /** True when the title is a generated placeholder ("Серия N", "Special N") rather than a name. */
+    private fun isSyntheticEpisodeTitle(title: String?, number: Int): Boolean {
+        val t = title?.trim() ?: return true
+        if (t.isEmpty() || t.equals("null", ignoreCase = true)) return true
+        if (t == "Серия $number" || t == "Special $number") return true
+        return t.startsWith("Сезон ") && t.endsWith("Серия $number")
+    }
+
+    /** optString that treats JSON null, the literal "null" and blanks as absent. */
+    private fun JSONObject.optCleanString(key: String): String =
+        optString(key).takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) }.orEmpty()
 
     suspend fun prefetchAllMedia(shikimoriId: Int, animeTitle: String): List<FlatTranslation> {
         val cacheKey = "$shikimoriId:${animeTitle.trim().lowercase()}"
@@ -137,10 +186,17 @@ object AnimeStreamResolver {
     /** Snapshot of a fresh prefetch result for [shikimoriId]/[animeTitle], or null on miss. */
     private fun cachedPrefetchedTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation>? {
         val cacheKey = "$shikimoriId:${animeTitle.trim().lowercase()}"
-        val entry = prefetchAllMediaCache[cacheKey] ?: return null
-        val age = System.currentTimeMillis() - entry.timestamp
-        val stillValid = if (entry.data.isEmpty()) age < NEGATIVE_CACHE_TTL_MS else age < CACHE_TTL_MS
-        return entry.data.takeIf { stillValid }
+        val entry = prefetchAllMediaCache[cacheKey]
+        // The progressive selection page only fills the per-source cache; resolveKodikStream's
+        // fast path must see it too, otherwise every episode click re-ran the search cascade.
+        val sourceEntry = sourceMediaCache["${AnimeSourceType.KODIK.name}:$shikimoriId:${animeTitle.trim().lowercase()}"]
+        for (candidate in listOf(entry, sourceEntry)) {
+            if (candidate == null) continue
+            val age = System.currentTimeMillis() - candidate.timestamp
+            val stillValid = if (candidate.data.isEmpty()) age < NEGATIVE_CACHE_TTL_MS else age < CACHE_TTL_MS
+            if (stillValid) return candidate.data
+        }
+        return null
     }
 
     private fun getCachedKodikHls(episodeLinkAbsolute: String): Map<String, String>? {
@@ -151,116 +207,125 @@ object AnimeStreamResolver {
         return null
     }
 
+    /**
+     * Translations of ONE source, cached independently so the progressive selection page can
+     * render each provider as soon as it answers instead of waiting for the slowest one.
+     * Empty results are negative-cached with the shorter TTL, like the merged prefetch.
+     */
+    suspend fun fetchSourceMedia(shikimoriId: Int, animeTitle: String, source: AnimeSourceType): List<FlatTranslation> {
+        val cacheKey = "${source.name}:$shikimoriId:${animeTitle.trim().lowercase()}"
+        sourceMediaCache[cacheKey]?.let { entry ->
+            val age = System.currentTimeMillis() - entry.timestamp
+            val stillValid = if (entry.data.isEmpty()) age < NEGATIVE_CACHE_TTL_MS else age < CACHE_TTL_MS
+            if (stillValid) {
+                return entry.data
+            } else {
+                sourceMediaCache.remove(cacheKey)
+            }
+        }
+
+        val loaded = when (source) {
+            AnimeSourceType.KODIK -> fetchKodikFlatTranslations(shikimoriId, animeTitle)
+            AnimeSourceType.ANILIBERTY -> fetchAniLibertyFlatTranslations(shikimoriId, animeTitle)
+            AnimeSourceType.ANILIB -> fetchAniLibFlatTranslations(shikimoriId, animeTitle)
+        }
+        sourceMediaCache[cacheKey] = CacheEntry(loaded, System.currentTimeMillis())
+        return loaded
+    }
+
+    private suspend fun fetchKodikFlatTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        runCatching {
+            Log.i(TAG, "[Kodik] Starting search...")
+            val results = kodikSearch(shikimoriId, animeTitle, null)
+            Log.i(TAG, "[Kodik] Search returned ${results.size} results")
+            val translations = results.mapNotNull { result ->
+                val translation = result.optJSONObject("translation")
+                if (translation != null) {
+                    val id = translation.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    val title = translation.optString("title").ifBlank { "Озвучка $id" }
+                    val type = translation.optString("type").ifBlank { "voice" }
+                    val episodes = extractKodikEpisodes(result)
+                    FlatTranslation(
+                        source = AnimeSourceType.KODIK,
+                        translationId = id,
+                        title = title,
+                        type = type,
+                        episodes = episodes
+                    )
+                } else if (result.has("link") || result.has("player_url")) {
+                    val id = "default"
+                    FlatTranslation(
+                        source = AnimeSourceType.KODIK,
+                        translationId = id,
+                        title = "Основной плеер Kodik",
+                        type = "voice",
+                        episodes = extractKodikEpisodes(result)
+                    )
+                } else null
+            }
+            Log.i(TAG, "[Kodik] Parsed ${translations.size} translations: ${translations.joinToString { "${it.title} (${it.episodes.size} ep)" }}")
+            mergeTranslations(translations)
+        }.getOrElse { e ->
+            Log.e(TAG, "[Kodik] Search failed: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    private suspend fun fetchAniLibertyFlatTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        runCatching {
+            Log.i(TAG, "[Aniliberty] Starting search...")
+            val release = findAniLibertyRelease(shikimoriId, animeTitle)
+            if (release != null) {
+                val episodes = parseAniLibertyEpisodes(release)
+                val title = getAniLibertyTitle(release)
+                Log.i(TAG, "[Aniliberty] Found: \"$title\" (${episodes.size} episodes), alias=${release.optString("alias")}, type=${release.optString("type")}")
+                listOf(
+                    FlatTranslation(
+                        source = AnimeSourceType.ANILIBERTY,
+                        // A literal "default" collides with every other source's fallback id:
+                        // AnimeControls compares translationId alone and would highlight both
+                        // rows as selected. The alias is also the id findAniLibertyRelease can
+                        // fetch directly, so it doubles as a fast-path key.
+                        translationId = release.optString("alias")
+                            .ifBlank { release.optInt("id").takeIf { it > 0 }?.toString().orEmpty() }
+                            .ifBlank { "default" },
+                        title = title,
+                        type = "voice",
+                        episodes = episodes
+                    )
+                )
+            } else {
+                Log.w(TAG, "[Aniliberty] No release found for \"$animeTitle\"")
+                emptyList()
+            }
+        }.getOrElse { e ->
+            Log.e(TAG, "[Aniliberty] Search failed: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    private suspend fun fetchAniLibFlatTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        runCatching {
+            buildAniLibTeamTranslations(shikimoriId, animeTitle)
+        }.getOrElse { e ->
+            Log.e(TAG, "[AniLib] Search failed: ${e.message}", e)
+            emptyList()
+        }
+    }
+
     private suspend fun prefetchAllMediaInternal(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
         Log.i(TAG, "=== prefetchAllMedia === id=$shikimoriId, title=\"$animeTitle\"")
         kotlinx.coroutines.coroutineScope {
-            val deferredKodik = async {
-                runCatching {
-                    Log.i(TAG, "[Kodik] Starting search...")
-                    val results = kodikSearch(shikimoriId, animeTitle, null)
-                    Log.i(TAG, "[Kodik] Search returned ${results.size} results")
-                    val translations = results.mapNotNull { result ->
-                        val translation = result.optJSONObject("translation")
-                        if (translation != null) {
-                            val id = translation.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                            val title = translation.optString("title").ifBlank { "Озвучка $id" }
-                            val type = translation.optString("type").ifBlank { "voice" }
-                            val episodes = extractKodikEpisodes(result)
-                            FlatTranslation(
-                                source = AnimeSourceType.KODIK,
-                                translationId = id,
-                                title = title,
-                                type = type,
-                                episodes = episodes
-                            )
-                        } else if (result.has("link") || result.has("player_url")) {
-                            val id = "default"
-                            FlatTranslation(
-                                source = AnimeSourceType.KODIK,
-                                translationId = id,
-                                title = "Основной плеер Kodik",
-                                type = "voice",
-                                episodes = extractKodikEpisodes(result)
-                            )
-                        } else null
-                    }
-                    Log.i(TAG, "[Kodik] Parsed ${translations.size} translations: ${translations.joinToString { "${it.title} (${it.episodes.size} ep)" }}")
-                    translations
-                }.getOrElse { e ->
-                    Log.e(TAG, "[Kodik] Search failed: ${e.message}", e)
-                    emptyList()
-                }
-            }
-
-            val deferredAniLiberty = async {
-                runCatching {
-                    Log.i(TAG, "[Aniliberty] Starting search...")
-                    val release = findAniLibertyRelease(shikimoriId, animeTitle)
-                    if (release != null) {
-                        val episodes = parseAniLibertyEpisodes(release)
-                        val title = getAniLibertyTitle(release)
-                        Log.i(TAG, "[Aniliberty] Found: \"$title\" (${episodes.size} episodes), alias=${release.optString("alias")}, type=${release.optString("type")}")
-                        listOf(
-                            FlatTranslation(
-                                source = AnimeSourceType.ANILIBERTY,
-                                // A literal "default" collides with every other source's fallback id:
-                                // AnimeControls compares translationId alone and would highlight both
-                                // rows as selected. The alias is also the id findAniLibertyRelease can
-                                // fetch directly, so it doubles as a fast-path key.
-                                translationId = release.optString("alias")
-                                    .ifBlank { release.optInt("id").takeIf { it > 0 }?.toString().orEmpty() }
-                                    .ifBlank { "default" },
-                                title = title,
-                                type = "voice",
-                                episodes = episodes
-                            )
-                        )
-                    } else {
-                        Log.w(TAG, "[Aniliberty] No release found for \"$animeTitle\"")
-                        emptyList()
-                    }
-                }.getOrElse { e ->
-                    Log.e(TAG, "[Aniliberty] Search failed: ${e.message}", e)
-                    emptyList()
-                }
-            }
-
-            val deferredAniLib = async {
-                runCatching {
-                    Log.i(TAG, "[AniLib] Starting search...")
-                    val release = findAniLibRelease(shikimoriId, animeTitle)
-                    if (release != null) {
-                        val episodes = parseAniLibEpisodes(release)
-                        val title = getAniLibTitle(release)
-                        Log.i(TAG, "[AniLib] Found: \"$title\" (${episodes.size} episodes), code=${release.optString("code")}")
-                        listOf(
-                            FlatTranslation(
-                                source = AnimeSourceType.ANILIB,
-                                // Distinct from the Kodik/AniLiberty fallback ids for the same reason
-                                // (AnimeControls matches on translationId alone). AniLib playback
-                                // re-resolves via findAniLibRelease and ignores this id, so any unique
-                                // value is safe here.
-                                translationId = release.optInt("id").takeIf { it > 0 }?.toString() ?: "default",
-                                title = title,
-                                type = "voice",
-                                episodes = episodes
-                            )
-                        )
-                    } else {
-                        Log.w(TAG, "[AniLib] No release found for \"$animeTitle\"")
-                        emptyList()
-                    }
-                }.getOrElse { e ->
-                    Log.e(TAG, "[AniLib] Search failed: ${e.message}", e)
-                    emptyList()
-                }
-            }
-
-            val kodikResult = deferredKodik.await()
-            val anilibertyResult = deferredAniLiberty.await()
-            val anilibResult = deferredAniLib.await()
-            Log.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodikResult.size}, Aniliberty: ${anilibertyResult.size}, AniLib: ${anilibResult.size}")
-            mergeTranslations(kodikResult + anilibertyResult + anilibResult)
+            // Each branch goes through the per-source cache, so a progressive page that already
+            // fetched some providers never repeats their network roundtrips here.
+            val kodikResult = async { fetchSourceMedia(shikimoriId, animeTitle, AnimeSourceType.KODIK) }
+            val anilibertyResult = async { fetchSourceMedia(shikimoriId, animeTitle, AnimeSourceType.ANILIBERTY) }
+            val anilibResult = async { fetchSourceMedia(shikimoriId, animeTitle, AnimeSourceType.ANILIB) }
+            val kodik = kodikResult.await()
+            val aniliberty = anilibertyResult.await()
+            val anilib = anilibResult.await()
+            Log.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodik.size}, Aniliberty: ${aniliberty.size}, AniLib: ${anilib.size}")
+            mergeTranslations(kodik + aniliberty + anilib)
         }
     }
 
@@ -285,8 +350,19 @@ object AnimeStreamResolver {
             merged[key] = if (existing == null) {
                 translation
             } else {
+                // Same episode from two rows: keep the copy advertising the higher quality, but
+                // preserve a real episode title if only the lower-quality copy carried one.
                 val episodes = (existing.episodes + translation.episodes)
-                    .distinctBy { it.number }
+                    .groupBy { it.number }
+                    .map { (_, eps) ->
+                        eps.reduce { a, b ->
+                            val best = if (qualityRank(b.maxQuality) > qualityRank(a.maxQuality)) b else a
+                            val other = if (best === b) a else b
+                            if (isSyntheticEpisodeTitle(best.title, best.number) &&
+                                !isSyntheticEpisodeTitle(other.title, other.number)
+                            ) best.copy(title = other.title) else best
+                        }
+                    }
                     .sortedBy { it.number }
                 // Prefer whichever row carried a real episode list; titles are identical per id.
                 existing.copy(episodes = episodes)
@@ -356,7 +432,12 @@ object AnimeStreamResolver {
         when (sourceType) {
             AnimeSourceType.KODIK -> resolveKodikStream(shikimoriId, animeTitle, translationId, episodeNumber)
             AnimeSourceType.ANILIBERTY -> resolveAniLibertyStream(shikimoriId, animeTitle, episodeNumber, translationId)
-            AnimeSourceType.ANILIB -> resolveAniLibStream(shikimoriId, animeTitle, episodeNumber, translationId)
+            AnimeSourceType.ANILIB ->
+                if (translationId.startsWith("L")) {
+                    resolveAniLibLegacyStream(shikimoriId, animeTitle, translationId, episodeNumber)
+                } else {
+                    resolveAniLibStream(shikimoriId, animeTitle, episodeNumber, translationId)
+                }
         }
     }
 
@@ -714,7 +795,7 @@ object AnimeStreamResolver {
                         .orEmpty()
                         .ifBlank { items.optString(episodeKey) }
                     val prefix = if (seasonNumber != null && seasonNumber > 1) "Сезон $seasonNumber, " else ""
-                    episodes.add(AnimeEpisode(number = number, title = "${prefix}Серия $number", link = link))
+                    episodes.add(AnimeEpisode(number = number, title = "${prefix}Серия $number", link = link, maxQuality = qualityFromLink(link, fallback = KODIK_DEFAULT_QUALITY)))
                 }
             }
         }
@@ -725,7 +806,7 @@ object AnimeStreamResolver {
             val link = directEpisodes.optJSONObject(key)?.optString("link")
                 .orEmpty()
                 .ifBlank { directEpisodes.optString(key) }
-            episodes.add(AnimeEpisode(number = number, title = "Серия $number", link = link))
+            episodes.add(AnimeEpisode(number = number, title = "Серия $number", link = link, maxQuality = qualityFromLink(link, fallback = KODIK_DEFAULT_QUALITY)))
         }
 
         // Add specials
@@ -738,7 +819,7 @@ object AnimeStreamResolver {
                 // Use a high number for specials to avoid conflict with regular episodes
                 // and keep them at the end of the list.
                 val specialNumber = number + 10000 
-                episodes.add(AnimeEpisode(number = specialNumber, title = "Special $number", link = link))
+                episodes.add(AnimeEpisode(number = specialNumber, title = "Special $number", link = link, maxQuality = qualityFromLink(link, fallback = KODIK_DEFAULT_QUALITY)))
             }
         }
 
@@ -1108,7 +1189,7 @@ object AnimeStreamResolver {
         .trim()
         .replace(Regex("""\s+"""), " ")
 
-    private suspend fun get(url: String, referer: String? = null): String? = runCatching {
+    private suspend fun get(url: String, referer: String? = null, logTag: String? = null): String? = runCatching {
         val builder = Request.Builder()
             .url(url)
             .addHeader("User-Agent", USER_AGENT)
@@ -1116,8 +1197,13 @@ object AnimeStreamResolver {
         if (referer != null) builder.addHeader("Referer", referer)
         if (referer != null) builder.addHeader("Origin", originFrom(referer))
         client.newCall(builder.build()).execute().use { response ->
-            if (!response.isSuccessful) null else response.body?.string()
+            if (!response.isSuccessful) {
+                if (logTag != null) Log.w(TAG, "$logTag HTTP ${response.code} for $url")
+                null
+            } else response.body?.string()
         }
+    }.onFailure { e ->
+        if (logTag != null) Log.w(TAG, "$logTag ${e.javaClass.simpleName}: ${e.message} for $url")
     }.getOrNull()
 
     /**
@@ -1389,13 +1475,267 @@ object AnimeStreamResolver {
     }
 
     // ============================================================
-    // AniLib (anilib.me) — a distinct source from AniLiberty/AniLibria.
-    // Modeled after ShikiWatch's AniLib integration: search → title (shikiId/id),
-    // getPlaylist(title.id) → episodes, getEpisode(episodeId) → players (teams) with
-    // video[{quality,href}] and a videoHost; stream url = host + href.
+    // AniLib (animelib.org) — отдельный источник, НЕ путать с AniLiberty/AniLibria.
+    // Новое REST API на api.animelib.org (DDoS-Guard, доступен из РФ, в отличие от
+    // Cloudflare-фронта animelib.org и мёртвого anilib.me):
+    //   /api/anime?search=<q>        → тайтлы c shikimori_href (id Shikimori внутри)
+    //   /api/episodes?anime_id=<id>  → серии
+    //   /api/episodes/<episodeId>    → players[]: team, translation_type (Озвучка/Субтитры),
+    //                                  src = ссылка на Kodik-плеер → HLS через resolveKodikHls
+    // Каждая команда — отдельная озвучка ("v<i>|<метка>" / "s<i>|<метка>").
     // ============================================================
 
     private val anilibReleaseCache = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
+    private val anilibEpisodesCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<List<AnimeEpisode>>>()
+
+    // ------------------------------------------------------------
+    // AniLib legacy (api.anilib.me v3) — прямые HLS-ссылки команд с
+    // качествами до 4K, в отличие от Kodik-эмбедов нового API.
+    // Домен TLS-блокирован в РФ без VPN, поэтому каждый запрос короткий
+    // по таймауту, а любой сбой откатывает на новый api.animelib.org.
+    // Форматы ответов не документированы — парсинг максимально терпимый.
+    // ------------------------------------------------------------
+
+    private val ANILIB_LEGACY_API = listOf("https://api.anilib.me")
+
+    private const val LEGACY_REQUEST_TIMEOUT_MS = 9_000L
+
+    private val anilibLegacyCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<LegacyRow>>>()
+    private val anilibLegacyDetailCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<JSONObject>>()
+
+    /** hls-key → "NNNNp": терпимо к именованию sd/hd/fullHd/4k разных поколений API. */
+    private fun legacyQualityFromKey(key: String): String? {
+        val k = key.lowercase()
+        return when {
+            "2160" in k || "4k" in k || "uhd" in k -> "2160p"
+            "1440" in k || k == "2k" -> "1440p"
+            "1080" in k || "fullhd" in k || "full_hd" in k || "fhd" in k -> "1080p"
+            "720" in k || k == "hd" -> "720p"
+            "480" in k || k == "sd" -> "480p"
+            else -> null
+        }
+    }
+
+    /** Корневой data-объект ответа: терпит {"data": {...}} и прямой объект. */
+    private fun legacyDataObject(body: String?): JSONObject? {
+        if (body.isNullOrBlank() || body == "null") return null
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        return root.optJSONObject("data") ?: root.takeIf { it.has("playlist") || it.has("hls") || it.has("id") }
+    }
+
+    private fun legacyArray(root: JSONObject?, vararg names: String): JSONArray? =
+        names.firstNotNullOfOrNull { root?.optJSONArray(it)?.takeIf { arr -> arr.length() > 0 } }
+
+    /** Название команды/студии из записи плейлиста; поля гуляют между версиями API. */
+    private fun legacyEntryLabel(entry: JSONObject): String {
+        val fromNested = sequenceOf("studio", "team", "translation", "voice")
+            .mapNotNull { entry.optJSONObject(it) }
+            .mapNotNull { it.optCleanString("name").ifBlank { it.optCleanString("title") }.ifBlank { null } }
+            .firstOrNull()
+        return (fromNested
+            ?: entry.optCleanString("studio_name").ifBlank {
+                entry.optCleanString("team_name").ifBlank { entry.optCleanString("name") }
+            })
+            .ifBlank { "Озвучка AniLib" }
+    }
+
+    private fun legacyEntryIsSub(entry: JSONObject): Boolean {
+        val tt = entry.optJSONObject("translation_type")?.optCleanString("label")
+        val type = entry.optCleanString("type")
+        return listOf(tt, type).any { it?.contains("субтитр", true) == true || it?.contains("sub", true) == true }
+    }
+
+    /** Карта качество→m3u8 одной записи плейлиста. */
+    private fun legacyEntryQualities(entry: JSONObject): Map<String, String> {
+        val map = linkedMapOf<String, String>()
+        val hls = entry.optJSONObject("hls")
+        if (hls != null) {
+            hls.keys().asSequence().forEach { key ->
+                val url = hls.optString(key)
+                val q = legacyQualityFromKey(key)
+                if (q != null && url.startsWith("http")) map[q] = url
+            }
+        }
+        if (map.isEmpty()) {
+            sequenceOf("url", "src", "link", "file")
+                .mapNotNull { entry.optString(it).takeIf { u -> u.startsWith("http") } }
+                .firstOrNull()
+                ?.let { direct -> map[inferQuality(direct)] = direct }
+        }
+        return map
+    }
+
+    private suspend fun findAniLibLegacyTitle(shikimoriId: Int, animeTitle: String): JSONObject? {
+        val queries = buildAnimeSearchQueries(animeTitle).ifEmpty { listOf(animeTitle) }
+        for (base in ANILIB_LEGACY_API) {
+            for (query in queries.take(3)) {
+                val body = withTimeoutOrNull(LEGACY_REQUEST_TIMEOUT_MS) {
+                    get("$base/api/v3/anime/search?search=${enc(query)}&limit=20", referer = "https://anilib.me/", logTag = "[AniLib.Legacy]")
+                } ?: continue
+                pickAniLibTitle(body, shikimoriId, animeTitle)?.let { found ->
+                    return JSONObject().apply {
+                        put("id", found.optInt("id"))
+                        put("name", found.optString("name", animeTitle))
+                        put("ruTitle", found.optString("rus_name").ifBlank { found.optString("name", animeTitle) })
+                        put("base", base)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Полный легаси-конвейер: поиск тайтла → серии → детали с плейлистами → строки по командам,
+     * где для каждой серии хранится ВСЯ карта качеств. Пустой результат на любом звене означает
+     * «легаси недоступен» — вызывающий код откатывается на новый api.animelib.org.
+     */
+    private data class LegacyRow(
+        val kind: String,
+        val label: String,
+        /** номер серии → карта качество→m3u8 */
+        val episodes: MutableMap<Int, LinkedHashMap<String, String>> = LinkedHashMap()
+    )
+
+    private suspend fun buildAniLibLegacyRows(shikimoriId: Int, animeTitle: String): List<LegacyRow> = withContext(Dispatchers.IO) {
+        val title = findAniLibLegacyTitle(shikimoriId, animeTitle) ?: return@withContext emptyList()
+        val base = title.optString("base")
+        val animeId = title.optInt("id")
+
+        val episodeRoot = withTimeoutOrNull(LEGACY_REQUEST_TIMEOUT_MS) {
+            get("$base/api/v3/anime/$animeId/episodes", referer = "https://anilib.me/", logTag = "[AniLib.Legacy]")
+        } ?: return@withContext emptyList()
+        val episodesArr = legacyArray(legacyDataObject(episodeRoot), "data", "items", "episodes")
+            ?: return@withContext emptyList()
+
+        data class LegacyEp(val number: Int, val id: Int?)
+        val eps = episodesArr.asSequenceObjects().mapNotNull { item ->
+            val number = item.optInt("item_number").takeIf { it > 0 }
+                ?: item.optString("number").toIntOrNull().takeIf { (it ?: 0) > 0 }
+                ?: item.optInt("ordinal").takeIf { it > 0 }
+                ?: return@mapNotNull null
+            LegacyEp(number, item.optInt("id").takeIf { it > 0 })
+        }.distinctBy { it.number }.sortedBy { it.number }.toList()
+        if (eps.isEmpty()) return@withContext emptyList()
+
+        val rows = LinkedHashMap<String, LegacyRow>()
+        for (ep in eps) {
+            val detailId = ep.id ?: continue
+            val detail = fetchAniLibLegacyDetail(base, animeId, detailId) ?: continue
+            val playlist = legacyArray(detail, "playlist", "videos", "players") ?: continue
+            playlist.asSequenceObjects().forEach { entry ->
+                val qualities = legacyEntryQualities(entry)
+                if (qualities.isEmpty()) return@forEach
+                val label = legacyEntryLabel(entry)
+                val isSub = legacyEntryIsSub(entry)
+                val key = "${if (isSub) 's' else 'v'}|${label.lowercase().replace('|', ' ').trim()}"
+                val row = rows.getOrPut(key) {
+                    LegacyRow(if (isSub) "sub" else "voice", label)
+                }
+                row.episodes.putIfAbsent(ep.number, LinkedHashMap(qualities))
+            }
+        }
+        val result = rows.values.filter { it.episodes.isNotEmpty() }
+        if (result.isNotEmpty()) {
+            Log.i(TAG, "[AniLib.Legacy] built ${result.size} rows (${result.sumOf { it.episodes.size }} episode entries)")
+        }
+        result
+    }
+
+    private suspend fun fetchAniLibLegacyDetail(base: String, animeId: Int, episodeId: Int): JSONObject? {
+        anilibLegacyDetailCache[episodeId]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) return entry.data
+            anilibLegacyDetailCache.remove(episodeId)
+        }
+        // Точная форма эндпоинта деталей не документирована — пробуем оба расклада.
+        val candidates = listOf(
+            "$base/api/v3/episode/$episodeId",
+            "$base/api/v3/anime/$animeId/episode/$episodeId"
+        )
+        for (url in candidates) {
+            val body = withTimeoutOrNull(LEGACY_REQUEST_TIMEOUT_MS) {
+                get(url, referer = "https://anilib.me/", logTag = "[AniLib.Legacy]")
+            } ?: continue
+            val obj = legacyDataObject(body) ?: continue
+            if (legacyArray(obj, "playlist", "videos", "players") != null) {
+                anilibLegacyDetailCache[episodeId] = CacheEntry(obj, System.currentTimeMillis())
+                return obj
+            }
+        }
+        return null
+    }
+
+    private suspend fun cachedAniLibLegacyRows(shikimoriId: Int, animeTitle: String): List<LegacyRow> {
+        val cacheKey = "$shikimoriId:${animeTitle.trim().lowercase()}"
+        anilibLegacyCache[cacheKey]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) return entry.data
+            anilibLegacyCache.remove(cacheKey)
+        }
+        val rows = buildAniLibLegacyRows(shikimoriId, animeTitle)
+        if (rows.isNotEmpty()) {
+            anilibLegacyCache[cacheKey] = CacheEntry(rows, System.currentTimeMillis())
+        }
+        return rows
+    }
+
+    private fun LegacyRow.toFlatTranslation(index: Int): FlatTranslation = FlatTranslation(
+        source = AnimeSourceType.ANILIB,
+        translationId = "L$index|$label",
+        title = label,
+        type = kind,
+        episodes = episodes.map { (number, qualities) ->
+            val best = qualities.maxByOrNull { qualityRank(it.key) }!!
+            AnimeEpisode(number = number, link = best.value, maxQuality = best.key)
+        }.sortedBy { it.number }
+    )
+
+    /** Легаси-озвучки для листа выбора; пусто, если старый API недоступен. */
+    private suspend fun buildAniLibLegacyTeamTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation> =
+        cachedAniLibLegacyRows(shikimoriId, animeTitle).mapIndexed { i, row -> row.toFlatTranslation(i) }
+
+    /** Стрим из легаси-плейлиста: все качества команды, лучший — дефолтным URL. */
+    private suspend fun resolveAniLibLegacyStream(
+        shikimoriId: Int,
+        animeTitle: String,
+        translationId: String,
+        episodeNumber: Int
+    ): AnimeMediaStream? = withContext(Dispatchers.IO) {
+        val rows = cachedAniLibLegacyRows(shikimoriId, animeTitle)
+        val index = translationId.removePrefix("L").substringBefore('|').toIntOrNull() ?: return@withContext null
+        val labelKey = translationId.substringAfter('|').lowercase()
+        val row = rows.getOrNull(index)?.takeIf { it.label.lowercase() == labelKey } ?: return@withContext null
+        val qualities = row.episodes[episodeNumber]?.takeIf { it.isNotEmpty() } ?: return@withContext null
+
+        val best = qualities.maxByOrNull { qualityRank(it.key) }!!
+        AnimeMediaStream(
+            url = best.value,
+            qualities = LinkedHashMap(qualities),
+            quality = best.key,
+            headers = mapOf(
+                "User-Agent" to USER_AGENT,
+                "Referer" to "https://anilib.me/",
+                "Origin" to "https://anilib.me"
+            )
+        )
+    }
+
+
+    /** Episode-detail json (with players[]) by episode id; TTL-shared with resolveStream for id stability. */
+    private suspend fun fetchAniLibEpisodeDetail(base: String, episodeId: Int): JSONObject? {
+        anilibEpisodeCache[episodeId]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < HLS_CACHE_TTL_MS) return entry.data
+            anilibEpisodeCache.remove(episodeId)
+        }
+        val body = get("$base/api/episodes/$episodeId", referer = "https://animelib.org/", logTag = "[AniLib]") ?: return null
+        val json = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        anilibEpisodeCache[episodeId] = CacheEntry(json, System.currentTimeMillis())
+        return json
+    }
+
+    /** Shikimori id parsed from the title's shikimori_href ("https://shikimori.io/animes/30276"). */
+    private fun aniLibShikiId(item: JSONObject): Int =
+        Regex("""/animes/(\d+)""").find(item.optString("shikimori_href"))
+            ?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
 
     private suspend fun findAniLibRelease(shikimoriId: Int, animeTitle: String): JSONObject? {
         Log.i(TAG, "[AniLib] findRelease: id=$shikimoriId, title=\"$animeTitle\"")
@@ -1409,27 +1749,24 @@ object AnimeStreamResolver {
             val found = kotlinx.coroutines.coroutineScope {
                 queries.map { query ->
                     async {
-                        val body = get("$base/api/v2/searchTitles?search=${enc(query)}", referer = "https://anilib.me/")
+                        // The current API ignores "search=" and always answers with a fixed
+                        // popular-top list; only "q=" performs a real title lookup.
+                        val body = get("$base/api/anime?q=${enc(query)}", referer = "https://animelib.org/", logTag = "[AniLib]")
                             ?: return@async null
-                        val title = pickAniLibTitle(body, shikimoriId, animeTitle) ?: return@async null
-                        // Resolve to a full playlist/release object so callers can read episodes + players.
-                        val playlist = get("$base/api/v2/playlist?id=${title.optInt("id")}", referer = "https://anilib.me/")
-                            ?: return@async null
-                        JSONObject().apply {
-                            put("id", title.optInt("id"))
-                            put("shikiId", title.optInt("shikiId", shikimoriId))
-                            put("name", title.optString("name", animeTitle))
-                            put("ruTitle", title.optString("ruTitle", title.optString("name", animeTitle)))
-                            put("base", base)
-                            try { put("playlist", JSONArray(playlist)) } catch (e: Exception) { put("playlistRaw", playlist) }
-                        }
+                        pickAniLibTitle(body, shikimoriId, animeTitle) ?: return@async null
                     }
                 }.firstNotNullOfOrNull { it.await() }
             }
             if (found != null) {
-                anilibReleaseCache[cacheKey] = found
-                Log.i(TAG, "[AniLib] found title id=${found.optInt("id")} on $base")
-                return found
+                val release = JSONObject().apply {
+                    put("id", found.optInt("id"))
+                    put("name", found.optString("name", animeTitle))
+                    put("ruTitle", found.optString("rus_name").ifBlank { found.optString("name", animeTitle) })
+                    put("base", base)
+                }
+                anilibReleaseCache[cacheKey] = release
+                Log.i(TAG, "[AniLib] found title id=${release.optInt("id")} \"${getAniLibTitle(release)}\" on $base")
+                return release
             }
         }
         Log.w(TAG, "[AniLib] no release found for id=$shikimoriId, title=\"$animeTitle\"")
@@ -1438,113 +1775,237 @@ object AnimeStreamResolver {
 
     private fun pickAniLibTitle(body: String, shikimoriId: Int, expectedTitle: String): JSONObject? {
         if (body.isBlank() || body == "null") return null
-        return runCatching {
-            val root = JSONObject(body)
-            val arr = root.optJSONArray("items")
-                ?: root.optJSONArray("data")
-                ?: root.optJSONArray("titles")
-                ?: if (root.has("id")) JSONArray().also { it.put(root) } else JSONArray(body.trim().ifEmpty { "[]" })
-            // Prefer a title whose shikiId matches; else first whose name loosely matches.
-            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.firstOrNull { t ->
-                t.optInt("shikiId", -1) == shikimoriId || t.optInt("shikimoriId", -1) == shikimoriId
-            } ?: (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.firstOrNull { t ->
-                val n = (t.optString("name") + " " + t.optString("ruTitle") + " " + t.optString("enTitle")).lowercase()
-                n.contains(expectedTitle.lowercase().take(5))
-            } ?: arr.optJSONObject(0)
-        }.getOrNull()
+        val titles = runCatching {
+            val root = JSONObject(body.trim())
+            val arr = root.optJSONArray("data")
+                ?: root.optJSONArray("items")
+                ?: if (root.has("id")) JSONArray().put(root) else null
+                ?: return@runCatching emptyList<JSONObject>()
+            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+        }.getOrDefault(emptyList())
+        if (titles.isEmpty()) return null
+        // Authoritative: the title whose shikimori_href carries our shikimori id.
+        if (shikimoriId > 0) {
+            titles.firstOrNull { aniLibShikiId(it) == shikimoriId }?.let { return it }
+        }
+        // Fuzzy fallback by name, then first (the search is fuzzy and may not contain the title).
+        return titles.firstOrNull { t ->
+            titlesMatch(expectedTitle, t.optString("rus_name")) ||
+                titlesMatch(expectedTitle, t.optString("eng_name")) ||
+                titlesMatch(expectedTitle, t.optString("name"))
+        } ?: titles.firstOrNull().also {
+            Log.d(TAG, "[AniLib] pickAniLibTitle: no shiki/title match, taking first result id=${it?.optInt("id")}")
+        }
     }
 
-    private fun parseAniLibEpisodes(release: JSONObject): List<AnimeEpisode> {
-        val arr = release.optJSONArray("playlist") ?: return emptyList()
-        val episodes = mutableListOf<AnimeEpisode>()
-        for (i in 0 until arr.length()) {
-            val item = arr.optJSONObject(i) ?: continue
-            val number = item.optInt("episode")
-                .takeIf { it > 0 }
-                ?: item.optInt("episodeNumber", -1).takeIf { it > 0 }
-                ?: item.optInt("number", -1).takeIf { it > 0 }
-                ?: continue
-            val title = item.optString("name").ifBlank { item.optString("title") }.ifBlank { "Серия $number" }
-            val id = item.optInt("id").takeIf { it > 0 } ?: item.optInt("episodeId").takeIf { it > 0 }
-            episodes.add(AnimeEpisode(number = number, title = title, id = id))
+    /** Episode list of an AniLib title: GET /api/episodes?anime_id=<id>. */
+    private suspend fun fetchAniLibEpisodeList(base: String, animeId: Int): List<AnimeEpisode> {
+        anilibEpisodesCache[animeId]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) return entry.data
+            anilibEpisodesCache.remove(animeId)
         }
-        return episodes.distinctBy { it.number }.sortedBy { it.number }
+        val body = get("$base/api/episodes?anime_id=$animeId", referer = "https://animelib.org/", logTag = "[AniLib]")
+        val episodes = runCatching {
+            val root = JSONObject(body.orEmpty())
+            val arr = root.optJSONArray("data") ?: return@runCatching emptyList<AnimeEpisode>()
+            arr.asSequenceObjects().mapNotNull { item ->
+                val number = item.optInt("item_number").takeIf { it > 0 }
+                    ?: item.optString("number").toIntOrNull().takeIf { (it ?: 0) > 0 }
+                    ?: return@mapNotNull null
+                val title = item.optCleanString("name").ifBlank { "Серия $number" }
+                AnimeEpisode(number = number, title = title, id = item.optInt("id").takeIf { it > 0 })
+            }.distinctBy { it.number }.sortedBy { it.number }.toList()
+        }.getOrDefault(emptyList())
+        if (episodes.isNotEmpty()) {
+            anilibEpisodesCache[animeId] = CacheEntry(episodes, System.currentTimeMillis())
+        }
+        return episodes
     }
 
     private fun getAniLibTitle(release: JSONObject): String =
         release.optString("ruTitle").ifBlank { release.optString("name") }.ifBlank { "AniLib" }
 
-    private suspend fun fetchAniLibTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> {
-        val release = findAniLibRelease(shikimoriId, animeTitle) ?: return emptyList()
-        val episodes = parseAniLibEpisodes(release)
-        return listOf(
-            AnimeTranslation(
-                id = release.optInt("id").toString(),
-                title = getAniLibTitle(release),
-                type = "voice",
-                episodesCount = episodes.size
-            )
-        )
+    /** players[] of an episode-detail json; tolerates a {"data": {...}} wrapper. */
+    private fun aniLibPlayers(detail: JSONObject): List<JSONObject> {
+        val direct = detail.optJSONArray("players")
+        if (direct != null) return direct.asSequenceObjects().toList()
+        val data = detail.optJSONObject("data") ?: return emptyList()
+        return data.optJSONArray("players")?.asSequenceObjects().orEmpty().toList()
     }
+
+    /** Team display label ("AniLibria.TV", "OnWave", …); falls back to slug, then generic. */
+    private fun aniLibPlayerLabel(player: JSONObject): String {
+        val team = player.optJSONObject("team")
+        val label = sequenceOf(
+            team?.optString("name"),
+            team?.optString("slug"),
+            player.optString("name")
+        ).firstOrNull { !it.isNullOrBlank() }?.trim().orEmpty()
+        return label.ifBlank { "Озвучка AniLib" }
+    }
+
+    /** translation_type: {id: 2, label: "Озвучка"} / {id: 1, label: "Субтитры"}; unknown → voice. */
+    private fun aniLibPlayerIsVoice(player: JSONObject): Boolean {
+        val tt = player.optJSONObject("translation_type")
+        val label = tt?.optString("label").orEmpty().lowercase()
+        if (label.contains("субтитр") || label.contains("sub")) return false
+        if (label.contains("озвучк") || label.contains("dub") || label.contains("voice")) return true
+        return tt?.optInt("id", 2) != 1
+    }
+
+    /** Kodik player link of a player ("//kodikplayer.com/seria/…/720p"), made absolute. */
+    private fun aniLibPlayerSrc(player: JSONObject): String? {
+        val raw = player.optString("src").replace("\\/", "/").trim()
+        if (raw.isBlank()) return null
+        return when {
+            raw.startsWith("//") -> "https:$raw"
+            raw.startsWith("http") -> raw
+            else -> "https://kodikplayer.com/${raw.trimStart('/')}"
+        }
+    }
+
+    /**
+     * One FlatTranslation per AniLib voice/sub team (like Kodik dubs). Episode details are fetched
+     * once here and land in [anilibEpisodeCache]; resolveStream reads the same cached json, so
+     * "v<i>|<label>" ids keep matching the players arrays they were built from. A label is embedded
+     * in the id because player ordering can shift between refetches — matching goes by label first,
+     * index second. If no details expose players, fall back to a single row with all episodes.
+     */
+    private suspend fun buildAniLibTeamTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        Log.i(TAG, "[AniLib] buildTeamTranslations: id=$shikimoriId, title=\"$animeTitle\"")
+        // Легаси anilib.me первым: прямые HLS команд до 4K. Недоступен (нет VPN/блок) — тихий
+        // откат на новый api.animelib.org с Kodik-эмбедами (максимум 720p).
+        val legacy = runCatching {
+            withTimeoutOrNull(15_000L) { buildAniLibLegacyTeamTranslations(shikimoriId, animeTitle) }
+        }.getOrNull().orEmpty()
+        if (legacy.isNotEmpty()) return@withContext legacy
+        Log.i(TAG, "[AniLib] legacy unavailable, falling back to api.animelib.org")
+
+        val release = findAniLibRelease(shikimoriId, animeTitle)
+        if (release == null) {
+            Log.w(TAG, "[AniLib] No release found for \"$animeTitle\"")
+            return@withContext emptyList()
+        }
+        val base = release.optString("base").ifBlank { ANILIB_API.first() }
+        val episodes = fetchAniLibEpisodeList(base, release.optInt("id"))
+        Log.i(TAG, "[AniLib] Found: \"${getAniLibTitle(release)}\" (${episodes.size} episodes)")
+        if (episodes.isEmpty()) return@withContext emptyList()
+
+        val detailByIds = kotlinx.coroutines.coroutineScope {
+            val sem = Semaphore(6)
+            episodes.mapNotNull { it.id }.map { id ->
+                async { sem.withPermit { id to fetchAniLibEpisodeDetail(base, id) } }
+            }.awaitAll()
+        }
+        val detailById = HashMap<Int, JSONObject>()
+        for ((id, detail) in detailByIds) detail?.let { detailById[id] = it }
+
+        data class TeamRow(val kind: String, val label: String, val eps: MutableList<AnimeEpisode>)
+        val rows = LinkedHashMap<String, TeamRow>()
+
+        for (ep in episodes) {
+            val detail = ep.id?.let { detailById[it] } ?: continue
+            val players = aniLibPlayers(detail)
+            // Only teams that actually carry a Kodik link for this episode produce playable rows.
+            val usable = players.filter { !aniLibPlayerSrc(it).isNullOrBlank() }
+            for (player in usable) {
+                val voice = aniLibPlayerIsVoice(player)
+                val label = aniLibPlayerLabel(player)
+                val key = "${if (voice) 'v' else 's'}|${label.lowercase()}"
+                // The episode object is shared across teams: stamp each row with the quality of
+                // its own player link (Kodik embeds carry their top variant in the path).
+                val rowEpisode = ep.copy(maxQuality = qualityFromLink(aniLibPlayerSrc(player), fallback = KODIK_DEFAULT_QUALITY))
+                rows.getOrPut(key) { TeamRow(if (voice) "voice" else "sub", label, mutableListOf()) }
+                    .eps.add(rowEpisode)
+            }
+        }
+
+        if (rows.isEmpty()) {
+            Log.i(TAG, "[AniLib] no team players resolved, falling back to single row")
+            return@withContext listOf(
+                FlatTranslation(
+                    source = AnimeSourceType.ANILIB,
+                    translationId = "default",
+                    title = getAniLibTitle(release),
+                    type = "voice",
+                    episodes = episodes
+                )
+            )
+        }
+
+        val translations = rows.values.mapIndexed { i, row ->
+            FlatTranslation(
+                source = AnimeSourceType.ANILIB,
+                translationId = "${if (row.kind == "voice") 'v' else 's'}$i|${row.label.replace('|', ' ')}",
+                title = row.label,
+                type = row.kind,
+                episodes = row.eps.distinctBy { it.number }.sortedBy { it.number }
+            )
+        }
+        Log.i(TAG, "[AniLib] teams: ${translations.joinToString { "${it.title}[${it.translationId}](${it.episodes.size})" }}")
+        translations
+    }
+
+    private suspend fun fetchAniLibTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> =
+        buildAniLibTeamTranslations(shikimoriId, animeTitle).map {
+            AnimeTranslation(id = it.translationId, title = it.title, type = it.type, episodesCount = it.episodes.size)
+        }
 
     private suspend fun fetchAniLibEpisodes(shikimoriId: Int, animeTitle: String, translationId: String): List<AnimeEpisode> {
         val release = findAniLibRelease(shikimoriId, animeTitle) ?: return emptyList()
-        return parseAniLibEpisodes(release)
+        val base = release.optString("base").ifBlank { ANILIB_API.first() }
+        return fetchAniLibEpisodeList(base, release.optInt("id"))
     }
 
     private suspend fun resolveAniLibStream(shikimoriId: Int, animeTitle: String, episodeNumber: Int, translationId: String): AnimeMediaStream? {
-        Log.i(TAG, "[AniLib] resolveStream: id=$shikimoriId, ep=$episodeNumber")
+        Log.i(TAG, "[AniLib] resolveStream: id=$shikimoriId, ep=$episodeNumber, tr=$translationId")
         val release = findAniLibRelease(shikimoriId, animeTitle) ?: return null
         val base = release.optString("base").ifBlank { ANILIB_API.first() }
-        val episodes = parseAniLibEpisodes(release)
-        val ep = episodes.firstOrNull { it.number == episodeNumber } ?: return null
+        val episodes = fetchAniLibEpisodeList(base, release.optInt("id"))
+        val ep = episodes.firstOrNull { it.number == episodeNumber } ?: run {
+            Log.w(TAG, "[AniLib] Episode $episodeNumber not found (${episodes.size} known)")
+            return null
+        }
         val episodeId = ep.id ?: return null
 
-        val epBody = get("$base/api/v2/episode?id=$episodeId", referer = "https://anilib.me/") ?: return null
-        val players = runCatching {
-            val root = JSONObject(epBody)
-            root.optJSONArray("players") ?: root.optJSONObject("data")?.optJSONArray("players") ?: JSONArray()
-        }.getOrNull() ?: return null
-        if (players.length() == 0) return null
-
-        // Pick the first voice player (ShikiWatch picks by team; we take the first voice one).
-        val player = (0 until players.length())
-            .mapNotNull { players.optJSONObject(it) }
-            .firstOrNull { p ->
-                val tt = p.optString("translationType").lowercase()
-                tt == "voice" || tt == "озвучка" || (tt != "sub" && tt != "subtitles")
-            } ?: players.optJSONObject(0) ?: return null
-
-        val host = runCatching {
-            JSONObject(epBody).optString("videoHost").ifBlank { JSONObject(epBody).optJSONObject("data")?.optString("videoHost") ?: "" }
-        }.getOrDefault("")
-        val videoArr = player.optJSONArray("video") ?: return null
-
-        val qualities = linkedMapOf<String, String>()
-        for (i in 0 until videoArr.length()) {
-            val v = videoArr.optJSONObject(i) ?: continue
-            val href = v.optString("href").ifBlank { v.optString("src") }
-            if (href.isBlank()) continue
-            val q = normalizeQuality(v.optString("quality")) ?: when {
-                href.contains("1080", ignoreCase = true) -> "1080p"
-                href.contains("720", ignoreCase = true) -> "720p"
-                href.contains("480", ignoreCase = true) -> "480p"
-                else -> null
-            } ?: continue
-            val url = if (href.startsWith("http")) href else host.trimEnd('/') + "/" + href.trimStart('/')
-            qualities[q] = url
+        // Cache-first: the same json the team list was built from, so label/index ids align.
+        val detail = fetchAniLibEpisodeDetail(base, episodeId) ?: return null
+        val players = aniLibPlayers(detail)
+        if (players.isEmpty()) {
+            Log.w(TAG, "[AniLib] episode $episodeId has no players")
+            return null
         }
-        if (qualities.isEmpty()) return null
-        val url = qualities["1080p"] ?: qualities["720p"] ?: qualities["480p"] ?: qualities.values.first()
-        Log.i(TAG, "[AniLib] resolved qualities: ${qualities.keys}")
+
+        val wantSubs = translationId.startsWith("s") && translationId != "default"
+        val pool = players.filter { aniLibPlayerIsVoice(it) != wantSubs }.ifEmpty { players }
+        val requestedLabel = translationId.substringAfter('|', "").takeIf { it.isNotBlank() }
+        val selected = requestedLabel?.let { lbl ->
+            pool.firstOrNull { aniLibPlayerLabel(it).equals(lbl, ignoreCase = true) }
+        } ?: translationId.drop(1).substringBefore('|').toIntOrNull()?.let { pool.getOrNull(it) } ?: pool.first()
+
+        // Players carry a Kodik embed link ("//kodikplayer.com/seria/…/720p"); reuse the
+        // existing Kodik HLS extraction instead of a bespoke scraper.
+        val src = aniLibPlayerSrc(selected) ?: run {
+            Log.w(TAG, "[AniLib] player \"${aniLibPlayerLabel(selected)}\" has no src link")
+            return null
+        }
+        Log.d(TAG, "[AniLib] resolving kodik hls for \"${aniLibPlayerLabel(selected)}\": $src")
+        val qualities = getCachedKodikHls(src) ?: resolveKodikHls(src).also {
+            if (it.isNotEmpty()) kodikHlsCache[src] = CacheEntry(it, System.currentTimeMillis())
+        }
+        if (qualities.isEmpty()) {
+            Log.w(TAG, "[AniLib] kodik hls extraction failed for $src")
+            return null
+        }
+        val url = qualities["720p"] ?: qualities["1080p"] ?: qualities["480p"] ?: qualities["360p"] ?: qualities.values.first()
+        Log.i(TAG, "[AniLib] resolved \"${aniLibPlayerLabel(selected)}\" qualities: ${qualities.keys}")
         return AnimeMediaStream(
             url = url,
             qualities = qualities,
             quality = qualities.entries.firstOrNull { it.value == url }?.key ?: "Auto",
             headers = mapOf(
                 "User-Agent" to USER_AGENT,
-                "Referer" to "https://anilib.me/",
-                "Origin" to "https://anilib.me"
+                "Referer" to "https://kodik.info/"
             )
         )
     }

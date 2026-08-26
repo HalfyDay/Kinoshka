@@ -9,13 +9,46 @@ import hd.kinoshka.app.data.model.MoviePlaybackFailure
 import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.MovieStreamResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 object MovieStreamResolver {
     private const val TAG = "MovieStreamResolver"
 
+    private data class CatalogCacheEntry(
+        val candidates: List<KodikMovieCandidate>,
+        val timestamp: Long
+    )
+
+    // Kodik's id lookups are stable for a title; caching the accepted candidate list keeps
+    // Watch→player relaunches (and the series race) from repeating a multi-request cascade.
+    private val catalogCache = java.util.concurrent.ConcurrentHashMap<String, CatalogCacheEntry>()
+    private const val CATALOG_TTL_MS = 5 * 60_000L
+
+    private fun catalogCacheKey(request: MoviePlaybackRequest): String = listOf(
+        request.kinopoiskId?.takeIf { it > 0 }?.toString() ?: "-",
+        request.imdbId ?: "-",
+        request.titles.map(KodikMovieParser::normalizeTitle).sorted().joinToString(",").take(120)
+    ).joinToString("|")
+
     suspend fun loadCatalog(request: MoviePlaybackRequest): MovieCatalogResult = withContext(Dispatchers.IO) {
+        val cacheKey = catalogCacheKey(request)
+        catalogCache[cacheKey]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < CATALOG_TTL_MS) {
+                return@withContext MovieCatalogResult.Available(entry.candidates)
+            }
+            catalogCache.remove(cacheKey)
+        }
+
+        val result = loadCatalogInternal(request)
+        if (result is MovieCatalogResult.Available) {
+            catalogCache[cacheKey] = CatalogCacheEntry(result.candidates, System.currentTimeMillis())
+        }
+        result
+    }
+
+    private suspend fun loadCatalogInternal(request: MoviePlaybackRequest): MovieCatalogResult = withContext(Dispatchers.IO) {
         val searchResults = search(request)
         if (searchResults.raw.isEmpty()) {
             val failure = when (searchResults.failure) {
@@ -130,20 +163,24 @@ object MovieStreamResolver {
             allAccepted += accept(request, result.items, origin)
         }
 
-        // Both ID lookups are authoritative, so run both: a row Kodik joined to IMDb but not to the
-        // Kinopoisk id still contributes a reference when the first batch fails stream extraction.
-        request.kinopoiskId?.takeIf { it > 0 }?.let { id ->
-            evaluate(
-                AnimeStreamResolver.kodikSearchMovieByKinopoiskId(id),
-                KodikMovieParser.MatchOrigin.KINOPOISK_ID
-            )
-        }
-        KodikMovieParser.normalizeImdb(request.imdbId)?.let { imdb ->
-            evaluate(
-                AnimeStreamResolver.kodikSearchMovieByImdbId(imdb),
-                KodikMovieParser.MatchOrigin.IMDB_ID
-            )
-        }
+        // Both ID lookups are authoritative, so run both — but CONCURRENTLY: they are independent,
+        // and serially paying two full token×base cascades doubled the catalog latency for every
+        // title the first lookup could not serve (live-action series like The Boys among them).
+        val idBatches: List<Pair<AnimeStreamResolver.KodikMovieSearchResult, KodikMovieParser.MatchOrigin>> =
+            kotlinx.coroutines.coroutineScope {
+                val byKp = async {
+                    request.kinopoiskId?.takeIf { it > 0 }?.let { id ->
+                        AnimeStreamResolver.kodikSearchMovieByKinopoiskId(id) to KodikMovieParser.MatchOrigin.KINOPOISK_ID
+                    }
+                }
+                val byImdb = async {
+                    KodikMovieParser.normalizeImdb(request.imdbId)?.let { imdb ->
+                        AnimeStreamResolver.kodikSearchMovieByImdbId(imdb) to KodikMovieParser.MatchOrigin.IMDB_ID
+                    }
+                }
+                listOfNotNull(byKp.await(), byImdb.await())
+            }
+        idBatches.forEach { (result, origin) -> evaluate(result, origin) }
         // Title queries are heuristic and cost one request each: only spend them when the
         // authoritative lookups produced nothing, and cap the variants — the ddbb race covers
         // titles Kodik's fuzzy search would only find deep into the list anyway.

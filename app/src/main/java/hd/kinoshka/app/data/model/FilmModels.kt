@@ -129,3 +129,15 @@ data class FiltersResponse(
     @SerializedName("countries") val countries: List<FilterItem> = emptyList()
 )
 
+data class FilmVideosResponse(
+    @SerializedName("total") val total: Int = 0,
+    @SerializedName("items") val items: List<FilmVideoItem> = emptyList()
+)
+
+data class FilmVideoItem(
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("site") val site: String? = null,
+    @SerializedName("official") val official: Boolean? = null
+)
+

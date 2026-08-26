@@ -5,6 +5,7 @@ import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.FilmLinkItem
+import hd.kinoshka.app.data.model.FilmVideoItem
 import hd.kinoshka.app.data.model.FiltersResponse
 import hd.kinoshka.app.data.model.SeasonItem
 
@@ -17,6 +18,7 @@ class FilmsRepository(private val api: KinopoiskApi) {
     private val relationsCache = BoundedCache<Int, List<FilmLinkItem>>()
     private val imagesCache = BoundedCache<String, List<FilmImageItem>>()
     private val filtersCache = BoundedCache<String, FiltersResponse>()
+    private val videosCache = BoundedCache<Int, List<FilmVideoItem>>()
 
     suspend fun popular(
         collectionType: String = "TOP_POPULAR_ALL",
@@ -37,7 +39,7 @@ class FilmsRepository(private val api: KinopoiskApi) {
         countryId: Int? = null,
         genreId: Int? = null,
         order: String = "RATING",
-        type: String = "ALL",
+        type: String? = "ALL",
         ratingFrom: Int? = null,
         ratingTo: Int? = null,
         yearFrom: Int? = null,
@@ -107,6 +109,13 @@ class FilmsRepository(private val api: KinopoiskApi) {
         imagesCache.get(key)?.let { return it }
         val loaded = api.images(id = id, page = page).items
         imagesCache.put(key, loaded)
+        return loaded
+    }
+
+    suspend fun videos(id: Int): List<FilmVideoItem> {
+        videosCache.get(id)?.let { return it }
+        val loaded = runCatching { api.videos(id).items }.getOrDefault(emptyList())
+        if (loaded.isNotEmpty()) videosCache.put(id, loaded)
         return loaded
     }
 }

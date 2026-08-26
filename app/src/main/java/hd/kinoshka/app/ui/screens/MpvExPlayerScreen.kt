@@ -10,6 +10,7 @@ import app.marlboroadvance.mpvex.ui.player.PlayerActivity
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.MovieSeriesContextStore
 import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
 import hd.kinoshka.app.data.model.NativePlaybackMode
 import kotlinx.serialization.encodeToString
@@ -41,9 +42,12 @@ fun MpvExPlayerScreen(
     val userStateStore = UserStateStore(context)
 
     LaunchedEffect(streamUrl) {
+        // PENDING_MOVIE launches with no stream yet: PlayerActivity opens immediately, shows its
+        // loading overlay and resolves the stream itself (setPendingMovieExtras).
+        val pendingLaunch = playbackMode == NativePlaybackMode.PENDING_MOVIE
         val intent = Intent(context, PlayerActivity::class.java).apply {
             action = Intent.ACTION_VIEW
-            
+
             val preferredQuality = userStateStore.getPreferredQuality()
             val effectiveQuality = preferredQuality.takeIf { it != "Auto" && qualities.containsKey(it) } ?: "Auto"
             // "Auto" must NOT load a literal Auto entry from the qualities map: turbo's Auto is an
@@ -53,12 +57,16 @@ fun MpvExPlayerScreen(
             val effectiveUrl = if (effectiveQuality == "Auto") streamUrl
                 else qualities[effectiveQuality] ?: streamUrl
 
-            data = Uri.parse(effectiveUrl)
-            putExtra("uri", effectiveUrl)
-            putExtra("anime_auto_url", streamUrl)
+            if (!pendingLaunch) {
+                data = Uri.parse(effectiveUrl)
+                putExtra("uri", effectiveUrl)
+                putExtra("anime_auto_url", streamUrl)
+            } else {
+                putExtra("movie_pending_request", true)
+            }
 
             val displayTitle = when {
-                playbackMode == NativePlaybackMode.QUALITY_ONLY_MOVIE -> animeTitle
+                playbackMode == NativePlaybackMode.QUALITY_ONLY_MOVIE || pendingLaunch -> animeTitle
                 movieSeriesContext != null -> movieSeriesContext.currentEpisode.let { episode ->
                     "$animeTitle • S${episode.seasonNumber}E${episode.episodeNumber}"
                 }
@@ -94,8 +102,17 @@ fun MpvExPlayerScreen(
             putExtra("anime_disable_http_reuse", sourceType == "ANILIBERTY")
             putExtra("anime_current_episode", episodeNumber)
             putExtra("anime_current_translation_id", currentTranslationId)
-            movieSeriesContext?.let {
-                putExtra("movie_series_context", Json.encodeToString(it))
+            movieSeriesContext?.let { ctx ->
+                // The full context is hundreds of KB (dub×episode lists) — serializing it into
+                // the intent overflowed the binder transaction (TransactionTooLargeException →
+                // web-player fallback) and janked the main thread. Hand it over in-process and
+                // put only the lookup id (small contexts still ride as JSON for safety).
+                MovieSeriesContextStore.put(ctx)
+                putExtra("movie_series_kp_id", ctx.kinopoiskId)
+                val json = runCatching { Json.encodeToString(ctx) }.getOrNull()
+                if (json != null && json.length < 120_000) {
+                    putExtra("movie_series_context", json)
+                }
             }
 
             if (episodes.isNotEmpty()) {

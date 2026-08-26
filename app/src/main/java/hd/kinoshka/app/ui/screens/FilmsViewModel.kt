@@ -167,6 +167,8 @@ data class DetailsUiState(
     val fullChronology: List<FilmLinkItem> = emptyList(),
     val franchiseResponse: hd.kinoshka.app.data.model.ShikimoriFranchiseResponse? = null,
     val images: List<FilmImageItem> = emptyList(),
+    /** Превью-клип 18+ тайтла (первая ячейка «Кадров», без автозапуска). */
+    val trailer: hd.kinoshka.app.data.source.HentaiStreamResolver.HentaiTrailer? = null,
     val userProfile: UserFilmProfile? = null,
     val savingProfile: Boolean = false,
     val animeDetails: hd.kinoshka.app.data.model.ShikimoriAnimeDetails? = null,
@@ -452,10 +454,12 @@ class FilmsViewModel(
         if (isAnime) {
             userStateStore.setSavedContentType(ContentType.ANIME)
             val matchedGenre = shikimoriGenres.firstOrNull { it.genre.equals(genreName, ignoreCase = true) }
+            // Жанра нет в статичном списке Shikimori (например, хентай-тег из каталога hanime) —
+            // ищем его текстом, а не открываем неотфильтрованный каталог.
             uiState = uiState.copy(
                 tab = HomeTab.CATALOG,
                 contentType = ContentType.ANIME,
-                query = "",
+                query = if (matchedGenre == null) genreName else "",
                 filterState = SearchFilterState(animeGenreId = matchedGenre?.id)
             )
         } else {
@@ -464,7 +468,7 @@ class FilmsViewModel(
             uiState = uiState.copy(
                 tab = HomeTab.CATALOG,
                 contentType = ContentType.FILMS,
-                query = "",
+                query = if (matchedGenre == null) genreName else "",
                 filterState = SearchFilterState(selectedGenreId = matchedGenre?.id)
             )
         }
@@ -553,8 +557,19 @@ class FilmsViewModel(
         watchedEpisodes: Int?,
         totalEpisodesInSeason: Int?,
         totalSeasons: Int?,
-        totalEpisodes: Int?
+        totalEpisodes: Int?,
+        isRussianOverride: Boolean? = null
     ) {
+        // Cleared status in the progress editor = explicit "remove from library": the title has
+        // no status and no progress, so drop both the profile and its history entry instead of
+        // persisting a statusless husk that would still surface in the История tab.
+        if (status == null) {
+            userStateStore.removeFromLibrary(details.kinopoiskId)
+            detailsState = detailsState.copy(userProfile = null, savingProfile = false)
+            refreshLibraryAndAvatar()
+            return
+        }
+
         val safeRating = userRating?.coerceIn(1, 10)
         val safeSeasons = watchedSeasons?.coerceAtLeast(0)
         val safeEpisodes = watchedEpisodes?.coerceAtLeast(0)
@@ -572,7 +587,8 @@ class FilmsViewModel(
             watchedEpisodes = safeEpisodes,
             totalEpisodesInSeason = safeTotalEpisodesInSeason,
             totalSeasons = safeTotalSeasons,
-            totalEpisodes = safeTotalEpisodes
+            totalEpisodes = safeTotalEpisodes,
+            isRussianOverride = isRussianOverride
         )
         detailsState = detailsState.copy(
             userProfile = updated,
@@ -742,12 +758,59 @@ class FilmsViewModel(
                     )
                     detailsState = baseState
 
+                    if (isAdultAnime(animeDetails)) {
+                        launch {
+                            // Shikimori для 18+ отдаёт единственный жанр «хентай»; дополняем
+                            // его настоящими тегами из каталога hanime (RU-словарь, фолбэк — слаг).
+                            val tags = runCatching {
+                                hd.kinoshka.app.data.source.HentaiStreamResolver.hentaiTags(
+                                    animeDetails.name,
+                                    animeDetails.russian
+                                )
+                            }.getOrDefault(emptyList())
+                            if (tags.isNotEmpty()) {
+                                detailsState.item?.let { current ->
+                                    val merged = buildList {
+                                        add(hd.kinoshka.app.data.model.NameOnly(genre = "Хентай"))
+                                        addAll(current.genres.filterNot { it.genre?.equals("хентай", ignoreCase = true) == true })
+                                        addAll(tags.map { hd.kinoshka.app.data.model.NameOnly(genre = it) })
+                                    }.distinctBy { it.genre?.lowercase() }
+                                    detailsState = detailsState.copy(item = current.copy(genres = merged))
+                                }
+                            }
+                        }
+                        launch {
+                            val trailer = runCatching {
+                                hd.kinoshka.app.data.source.HentaiStreamResolver.hentaiTrailer(
+                                    animeDetails.name,
+                                    animeDetails.russian
+                                )
+                            }.getOrNull()
+                            if (trailer != null) {
+                                detailsState = detailsState.copy(trailer = trailer)
+                            }
+                        }
+                    }
+
                     launch {
                         val screenshots = runCatching { animeRepository.screenshots(shikimoriId) }.getOrDefault(emptyList())
                         val imageItems = screenshots.map {
                             FilmImageItem(imageUrl = it.getFullOriginalUrl(), previewUrl = it.getFullPreviewUrl())
                         }
-                        detailsState = detailsState.copy(images = imageItems)
+                        if (imageItems.isNotEmpty()) {
+                            detailsState = detailsState.copy(images = imageItems)
+                        } else {
+                            // Shikimori хранит кадры только для обычных аниме; у 18+ тайтлов их
+                            // нет и в Кинопоиске — берём превью со страницы hanime1 (каталог
+                            // хентая уже замаплен на неё), фолбэк — обложка из каталога.
+                            val hentaiFrames = runCatching {
+                                hd.kinoshka.app.data.source.HentaiStreamResolver.hentaiFrames(
+                                    animeDetails.name,
+                                    animeDetails.russian
+                                )
+                            }.getOrDefault(emptyList())
+                            detailsState = detailsState.copy(images = hentaiFrames)
+                        }
                     }
                     launch {
                         val relatedList = runCatching { animeRepository.related(shikimoriId) }.getOrDefault(emptyList())
@@ -843,6 +906,21 @@ class FilmsViewModel(
                 detailsState = DetailsUiState(error = ex.toUiMessage())
             }
         }
+    }
+
+    /**
+     * Adult-детект для ветки загрузки деталей: рейтинг Shikimori, жанр или совпадение
+     * с каталогом hanime. Синхронный по кэшу каталога — false, пока каталог не загружен.
+     */
+    private fun isAdultAnime(details: hd.kinoshka.app.data.model.ShikimoriAnimeDetails): Boolean {
+        val rating = details.rating?.lowercase().orEmpty()
+        if (rating.contains("18") || rating.startsWith("rx") || rating == "x" || rating.contains("nc17")) return true
+        val hasAdultGenre = details.genres.any { g ->
+            val n = (g.russian ?: g.name)?.lowercase().orEmpty()
+            n.contains("хентай") || n.contains("hentai") || n.contains("эротик") || n.contains("ecchi")
+        }
+        return hasAdultGenre ||
+            hd.kinoshka.app.data.source.HentaiStreamResolver.isKnownHentai(details.name, details.russian)
     }
 
     /**
