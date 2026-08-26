@@ -26,7 +26,10 @@ object DdbbStreamResolver {
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .dns(hd.kinoshka.app.utils.DohFallbackDns)
-            .connectTimeout(10, TimeUnit.SECONDS)
+            // Short connect budget: p2.ddbb.lol intermittently black-holes connections (live log:
+            // 10s connect timeouts twice in a row, then instant success). Failing fast leaves
+            // room for more attempts inside the same resolve deadline.
+            .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .build()
     }
@@ -46,7 +49,12 @@ object DdbbStreamResolver {
         val qualities: Map<String, String>,
         val sourceName: String,
         /** Voiceover tracks as (title, ready-to-play url); empty when the source has one dub. */
-        val translations: List<Pair<String, String>> = emptyList()
+        val translations: List<Pair<String, String>> = emptyList(),
+        /**
+         * Structured turbo serial catalog: one entry per (dub × episode) with S/E numbers from
+         * the t1 label. Empty for movies and embeds without episode structure.
+         */
+        val episodeTracks: List<hd.kinoshka.app.data.model.DdbbEpisodeTrack> = emptyList()
     )
 
     /** Sources whose embeds are worth re-resolving inside a real browser environment. */
@@ -60,7 +68,28 @@ object DdbbStreamResolver {
      * streams hide behind JS bootstrapping or region checks (alloha/veoveo), or whose tokens
      * expire too fast to survive the round-trip (collaps).
      */
+    private val resolveCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<DdbbStream>>()
+    private const val RESOLVE_CACHE_TTL_MS = 3 * 60_000L
+
+    /**
+     * Cached entry point: the details screen prefetches on open and the Watch button resolves
+     * again on press — without this memo the same embed would be downloaded+decoded twice.
+     * Short TTL keeps expiring CDN tokens from outliving their validity.
+     */
     suspend fun resolveMovieStream(kinopoiskId: Int): DdbbStream? = withContext(Dispatchers.IO) {
+        if (kinopoiskId <= 0) return@withContext null
+        resolveCache[kinopoiskId]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < RESOLVE_CACHE_TTL_MS) return@withContext entry.data
+            resolveCache.remove(kinopoiskId)
+        }
+        val resolved = resolveMovieStreamInternal(kinopoiskId)
+        if (resolved != null) {
+            resolveCache[kinopoiskId] = CacheEntry(resolved, System.currentTimeMillis())
+        }
+        resolved
+    }
+
+    private suspend fun resolveMovieStreamInternal(kinopoiskId: Int): DdbbStream? = withContext(Dispatchers.IO) {
         if (kinopoiskId <= 0) return@withContext null
         val players = fetchPlayers(kinopoiskId)
         Log.i(TAG, "ddbb offered ${players.size} sources for kp=$kinopoiskId: ${players.map { it.first }}")
@@ -82,13 +111,47 @@ object DdbbStreamResolver {
                     if (qualities.isNotEmpty()) {
                         val bestKey = qualityPreference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
                         Log.i(TAG, "$lowerType: extracted ${qualities.size} qualities, using $bestKey")
-                        val translations = if (lowerType == "turbo") extractTurboTracks(html).map { it.first to it.second } else emptyList()
+                        // extractTurboTracks must receive the obfuscated config blob, not the whole
+                        // embed page: findTurboWindow scans a short base64 prefix, and feeding it the
+                        // full HTML made the window search fail → voiceover list silently empty.
+                        val turboBlob = if (lowerType == "turbo") TURBO_BLOB_REGEX.find(html)?.groupValues?.get(1) else null
+                        // Single decode feeds both consumers: flat dub rows for the movie
+                        // dropdown and structured dub×episode rows for series playback.
+                        val turboEntries = turboBlob?.let { extractTurboEntries(it) }.orEmpty()
+                        val translations = voiceoverRowsFromEntries(turboEntries)
+                            .ifEmpty { cachedVoiceoverRows(kinopoiskId).orEmpty() }
+                        val serialParse = buildSerialParse(turboEntries)
+                        // Per-dub ladders keyed by best url — movies included. Without them the
+                        // player's quality menu dies on the first voiceover switch (the catalog
+                        // used to carry ladders for SERIES entries only).
+                        val perDubLadders = buildLadders(turboEntries)
+                        if (serialParse.tracks.isNotEmpty() || translations.isNotEmpty()) {
+                            registerTurboCatalog(kinopoiskId, headers, serialParse.copy(ladders = perDubLadders), translations)
+                        }
+                        if (serialParse.tracks.isNotEmpty()) {
+                            Log.i(TAG, "$lowerType: structured serial catalog: " +
+                                "${serialParse.tracks.map { it.dubTitle }.distinct().size} dubs, " +
+                                "${serialParse.tracks.map { it.seasonNumber to it.episodeNumber }.distinct().size} episodes")
+                        }
+                        // The launch stream must be ONE dub's ladder, not a whole-blob scan:
+                        // collectFileFieldQualities keeps the FIRST url seen per quality label,
+                        // so with several dubs the "720p" entry could belong to a DIFFERENT
+                        // voiceover than the selected one — switching quality silently swapped
+                        // the audio track. Default dub = first row of the merged list.
+                        val defaultDubUrl = translations.firstOrNull()?.second
+                        val defaultLadder = defaultDubUrl?.let { perDubLadders[it] }
                         return@withContext DdbbStream(
-                            url = qualities.getValue(bestKey),
+                            url = defaultDubUrl ?: qualities.getValue(bestKey),
                             headers = headers,
-                            qualities = qualities,
+                            qualities = defaultLadder?.let { ladder ->
+                                linkedMapOf<String, String>().apply {
+                                    directLadderPreference.forEach { q -> ladder[q]?.let { put(q, it) } }
+                                    ladder.forEach { (q, u) -> if (!containsKey(q)) put(q, u) }
+                                }
+                            } ?: qualities,
                             sourceName = type.replaceFirstChar { it.uppercase() },
-                            translations = translations
+                            translations = translations,
+                            episodeTracks = serialParse.tracks
                         )
                     }
                 }
@@ -127,13 +190,100 @@ object DdbbStreamResolver {
 
     private const val RESOLVE_DEADLINE_MS = 20_000L
 
+    // --- Session caches -------------------------------------------------------------------
+    // Re-entering a title (Watch → back → Watch, or episode switches in the player) must not
+    // re-download the players list or re-decode a ~1MB turbo blob every time.
+
+    private data class CacheEntry<T>(val data: T, val timestamp: Long)
+
+    private val playersCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<List<Pair<String, String>>>>()
+    private val playersCacheTtlMs = 5 * 60_000L
+
+    private class TurboCatalog(
+        val headers: Map<String, String>,
+        val tracks: List<hd.kinoshka.app.data.model.DdbbEpisodeTrack>,
+        /** bestUrl -> (quality -> url) for the player's on-demand quality menu. */
+        val ladders: Map<String, Map<String, String>>,
+        /** Movie-path dub rows (cleaned title -> best-quality url) of this parse. */
+        val voiceovers: List<Pair<String, String>> = emptyList()
+    )
+
+    private val turboCatalogs = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<TurboCatalog>>()
+    private const val TURBO_CATALOG_TTL_MS = 30 * 60_000L
+
+    private fun registerTurboCatalog(
+        kinopoiskId: Int,
+        headers: Map<String, String>,
+        parse: TurboSerialParse,
+        voiceovers: List<Pair<String, String>> = emptyList(),
+    ) {
+        if (kinopoiskId <= 0) return
+        if (parse.tracks.isEmpty() && voiceovers.isEmpty()) return
+        turboCatalogs[kinopoiskId] = CacheEntry(
+            TurboCatalog(headers, parse.tracks, parse.ladders, voiceovers),
+            System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Voiceover rows remembered from a previous successful turbo parse for this title. A fresh
+     * blob decode varies run-to-run (junk segments shift the base64 phase), so without this
+     * fallback a worse decode silently SHRANK the dub list between launches of the same movie.
+     */
+    fun cachedVoiceoverRows(kinopoiskId: Int): List<Pair<String, String>>? =
+        turboCatalogs[kinopoiskId]
+            ?.takeIf { System.currentTimeMillis() - it.timestamp < TURBO_CATALOG_TTL_MS }
+            ?.data?.voiceovers
+            ?.takeIf { it.isNotEmpty() }
+
+    /** Ladder of a direct url across any fresh turbo catalog (player quality menu on switches). */
+    fun cachedLadderFor(url: String): Map<String, String>? =
+        turboCatalogs.values.firstOrNull { entry ->
+            System.currentTimeMillis() - entry.timestamp < TURBO_CATALOG_TTL_MS &&
+                entry.data.ladders.containsKey(url)
+        }?.data?.ladders?.get(url)
+
+    /**
+     * Drops the memoized embed resolve for [kinopoiskId]: a tracked-load retry after mpv reported
+     * a dead stream must not be handed the SAME expired url back from the 3-minute cache — that
+     * burned the whole retry budget on an identical failure ("фильм иногда не запускается").
+     */
+    fun evictResolveCache(kinopoiskId: Int) {
+        if (kinopoiskId > 0) resolveCache.remove(kinopoiskId)
+    }
+
+
+    /**
+     * Concrete quality variants of a direct turbo url from the cached serial catalog, or null
+     * when the catalog is absent/expired — the player then offers plain Auto playback.
+     */
+    fun directQualities(kinopoiskId: Int, url: String): Map<String, String>? {
+        val entry = turboCatalogs[kinopoiskId]?.takeIf {
+            System.currentTimeMillis() - it.timestamp < TURBO_CATALOG_TTL_MS
+        } ?: return null
+        return entry.data.ladders[url]
+    }
+
+    /** Headers required to play direct turbo urls of the cached catalog for [kinopoiskId]. */
+    fun directHeaders(kinopoiskId: Int): Map<String, String> =
+        turboCatalogs[kinopoiskId]
+            ?.takeIf { System.currentTimeMillis() - it.timestamp < TURBO_CATALOG_TTL_MS }
+            ?.data?.headers
+            .orEmpty()
+
     // Best-first: the resolver's default pick doubles as the player's "Auto" quality, and Auto
     // means "start at the best variant, step down if the network can't sustain it" (the player
     // runs a stall watchdog that walks this ladder downwards).
     private val qualityPreference = listOf("2160p", "1080p", "720p", "480p", "360p", "240p", "Auto")
 
     private fun fetchPlayers(kinopoiskId: Int): List<Pair<String, String>> {
-        for (attempt in 0..1) {
+        playersCache[kinopoiskId]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < playersCacheTtlMs) return entry.data
+            playersCache.remove(kinopoiskId)
+        }
+        // Three quick attempts beat two slow ones: the host intermittently drops connects for
+        // a few seconds at a time, so an extra try usually lands (live-verified on Rick&Morty).
+        for (attempt in 0..2) {
             runCatching {
                 val req = Request.Builder()
                     .url(String.format(java.util.Locale.US, PLAYERS_API, kinopoiskId))
@@ -155,7 +305,11 @@ object DdbbStreamResolver {
                         if (type.isEmpty() || !seen.add(type.lowercase())) continue
                         result += type to url
                     }
-                    if (result.isNotEmpty()) return result.sortedBy { typeRank(it.first) }
+                    if (result.isNotEmpty()) {
+                        val sorted = result.sortedBy { typeRank(it.first) }
+                        playersCache[kinopoiskId] = CacheEntry(sorted, System.currentTimeMillis())
+                        return sorted
+                    }
                 }
             }.onFailure { Log.w(TAG, "players api attempt $attempt failed", it) }
         }
@@ -217,39 +371,60 @@ object DdbbStreamResolver {
 
     internal fun decodeTurboConfig(blob: String): String? = findTurboWindow(blob)
 
-    /** Finds the base64 alignment whose decode actually contains stream markers. */
-    private fun findTurboWindow(blob: String): String? {
+    /** True when a decoded window looks like a real player config (markers + plausible head). */
+    private fun looksLikeTurboPayload(decoded: String?): Boolean =
+        decoded != null &&
+            QUALITY_MARKER_REGEX.containsMatchIn(decoded) &&
+            decoded.contains("https")
+
+    private fun isPlausibleJsonHead(decoded: String?): Boolean {
+        val trimmed = decoded?.trimStart() ?: return false
+        return trimmed.startsWith("[") || trimmed.startsWith("{")
+    }
+
+    private val BASE64_CLEAN_FILTER: (Char) -> Boolean = { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
+
+    /** One base64 decode of [clean] from [offset] to the nearest 4-char boundary. */
+
+    /**
+     * Finds base64 alignments whose decodes contain stream markers.
+     *
+     * Junk-segment removal shifts the base64 phase mid-stream, so each of the four possible
+     * phases (offset % 4) decodes DIFFERENT regions cleanly — verified live on The Boys, where
+     * one phase yielded 30 episodes and the union of four yielded the complete 40-episode
+     * catalog. Decoding is cheap (≤4 full passes), so every phase is always returned; callers
+     * merge parsed entries across windows.
+     */
+    private fun findTurboWindows(blob: String): List<String> {
         val stripped = blob.replace(TURBO_JUNK_REGEX, "")
-        var fuzzyFallback: String? = null
+        val windows = ArrayList<String>(4)
         for (candidate in listOf(stripped, blob)) {
-            val clean = candidate.filter { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
-            var offset = 0
-            // The real payload starts within the first ~100 base64 chars (short random prefix);
-            // scanning past that only wastes time.
-            while (offset < clean.length && offset < 250) {
-                val sub = clean.substring(offset)
-                val usable = sub.substring(0, sub.length / 4 * 4)
-                val decoded = runCatching {
-                    String(java.util.Base64.getDecoder().decode(usable), Charsets.UTF_8)
-                }.getOrNull()
-                if (
-                    decoded != null &&
-                    QUALITY_MARKER_REGEX.containsMatchIn(decoded) &&
-                    decoded.contains("https")
-                ) {
-                    // A decode at the TRUE alignment parses as the original JSON config and yields
-                    // the full quality set; a false-positive offset decodes to garbage that still
-                    // happens to contain a marker but only a partial/rotating subset — the cause of
-                    // the quality menu changing between launches. Prefer the clean JSON decode and
-                    // keep the first fuzzy match only as a fallback.
-                    val trimmed = decoded.trimStart()
-                    if (trimmed.startsWith("[") || trimmed.startsWith("{")) return decoded
-                    if (fuzzyFallback == null) fuzzyFallback = decoded
-                }
-                offset++
+            val clean = candidate.filter(BASE64_CLEAN_FILTER)
+            if (clean.length < 8) continue
+            for (phase in 0..3) {
+                val decoded = fullDecodeAt(clean, phase) ?: continue
+                if (looksLikeTurboPayload(decoded) && decoded !in windows) windows += decoded
+            }
+            if (windows.isNotEmpty()) {
+                // JSON-head windows first (structural parse succeeds there), then richest fuzzy.
+                return windows.sortedWith(
+                    compareByDescending<String> { isPlausibleJsonHead(it) }.thenByDescending { it.length }
+                )
             }
         }
-        return fuzzyFallback
+        return emptyList()
+    }
+
+    private fun findTurboWindow(blob: String): String? = findTurboWindows(blob).firstOrNull()
+
+    /** One base64 decode of [clean] from [offset] to the nearest 4-char boundary. */
+    private fun fullDecodeAt(clean: String, offset: Int): String? {
+        val length = clean.length - offset
+        if (length < 4) return null
+        val usable = clean.substring(offset, offset + length / 4 * 4)
+        return runCatching {
+            String(java.util.Base64.getDecoder().decode(usable), Charsets.UTF_8)
+        }.getOrNull()
     }
 
     /**
@@ -271,44 +446,306 @@ object DdbbStreamResolver {
     private fun unescapeJsonUnicode(value: String): String =
         UNESCAPE_UNICODE_REGEX.replace(value) { m -> m.groupValues[1].toInt(16).toChar().toString() }
             .replace("\\/", "/")
+            // Turbo wraps some dub labels in escaped quotes ("title":"\"(RU) DUB\""); left in,
+            // they leak into the picker and break the "(RU)"-prefix cleanup.
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
 
     /**
      * Every voiceover track of a turbo config as (display title, best-quality url).
      *
-     * The config is one JSON array where each element carries its own "title" and a "[q]url"
-     * file field. After decoding we lose strict JSON validity to junk-stripping corruption, so
-     * instead of parsing we associate each [quality]url match with the nearest preceding title
-     * marker positionally.
+     * Movie path: a movie blob holds one entry per dub with no episode labels, so every entry
+     * becomes one dropdown row — now with human-readable names instead of raw "(RU) MVO | …".
      */
-    internal fun extractTurboTracks(blob: String): List<Pair<String, String>> {
-        val decoded = findTurboWindow(blob) ?: return emptyList()
+    internal fun extractTurboTracks(blob: String): List<Pair<String, String>> =
+        voiceoverRowsFromEntries(extractTurboEntries(blob))
 
-        val titlePositions = TITLE_MARKER_REGEX.findAll(decoded).map { marker ->
-            val start = marker.range.last + 1
-            val rawTail = decoded.substring(start, minOf(decoded.length, start + 300))
-            val end = Regex("""\\"|\\""").find(rawTail)?.range?.first ?: rawTail.length
-            start to unescapeJsonUnicode(rawTail.take(end)).trim()
-        }.toList()
-
-        val best = linkedMapOf<String, Pair<Int, String>>() // title -> (ladder rank, url)
-        for (match in TURBO_FILE_REGEX.findAll(decoded)) {
-            val label = match.groupValues[1].trim()
-            if (!TURBO_LABEL_REGEX.matches(label)) continue
-            val url = match.groupValues[2].replace("\\/", "/").trim()
-            if (!url.startsWith("http") || url.length < 20) continue
-
-            val owningTitle = titlePositions
-                .filter { it.first < match.range.first }
-                .maxByOrNull { it.first }
-                ?.second
-                ?.takeIf { it.isNotBlank() }
-                ?: continue
-
-            val rank = qualityPreference.indexOf(label).let { if (it < 0) Int.MAX_VALUE else it }
-            val current = best[owningTitle]
-            if (current == null || rank < current.first) best[owningTitle] = rank to url
+    /** Flat dub rows for the movie dropdown: cleaned name → best-quality url of its entry. */
+    private fun voiceoverRowsFromEntries(entries: List<TurboEntry>): List<Pair<String, String>> {
+        val rows = LinkedHashMap<String, String>()
+        val seenUrls = HashSet<String>()
+        var genericIndex = 0
+        for (entry in entries) {
+            val best = bestOfLadder(entry.ladder) ?: continue
+            // Same stream under two labels = one voiceover, not two.
+            if (!seenUrls.add(best.second.substringBefore('#').substringBefore('?'))) continue
+            var cleaned = cleanDdbbDubTitle(entry.rawTitle)
+            if (cleaned.isBlank()) {
+                genericIndex += 1
+                cleaned = "Озвучка $genericIndex"
+            }
+            rows.putIfAbsent(cleaned, best.second)
         }
-        return best.entries.map { it.key to it.value.second }
+        return rows.map { it.key to it.value }
+    }
+
+    /** One parsed entry of a turbo config: raw dub label, optional t1 episode label, quality ladder. */
+    internal data class TurboEntry(val rawTitle: String, val label: String?, val ladder: Map<String, String>)
+
+    /** Structured result of a turbo config parse: playable serial rows plus their full ladders. */
+    internal data class TurboSerialParse(
+        val tracks: List<hd.kinoshka.app.data.model.DdbbEpisodeTrack>,
+        /** bestUrl -> (quality -> url); feeds the player's on-demand quality menu. */
+        val ladders: Map<String, Map<String, String>>
+    )
+
+    private fun parseLadder(fileField: String): Map<String, String> {
+        val out = linkedMapOf<String, String>()
+        TURBO_FILE_REGEX.findAll(fileField).forEach { match ->
+            val label = match.groupValues[1].trim()
+            if (!TURBO_LABEL_REGEX.matches(label)) return@forEach
+            val url = match.groupValues[2].trim()
+            if (!url.startsWith("http") || url.length < 20) return@forEach
+            if (!out.containsKey(label)) out[label] = url
+        }
+        return out
+    }
+
+    // Best-first rung order for direct episode ladders. Unlike [qualityPreference] (embed-level
+    // "Auto" pick), this prefers 720p: the player's stall watchdog starts at stream.url and steps
+    // down, so booting a phone at 2160p would stall before ever settling.
+    // The direct URL chosen for a dub is also the key into its per-dub ladder.  It must agree
+    // with the resolver's Auto policy: picking 720p here made a Turbo dub start at 720 even
+    // though its ladder (and the embed's default) contained 1080p.
+    private val directLadderPreference = listOf("2160p", "1080p", "720p", "480p", "360p", "240p")
+
+    /** (quality, url) of a ladder's best rung per [directLadderPreference]. */
+    private fun bestOfLadder(ladder: Map<String, String>): Pair<String, String>? =
+        ladder.entries.minByOrNull { entry ->
+            directLadderPreference.indexOf(entry.key).let { if (it < 0) Int.MAX_VALUE else it }
+        }?.let { it.key to it.value }
+
+    /**
+     * Parses a turbo config into structured serial rows.
+     *
+     * Serial blobs are flat arrays of dub×episode entries: {"title":"(RU) MVO | GoShows",
+     * "t1":"S05E07 - Name","file":"[240p]url,[720p]url,…"} — the previous parser collapsed this
+     * to ONE row per dub (first entry won), which lost every episode beyond the first and showed
+     * raw technical labels. Entries whose t1 carries no S/E numbers are ignored here (movie
+     * configs go through [extractTurboTracks]).
+     */
+    internal fun extractTurboSerial(blob: String): TurboSerialParse =
+        buildSerialParse(extractTurboEntries(blob))
+
+    /**
+     * Decodes a turbo blob and lists its raw entries (title, optional t1 label, quality ladder).
+     *
+     * Entries are parsed from EVERY phase window and merged by (title, t1): junk-segment removal
+     * shifts the base64 phase mid-stream, so each window recovers different regions — the merge
+     * is what makes the full episode catalog visible.
+     */
+    internal fun extractTurboEntries(blob: String): List<TurboEntry> {
+        val windows = findTurboWindows(blob)
+        if (windows.isEmpty()) return emptyList()
+
+        val merged = LinkedHashMap<String, TurboEntry>()
+        for (decoded in windows) {
+            for (entry in parseEntriesFromWindow(decoded)) {
+                if (entry.ladder.isEmpty()) continue
+                val key = "${entry.rawTitle.lowercase()}\u0000${entry.label.orEmpty()}"
+                val existing = merged[key]
+                if (existing == null) {
+                    merged[key] = entry
+                } else if (existing.label.isNullOrBlank() && !entry.label.isNullOrBlank()) {
+                    // Strictly-better metadata only: a corrupted window can stitch one entry's
+                    // title to ANOTHER dub's file field (with a longer, concatenated ladder) —
+                    // overriding by ladder size used to let that wrong pairing win, making two
+                    // dropdown dubs play the same audio. First clean decode wins.
+                    merged[key] = entry
+                }
+            }
+        }
+        Log.i(TAG, "turbo entries: ${merged.size} merged from ${windows.size} phase window(s)")
+        return merged.values.toList()
+    }
+
+    /** Structural JSON parse of one decoded window, falling back to positional scanning. */
+    private fun parseEntriesFromWindow(decoded: String): List<TurboEntry> {
+        // Preferred path: the JSON-first window decode parses as the player config — read
+        // entries structurally so titles/labels survive unicode escapes and punctuation.
+        val jsonEntries = runCatching {
+            val root = org.json.JSONObject(decoded)
+            val arr = root.optJSONArray("file")
+            buildList {
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val title = unescapeJsonUnicode(obj.optString("title")).trim()
+                        val label = unescapeJsonUnicode(obj.optString("t1")).trim().takeIf { it.isNotEmpty() }
+                        val ladder = parseLadder(obj.optString("file").replace("\\/", "/"))
+                        if (ladder.isNotEmpty()) add(TurboEntry(title, label, ladder))
+                    }
+                }
+            }
+        }.getOrNull().orEmpty()
+
+        if (jsonEntries.isNotEmpty()) return jsonEntries
+        return positionalScanEntries(decoded)
+    }
+
+    /**
+     * Fallback for corrupted decodes (junk-stripped base64): walk segments delimited by
+     * `{"title":"` markers and associate each segment's t1 label with its own `[q]url` ladder.
+     */
+    private fun positionalScanEntries(decoded: String): List<TurboEntry> {
+        val markers = TITLE_MARKER_REGEX.findAll(decoded).toList()
+        if (markers.isEmpty()) return emptyList()
+        return buildList {
+            for (i in markers.indices) {
+                val start = markers[i].range.last + 1
+                val end = markers.getOrNull(i + 1)?.range?.first ?: decoded.length
+                val segment = decoded.substring(start, minOf(decoded.length, end))
+                val title = unescapeJsonUnicode(
+                    segment.substringBefore("\",").trim()
+                ).trim()
+                val label = Regex("""\"t1\"\s*:\s*\"((?:[^"\\]|\\.)*)\"""").find(segment)
+                    ?.let { unescapeJsonUnicode(it.groupValues[1]).trim() }?.takeIf { it.isNotEmpty() }
+                val ladder = parseLadder(segment.take(12_000).replace("\\/", "/"))
+                if (ladder.isNotEmpty()) add(TurboEntry(title, label, ladder))
+            }
+        }
+    }
+
+    /**
+     * Per-dub quality ladders of ANY turbo config (movie or serial), keyed by the entry's
+     * best-quality url. Feeds the player's on-demand quality menu: after a voiceover switch the
+     * active stream's ladder must come from THAT dub's own file field, not from a whole-blob
+     * label scan that mixes urls across dubs.
+     */
+    private fun buildLadders(entries: List<TurboEntry>): Map<String, Map<String, String>> {
+        val ladders = LinkedHashMap<String, Map<String, String>>()
+        for (entry in entries) {
+            val best = bestOfLadder(entry.ladder) ?: continue
+            ladders.putIfAbsent(best.second, entry.ladder)
+        }
+        return ladders
+    }
+
+    private fun buildSerialParse(entries: List<TurboEntry>): TurboSerialParse {
+        val labeled = entries.filter { parseEpisodeNumbers(it.label) != null }
+        if (labeled.isEmpty()) return TurboSerialParse(emptyList(), emptyMap())
+
+        val anyProperDub = labeled.any { cleanDdbbDubTitle(it.rawTitle).isNotBlank() }
+        val tracks = LinkedHashMap<Triple<String, Int, Int>, hd.kinoshka.app.data.model.DdbbEpisodeTrack>()
+        val ladders = HashMap<String, Map<String, String>>()
+        // (season, episode) -> stream urls already registered under some dub. The provider lists
+        // the same track under several labels, and a corrupted decode can stitch a title to
+        // another dub's file — either way two dropdown entries would play IDENTICAL audio.
+        // Different dubs always have different stream paths, so an url collision means duplicate.
+        val seenStreamUrls = HashMap<Pair<Int, Int>, HashSet<String>>()
+        var duplicateRows = 0
+        var genericIndex = 0
+
+        for (entry in labeled) {
+            val (season, episode) = parseEpisodeNumbers(entry.label!!) ?: continue
+            var cleaned = cleanDdbbDubTitle(entry.rawTitle)
+            if (cleaned.isBlank()) {
+                // Orphan episode rows without an attributable dub: drop them when real dubs
+                // exist, otherwise surface under a generic name so nothing becomes unplayable.
+                if (anyProperDub) continue
+                genericIndex += 1
+                cleaned = "Озвучка $genericIndex"
+            }
+            val (bestQ, bestUrl) = bestOfLadder(entry.ladder) ?: continue
+            val streamKey = bestUrl.substringBefore('#').substringBefore('?')
+            val seasonUrls = seenStreamUrls.getOrPut(season to episode) { HashSet() }
+            if (!seasonUrls.add(streamKey)) {
+                duplicateRows += 1
+                continue
+            }
+            val dubId = "turbo|" + cleaned.lowercase().replace(Regex("[^a-zа-я0-9]+"), "-").trim('-')
+            val key = Triple(dubId, season, episode)
+            if (tracks.containsKey(key)) continue
+            tracks[key] = hd.kinoshka.app.data.model.DdbbEpisodeTrack(
+                dubId = dubId,
+                dubTitle = cleaned,
+                seasonNumber = season,
+                episodeNumber = episode,
+                title = episodeNameFromLabel(entry.label),
+                playerUrl = bestUrl
+            )
+            ladders[bestUrl] = entry.ladder
+        }
+        if (duplicateRows > 0) Log.i(TAG, "turbo serial parse: dropped $duplicateRows duplicate-stream rows")
+        val seasons = tracks.values.map { it.seasonNumber }.distinct().sorted()
+        Log.i(TAG, "turbo serial parse: ${tracks.size} rows, ${ladders.size} ladders, seasons=$seasons")
+        return TurboSerialParse(tracks.values.toList(), ladders)
+    }
+
+    /** S05E07 / 5x07 prefix of a t1 label → (season, episode); null when absent. */
+    private fun parseEpisodeNumbers(label: String?): Pair<Int, Int>? {
+        val text = label?.trim().orEmpty()
+        if (text.isEmpty()) return null
+        Regex("""(?i)^S(\d{1,2})E(\d{1,3})""").find(text)?.let {
+            return (it.groupValues[1].toInt() to it.groupValues[2].toInt())
+        }
+        Regex("""(?i)^(\d{1,2})x(\d{1,3})""").find(text)?.let {
+            return (it.groupValues[1].toInt() to it.groupValues[2].toInt())
+        }
+        return null
+    }
+
+    /** "S05E07 - Blood and Bone" → "Blood and Bone" (null when the label carries no name). */
+    private fun episodeNameFromLabel(label: String): String? {
+        val idx = label.indexOfFirst { it == '-' }
+        if (idx < 0) return null
+        return label.substring(idx + 1).trim().takeIf { it.isNotEmpty() }
+    }
+
+    // --- Dub label cleanup ---------------------------------------------------------------
+
+    private val DUB_KIND_LABELS = mapOf(
+        "MVO" to "озвучка",
+        "VO" to "закадровая",
+        "DUB" to "дубляж",
+        "DVO" to "двухголосая",
+        "SUB" to "субтитры",
+        "SUBTITLES" to "субтитры"
+    )
+
+    /** Kind suffix appended in parentheses when it adds meaning ("Кубик в Кубе (двухголосая)"). */
+    private val DUB_KIND_SUFFIXES = mapOf(
+        "MVO" to null,
+        "VO" to "закадровая",
+        "DUB" to "дубляж",
+        "DVO" to "двухголосая",
+        "SUB" to "субтитры",
+        "SUBTITLES" to "субтитры"
+    )
+
+    /**
+     * "(RU) DVO | Кубик в Кубе | Kubik³" → "Кубик в Кубе (двухголосая)";
+     * "(RU) MVO | GoShows" → "GoShows". Strips language tags and provider jargon so the picker
+     * shows names a viewer recognises; unknown formats pass through trimmed.
+     */
+    internal fun cleanDdbbDubTitle(raw: String): String {
+        var text = raw.trim().trim('"', '\'').trim()
+        if (text.isEmpty()) return ""
+        text = text.replace(Regex("""^[\[(]\s*[A-Za-z]{2,3}\s*[\])]\s*"""), "")
+        val parts = text.split('|', '/', '•')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        var kindKey: String? = null
+        var studio = ""
+        for (part in parts) {
+            val upper = part.uppercase()
+            if (kindKey == null && DUB_KIND_LABELS.containsKey(upper)) {
+                kindKey = upper
+                continue
+            }
+            if (studio.isEmpty() && !DUB_KIND_LABELS.containsKey(upper)) {
+                studio = part
+                // A second segment after the studio is usually a latin alias ("Kubik³") — ignore.
+                break
+            }
+        }
+        val suffix = kindKey?.let { DUB_KIND_SUFFIXES[it] }
+        return when {
+            studio.isNotBlank() && suffix != null -> "$studio ($suffix)"
+            studio.isNotBlank() -> studio
+            kindKey != null -> DUB_KIND_LABELS[kindKey]!!.replaceFirstChar(Char::uppercase)
+            else -> parts.firstOrNull() ?: text
+        }
     }
 
     private fun collectFileFieldQualities(fileField: String, qualities: MutableMap<String, String>) {

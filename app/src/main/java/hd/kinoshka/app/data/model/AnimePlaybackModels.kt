@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 enum class AnimeSourceType(val displayName: String, val description: String) {
     KODIK("Kodik", "Большой каталог озвучек и субтитров"),
     ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p"),
-    ANILIB("AniLib", "Релизы AniLib (AniLibria v2) с качествами 1080p/720p/480p")
+    ANILIB("AniLib", "Каталог AniLib (animelib.org), озвучки по командам")
 }
 
 @Serializable
@@ -32,8 +32,27 @@ data class AnimeEpisode(
     val id: Int? = null,
     // Season number for multi-season series (movie-series mode). Null for plain anime episodes;
     // the player's season dropdown groups on this when more than one distinct value exists.
-    val season: Int? = null
+    val season: Int? = null,
+    // Best quality advertised by the source at listing time (e.g. "1080p"), before any stream
+    // resolution. Null when the source exposes no hint; the picker shows a short badge for it.
+    val maxQuality: String? = null
 )
+
+/** Numeric rank of a "NNNNp" quality label; unknown/absent labels rank 0. */
+fun qualityRank(quality: String?): Int =
+    quality?.substringBefore("p")?.takeIf { it.length <= 4 }?.toIntOrNull() ?: 0
+
+/**
+ * Short badge label for the selection sheets: 2160p→"4К", 1440p→"2К", 1080p→"FHD", 720p→"HD".
+ * Lower resolutions get no badge at all.
+ */
+fun qualityBadgeLabel(quality: String?): String? = when (quality) {
+    "2160p" -> "4К"
+    "1440p" -> "2К"
+    "1080p" -> "FHD"
+    "720p" -> "HD"
+    else -> null
+}
 
 @Serializable
 data class AnimeMediaStream(

@@ -8,7 +8,14 @@ import kotlinx.serialization.Serializable
 enum class NativePlaybackMode {
     ANIME,
     MOVIE_SERIES,
-    QUALITY_ONLY_MOVIE
+    QUALITY_ONLY_MOVIE,
+    /**
+     * Player opens instantly with metadata only; the stream is resolved in the background
+     * (MovieNativeLauncher) while the player shows its loading indicator. On success the
+     * activity re-applies itself as QUALITY_ONLY_MOVIE or MOVIE_SERIES; on failure it shows
+     * a retryable error card.
+     */
+    PENDING_MOVIE
 }
 
 @Serializable
@@ -52,6 +59,23 @@ data class KodikMovieCandidate(
     val episodes: List<MovieEpisodeRef>
 )
 
+/**
+ * One playable entry of a ddbb/turbo serial config: a single episode of a single dub.
+ * The turbo blob is a flat (dub × episode) array; [dubId]/[dubTitle] come from the entry's
+ * cleaned "title" and S/E numbers from its "t1" label ("S05E07 - Name").
+ */
+@Serializable
+data class DdbbEpisodeTrack(
+    val dubId: String,
+    val dubTitle: String,
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    /** Episode name from the t1 label ("S05E07 - …"), null when the entry carries none. */
+    val title: String? = null,
+    /** Best-quality direct CDN url of this dub/episode. */
+    val playerUrl: String
+)
+
 @Serializable
 data class MovieSeriesPlaybackContext(
     val request: MoviePlaybackRequest,
@@ -59,8 +83,79 @@ data class MovieSeriesPlaybackContext(
     val episodes: List<MovieEpisodeRef>,
     val currentEpisode: MovieEpisodeRef,
     val kinopoiskId: Int,
-    val displayTitle: String
+    val displayTitle: String,
+    /**
+     * Direct-link source (ddbb/turbo): episode refs carry ready CDN urls that must load as-is
+     * with [directHeaders] instead of going through Kodik HLS extraction. Dub ids in candidates
+     * match [DdbbEpisodeTrack.dubId]; concrete quality ladders are served on demand by
+     * DdbbStreamResolver so the intent extra stays small.
+     */
+    val isDirectSource: Boolean = false,
+    val directHeaders: Map<String, String> = emptyMap()
 )
+
+/**
+ * Process-local handoff of series playback contexts. A full context (every dub's episode list)
+ * serializes to hundreds of KB — Rick and Morty hit 496KB — which overflows the Intent binder
+ * transaction (TransactionTooLargeException → the Watch button silently fell back to the web
+ * player) and froze the main thread during JSON encoding. The context now travels through this
+ * map keyed by kinopoisk id; the intent carries only the id (plus a small-JSON fallback).
+ */
+object MovieSeriesContextStore {
+    private val contexts = java.util.concurrent.ConcurrentHashMap<Int, MovieSeriesPlaybackContext>()
+
+    fun put(context: MovieSeriesPlaybackContext) {
+        if (context.kinopoiskId > 0) contexts[context.kinopoiskId] = context
+    }
+
+    fun get(kinopoiskId: Int): MovieSeriesPlaybackContext? =
+        kinopoiskId.takeIf { it > 0 }?.let { contexts[it] }
+
+    fun remove(kinopoiskId: Int) {
+        if (kinopoiskId > 0) contexts.remove(kinopoiskId)
+    }
+}
+
+/**
+ * Process-local handoff for PENDING_MOVIE launches: the player activity opens before any
+ * stream exists, so the resolve request (titles/ids/kind) travels through this map instead
+ * of the intent; the intent carries only the kinopoisk lookup id. Removed on consume.
+ */
+object PendingMovieRequestStore {
+    data class PendingMovieLaunch(
+        val request: MoviePlaybackRequest,
+        val displayTitle: String,
+        val webFallbackUrl: String? = null
+    )
+
+    private val launches = java.util.concurrent.ConcurrentHashMap<Int, PendingMovieLaunch>()
+
+    fun put(kinopoiskId: Int, launch: PendingMovieLaunch) {
+        if (kinopoiskId > 0) launches[kinopoiskId] = launch
+    }
+
+    fun get(kinopoiskId: Int): PendingMovieLaunch? =
+        kinopoiskId.takeIf { it > 0 }?.let { launches[it] }
+
+    fun remove(kinopoiskId: Int) {
+        if (kinopoiskId > 0) launches.remove(kinopoiskId)
+    }
+}
+
+/**
+ * In-process handoff of fully prepared movie dub streams. Keeping these out of Intent extras
+ * avoids the binder-size limit while ensuring a picker row never triggers a second resolve.
+ */
+object MovieVoiceoverStreamStore {
+    private val streams = java.util.concurrent.ConcurrentHashMap<Int, Map<String, AnimeMediaStream>>()
+
+    fun put(kinopoiskId: Int, value: Map<String, AnimeMediaStream>) {
+        if (kinopoiskId > 0) streams[kinopoiskId] = value
+    }
+
+    fun get(kinopoiskId: Int): Map<String, AnimeMediaStream> =
+        kinopoiskId.takeIf { it > 0 }?.let { streams[it] }.orEmpty()
+}
 
 enum class MoviePlaybackFailure {
     NO_PROVIDER_RESULTS,

@@ -1,4 +1,4 @@
-package app.marlboroadvance.mpvex.ui.player.controls
+﻿package app.marlboroadvance.mpvex.ui.player.controls
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -35,9 +35,8 @@ import app.marlboroadvance.mpvex.ui.player.PlayerActivity
 import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.player.Sheets
 import app.marlboroadvance.mpvex.ui.player.VideoAspect
-import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeEpisodeDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeQualityDropdown
-import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeSeasonDropdown
+import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeSeriesDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeShaderControl
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeTranslationDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
@@ -64,8 +63,6 @@ fun TopLeftPlayerControlsLandscape(
   val currentQualityId by viewModel.currentAnimeQualityId.collectAsState()
   val animeSeasons by viewModel.animeSeasons.collectAsState()
   val currentAnimeSeason by viewModel.currentAnimeSeason.collectAsState()
-  // Multi-season series show only the active season's episodes in the dropdown.
-  val visibleEpisodes = animeEpisodes.filter { it.season == null || it.season == currentAnimeSeason }
 
   Row(
     modifier = Modifier.fillMaxWidth(),
@@ -79,21 +76,15 @@ fun TopLeftPlayerControlsLandscape(
       modifier = Modifier.size(45.dp),
     )
 
-    if (animeSeasons.size > 1) {
-      AnimeSeasonDropdown(
+    if (animeEpisodes.isNotEmpty()) {
+      AnimeSeriesDropdown(
+        episodes = animeEpisodes,
         seasons = animeSeasons,
         currentSeason = currentAnimeSeason,
-        hideBackground = hideBackground,
-        onSeasonSelected = { viewModel.onAnimeSeasonSelected?.invoke(it) }
-      )
-    }
-
-    if (visibleEpisodes.isNotEmpty()) {
-      AnimeEpisodeDropdown(
-        episodes = visibleEpisodes,
         currentEpisode = currentEpisode,
         hideBackground = hideBackground,
         viewModel = viewModel,
+        onSeasonSelected = { viewModel.onAnimeSeasonSelected?.invoke(it) },
         onEpisodeSelected = { viewModel.onAnimeEpisodeSelected?.invoke(it) }
       )
     }
@@ -254,7 +245,8 @@ fun BottomRightPlayerControlsLandscape(
 ) {
     val animeQualities by viewModel.animeQualities.collectAsState()
     val currentQualityId by viewModel.currentAnimeQualityId.collectAsState()
-    val showQuality = animeQualities.isNotEmpty() || currentQualityId != null
+    // Hidden entirely when the source offers no concrete variants (a lone "Auto" is not a choice).
+    val showQuality = animeQualities.keys.any { !it.equals("Auto", true) }
     Row(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),

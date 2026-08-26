@@ -157,6 +157,27 @@ class PlayerViewModel(
   private val _currentAnimeQualityId = MutableStateFlow<String?>(null)
   val currentAnimeQualityId: StateFlow<String?> = _currentAnimeQualityId.asStateFlow()
 
+  // Actual decoded frame size from mpv (video-params/w × /h): lets the quality selector show
+  // which concrete rung "Auto" is currently serving.
+  private val _videoResolution = MutableStateFlow<Pair<Int, Int>?>(null)
+  val videoResolution: StateFlow<Pair<Int, Int>?> = _videoResolution.asStateFlow()
+
+  fun setVideoResolution(width: Int?, height: Int?) {
+    _videoResolution.value =
+      if (width != null && height != null && width > 0 && height > 0) width to height
+      else null
+  }
+
+  // Ladder label of the url "Auto" is currently serving ("1080p"), resolved by the activity from
+  // the active stream's ladder. Shown until video-params arrive, so the pill reads "Auto · 1080p"
+  // right at launch instead of a bare "Auto" that hides what was picked.
+  private val _autoQualityRungHint = MutableStateFlow<String?>(null)
+  val autoQualityRungHint: StateFlow<String?> = _autoQualityRungHint.asStateFlow()
+
+  fun setAutoQualityRungHint(rung: String?) {
+    _autoQualityRungHint.value = rung
+  }
+
   // Multi-season series (movie-series mode): distinct season numbers for the season dropdown and
   // the currently selected one. The episode dropdown shows only the active season's episodes.
   private val _animeSeasons = MutableStateFlow<List<Int>>(emptyList())
@@ -179,6 +200,32 @@ class PlayerViewModel(
 
   private val _isLoadingStream = MutableStateFlow(false)
   val isLoadingStream: StateFlow<Boolean> = _isLoadingStream.asStateFlow()
+
+  // PENDING_MOVIE: background stream resolve failed — retryable card over the player surface.
+  private val _pendingResolveError = MutableStateFlow<String?>(null)
+  val pendingResolveError: StateFlow<String?> = _pendingResolveError.asStateFlow()
+
+  private val _pendingWebFallbackUrl = MutableStateFlow<String?>(null)
+  val pendingWebFallbackUrl: StateFlow<String?> = _pendingWebFallbackUrl.asStateFlow()
+
+  /** Wired by PlayerActivity; re-runs the background resolve. */
+  var onPendingRetry: (() -> Unit)? = null
+
+  /** Wired by PlayerActivity; re-issues the last tracked stream load after a failed mpv open. */
+  var onStreamLoadRetry: (() -> Unit)? = null
+
+  fun setPendingResolveError(message: String?) {
+    _pendingResolveError.value = message
+  }
+
+  fun setPendingWebFallbackUrl(url: String?) {
+    _pendingWebFallbackUrl.value = url
+  }
+
+  fun retryPendingResolve() {
+    _pendingResolveError.value = null
+    (onPendingRetry ?: onStreamLoadRetry)?.invoke()
+  }
 
   private val _isAnimeModalOpen = MutableStateFlow(false)
   val isAnimeModalOpen: StateFlow<Boolean> = _isAnimeModalOpen.asStateFlow()

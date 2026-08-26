@@ -55,17 +55,23 @@ import hd.kinoshka.app.ui.screens.AboutScreen
 import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
 import hd.kinoshka.app.ui.screens.AnimeFeedScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
+import hd.kinoshka.app.ui.screens.FeedViewModel
+import hd.kinoshka.app.ui.screens.FeedViewModelFactory
 import hd.kinoshka.app.ui.screens.FilmsViewModel
 import hd.kinoshka.app.ui.screens.FilmsViewModelFactory
 import hd.kinoshka.app.ui.screens.HomeScreen
 import hd.kinoshka.app.ui.screens.InAppWebScreen
 import hd.kinoshka.app.ui.screens.MpvExPlayerScreen
 import hd.kinoshka.app.ui.screens.ProfileScreen
+import hd.kinoshka.app.ui.screens.RecommendationFeedScreen
 import hd.kinoshka.app.ui.screens.SettingsScreen
+import hd.kinoshka.app.ui.screens.ProgressEditorSeed
+import hd.kinoshka.app.ui.screens.UserProfileEditorSheet
 import hd.kinoshka.app.ui.components.DebugPerformanceOverlay
 import hd.kinoshka.app.ui.components.UpdateAvailableSheet
 import hd.kinoshka.app.ui.theme.KinoTheme
 import hd.kinoshka.app.data.model.AnimeEpisode
+import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
 import hd.kinoshka.app.data.model.NativePlaybackMode
@@ -281,6 +287,16 @@ fun KinoApp() {
             )
         )
 
+        // Тестовый фид рекомендаций (TikTok-стиль): изолированная ViewModel, удаляется одним коммитом
+        val feedVm: FeedViewModel = viewModel(
+            factory = FeedViewModelFactory(
+                appContext,
+                FilmsRepository(ApiClient.kinopoiskApi(appContext)),
+                AnimeRepository(ApiClient.shikimoriApi(appContext)),
+                UserStateStore(appContext)
+            )
+        )
+
         // The native player (its own Activity) writes watch progress straight into
         // SharedPreferences. Re-read it whenever the app comes back to the foreground so the
         // library folders, progress bars and details header never lag behind what was watched.
@@ -305,6 +321,11 @@ fun KinoApp() {
                                 fadeIn(animationSpec = tween(durationMillis = 210))
                             }
                         ) {
+                            // Long-press on a library/discover cover hosts the progress editor
+                            // sheet right here. The seed is built from tile data alone — instant,
+                            // no network, and the details page never opens.
+                            var progressEditorSeed by remember { mutableStateOf<ProgressEditorSeed?>(null) }
+
                             HomeScreen(
                                 state = vm.uiState,
                                 onQueryChange = vm::onQueryChange,
@@ -315,6 +336,8 @@ fun KinoApp() {
                                 onContentTypeSelected = vm::onContentTypeSelected,
                                 onOpenFilm = { film -> navController.navigate(detailsRoute(film.kinopoiskId)) },
                                 onOpenHistoryFilm = { id -> navController.navigate(detailsRoute(id)) },
+                                // Long-press: instant local progress editor, no navigation.
+                                onOpenFilmEditor = { seed -> progressEditorSeed = seed },
                                 onDiscoverCategorySelected = vm::onDiscoverCategorySelected,
                                 onLoadMore = vm::loadMore,
                                 onRemoveFromHistory = vm::removeFromHistory,
@@ -325,10 +348,49 @@ fun KinoApp() {
                                 onToggleFilterSheet = vm::setShowFilterSheet,
                                 onOpenCalendar = { navController.navigate("anime_calendar") },
                                 onOpenFeed = { navController.navigate("anime_feed") },
+                                onOpenRecommendationsFeed = { navController.navigate("recommendations_feed") },
                                 onLibrarySortSelected = vm::setLibrarySortType,
                                 onRemoveSearchHistory = vm::removeSearchQueryFromHistory,
                                 onClearSearchHistory = vm::clearSearchHistory
                             )
+
+                            progressEditorSeed?.let { seed ->
+                                // Minimal locally-built details: the editor only reads identity
+                                // fields (id/name/type/genres) and saves through the same path as
+                                // the details page, Shikimori sync included.
+                                val editorDetails = FilmDetails(
+                                    kinopoiskId = seed.kinopoiskId,
+                                    nameRu = seed.title,
+                                    posterUrl = seed.posterUrl,
+                                    posterUrlPreview = seed.posterUrl,
+                                    ratingKinopoisk = seed.ratingKinopoisk,
+                                    year = seed.year,
+                                    type = seed.type
+                                )
+                                UserProfileEditorSheet(
+                                    item = editorDetails,
+                                    animeDetails = null,
+                                    seasons = emptyList(),
+                                    profile = seed.profile,
+                                    saving = false,
+                                    onDismiss = { progressEditorSeed = null },
+                                    onSave = { status, rating, note, watchedSeasons, watchedEpisodes ->
+                                        vm.saveUserProfile(
+                                            editorDetails,
+                                            status,
+                                            rating,
+                                            note,
+                                            watchedSeasons,
+                                            watchedEpisodes,
+                                            totalEpisodesInSeason = null,
+                                            totalSeasons = null,
+                                            totalEpisodes = null,
+                                            isRussianOverride = seed.profile?.isRussian
+                                        )
+                                        progressEditorSeed = null
+                                    }
+                                )
+                            }
                         }
                         composable(
                             route = "anime_calendar",
@@ -356,6 +418,38 @@ fun KinoApp() {
                                 loading = vm.uiState.topicsLoading,
                                 onBack = { navController.popBackStack() },
                                 onOpenAnime = { targetId -> navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)) }
+                            )
+                        }
+                        composable(
+                            route = "recommendations_feed",
+                            enterTransition = { fadeIn(animationSpec = tween(160)) },
+                            exitTransition = { fadeOut(animationSpec = tween(120)) },
+                            popEnterTransition = { fadeIn(animationSpec = tween(160)) },
+                            popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                        ) {
+                            RecommendationFeedScreen(
+                                state = feedVm.uiState,
+                                onOpened = { feedVm.onScreenOpened() },
+                                onChipSelected = feedVm::selectChip,
+                                onLoadMore = feedVm::loadMore,
+                                onToggleExpanded = feedVm::toggleExpanded,
+                                onReact = feedVm::react,
+                                onItemShown = feedVm::onItemShown,
+                                onOpenDetails = { id -> navController.navigate(detailsRoute(id)) },
+                                onToggleSound = feedVm::toggleSound,
+                                onSelectHomeSection = { tab ->
+                                    vm.onTabSelected(tab)
+                                    navController.popBackStack()
+                                },
+                                onAdultGateConfirm = feedVm::confirmAdultGate,
+                                onAdultGateDismiss = feedVm::dismissAdultGate,
+                                onSaveTastes = feedVm::saveTastes,
+                                onSkipTastes = feedVm::skipTastes,
+                                onResetSeen = feedVm::resetSeenAndRestart,
+                                onShareDiagnostics = { feedVm.shareDiagnostics() },
+                                onLoadTastes = feedVm::tasteSnapshot,
+                                onLoadLiked = feedVm::likedTitles,
+                                onPlan = { item -> feedVm.planForLater(item) { vm.refreshAfterPlayerClosed() } }
                             )
                         }
                         composable(
@@ -391,6 +485,9 @@ fun KinoApp() {
                                  onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
                                      val mode = when {
                                          seriesContext != null -> NativePlaybackMode.MOVIE_SERIES
+                                         // Movies/series launched unresolved from the details page: the
+                                         // player opens at once and resolves its stream in the background.
+                                         srcType == "PENDING" -> NativePlaybackMode.PENDING_MOVIE
                                          // Voiceover-only launches (kodik/ddbb movies and ddbb series
                                          // fallbacks): translations carry direct or lazily-resolved
                                          // links, handled by setQualityOnlyMovieExtras. Episodes stay

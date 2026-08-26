@@ -6,6 +6,7 @@ import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
 import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
@@ -92,6 +93,37 @@ data class UserFilmProfile(
     val updatedAt: Long
 )
 
+/** Usage counters for one playback source (Kodik/AniLiberty/AniLib). */
+data class SourceUsage(val count: Int = 0, val lastUsedAt: Long = 0)
+
+/**
+ * Usage counters for one dub team across ALL titles. Dubs are keyed by normalized team name —
+ * ids differ per anime, names ("Studio Band", "AniLiberty") travel between titles.
+ */
+data class DubUsage(val count: Int = 0, val lastUsedAt: Long = 0)
+
+/** Global preference memory backing the used-first ranking of source/dub lists. */
+data class PlaybackUsageStats(
+    val sources: Map<String, SourceUsage> = emptyMap(),
+    val dubs: Map<String, DubUsage> = emptyMap()
+)
+
+/**
+ * One merged movie voiceover row persisted between launches: [id]/[title] feed the dropdown,
+ * [link] is the ready-to-play url (turbo CDN or raw Kodik player page). Pure data for Gson.
+ */
+data class CachedMovieVoiceover(
+    val id: String,
+    val title: String,
+    val link: String
+)
+
+/** Persisted merged voiceover list of one movie; [savedAtMs] bounds url validity. */
+data class MovieVoiceoverCache(
+    val savedAtMs: Long = 0,
+    val rows: List<CachedMovieVoiceover> = emptyList()
+)
+
 data class LibraryBackup(
     val exportedAt: Long,
     val profileAvatar: String? = null,
@@ -125,6 +157,7 @@ enum class LibrarySortType(val label: String) {
 
 private const val MAX_PROFILES = 5000
 private const val PROFILE_HARD_CEILING = 20_000
+private const val MAX_DUB_USAGE_ENTRIES = 100
 
 private fun UserFilmProfile.isCurated(): Boolean =
     status != null || userRating != null || !note.isNullOrBlank() ||
@@ -168,6 +201,8 @@ class UserStateStore(context: Context) {
     private val shikimoriAnimeCacheKey = "shikimori_anime_cache"
     private val librarySortKey = "library_sort_type"
     private val searchHistoryKey = "search_history_json"
+    private val playbackUsageKey = "playback_usage_json"
+    private val movieVoiceoverKeyPrefix = "movie_voiceovers_"
 
     private val prettyGson: Gson = GsonBuilder().setPrettyPrinting().create()
 
@@ -329,6 +364,37 @@ class UserStateStore(context: Context) {
         return readProfiles().firstOrNull { it.kinopoiskId == kinopoiskId }
     }
 
+    /**
+     * Быстрая пометка статуса без деталей — кнопка «В планах» во фиде.
+     * Поверх существующего профиля, если он уже есть; status=null снимает пометку.
+     */
+    fun setFeedQuickStatus(
+        kinopoiskId: Int,
+        title: String,
+        posterUrl: String?,
+        status: UserFilmStatus?
+    ) = synchronized(BLOB_LOCK) {
+        val existing = readProfilesOrNull()?.firstOrNull { it.kinopoiskId == kinopoiskId }
+        val base = existing ?: UserFilmProfile(
+            kinopoiskId = kinopoiskId,
+            title = title,
+            subtitle = null,
+            posterUrl = posterUrl,
+            ratingText = null,
+            type = null,
+            status = null,
+            userRating = null,
+            note = null,
+            watchedSeasons = null,
+            watchedEpisodes = null,
+            totalEpisodesInSeason = null,
+            totalSeasons = null,
+            totalEpisodes = null,
+            updatedAt = System.currentTimeMillis()
+        )
+        upsertProfile(base.copy(status = status, updatedAt = System.currentTimeMillis()))
+    }
+
     fun clearHistory() {
         prefs.edit().remove(historyKey).apply()
     }
@@ -359,23 +425,16 @@ class UserStateStore(context: Context) {
         )
     }
 
+    /**
+     * Seeds/refreshes the library profile from details metadata WITHOUT touching history.
+     * Merely pressing "Watch" must not surface the title in any library folder — it becomes
+     * visible only after real playback is committed ([commitRealPlayback]).
+     */
     fun addFromDetails(item: FilmDetails) = synchronized(BLOB_LOCK) {
         val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
         val subtitle = item.year?.toString()
         val rating = item.ratingKinopoisk?.let { "KP %.1f".format(Locale.US, it) }
         val isRussian = item.isRussianContent()
-
-        upsert(
-            HistoryRecord(
-                kinopoiskId = item.kinopoiskId,
-                title = title,
-                subtitle = subtitle,
-                posterUrl = item.posterUrlPreview ?: item.posterUrl,
-                ratingText = rating,
-                isRussian = isRussian,
-                viewedAt = System.currentTimeMillis()
-            )
-        )
 
         val existing = getProfile(item.kinopoiskId)
         upsertProfile(
@@ -424,7 +483,11 @@ class UserStateStore(context: Context) {
         watchedEpisodes: Int?,
         totalEpisodesInSeason: Int?,
         totalSeasons: Int?,
-        totalEpisodes: Int?
+        totalEpisodes: Int?,
+        // Editors that reconstruct FilmDetails locally (quick-progress sheet over library/
+        // discover tiles) carry no countries list — without the override their derived
+        // isRussian=false would clobber the stored flag on every save.
+        isRussianOverride: Boolean? = null
     ): UserFilmProfile {
         // The whole read-modify-write must hold the lock, otherwise a concurrent writer on another
         // thread re-serializes a stale profile list and erases this edit. Returning the synchronized
@@ -433,7 +496,7 @@ class UserStateStore(context: Context) {
             val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
             val subtitle = item.year?.toString()
             val ratingText = item.ratingKinopoisk?.let { "★ %.1f".format(Locale.US, it) }
-            val isRussian = item.isRussianContent()
+            val isRussian = isRussianOverride ?: item.isRussianContent()
 
             val existing = getProfile(item.kinopoiskId)
             val finalTotalEpisodes = totalEpisodes ?: existing?.totalEpisodes
@@ -537,26 +600,64 @@ class UserStateStore(context: Context) {
         }
     }
 
+    /**
+     * Full library exit: drops BOTH the profile and the history entry. Saving the progress editor
+     * with an explicitly cleared (null) status means "remove from library" — otherwise a statusless
+     * husk would keep surfacing in the История tab despite having no progress at all.
+     */
+    fun removeFromLibrary(kinopoiskId: Int) = synchronized(BLOB_LOCK) {
+        readProfilesOrNull()?.let { current ->
+            val filtered = current.filterNot { it.kinopoiskId == kinopoiskId }
+            if (filtered.size != current.size) writeProfiles(filtered)
+        }
+        val history = readHistory()
+        if (history.any { it.kinopoiskId == kinopoiskId }) {
+            writeHistory(history.filterNot { it.kinopoiskId == kinopoiskId })
+        }
+    }
+
     fun updateWatchedEpisode(
         shikimoriId: Int,
         animeTitle: String,
         episodeNum: Int,
         totalEpisodes: Int
     ) {
+        updateWatchedEpisodeByKey(shikimoriId + ANIME_ID_OFFSET, animeTitle, episodeNum, totalEpisodes)
+    }
+
+    /**
+     * Same as [updateWatchedEpisode] but keyed by an explicit library id. Titles opened outside
+     * the Shikimori section (Kinopoisk search hits tagged as anime by genre) have no shikimori
+     * mapping — their profiles live under the raw Kinopoisk id, and playback must keep writing
+     * there instead of silently dropping progress.
+     */
+    fun updateWatchedEpisodeByKey(
+        kinopoiskId: Int,
+        animeTitle: String,
+        episodeNum: Int,
+        totalEpisodes: Int,
+        allowComplete: Boolean = true
+    ) {
         // Block body + inner synchronized: the verbatim body aborts early on an unreadable blob.
         synchronized(BLOB_LOCK) {
-            val kinopoiskId = shikimoriId + ANIME_ID_OFFSET
             val current = readProfilesOrNull()?.toMutableList() ?: return
             val index = current.indexOfFirst { it.kinopoiskId == kinopoiskId }
             val existing = if (index >= 0) current[index] else null
 
             val currentStatus = existing?.status
-            val newStatus = if (totalEpisodes > 0 && episodeNum >= totalEpisodes) {
-                UserFilmStatus.COMPLETED
-            } else if (currentStatus == UserFilmStatus.REWATCHING) {
-                currentStatus
-            } else {
-                UserFilmStatus.WATCHING
+            val newStatus = when {
+                // User explicitly dropped/put the title on hold — playback must not override that.
+                currentStatus == UserFilmStatus.DROPPED || currentStatus == UserFilmStatus.ON_HOLD -> currentStatus
+                // Mid-episode progress commits must never complete a run: reaching the last
+                // episode's 5th minute is not "watched through". A completed title being
+                // re-watched stays completed until a watched-through commit says otherwise.
+                !allowComplete -> when (currentStatus) {
+                    UserFilmStatus.REWATCHING, UserFilmStatus.COMPLETED -> currentStatus
+                    else -> UserFilmStatus.WATCHING
+                }
+                totalEpisodes > 0 && episodeNum >= totalEpisodes -> UserFilmStatus.COMPLETED
+                currentStatus == UserFilmStatus.REWATCHING -> currentStatus
+                else -> UserFilmStatus.WATCHING
             }
 
             // The player's episode list is not canonical (it can be shorter than the real run while
@@ -702,6 +803,90 @@ class UserStateStore(context: Context) {
         runCatching {
             prefs.edit().putLong("durability_flush_counter", System.currentTimeMillis()).commit()
         }.onFailure { Log.e("UserStateStore", "flushToDisk failed", it) }
+    }
+
+    // ---- Playback usage memory (sources & dubs the user actually launches) ----
+
+    fun getPlaybackUsage(): PlaybackUsageStats {
+        val raw = prefs.getString(playbackUsageKey, null) ?: return PlaybackUsageStats()
+        return runCatching { gson.fromJson(raw, PlaybackUsageStats::class.java) }
+            .getOrNull() ?: PlaybackUsageStats()
+    }
+
+    fun recordSourceUsage(source: AnimeSourceType) = editPlaybackUsage { stats ->
+        val current = stats.sources[source.name] ?: SourceUsage()
+        stats.copy(
+            sources = stats.sources + (
+                source.name to SourceUsage(
+                    count = current.count + 1,
+                    lastUsedAt = System.currentTimeMillis()
+                )
+                )
+        )
+    }
+
+    fun recordDubUsage(title: String) = editPlaybackUsage { stats ->
+        val key = title.trim().lowercase()
+        if (key.isEmpty()) return@editPlaybackUsage stats
+        val current = stats.dubs[key] ?: DubUsage()
+        stats.copy(
+            dubs = stats.dubs + (
+                key to DubUsage(
+                    count = current.count + 1,
+                    lastUsedAt = System.currentTimeMillis()
+                )
+                )
+        )
+    }
+
+    private fun editPlaybackUsage(edit: (PlaybackUsageStats) -> PlaybackUsageStats) = synchronized(BLOB_LOCK) {
+        val updated = edit(getPlaybackUsage())
+        // Bound growth: numeric Kodik labels accumulate fast across titles — keep the freshest.
+        val capped = updated.copy(
+            dubs = updated.dubs.entries
+                .sortedByDescending { it.value.lastUsedAt }
+                .take(MAX_DUB_USAGE_ENTRIES)
+                .associate { it.toPair() }
+        )
+        prefs.edit().putString(playbackUsageKey, gson.toJson(capped)).apply()
+    }
+
+    // ---- Merged movie voiceover list cache (stable dropdown across launches) ----
+
+    fun getMovieVoiceoverCache(key: String): MovieVoiceoverCache? {
+        val raw = prefs.getString(movieVoiceoverKeyPrefix + key, null) ?: return null
+        return runCatching { gson.fromJson(raw, MovieVoiceoverCache::class.java) }.getOrNull()
+    }
+
+    fun saveMovieVoiceoverCache(key: String, cache: MovieVoiceoverCache) {
+        if (cache.rows.isEmpty()) return
+        prefs.edit().putString(movieVoiceoverKeyPrefix + key, gson.toJson(cache)).apply()
+    }
+
+    /**
+     * Marks that the user REALLY watched this title (called once ≥5 minutes of playback accrued).
+     * Flips a fresh/planned profile to WATCHING (explicit Dropped/On-hold/Completed/rewatch
+     * statuses stay), and adds the history entry the library's "Смотрю"/"История" views need.
+     * Metadata comes from the seeded profile; titles never pressed "Watch" on have no profile
+     * and are silently skipped until some screen seeds one.
+     */
+    fun commitRealPlayback(kinopoiskId: Int) = synchronized(BLOB_LOCK) {
+        val now = System.currentTimeMillis()
+        val profile = readProfiles().firstOrNull { it.kinopoiskId == kinopoiskId } ?: return
+        if (profile.status == null || profile.status == UserFilmStatus.PLANNED) {
+            upsertProfile(profile.copy(status = UserFilmStatus.WATCHING, updatedAt = now))
+        }
+        upsert(
+            HistoryRecord(
+                kinopoiskId = kinopoiskId,
+                title = profile.title,
+                subtitle = profile.subtitle,
+                posterUrl = profile.posterUrl,
+                ratingText = profile.ratingText,
+                isRussian = profile.isRussian,
+                viewedAt = now
+            )
+        )
     }
 
     // ---- Search query history ----

@@ -33,8 +33,12 @@ import hd.kinoshka.app.data.model.*
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 
 private enum class FilterMode {
@@ -42,17 +46,28 @@ private enum class FilterMode {
     SUBTITLES
 }
 
-private data class LastPlaybackInfo(
-    val source: String,
+/** Load lifecycle of one media source on the progressive selection page. */
+internal sealed interface SourceLoadState {
+    data object Loading : SourceLoadState
+    data class Ready(val translations: List<FlatTranslation>) : SourceLoadState
+    data class Failed(val message: String) : SourceLoadState
+}
+
+/** Последний запуск тайтла из anime_playback_prefs: источник, озвучка, серия. */
+private data class LastPlaybackPref(
+    val source: AnimeSourceType,
     val translationId: String,
-    val translationTitle: String,
-    val episodeNum: Int
+    val translationTitle: String?,
+    val episodeNumber: Int
 )
+
+/** Hard cap for one source's prefetch: OkHttp timeouts bound each request, the cascade must stay bounded overall. */
+private const val SOURCE_LOAD_TIMEOUT_MS = 25_000L
 
 /** True if the episode carries a real (non-synthetic) title, e.g. from AniLiberty. */
 private fun hasRealTitle(ep: AnimeEpisode): Boolean {
     val t = ep.title ?: return false
-    if (t.isBlank()) return false
+    if (t.isBlank() || t.equals("null", ignoreCase = true)) return false
     // Kodik synthesizes "Серия N" / "Сезон X, Серия N" — not real titles.
     if (t == "Серия ${ep.number}") return false
     if (t.startsWith("Сезон ") && t.endsWith("Серия ${ep.number}")) return false
@@ -66,12 +81,23 @@ private fun pluralDubs(n: Int): String = when {
     else -> "озвучек"
 }
 
+/**
+ * Best advertised quality of a dub for the picker badges: the pre-selected episode's own hint
+ * when one was picked, otherwise the dub-wide maximum.
+ */
+private fun FlatTranslation.qualityForEpisode(selected: AnimeEpisode?): String? =
+    selected?.let { sel -> episodes.firstOrNull { it.number == sel.number }?.maxQuality }
+        ?: episodes.maxByOrNull { qualityRank(it.maxQuality) }?.maxQuality
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnimePlaybackSelectionScreen(
     shikimoriId: Int,
     animeTitle: String,
     playbackSequence: PlaybackSequenceOption,
+    // Raw Kinopoisk id of the title (when opened outside the Shikimori section). Used as the
+    // library profile key when shikimoriId is 0, keeping episode progress synced for such titles.
+    kinopoiskId: Int = 0,
     onDismissRequest: () -> Unit,
     onStreamSelected: (
         stream: AnimeMediaStream,
@@ -102,30 +128,112 @@ fun AnimePlaybackSelectionScreen(
     var selectedTranslation by remember { mutableStateOf<FlatTranslation?>(null) }
     var selectedEpisode by remember { mutableStateOf<AnimeEpisode?>(null) }
 
-    var isLoading by remember { mutableStateOf(true) }
     var isResolvingStream by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    var allTranslations by remember { mutableStateOf<List<FlatTranslation>>(emptyList()) }
+    // Progressive load (same pattern as the 18+ source page): the page renders immediately and
+    // every source fills its own section as soon as it answers — no full-screen blocking spinner
+    // waiting for the slowest of three providers.
+    val sourceStatesFlow = remember(shikimoriId) {
+        MutableStateFlow<Map<AnimeSourceType, SourceLoadState>>(emptyMap())
+    }
+    val sourceStates by sourceStatesFlow.collectAsState()
 
-    // Load available media on start
-    LaunchedEffect(shikimoriId) {
-        isLoading = true
-        errorMessage = null
-        try {
-            // Translations with zero episodes (e.g. Kodik's find-player stub for 18+ titles the
-            // public API refuses to index) are not usable content — treat them as "nothing found"
-            // so the user gets the error state with the web-player escape hatch, not an empty list.
-            allTranslations = AnimeStreamResolver.prefetchAllMedia(shikimoriId, animeTitle)
-                .filter { it.episodes.isNotEmpty() }
-            if (allTranslations.isEmpty()) {
-                errorMessage = "Не удалось найти видео для этого аниме.\nДля 18+ тайтлов используйте веб-плеер."
+    val allTranslations = remember(sourceStates) {
+        sourceStates.values.filterIsInstance<SourceLoadState.Ready>().flatMap { it.translations }
+    }
+
+    fun startSource(source: AnimeSourceType) {
+        if (sourceStatesFlow.value[source] is SourceLoadState.Loading) return
+        sourceStatesFlow.update { it + (source to SourceLoadState.Loading) }
+        scope.launch {
+            val deferred = scope.async(Dispatchers.IO) {
+                AnimeStreamResolver.fetchSourceMedia(shikimoriId, animeTitle, source)
+                    .filter { it.episodes.isNotEmpty() }
             }
-            isLoading = false
-        } catch (e: Exception) {
-            errorMessage = "Ошибка при загрузке: ${e.localizedMessage}"
-            isLoading = false
+            // Timeout must not cancel the fetch itself: resolver's runCatching blocks swallow
+            // TimeoutCancellationException. The loser keeps running and a retry hits its cache.
+            val result = withTimeoutOrNull(SOURCE_LOAD_TIMEOUT_MS) { deferred.await() }
+            val newState = when {
+                result == null -> SourceLoadState.Failed("Превышено время ожидания")
+                result.isEmpty() -> SourceLoadState.Failed("Ничего не найдено")
+                else -> SourceLoadState.Ready(result)
+            }
+            sourceStatesFlow.update { current ->
+                if (current[source] is SourceLoadState.Ready) current
+                else current + (source to newState)
+            }
         }
+    }
+
+    /** Launches sources that are neither loading nor loaded — initial open and «Повторить». */
+    fun startPendingSources() {
+        AnimeSourceType.entries.forEach { src ->
+            val state = sourceStatesFlow.value[src]
+            if (state !is SourceLoadState.Loading && state !is SourceLoadState.Ready) {
+                startSource(src)
+            }
+        }
+    }
+
+    LaunchedEffect(shikimoriId) {
+        startPendingSources()
+    }
+
+    // Global preference memory: which sources/dubs the user launches most recently and often.
+    // Читается в IO — первый доступ к SharedPreferences бьёт в диск прямо во время композиции.
+    val playbackUsage by androidx.compose.runtime.produceState(
+        initialValue = hd.kinoshka.app.data.local.PlaybackUsageStats(),
+        key1 = shikimoriId
+    ) {
+        withContext(Dispatchers.IO) {
+            value = hd.kinoshka.app.data.local.UserStateStore(context).getPlaybackUsage()
+        }
+    }
+
+    // Последняя просмотренная озвучка/источник/серия этого тайтла — для карточки «Продолжить с…».
+    // Тот же per-title ключ, что пишет resolveAndPlay.
+    var lastPlayback by remember { mutableStateOf<LastPlaybackPref?>(null) }
+    val playbackPrefsKey = if (shikimoriId > 0) shikimoriId else kinopoiskId
+    LaunchedEffect(playbackPrefsKey) {
+        lastPlayback = withContext(Dispatchers.IO) {
+            val prefs = context.getSharedPreferences("anime_playback_prefs", Context.MODE_PRIVATE)
+            val sourceName = prefs.getString("last_source_$playbackPrefsKey", null) ?: return@withContext null
+            val translationId = prefs.getString("last_translation_id_$playbackPrefsKey", null) ?: return@withContext null
+            val source = runCatching { AnimeSourceType.valueOf(sourceName) }.getOrNull() ?: return@withContext null
+            LastPlaybackPref(
+                source = source,
+                translationId = translationId,
+                translationTitle = prefs.getString("last_translation_title_$playbackPrefsKey", null),
+                episodeNumber = prefs.getInt("last_episode_num_$playbackPrefsKey", 1)
+            )
+        }
+    }
+
+    // Сопоставляем запись с реально загруженными озвучками: точный id, затем совпадение по имени;
+    // серия — сохранённая, ближайшая ниже неё или первая доступная.
+    val resumeSuggestion = remember(lastPlayback, allTranslations) {
+        val last = lastPlayback ?: return@remember null
+        val translation = (
+            allTranslations.firstOrNull { it.source == last.source && it.translationId == last.translationId }
+                ?: allTranslations.firstOrNull { it.source == last.source && it.title == last.translationTitle }
+            )?.takeIf { it.episodes.isNotEmpty() } ?: return@remember null
+        val episode = translation.episodes.firstOrNull { it.number == last.episodeNumber }
+            ?: translation.episodes.lastOrNull { it.number < last.episodeNumber }
+            ?: translation.episodes.first()
+        translation to episode
+    }
+
+    // «Продолжить с…» живёт только на первом шаге последовательности — при «Сначала серии» это
+    // список серий, при «Сначала озвучки» — страница озвучек.
+    val activeResumeSuggestion = if (currentStepIndex == 0) resumeSuggestion else null
+
+    // Full error state only when every source has settled and none produced usable content.
+    val allSourcesSettled = AnimeSourceType.entries.all { sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Failed }
+    val isLoadingSources = sourceStates.values.any { it is SourceLoadState.Loading }
+    val errorMessage = if (allSourcesSettled && !isLoadingSources && allTranslations.isEmpty()) {
+        "Не удалось найти видео для этого аниме.\nДля 18+ тайтлов используйте веб-плеер."
+    } else {
+        null
     }
 
     // Pre-compute derived data once when translations load
@@ -163,35 +271,27 @@ fun AnimePlaybackSelectionScreen(
             }
     }
 
-    // SharedPreferences to save/load last watched info (async to avoid blocking composition)
-    var lastPlayback by remember { mutableStateOf<LastPlaybackInfo?>(null) }
     // High-water-mark watched-episode count (per-anime), used to mark watched episodes in the
     // picker. Sourced from UserStateStore profiles (written by PlayerActivity on watched threshold).
     var watchedEpisodes by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(shikimoriId) {
         watchedEpisodes = withContext(Dispatchers.IO) {
+            // Titles opened from regular search carry no shikimori mapping (shikimoriId == 0);
+            // their profiles live under the raw Kinopoisk id passed by the caller.
+            val profileKey = if (shikimoriId > 0) {
+                shikimoriId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+            } else {
+                kinopoiskId
+            }
             hd.kinoshka.app.data.local.UserStateStore(context)
-                .getProfile(shikimoriId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
+                .getProfile(profileKey)
                 ?.watchedEpisodes
-        }
-    }
-    LaunchedEffect(shikimoriId, allTranslations) {
-        lastPlayback = withContext(Dispatchers.IO) {
-            val prefs = context.getSharedPreferences("anime_playback_prefs", Context.MODE_PRIVATE)
-            val src = prefs.getString("last_source_$shikimoriId", null)
-            val trId = prefs.getString("last_translation_id_$shikimoriId", null)
-            val trTitle = prefs.getString("last_translation_title_$shikimoriId", null)
-            val epNum = prefs.getInt("last_episode_num_$shikimoriId", -1)
-            if (src != null && trId != null && trTitle != null && epNum != -1) {
-                LastPlaybackInfo(src, trId, trTitle, epNum)
-            } else null
         }
     }
 
     // Helper to resolve HLS stream and launch player
     fun resolveAndPlay(episode: AnimeEpisode, translation: FlatTranslation, source: AnimeSourceType) {
         isResolvingStream = true
-        errorMessage = null
         scope.launch {
             try {
                 val stream = AnimeStreamResolver.resolveStream(
@@ -203,19 +303,30 @@ fun AnimePlaybackSelectionScreen(
                 )
                 isResolvingStream = false
                 if (stream != null) {
-                    // Save last watched position
+                    // Save last watched position. Keyed per-title: shikimori id when known,
+                    // otherwise the raw Kinopoisk id — a shared key would recommend one
+                    // title's dub on a completely different show.
+                    val prefsKey = if (shikimoriId > 0) shikimoriId else kinopoiskId
                     context.getSharedPreferences("anime_playback_prefs", Context.MODE_PRIVATE)
                         .edit()
-                        .putString("last_source_$shikimoriId", source.name)
-                        .putString("last_translation_id_$shikimoriId", translation.translationId)
-                        .putString("last_translation_title_$shikimoriId", translation.title)
-                        .putInt("last_episode_num_$shikimoriId", episode.number)
+                        .putString("last_source_$prefsKey", source.name)
+                        .putString("last_translation_id_$prefsKey", translation.translationId)
+                        .putString("last_translation_title_$prefsKey", translation.title)
+                        .putInt("last_episode_num_$prefsKey", episode.number)
                         .apply()
+
+                    // Feed the global preference memory: this source/dub rises to the top of
+                    // future lists (sheet + player dropdown).
+                    val usageStore = hd.kinoshka.app.data.local.UserStateStore(context)
+                    usageStore.recordSourceUsage(source)
+                    usageStore.recordDubUsage(translation.title)
 
                     onStreamSelected(
                         stream,
                         episode.number,
-                        episode.title ?: "Серия ${episode.number}",
+                        // Guard against JSON-null leaking as the literal string "null".
+                        episode.title?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                            ?: "Серия ${episode.number}",
                         source,
                         translation.title,
                         translation.episodes,
@@ -224,11 +335,23 @@ fun AnimePlaybackSelectionScreen(
                     )
                     onDismissRequest()
                 } else {
-                    errorMessage = "Не удалось получить ссылку на видео для серии ${episode.number}"
+                    // Transient resolve failure: the page itself is fine, so surface a toast
+                    // instead of the derived all-sources-failed error state.
+                    android.widget.Toast.makeText(
+                        context,
+                        "Не удалось получить ссылку на видео для серии ${episode.number}",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 isResolvingStream = false
-                errorMessage = "Ошибка при запуске плеера: ${e.localizedMessage}"
+                android.widget.Toast.makeText(
+                    context,
+                    "Ошибка при запуске плеера: ${e.localizedMessage}",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }
@@ -261,7 +384,8 @@ fun AnimePlaybackSelectionScreen(
 
     Dialog(
         onDismissRequest = onDismissRequest,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        // Рисуем окно под системными барами — без этого по краям виден фон Details-экрана.
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -271,6 +395,7 @@ fun AnimePlaybackSelectionScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
+                    .navigationBarsPadding()
             ) {
                 // Top Custom App Bar
                 Row(
@@ -310,6 +435,28 @@ fun AnimePlaybackSelectionScreen(
                     }
                 }
 
+                // Slim progress strip: the page is usable while sources are still resolving.
+                androidx.compose.animation.AnimatedVisibility(visible = isLoadingSources) {
+                    val settled = AnimeSourceType.entries.count { sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Failed }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Загрузка источников… $settled/${AnimeSourceType.entries.size}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
                 // Body content
                 Box(
                     modifier = Modifier
@@ -330,14 +477,6 @@ fun AnimePlaybackSelectionScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium
                                 )
-                            }
-                        }
-                        isLoading -> {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
                             }
                         }
                         errorMessage != null -> {
@@ -362,25 +501,11 @@ fun AnimePlaybackSelectionScreen(
                                 )
                                 Button(
                                     onClick = {
-                                        isLoading = true
-                                        errorMessage = null
                                         currentStepIndex = 0
                                         selectedSourceType = null
                                         selectedTranslation = null
                                         selectedEpisode = null
-                                        scope.launch {
-                                            try {
-                                                allTranslations = AnimeStreamResolver.prefetchAllMedia(shikimoriId, animeTitle)
-                                                    .filter { it.episodes.isNotEmpty() }
-                                                if (allTranslations.isEmpty()) {
-                                                    errorMessage = "Не удалось найти видео для этого аниме.\nДля 18+ тайтлов используйте веб-плеер."
-                                                }
-                                                isLoading = false
-                                            } catch (e: Exception) {
-                                                errorMessage = e.localizedMessage
-                                                isLoading = false
-                                            }
-                                        }
+                                        startPendingSources()
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                                 ) {
@@ -409,6 +534,10 @@ fun AnimePlaybackSelectionScreen(
                                             onSourceSelected = { filterSourceType = it },
                                             selectedEpisode = selectedEpisode,
                                             allTranslations = allTranslations,
+                                            sourceStates = sourceStates,
+                                            onRetrySource = ::startSource,
+                                            resumeSuggestion = activeResumeSuggestion,
+                                            onResumeSelected = { tr, ep -> resolveAndPlay(ep, tr, tr.source) },
                                             onTranslationSelected = { tr ->
                                                 selectedTranslation = tr
                                                 selectedSourceType = tr.source
@@ -429,19 +558,7 @@ fun AnimePlaybackSelectionScreen(
                                                     }
                                                 }
                                             },
-                                            lastPlayback = if (currentStepIndex == 0) lastPlayback else null,
-                                            onQuickContinue = { playbackInfo ->
-                                                val tr = allTranslations.firstOrNull {
-                                                    it.source.name == playbackInfo.source &&
-                                                    (it.translationId == playbackInfo.translationId || it.title == playbackInfo.translationTitle)
-                                                }
-                                                val ep = tr?.episodes?.firstOrNull { it.number == playbackInfo.episodeNum }
-                                                if (tr != null && ep != null) {
-                                                    resolveAndPlay(ep, tr, tr.source)
-                                                } else {
-                                                    Toast.makeText(context, "Не удалось продолжить просмотр", Toast.LENGTH_SHORT).show()
-                                                }
-                                            }
+                                            playbackUsage = playbackUsage
                                         )
                                     }
                                     SelectionStep.TRANSLATION -> {
@@ -450,14 +567,16 @@ fun AnimePlaybackSelectionScreen(
                                             onSourceSelected = { selectedSourceType = it },
                                             selectedEpisode = selectedEpisode,
                                             allTranslations = allTranslations,
+                                            sourceStates = sourceStates,
+                                            onRetrySource = ::startSource,
                                             onTranslationSelected = { tr ->
                                                 selectedTranslation = tr
                                                 selectedSourceType = tr.source
 
                                                 // Skip redundant steps if we already have both source and translation
                                                 var nextIdx = currentStepIndex + 1
-                                                while (nextIdx < playbackSequence.steps.size && 
-                                                    (playbackSequence.steps[nextIdx] == SelectionStep.SOURCE || 
+                                                while (nextIdx < playbackSequence.steps.size &&
+                                                    (playbackSequence.steps[nextIdx] == SelectionStep.SOURCE ||
                                                      playbackSequence.steps[nextIdx] == SelectionStep.TRANSLATION)) {
                                                     nextIdx++
                                                 }
@@ -470,7 +589,8 @@ fun AnimePlaybackSelectionScreen(
                                                         resolveAndPlay(ep, tr, tr.source)
                                                     }
                                                 }
-                                            }
+                                            },
+                                            playbackUsage = playbackUsage
                                         )
                                     }
                                     SelectionStep.EPISODE -> {
@@ -483,20 +603,10 @@ fun AnimePlaybackSelectionScreen(
                                         SelectEpisodeStep(
                                             episodes = episodesSource,
                                             episodeTranslationCountMap = episodeTranslationCountMap,
-                                            lastPlayback = if (currentStepIndex == 0) lastPlayback else null,
+                                            showDubCount = selectedTranslation == null,
                                             watchedEpisodes = watchedEpisodes,
-                                            onQuickContinue = { playbackInfo ->
-                                                val tr = allTranslations.firstOrNull {
-                                                    it.source.name == playbackInfo.source &&
-                                                    (it.translationId == playbackInfo.translationId || it.title == playbackInfo.translationTitle)
-                                                }
-                                                val ep = tr?.episodes?.firstOrNull { it.number == playbackInfo.episodeNum }
-                                                if (tr != null && ep != null) {
-                                                    resolveAndPlay(ep, tr, tr.source)
-                                                } else {
-                                                    Toast.makeText(context, "Не удалось продолжить просмотр", Toast.LENGTH_SHORT).show()
-                                                }
-                                            },
+                                            resumeSuggestion = activeResumeSuggestion,
+                                            onResumeSelected = { tr, ep -> resolveAndPlay(ep, tr, tr.source) },
                                             onEpisodeSelected = { ep ->
                                                 selectedEpisode = ep
                                                 if (currentStepIndex < playbackSequence.steps.lastIndex) {
@@ -518,14 +628,19 @@ fun AnimePlaybackSelectionScreen(
     }
 }
 
-@Composable
-private fun SelectSourceStep(
-    allTranslations: List<FlatTranslation>,
-    lastPlayback: LastPlaybackInfo?,
-    onSourceSelected: (AnimeSourceType) -> Unit,
-    onQuickContinue: (LastPlaybackInfo) -> Unit
-) {
-    // This step is now merged into SelectTranslationStep
+/** Recency-then-frequency rank of a source in the global usage memory. */
+private fun sourceUsageRank(
+    usage: hd.kinoshka.app.data.local.PlaybackUsageStats,
+    source: AnimeSourceType
+): Pair<Long, Int> {
+    val entry = usage.sources[source.name]
+    return (entry?.lastUsedAt ?: 0L) to (entry?.count ?: 0)
+}
+
+/** Recency-then-frequency rank of a dub team in the global usage memory. */
+private fun dubUsageRank(usage: hd.kinoshka.app.data.local.PlaybackUsageStats, title: String): Pair<Long, Int> {
+    val entry = usage.dubs[title.trim().lowercase()]
+    return (entry?.lastUsedAt ?: 0L) to (entry?.count ?: 0)
 }
 
 @Composable
@@ -534,9 +649,13 @@ private fun SelectTranslationStep(
     onSourceSelected: (AnimeSourceType?) -> Unit,
     selectedEpisode: AnimeEpisode?,
     allTranslations: List<FlatTranslation>,
-    lastPlayback: LastPlaybackInfo? = null,
-    onQuickContinue: ((LastPlaybackInfo) -> Unit)? = null,
-    onTranslationSelected: (FlatTranslation) -> Unit
+    sourceStates: Map<AnimeSourceType, SourceLoadState> = emptyMap(),
+    onRetrySource: (AnimeSourceType) -> Unit = {},
+    // «Продолжить с…»: последняя озвучка/серия этого тайтла; показывается только на первом шаге.
+    resumeSuggestion: Pair<FlatTranslation, AnimeEpisode>? = null,
+    onResumeSelected: ((FlatTranslation, AnimeEpisode) -> Unit)? = null,
+    onTranslationSelected: (FlatTranslation) -> Unit,
+    playbackUsage: hd.kinoshka.app.data.local.PlaybackUsageStats = hd.kinoshka.app.data.local.PlaybackUsageStats()
 ) {
     val sourceTranslations = remember(allTranslations, selectedSource, selectedEpisode) {
         var list = allTranslations
@@ -562,6 +681,17 @@ private fun SelectTranslationStep(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 16.dp)
     ) {
+        // Карточка продолжения просмотра — самый верх первого шага выбора.
+        if (resumeSuggestion != null && onResumeSelected != null) {
+            val (resumeTranslation, resumeEpisode) = resumeSuggestion
+            item(key = "resume-suggestion") {
+                ResumeWatchingCard(
+                    translation = resumeTranslation,
+                    episodeNumber = resumeEpisode.number,
+                    onClick = { onResumeSelected(resumeTranslation, resumeEpisode) }
+                )
+            }
+        }
         item {
             // Translation tabs (Voice / Subtitles)
             val filterOptions = listOf(FilterMode.VOICE, FilterMode.SUBTITLES)
@@ -605,11 +735,16 @@ private fun SelectTranslationStep(
         }
 
         item {
-            // Source chips (previous style)
-            val sources = remember(allTranslations) {
-                listOf<AnimeSourceType?>(null) + AnimeSourceType.entries.filter { src ->
+            // Source chips (previous style). "Все" stays first; used sources rise by recency.
+            val sources = remember(allTranslations, playbackUsage) {
+                val available = AnimeSourceType.entries.filter { src ->
                     allTranslations.any { it.source == src }
                 }
+                val ranked = available.sortedWith(
+                    compareByDescending<AnimeSourceType> { sourceUsageRank(playbackUsage, it).first }
+                        .thenByDescending { sourceUsageRank(playbackUsage, it).second }
+                )
+                listOf<AnimeSourceType?>(null) + ranked
             }
             Row(
                 modifier = Modifier
@@ -627,31 +762,50 @@ private fun SelectTranslationStep(
             }
         }
 
+        // Sources still resolving or failed — shown as compact rows above the results so the
+        // page explains itself instead of silently hiding providers (18+ source-page pattern).
+        val pendingSources = AnimeSourceType.entries.mapNotNull { src ->
+            when (val state = sourceStates[src]) {
+                is SourceLoadState.Loading -> src to null
+                is SourceLoadState.Failed -> src to state.message
+                else -> null
+            }
+        }
+
         if (filteredList.isEmpty()) {
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 64.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Нет доступных вариантов",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            if (pendingSources.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 64.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Нет доступных вариантов",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         } else {
             // Group by source, then sort each group by episode count (desc) then title so the
             // most complete dubs surface first — makes every available dub/source visible rather
-            // than lost in fetch order.
-            val grouped = filteredList.groupBy { it.source }
-                .mapValues { (_, translations) ->
-                    translations.sortedWith(
-                        compareByDescending<FlatTranslation> { it.episodes.size }.thenBy { it.title }
-                    )
-                }
+            // than lost in fetch order. Groups with used sources come first; inside a group,
+            // dubs the user actually launches rank by recency before the default ordering.
+            val groupOrder = filteredList.map { it.source }.distinct().sortedWith(
+                compareByDescending<AnimeSourceType> { sourceUsageRank(playbackUsage, it).first }
+                    .thenByDescending { sourceUsageRank(playbackUsage, it).second }
+            )
+            val grouped = groupOrder.associateWith { source ->
+                filteredList.filter { it.source == source }.sortedWith(
+                    compareByDescending<FlatTranslation> { dubUsageRank(playbackUsage, it.title).first }
+                        .thenByDescending { dubUsageRank(playbackUsage, it.title).second }
+                        .thenByDescending { it.episodes.size }
+                        .thenBy { it.title }
+                )
+            }
             grouped.forEach { (source, translations) ->
                 item {
                     Row(
@@ -716,7 +870,11 @@ private fun SelectTranslationStep(
                             Spacer(modifier = Modifier.width(14.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = if (tr.source == AnimeSourceType.ANILIBERTY) "AniLiberty" else tr.title,
+                                    // Kodik rows carry the dub name as the title; AniLib teams carry
+                                    // their own team names too. Only AniLiberty's release titles need
+                                    // the source prefix to not read as a Kodik dub.
+                                    text = if (tr.source == AnimeSourceType.KODIK || tr.source == AnimeSourceType.ANILIB) tr.title
+                                    else "${tr.source.displayName} · ${tr.title}",
                                     style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -726,6 +884,36 @@ private fun SelectTranslationStep(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                            }
+                            // Preference badge: this dub team is in the user's usage memory.
+                            if (dubUsageRank(playbackUsage, tr.title).first > 0L) {
+                                Icon(
+                                    imageVector = Icons.Default.History,
+                                    contentDescription = "Вы часто смотрите с этой озвучкой",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            // Quality badge only after an episode is picked ("Сначала серии",
+                            // second screen): shows that episode's quality under this dub.
+                            if (selectedEpisode != null) {
+                                val badge = qualityBadgeLabel(tr.qualityForEpisode(selectedEpisode))
+                                if (badge != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                                    ) {
+                                        Text(
+                                            text = badge,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
                             }
                             if (tr.episodes.isNotEmpty()) {
                                 Text(
@@ -740,6 +928,137 @@ private fun SelectTranslationStep(
                 }
             }
         }
+
+        // Still-loading / failed sources sit BELOW the ready content: loaded dubs first,
+        // progress at the bottom of the list.
+        if (pendingSources.isNotEmpty()) {
+            items(
+                count = pendingSources.size,
+                key = { index -> "pending:${pendingSources[index].first.name}" }
+            ) { index ->
+                val (source, failure) = pendingSources[index]
+                SourceStatusRow(
+                    sourceName = source.displayName,
+                    loading = failure == null,
+                    message = failure,
+                    onRetry = { onRetrySource(source) }
+                )
+            }
+        }
+    }
+}
+
+/** Compact per-source progress/failure row shown while the page fills in progressively. */
+@Composable
+private fun SourceStatusRow(
+    sourceName: String,
+    loading: Boolean,
+    message: String?,
+    onRetry: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.6f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (loading) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = sourceName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = if (loading) "Поиск озвучек…" else (message ?: "Ошибка"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (!loading) {
+                TextButton(onClick = onRetry, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Text("Повторить", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        }
+    }
+}
+
+/** Карточка «Продолжить с серии N»: последняя озвучка/источник тайтла, клик сразу запускает playback. */
+@Composable
+private fun ResumeWatchingCard(
+    translation: FlatTranslation,
+    episodeNumber: Int,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.History,
+                    contentDescription = "История просмотра",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Продолжить с серии $episodeNumber",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    text = "${translation.source.displayName} · ${translation.title}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                imageVector = Icons.Default.PlayArrow,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp)
+            )
+        }
     }
 }
 
@@ -747,9 +1066,13 @@ private fun SelectTranslationStep(
 private fun SelectEpisodeStep(
     episodes: List<AnimeEpisode>,
     episodeTranslationCountMap: Map<Int, Int> = emptyMap(),
-    lastPlayback: LastPlaybackInfo? = null,
+    // Dub-count badges make sense only on the merged episode list (before a dub is picked);
+    // once a dub is chosen the tile shows its quality instead.
+    showDubCount: Boolean = true,
     watchedEpisodes: Int? = null,
-    onQuickContinue: ((LastPlaybackInfo) -> Unit)? = null,
+    // «Продолжить с…»: последняя озвучка/серия; карточка показывается только на первом шаге.
+    resumeSuggestion: Pair<FlatTranslation, AnimeEpisode>? = null,
+    onResumeSelected: ((FlatTranslation, AnimeEpisode) -> Unit)? = null,
     onEpisodeSelected: (AnimeEpisode) -> Unit
 ) {
     var isSortAscending by remember { mutableStateOf(true) }
@@ -762,71 +1085,17 @@ private fun SelectEpisodeStep(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
-        // ... (Quick Continue block)
-        // Quick Continue watched history card if available
-        if (lastPlayback != null && onQuickContinue != null) {
-            item {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Text(
-                        text = "История просмотра",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    Card(
-                        onClick = { onQuickContinue(lastPlayback) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Серия ${lastPlayback.episodeNum} • ${lastPlayback.translationTitle}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                                Text(
-                                    text = lastPlayback.source,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                                )
-                            }
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                            )
-                        }
-                    }
-                }
+        // Карточка продолжения просмотра — самый верх первого шага (при «Сначала серии»).
+        if (resumeSuggestion != null && onResumeSelected != null) {
+            val (resumeTranslation, resumeEpisode) = resumeSuggestion
+            item(key = "resume-suggestion") {
+                ResumeWatchingCard(
+                    translation = resumeTranslation,
+                    episodeNumber = resumeEpisode.number,
+                    onClick = { onResumeSelected(resumeTranslation, resumeEpisode) }
+                )
             }
         }
-
         item {
             // Actions row (Sort options)
             Row(
@@ -919,7 +1188,7 @@ private fun SelectEpisodeStep(
                                 )
 
                                 val trCount = episodeTranslationCountMap[ep.number] ?: 0
-                                if (trCount > 1) {
+                                if (showDubCount && trCount > 1) {
                                     Surface(
                                         modifier = Modifier.padding(start = 8.dp),
                                         shape = RoundedCornerShape(6.dp),
@@ -932,6 +1201,23 @@ private fun SelectEpisodeStep(
                                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                                             fontWeight = FontWeight.Bold
                                         )
+                                    }
+                                } else if (!showDubCount) {
+                                    val badge = qualityBadgeLabel(ep.maxQuality)
+                                    if (badge != null) {
+                                        Surface(
+                                            modifier = Modifier.padding(start = 8.dp),
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                                        ) {
+                                            Text(
+                                                text = badge,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
                                 }
                                 if (isWatched) {

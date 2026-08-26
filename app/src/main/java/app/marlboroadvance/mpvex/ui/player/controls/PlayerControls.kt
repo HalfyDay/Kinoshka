@@ -326,8 +326,11 @@ fun PlayerControls(
         val rawMediaTitle by MPVLib.propString["media-title"].collectAsState()
         val mediaTitle by remember(rawMediaTitle, activity) {
           derivedStateOf {
-            rawMediaTitle?.takeIf { it.isNotBlank() }
-              ?: activity.getTitleForControls()
+            // Our own resolved name wins; mpv's raw media-title (often the stream URL for HLS)
+            // is only a fallback while nothing better exists.
+            activity.getTitleForControls().takeIf { it.isNotBlank() && it != "Unknown Video" }
+              ?: rawMediaTitle?.takeIf { it.isNotBlank() }
+              ?: ""
           }
         }
 
@@ -390,6 +393,59 @@ fun PlayerControls(
                 contentAlignment = Alignment.Center
             ) {
                 KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
+            }
+        }
+
+        // PENDING_MOVIE: background stream resolve failed — retry or fall back to the web player.
+        val pendingResolveError by viewModel.pendingResolveError.collectAsState()
+        val pendingWebFallbackUrl by viewModel.pendingWebFallbackUrl.collectAsState()
+        if (pendingResolveError != null) {
+            val activity = LocalActivity.current
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.65f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(horizontal = 40.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(44.dp)
+                    )
+                    Text(
+                        text = "Не удалось найти поток",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = pendingResolveError.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.7f),
+                        textAlign = TextAlign.Center
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        androidx.compose.material3.Button(onClick = { viewModel.retryPendingResolve() }) {
+                            Text("Повторить")
+                        }
+                        if (pendingWebFallbackUrl != null && activity != null) {
+                            androidx.compose.material3.OutlinedButton(onClick = {
+                                runCatching {
+                                    activity.startActivity(
+                                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(pendingWebFallbackUrl))
+                                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                            }) {
+                                Text("Веб-плеер", color = Color.White)
+                            }
+                        }
+                    }
+                }
             }
         }
 

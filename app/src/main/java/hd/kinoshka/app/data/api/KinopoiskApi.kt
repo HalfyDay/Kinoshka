@@ -4,6 +4,7 @@ import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImagesResponse
 import hd.kinoshka.app.data.model.FilmLinksResponse
 import hd.kinoshka.app.data.model.FilmSeasonsResponse
+import hd.kinoshka.app.data.model.FilmVideosResponse
 import hd.kinoshka.app.data.model.FilmsResponse
 import hd.kinoshka.app.data.model.FiltersResponse
 import retrofit2.http.GET
@@ -61,6 +62,10 @@ interface KinopoiskApi {
         @Query("type") type: String = "STILL",
         @Query("page") page: Int = 1
     ): FilmImagesResponse
+
+    @Headers("Content-Type: application/json")
+    @GET("api/v2.2/films/{id}/videos")
+    suspend fun videos(@Path("id") id: Int): FilmVideosResponse
 }
 
 

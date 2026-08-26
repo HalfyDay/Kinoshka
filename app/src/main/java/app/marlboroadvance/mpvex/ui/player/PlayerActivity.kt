@@ -68,9 +68,13 @@ import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
+import hd.kinoshka.app.data.model.MovieEpisodeRef
 import hd.kinoshka.app.data.model.MovieStreamResult
 import hd.kinoshka.app.data.model.NativePlaybackMode
+import hd.kinoshka.app.data.model.PendingMovieRequestStore
+import hd.kinoshka.app.data.playback.MovieNativeLauncher
 import hd.kinoshka.app.data.source.AnimeStreamResolver
+import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.MovieStreamResolver
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.update
@@ -270,11 +274,41 @@ class PlayerActivity :
   private var currentAnimeStream: AnimeMediaStream? = null
   private var movieSeriesContext: MovieSeriesPlaybackContext? = null
 
+  // PENDING_MOVIE launches stay "pending" in the intent forever; once the background resolve
+  // succeeds the activity effectively plays as QUALITY_ONLY_MOVIE or MOVIE_SERIES, and progress
+  // commits must follow the resolved mode rather than the launch marker.
+  private var effectiveNativePlaybackMode: NativePlaybackMode? = null
+
+  // Stream-loading overlay lifecycle: episode/dub switches resolve almost instantly for direct
+  // sources, so clearing the flag right after `loadfile` flashed the indicator for ~50ms while
+  // mpv still buffered for seconds. The overlay now stays up until MPV_EVENT_FILE_LOADED.
+  private var pendingStreamLoadIndicator = false
+  private var streamLoadIndicatorTimeoutJob: kotlinx.coroutines.Job? = null
+
   // Auto-quality watchdog: while the quality selector sits on "Auto", poll mpv's demuxer cache;
   // sustained stalls step the stream down the quality ladder (best-first) preserving position.
   private var qualityWatchdogJob: kotlinx.coroutines.Job? = null
   private var currentPlayingUrl: String? = null
   private var autoStallStrikes = 0
+
+  // QOM (QUALITY_ONLY_MOVIE) active-voiceover state: url/headers/ladder of THE DUB CURRENTLY
+  // PLAYING. The launch-time stream (currentAnimeStream) belongs to whichever voiceover won
+  // startup — reading its ladder on a quality switch used to reload the ORIGINAL dub and
+  // silently reset the user's voiceover choice.
+  private var qomActiveStream: AnimeMediaStream? = null
+
+  // Failed-loadfile recovery: mpv reports dead urls via MPV_EVENT_END_FILE(reason=error) while
+  // the loading overlay is up. The action re-does the load (fresh resolve); after the retry
+  // budget is spent the error card takes over instead of a silent black screen.
+  private var streamLoadRetryAction: (() -> Unit)? = null
+  private var streamLoadRetries = 0
+
+  /** Last tracked load, kept for the manual «Повторить» on the error card. */
+  private var lastStreamLoadRetry: (() -> Unit)? = null
+
+  // Real-playback library commit: only ≥5 minutes of viewing turns a title into "Смотрю".
+  private var playbackProgressJob: kotlinx.coroutines.Job? = null
+  private var watchingCommittedFor: String? = null
 
   /**
    * Thermal and performance monitoring
@@ -475,6 +509,8 @@ class PlayerActivity :
     setAnimeExtras(intent.extras)
     setMovieSeriesExtras(intent.extras)
     setQualityOnlyMovieExtras(intent.extras)
+    setPendingMovieExtras(intent.extras)
+    startPlaybackProgressLoop()
 
     playlistId = intent.getIntExtra("playlist_id", -1).takeIf { it != -1 }
     playlistIndex = intent.getIntExtra("playlist_index", 0)
@@ -536,7 +572,25 @@ class PlayerActivity :
     applyAnimeTransportOptions(intent.getBooleanExtra("anime_disable_http_reuse", false))
     setHttpHeadersFromExtras(intent.extras)
 
-    getPlayableUri(intent)?.let(player::playFile)
+    // Manual «Повторить» on the error card re-issues the last tracked stream load and grants
+    // a fresh auto-retry budget.
+    viewModel.onStreamLoadRetry = {
+      resetStreamLoadRetries()
+      lastStreamLoadRetry?.invoke()
+    }
+
+    getPlayableUri(intent)?.let { playableUri ->
+      when (currentNativePlaybackMode()) {
+        NativePlaybackMode.QUALITY_ONLY_MOVIE,
+        NativePlaybackMode.MOVIE_SERIES,
+        -> {
+          resetStreamLoadRetries()
+          beginTrackedStreamLoad(retry = { player.playFile(playableUri) })
+        }
+        else -> Unit
+      }
+      player.playFile(playableUri)
+    }
 
     // Set orientation immediately on launch (defaults to landscape for Video mode)
     setOrientation()
@@ -1271,11 +1325,9 @@ class PlayerActivity :
       // The anime path re-resolves streams on quality change — the URL watchdog is movie-only.
       qualityWatchdogJob?.cancel()
       viewModel.setAnimeData(episodes, translations, currentEp, currentTr, qualities, currentQ)
-      val shikimoriId = extras.getInt("anime_shikimori_id", 0)
-      if (shikimoriId > 0) {
-        val userStateStore = UserStateStore(this)
-        val profile = userStateStore.getProfile(shikimoriId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
-        viewModel.setWatchedEpisodesCount(profile?.watchedEpisodes ?: 0)
+      val userStateStore = UserStateStore(this)
+      libraryProfileKey()?.let { key ->
+        viewModel.setWatchedEpisodesCount(userStateStore.getProfile(key)?.watchedEpisodes ?: 0)
       }
 
       viewModel.onAnimeEpisodeSelected = episodeSelected@{ epNum ->
@@ -1293,15 +1345,16 @@ class PlayerActivity :
         val userStateStore = UserStateStore(this)
         val prefQuality = userStateStore.getPreferredQuality()
 
-        viewModel.setLoadingStream(true)
+        beginStreamLoadIndicator()
         viewModel.setAnimeData(episodes, translations, epNum, trId, viewModel.animeQualities.value, viewModel.currentAnimeQualityId.value)
 
         lifecycleScope.launch(Dispatchers.IO) {
           val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
           withContext(Dispatchers.Main) {
-            viewModel.setLoadingStream(false)
             if (stream != null) {
               applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
+            } else {
+              finishStreamLoadIndicator()
             }
           }
         }
@@ -1315,20 +1368,22 @@ class PlayerActivity :
         val shikimoriId = extras.getInt("anime_shikimori_id", 0)
         val animeTitle = extras.getString("anime_title", "")
         val selectedTranslation = viewModel.animeTranslations.value.firstOrNull { it.translationId == trId }
+        selectedTranslation?.let { recordPlaybackUsage(it.source, it.title) }
         val srcType = selectedTranslation?.source ?: currentAnimeSourceType
         val epNum = viewModel.currentAnimeEpisodeNumber.value ?: currentEp ?: 1
         val userStateStore = UserStateStore(this)
         val prefQuality = userStateStore.getPreferredQuality()
 
-        viewModel.setLoadingStream(true)
+        beginStreamLoadIndicator()
         viewModel.setAnimeData(episodes, translations, epNum, trId, viewModel.animeQualities.value, viewModel.currentAnimeQualityId.value)
 
         lifecycleScope.launch(Dispatchers.IO) {
           val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
           withContext(Dispatchers.Main) {
-            viewModel.setLoadingStream(false)
             if (stream != null) {
               applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
+            } else {
+              finishStreamLoadIndicator()
             }
           }
         }
@@ -1340,7 +1395,7 @@ class PlayerActivity :
           return@qualitySelected
         }
         pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
-        viewModel.setLoadingStream(true)
+        beginStreamLoadIndicator()
         UserStateStore(this).setPreferredQuality(qId)
 
         val animeTitle = extras.getString("anime_title", "")
@@ -1356,16 +1411,18 @@ class PlayerActivity :
             withContext(Dispatchers.Main) {
               if (stream != null) {
                 applyAnimeStream(stream, srcType, "Auto", animeTitle, epNum, trId, episodes, translations)
+              } else {
+                finishStreamLoadIndicator()
               }
-              viewModel.setLoadingStream(false)
             }
           }
         } else {
           val stream = currentAnimeStream
           if (stream != null && stream.qualities.containsKey(qId)) {
             applyAnimeStream(stream, currentAnimeSourceType, qId, animeTitle, epNum, trId, episodes, translations)
+          } else {
+            finishStreamLoadIndicator()
           }
-          viewModel.setLoadingStream(false)
         }
       }
     }
@@ -1374,105 +1431,358 @@ class PlayerActivity :
   private fun setQualityOnlyMovieExtras(extras: Bundle?) {
     if (extras?.getString("playback_mode") != NativePlaybackMode.QUALITY_ONLY_MOVIE.name) return
     val stream = currentAnimeStream ?: return
-    if (stream.qualities.isEmpty()) return
     val currentQuality = extras.getString("anime_current_quality") ?: "Auto"
-
     // Voiceover options ride in as FlatTranslations whose single episode link is either a ready
     // CDN url (turbo) or a raw Kodik player link that needs lazy HLS extraction on switch.
     val translations = extras.getString("anime_translations")
       ?.takeIf { it.isNotBlank() }
       ?.let { runCatching { Json.decodeFromString<List<FlatTranslation>>(it) }.getOrDefault(emptyList()) }
       .orEmpty()
+    // Use the episode/translation the user picked on the source page — not just the first one.
+    val selectedTranslationId = extras.getString("anime_current_translation_id")
+      ?: translations.firstOrNull()?.translationId
+    Log.i(TAG, "QOM extras: mode=${extras.getString("playback_mode")}, translations=${translations.size}, qualities=${stream.qualities.keys}")
+    applyQualityOnlyMovieSetup(stream, translations, selectedTranslationId, currentQuality)
+  }
 
+  /**
+   * Voiceover-only movie playback: dropdown wiring plus stream application. Shared by the
+   * intent-extras path ([setQualityOnlyMovieExtras]) and the PENDING_MOVIE background resolve,
+   * so both launch paths stay behaviourally identical.
+   */
+  private fun applyQualityOnlyMovieSetup(
+    stream: AnimeMediaStream,
+    translations: List<FlatTranslation>,
+    selectedTranslationId: String?,
+    requestedQuality: String,
+  ) {
+    val currentQuality = requestedQuality.ifBlank { "Auto" }
+    // Launch-time usage: the voiceover the movie starts under counts toward the memory.
+    translations.firstOrNull { it.translationId == selectedTranslationId }?.let {
+      recordPlaybackUsage(it.source, it.title)
+    }
+    // The launch stream IS the first active voiceover: quality switches must read ITS ladder,
+    // not a stale one from a previous session of this activity instance.
+    qomActiveStream = stream
     viewModel.setAnimeSeasons(emptyList(), null)
     viewModel.onAnimeSeasonSelected = null
-    viewModel.setAnimeData(emptyList(), translations, null, translations.firstOrNull()?.translationId, stream.qualities, currentQuality)
+    viewModel.setAnimeData(emptyList(), translations, null, selectedTranslationId, stream.qualities, currentQuality)
     viewModel.onAnimeEpisodeSelected = null
     // The activity loaded the intent URL (MpvExPlayerScreen already resolved Auto to the
     // resolver's best concrete variant) — remember it so the watchdog knows the current rung.
     currentPlayingUrl = if (currentQuality == "Auto") stream.url
       else stream.qualities[currentQuality] ?: stream.url
+    updateAutoRungHint(stream.qualities, currentPlayingUrl)
     startAutoQualityWatchdog()
     viewModel.onAnimeTranslationSelected = translationSelected@{ trId ->
       val track = translations.firstOrNull { it.translationId == trId } ?: return@translationSelected
+      if (trId == viewModel.currentAnimeTranslationId.value && qomActiveStream != null) {
+        Log.d(TAG, "Ignoring duplicate QOM translation selection: $trId")
+        return@translationSelected
+      }
+      recordPlaybackUsage(track.source, track.title)
+      // MovieNativeLauncher resolved every picker row before this activity was opened. Use that
+      // prepared stream verbatim: switching a dub must never start a new Kodik/turbo resolve.
+      val prepared = intent.getIntExtra("movie_kinopoisk_id", 0)
+        .takeIf { it > 0 }
+        ?.let { hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(it)[trId] }
+      if (prepared != null) {
+        loadPreparedQomVoiceover(track, prepared, translations)
+        return@translationSelected
+      }
       val link = track.episodes.firstOrNull()?.link.orEmpty()
       if (link.isBlank()) return@translationSelected
-      viewModel.setLoadingStream(true)
-      lifecycleScope.launch(Dispatchers.IO) {
-        val resolvedUrl = resolveVoiceoverLink(link)
-        withContext(Dispatchers.Main) {
-          viewModel.setLoadingStream(false)
-          if (resolvedUrl != null) {
-            fileName = "${intent.getStringExtra("title")?.substringBefore(" •").orEmpty().ifBlank { "Фильм" }} • ${track.title}"
-            mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(resolvedUrl), fileName)
+      resetStreamLoadRetries()
+      loadQomVoiceover(track, link, translations)
+    }
+    viewModel.onAnimeQualitySelected = qualitySelected@{ quality ->
+      // Duplicate guard lives ONLY in the tap-facing wrapper: the END_FILE auto-retry calls
+      // [performQomQualitySwitch] directly — the first attempt already updated
+      // currentAnimeQualityId, so a guarded re-issue used to be a silent no-op and the loading
+      // overlay just spun into a black screen ("смена качества зависает").
+      if (quality == viewModel.currentAnimeQualityId.value && currentPlayingUrl != null) return@qualitySelected
+      performQomQualitySwitch(quality)
+    }
+  }
+
+  /** Body of a QOM quality switch; safe to re-run verbatim from the failed-load retry path. */
+  private fun performQomQualitySwitch(quality: String) {
+    val activeStream = qomActiveStream ?: currentAnimeStream ?: return
+    pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
+    UserStateStore(this).setPreferredQuality(quality)
+    // "Auto" must mean the resolver's default (activeStream.url): a literal Auto entry in a
+    // turbo qualities map is an adaptive/master URL mpv often cannot open.
+    val effectiveQuality = quality.takeIf { it != "Auto" && activeStream.qualities.containsKey(it) } ?: "Auto"
+    val url = if (effectiveQuality == "Auto") activeStream.url
+      else activeStream.qualities[effectiveQuality] ?: activeStream.url
+    applyHttpHeaders(activeStream.headers)
+    viewModel.setAnimeData(emptyList(), viewModel.animeTranslations.value, null, viewModel.currentAnimeTranslationId.value, activeStream.qualities, effectiveQuality)
+    updateAutoRungHint(activeStream.qualities, url)
+    currentPlayingUrl = url
+    startAutoQualityWatchdog()
+    resetStreamLoadRetries()
+    beginTrackedStreamLoad(retry = {
+      // Re-issue the same switch bypassing the duplicate guard (see wrapper above).
+      performQomQualitySwitch(quality)
+    })
+    MPVLib.command("loadfile", url, "replace")
+  }
+
+  /**
+   * Resolves and plays the picked voiceover of a QUALITY_ONLY_MOVIE. Centralised so the initial
+   * switch, user taps and END_FILE-error auto-retries share one code path: headers are re-applied
+   * per provider (turbo↔kodik need different Referer/UA), the ACTIVE stream state is swapped to
+   * the new dub (so later quality switches keep the chosen voiceover), and a failed loadfile is
+   * retried once with a fresh resolve before the error card shows.
+   */
+  private fun loadQomVoiceover(track: FlatTranslation, rawLink: String, translations: List<FlatTranslation>) {
+    beginTrackedStreamLoad(retry = { loadQomVoiceover(track, rawLink, translations) })
+    lifecycleScope.launch(Dispatchers.IO) {
+      val resolved = resolveVoiceoverLink(rawLink)
+      withContext(Dispatchers.Main) {
+        val url = resolved
+        if (url.isNullOrBlank()) {
+          streamLoadRetryAction = null
+          finishStreamLoadIndicator()
+          Toast.makeText(this@PlayerActivity, "Не удалось открыть выбранную озвучку", Toast.LENGTH_SHORT).show()
+          return@withContext
+        }
+        val ladder = voiceoverLadderFor(url)
+        fileName = intent.getStringExtra("title")?.substringBefore(" •")?.ifBlank { "Фильм" } ?: "Фильм"
+        mediaIdentifier = stableKinoshkaIdentifier()
+          ?: getMediaIdentifierFromUri(Uri.parse(url), fileName)
+        MPVLib.setPropertyString("media-title", fileName)
+        val headers = voiceoverHeadersFor(track)
+        applyHttpHeaders(headers)
+        qomActiveStream = AnimeMediaStream(url = url, qualities = ladder, headers = headers)
+        currentPlayingUrl = url
+        updateAutoRungHint(ladder, url)
+        viewModel.setAnimeData(
+          emptyList(),
+          translations,
+          null,
+          track.translationId,
+          ladder,
+          // Empty ladder (catalog miss) must read Auto: keeping a stale concrete label would
+          // both mislead the picker and silently disable the stall watchdog.
+          viewModel.currentAnimeQualityId.value.takeIf { ladder.isNotEmpty() && it != "Auto" && ladder.containsKey(it) } ?: "Auto",
+        )
+        startAutoQualityWatchdog()
+        MPVLib.command("loadfile", url, "replace")
+      }
+    }
+  }
+
+  /** Quality ladder of an already-resolved voiceover url from the session turbo catalog. */
+  private fun voiceoverLadderFor(resolvedUrl: String): Map<String, String> =
+    DdbbStreamResolver.cachedLadderFor(resolvedUrl).orEmpty()
+
+  /**
+   * Default dub of a movie: the one from the user's playback memory (most recently used wins),
+   * else the merged list's head — deterministic instead of "whatever won this race".
+   */
+  private fun preferredTranslationId(translations: List<FlatTranslation>): String? {
+    if (translations.isEmpty()) return null
+    val dubs = UserStateStore(this).getPlaybackUsage().dubs
+    val best = translations.maxWithOrNull(
+      compareBy<FlatTranslation> { (dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L) > 0L }
+        .thenByDescending { dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L }
+        .thenByDescending { dubs[it.title.trim().lowercase()]?.count ?: 0 }
+    )
+    return best?.translationId
+  }
+
+  /**
+   * Headers required by the voiceover's provider: raw Kodik links need kodik playback headers,
+   * direct turbo/ddbb urls need their embed Referer (the launch stream's headers only match the
+   * provider that won startup — cross-provider switches used to 403 silently).
+   */
+  private fun voiceoverHeadersFor(track: FlatTranslation): Map<String, String> {
+    val link = track.episodes.firstOrNull()?.link.orEmpty()
+    val looksKodik = listOf("kodik", "vsh.my", "kdkonl", "aniqit", "kodi.my", "/seria/", "/video/")
+      .any { link.contains(it, ignoreCase = true) }
+    if (looksKodik) return AnimeStreamResolver.kodikPlaybackHeaders()
+    intent.getIntExtra("movie_kinopoisk_id", 0)
+      .takeIf { it > 0 }
+      ?.let { kpId -> DdbbStreamResolver.directHeaders(kpId).takeIf { it.isNotEmpty() } }
+      ?.let { return it }
+    return currentAnimeStream?.headers ?: AnimeStreamResolver.kodikPlaybackHeaders()
+  }
+
+  /**
+   * PENDING_MOVIE: the player opened before any stream existed. Pull the resolve request from
+   * the process-local store, run the Kodik↔ddbb race under the loading overlay, then re-apply
+   * this activity as QUALITY_ONLY_MOVIE or MOVIE_SERIES. Failure shows a retryable error card.
+   */
+  private fun setPendingMovieExtras(extras: Bundle?) {
+    if (extras == null || extras.getString("playback_mode") != NativePlaybackMode.PENDING_MOVIE.name) return
+    val kpId = extras.getInt("movie_kinopoisk_id", 0)
+    val launch = PendingMovieRequestStore.get(kpId)
+    if (launch == null) {
+      // Store entry lost (process death or stale launch): nothing to resolve in-process.
+      Log.w(TAG, "PENDING_MOVIE without a stored request for kpId=$kpId")
+      viewModel.setPendingResolveError("Не удалось получить данные фильма для поиска потока")
+      return
+    }
+    PendingMovieRequestStore.remove(kpId)
+    viewModel.setPendingWebFallbackUrl(launch.webFallbackUrl)
+    viewModel.onPendingRetry = { retryPendingResolve(launch) }
+    beginStreamLoadIndicator()
+    resolvePendingLaunch(launch)
+  }
+
+  private fun retryPendingResolve(launch: PendingMovieRequestStore.PendingMovieLaunch, isRetry: Boolean = true) {
+    beginStreamLoadIndicator()
+    resolvePendingLaunch(launch, isRetry)
+  }
+
+  private fun resolvePendingLaunch(launch: PendingMovieRequestStore.PendingMovieLaunch, isRetry: Boolean = false) {
+    // Profile decides which S/E to resume; read once per attempt on the main thread (prefs IO).
+    val profile = libraryProfileKey()?.let { key -> UserStateStore(this).getProfile(key) }
+    lifecycleScope.launch(Dispatchers.IO) {
+      // An mpv-reported dead stream must not be re-served from the ddbb 3-minute memo: bust it
+      // so the retry actually re-extracts fresh CDN urls instead of failing identically.
+      if (isRetry) launch.request.kinopoiskId?.takeIf { it > 0 }?.let { DdbbStreamResolver.evictResolveCache(it) }
+      val payload = MovieNativeLauncher.resolve(launch.request, profile, UserStateStore(this@PlayerActivity))
+      withContext(Dispatchers.Main) {
+        if (isFinishing || isDestroyed) return@withContext
+        when (payload) {
+          is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
+            // The QOM quality-switch closure reads the field, not the parameter.
+            currentAnimeStream = payload.stream
+            effectiveNativePlaybackMode = NativePlaybackMode.QUALITY_ONLY_MOVIE
+            applyQualityOnlyMovieSetup(
+              payload.stream,
+              payload.translations,
+              preferredTranslationId(payload.translations),
+              UserStateStore(this@PlayerActivity).getPreferredQuality()
+            )
+            fileName = launch.displayTitle
+            applyHttpHeaders(payload.stream.headers)
+            val resolvedUrl = currentPlayingUrl
+            if (resolvedUrl.isNullOrBlank()) return@withContext
+            mediaIdentifier = stableKinoshkaIdentifier()
+              ?: getMediaIdentifierFromUri(Uri.parse(resolvedUrl), fileName)
             MPVLib.setPropertyString("media-title", fileName)
-            currentPlayingUrl = resolvedUrl
+            // Tracked: a dead CDN url auto re-resolves instead of ending in a black screen.
+            beginTrackedStreamLoad(retry = { retryPendingResolve(launch, isRetry = true) })
             MPVLib.command("loadfile", resolvedUrl, "replace")
-          } else {
-            Toast.makeText(this@PlayerActivity, "Не удалось открыть выбранную озвучку", Toast.LENGTH_SHORT).show()
+          }
+          is MovieNativeLauncher.NativeLaunchPayload.MovieSeries -> {
+            effectiveNativePlaybackMode = NativePlaybackMode.MOVIE_SERIES
+            setupMovieSeriesControls(payload.context, UserStateStore(this@PlayerActivity).getPreferredQuality())
+            UserStateStore(this@PlayerActivity).updateSeriesProgress(
+              payload.context.kinopoiskId,
+              payload.context.currentEpisode.seasonNumber,
+              payload.context.currentEpisode.episodeNumber
+            )
+            // applyMovieSeriesStream issues loadfile itself; the overlay clears on FILE_LOADED.
+            beginTrackedStreamLoad(retry = {
+              launch.request.kinopoiskId?.takeIf { it > 0 }?.let { DdbbStreamResolver.evictResolveCache(it) }
+              applyMovieSeriesStream(payload.stream, payload.context, UserStateStore(this@PlayerActivity).getPreferredQuality())
+            })
+            applyMovieSeriesStream(payload.stream, payload.context, UserStateStore(this@PlayerActivity).getPreferredQuality())
+          }
+          is MovieNativeLauncher.NativeLaunchPayload.Failed -> {
+            finishStreamLoadIndicator()
+            Log.w(TAG, "PENDING_MOVIE resolve failed: ${payload.reason}")
+            viewModel.setPendingResolveError(payload.reason.userMessage())
           }
         }
       }
     }
-    viewModel.onAnimeQualitySelected = qualitySelected@{ quality ->
-      val activeStream = currentAnimeStream ?: return@qualitySelected
-      if (quality == viewModel.currentAnimeQualityId.value) return@qualitySelected
-      pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
-      UserStateStore(this).setPreferredQuality(quality)
-      // "Auto" must mean the resolver's default (activeStream.url): a literal Auto entry in a
-      // turbo qualities map is an adaptive/master URL mpv often cannot open.
-      val effectiveQuality = quality.takeIf { it != "Auto" && activeStream.qualities.containsKey(it) } ?: "Auto"
-      val url = if (effectiveQuality == "Auto") activeStream.url
-        else activeStream.qualities[effectiveQuality] ?: activeStream.url
-      applyHttpHeaders(activeStream.headers)
-      viewModel.setAnimeData(emptyList(), translations, null, viewModel.currentAnimeTranslationId.value, activeStream.qualities, effectiveQuality)
-      currentPlayingUrl = url
-      startAutoQualityWatchdog()
-      MPVLib.command("loadfile", url, "replace")
-    }
+  }
+
+  private fun loadPreparedQomVoiceover(
+    track: FlatTranslation,
+    stream: AnimeMediaStream,
+    translations: List<FlatTranslation>,
+  ) {
+    val quality = UserStateStore(this).getPreferredQuality()
+      .takeIf { it != "Auto" && stream.qualities.containsKey(it) } ?: "Auto"
+    qomActiveStream = stream
+    currentPlayingUrl = if (quality == "Auto") stream.url else stream.qualities[quality] ?: stream.url
+    applyHttpHeaders(stream.headers)
+    viewModel.setAnimeData(emptyList(), translations, null, track.translationId, stream.qualities, quality)
+    updateAutoRungHint(stream.qualities, currentPlayingUrl)
+    startAutoQualityWatchdog()
+    resetStreamLoadRetries()
+    beginTrackedStreamLoad(retry = { loadPreparedQomVoiceover(track, stream, translations) })
+    MPVLib.command("loadfile", currentPlayingUrl!!, "replace")
   }
 
   /**
    * Voiceover links come in two flavours: ready CDN urls (turbo/ddbb) play directly, raw Kodik
-   * player links go through the HLS extractor with the same ladder the anime path uses.
+   * player pages go through the HLS extractor with the same ladder the anime path uses.
+   *
+   * Bounded by a hard timeout and returning NULL on extraction failure: feeding mpv the raw
+   * player page used to fail the loadfile silently (END-FILE error was never handled), leaving
+   * the user with a dead spinner that looked like an endless hang.
    */
-  private suspend fun resolveVoiceoverLink(link: String): String? {
-    val looksKodik = listOf("kodik", "vsh.my", "kdkonl", "aniqit", "kodi.my", "/seria/", "/video/")
-      .any { link.contains(it, ignoreCase = true) }
-    if (!looksKodik) return link
-    val qualities = runCatching {
-      AnimeStreamResolver.resolveKodikHls(AnimeStreamResolver.absoluteKodikUrl(link))
-    }.getOrDefault(emptyMap())
-    val preference = listOf("720p", "1080p", "480p", "360p", "2160p", "240p")
-    return preference.firstOrNull { qualities.containsKey(it) }
-      ?.let { qualities[it] }
-      ?: qualities.values.firstOrNull()
-      ?: link
+  private suspend fun resolveVoiceoverLink(link: String): String? =
+    kotlinx.coroutines.withTimeoutOrNull(VOICEOVER_RESOLVE_TIMEOUT_MS) {
+      // Direct media files play as-is; only Kodik player pages need HLS extraction.
+      if (link.contains(".mp4") || link.contains(".m3u8") || link.contains(".webm")) return@withTimeoutOrNull link
+      val looksKodik = listOf("kodik", "vsh.my", "kdkonl", "aniqit", "kodi.my", "/seria/", "/video/").any { link.contains(it, ignoreCase = true) }
+      if (!looksKodik) return@withTimeoutOrNull link
+      val qualities = runCatching {
+        AnimeStreamResolver.resolveKodikHls(AnimeStreamResolver.absoluteKodikUrl(link))
+      }.getOrDefault(emptyMap())
+      val preference = listOf("720p", "1080p", "480p", "360p", "2160p", "240p")
+      preference.firstOrNull { qualities.containsKey(it) }?.let { qualities[it] }
+        ?: qualities.values.firstOrNull()
+        // Extraction produced nothing playable — a raw player-page link is NOT a fallback.
+        ?: null
+    }
+  private fun setMovieSeriesExtras(extras: Bundle?) {
+    extras ?: return
+    // Preferred: in-process store (the full context is too large for an intent transaction);
+    // fallback: the legacy JSON extra for small contexts.
+    val context: MovieSeriesPlaybackContext = extras.getInt("movie_series_kp_id", 0)
+      .takeIf { it > 0 }
+      ?.let { hd.kinoshka.app.data.model.MovieSeriesContextStore.get(it) }
+      ?: run {
+        val contextJson = extras.getString("movie_series_context") ?: return
+        runCatching { Json.decodeFromString<MovieSeriesPlaybackContext>(contextJson) }
+          .onFailure { Log.e(TAG, "Failed to decode movie series context", it) }
+          .getOrNull() ?: return
+      }
+    movieSeriesContext = context
+    setupMovieSeriesControls(context, extras.getString("anime_current_quality") ?: "Auto")
   }
 
-  private fun setMovieSeriesExtras(extras: Bundle?) {
-    val contextJson = extras?.getString("movie_series_context") ?: return
-    val context = runCatching { Json.decodeFromString<MovieSeriesPlaybackContext>(contextJson) }
-      .onFailure { Log.e(TAG, "Failed to decode movie series context", it) }
-      .getOrNull() ?: return
+  /**
+   * Seasons/episodes/dubs/quality dropdown wiring for MOVIE_SERIES playback. Shared by the
+   * intent-extras path ([setMovieSeriesExtras]) and the PENDING_MOVIE background resolve —
+   * without it the pending path renders populated dropdowns whose taps invoke null callbacks.
+   */
+  private fun setupMovieSeriesControls(
+    context: MovieSeriesPlaybackContext,
+    currentQuality: String,
+  ) {
     movieSeriesContext = context
 
     val uiEpisodes = context.episodes.map { episode ->
       AnimeEpisode(
         number = episode.playerEpisodeKey,
-        title = "Сезон ${episode.seasonNumber}, серия ${episode.episodeNumber}",
+        // Row layout: title line is "Сезон N, серия N" (built in the dropdown), the t1 name
+        // rides in `title` and renders as the subtitle line.
+        title = episode.title?.takeIf { it.isNotBlank() },
         link = episode.playerUrl,
         season = episode.seasonNumber,
       )
     }
-    val currentQuality = extras.getString("anime_current_quality") ?: "Auto"
-    // Voiceover options from the Kodik candidates — the dropdown re-resolves the CURRENT episode
-    // under the chosen dub instead of reloading anything.
-    val translations = extras.getString("anime_translations")
-      ?.takeIf { it.isNotBlank() }
-      ?.let { runCatching { Json.decodeFromString<List<FlatTranslation>>(it) }.getOrDefault(emptyList()) }
-      .orEmpty()
+    // Only dubs that actually carry the CURRENT episode: the catalog lists every dub of the
+    // whole series, but each dub covers its own episode subset — offering the rest produced
+    // "unavailable voiceover" picks.
+    val translations = seriesTranslationsFor(context, context.currentEpisode)
     val currentTranslationId = translations.firstOrNull()?.translationId
+    // Launch-time usage: the dub the title starts under counts toward the preference memory.
+    currentTranslationId?.let { trId ->
+      context.candidates.firstOrNull { it.translationId == trId }?.let { dub ->
+        recordPlaybackUsage(hd.kinoshka.app.data.model.AnimeSourceType.KODIK, dub.translationTitle ?: trId)
+      }
+    }
 
     viewModel.setAnimeData(
       uiEpisodes,
@@ -1499,32 +1809,75 @@ class PlayerActivity :
       val selected = activeContext.episodes.firstOrNull { it.playerEpisodeKey == episodeKey } ?: return@episodeSelected
       // Commit the outgoing episode's watched state while its identifier still points at it.
       flushOutgoingEpisodeProgress()
-      viewModel.setLoadingStream(true)
+      beginStreamLoadIndicator()
       pendingSeekPosition = null
       lifecycleScope.launch(Dispatchers.IO) {
-        val result = MovieStreamResolver.resolveEpisode(
-          activeContext.request, selected, activeContext.candidates,
-          translationId = viewModel.currentAnimeTranslationId.value,
-        )
-        withContext(Dispatchers.Main) {
-          if (result is MovieStreamResult.Success) {
-            val updatedContext = activeContext.copy(currentEpisode = selected)
-            movieSeriesContext = updatedContext
-            currentAnimeStream = result.stream
-            viewModel.setAnimeSeasons(
-              updatedContext.episodes.map { it.seasonNumber }.distinct().sorted(),
-              selected.seasonNumber,
-            )
-            UserStateStore(this@PlayerActivity).updateSeriesProgress(
-              updatedContext.kinopoiskId,
-              selected.seasonNumber,
-              selected.episodeNumber,
-            )
-            applyMovieSeriesStream(result.stream, updatedContext, UserStateStore(this@PlayerActivity).getPreferredQuality())
-          } else {
-            Toast.makeText(this@PlayerActivity, "Не удалось открыть выбранную серию", Toast.LENGTH_SHORT).show()
+        if (activeContext.isDirectSource) {
+          // ddbb/turbo catalog: every candidate carries ready CDN urls — no HLS extraction.
+          val requestedTrId = viewModel.currentAnimeTranslationId.value
+          val picked = pickDirectSeriesStream(activeContext, selected, requestedTrId, allowFallback = true)
+          withContext(Dispatchers.Main) {
+            if (picked != null) {
+              val (stream, trId) = picked
+              val updatedContext = activeContext.copy(
+                currentEpisode = selected.copy(playerUrl = stream.url)
+              )
+              movieSeriesContext = updatedContext
+              currentAnimeStream = stream
+              viewModel.setAnimeSeasons(
+                updatedContext.episodes.map { it.seasonNumber }.distinct().sorted(),
+                selected.seasonNumber,
+              )
+              UserStateStore(this@PlayerActivity).updateSeriesProgress(
+                updatedContext.kinopoiskId,
+                selected.seasonNumber,
+                selected.episodeNumber,
+              )
+              // Overlay clears on MPV_EVENT_FILE_LOADED, once the new file really buffers.
+              applyMovieSeriesStream(stream, updatedContext, UserStateStore(this@PlayerActivity).getPreferredQuality(), trId)
+              if (trId != requestedTrId) {
+                // The current dub doesn't cover this episode and another one was substituted —
+                // say so, otherwise the user hears a "wrong" voiceover with no explanation.
+                val fromName = activeContext.candidates
+                  .firstOrNull { it.translationId == requestedTrId }?.translationTitle ?: requestedTrId
+                val toName = activeContext.candidates
+                  .firstOrNull { it.translationId == trId }?.translationTitle ?: trId
+                Toast.makeText(
+                  this@PlayerActivity,
+                  "Озвучки «$fromName» нет для этой серии — включена «$toName»",
+                  Toast.LENGTH_LONG
+                ).show()
+              }
+            } else {
+              finishStreamLoadIndicator()
+              Toast.makeText(this@PlayerActivity, "Не удалось открыть выбранную серию", Toast.LENGTH_SHORT).show()
+            }
           }
-          viewModel.setLoadingStream(false)
+        } else {
+          val result = MovieStreamResolver.resolveEpisode(
+            activeContext.request, selected, activeContext.candidates,
+            translationId = viewModel.currentAnimeTranslationId.value,
+          )
+          withContext(Dispatchers.Main) {
+            if (result is MovieStreamResult.Success) {
+              val updatedContext = activeContext.copy(currentEpisode = selected)
+              movieSeriesContext = updatedContext
+              currentAnimeStream = result.stream
+              viewModel.setAnimeSeasons(
+                updatedContext.episodes.map { it.seasonNumber }.distinct().sorted(),
+                selected.seasonNumber,
+              )
+              UserStateStore(this@PlayerActivity).updateSeriesProgress(
+                updatedContext.kinopoiskId,
+                selected.seasonNumber,
+                selected.episodeNumber,
+              )
+              applyMovieSeriesStream(result.stream, updatedContext, UserStateStore(this@PlayerActivity).getPreferredQuality())
+            } else {
+              finishStreamLoadIndicator()
+              Toast.makeText(this@PlayerActivity, "Не удалось открыть выбранную серию", Toast.LENGTH_SHORT).show()
+            }
+          }
         }
       }
     }
@@ -1532,24 +1885,43 @@ class PlayerActivity :
     viewModel.onAnimeTranslationSelected = translationSelected@{ trId ->
       val activeContext = movieSeriesContext ?: return@translationSelected
       if (trId == viewModel.currentAnimeTranslationId.value) return@translationSelected
+      activeContext.candidates.firstOrNull { it.translationId == trId }?.let { dub ->
+        recordPlaybackUsage(hd.kinoshka.app.data.model.AnimeSourceType.KODIK, dub.translationTitle ?: trId)
+      }
       // Commit progress of the outgoing stream, then re-resolve the SAME episode under the new dub.
       flushOutgoingEpisodeProgress()
-      viewModel.setLoadingStream(true)
+      beginStreamLoadIndicator()
       pendingSeekPosition = null
       lifecycleScope.launch(Dispatchers.IO) {
-        val result = MovieStreamResolver.resolveEpisode(
-          activeContext.request, activeContext.currentEpisode, activeContext.candidates,
-          translationId = trId,
-        )
-        withContext(Dispatchers.Main) {
-          if (result is MovieStreamResult.Success) {
-            movieSeriesContext = activeContext
-            currentAnimeStream = result.stream
-            applyMovieSeriesStream(result.stream, activeContext, UserStateStore(this@PlayerActivity).getPreferredQuality(), trId)
-          } else {
-            Toast.makeText(this@PlayerActivity, "Озвучка недоступна для этой серии", Toast.LENGTH_SHORT).show()
+        if (activeContext.isDirectSource) {
+          // Strict: the user tapped a SPECIFIC dub — silently playing another one's audio is
+          // exactly the "several dubs sound the same" bug. Absent episode → toast, keep playing.
+          val picked = pickDirectSeriesStream(activeContext, activeContext.currentEpisode, trId, allowFallback = false)
+          withContext(Dispatchers.Main) {
+            if (picked != null) {
+              val (stream, _) = picked
+              currentAnimeStream = stream
+              applyMovieSeriesStream(stream, activeContext, UserStateStore(this@PlayerActivity).getPreferredQuality(), trId)
+            } else {
+              finishStreamLoadIndicator()
+              Toast.makeText(this@PlayerActivity, "Озвучка недоступна для этой серии", Toast.LENGTH_SHORT).show()
+            }
           }
-          viewModel.setLoadingStream(false)
+        } else {
+          val result = MovieStreamResolver.resolveEpisode(
+            activeContext.request, activeContext.currentEpisode, activeContext.candidates,
+            translationId = trId,
+          )
+          withContext(Dispatchers.Main) {
+            if (result is MovieStreamResult.Success) {
+              movieSeriesContext = activeContext
+              currentAnimeStream = result.stream
+              applyMovieSeriesStream(result.stream, activeContext, UserStateStore(this@PlayerActivity).getPreferredQuality(), trId)
+            } else {
+              finishStreamLoadIndicator()
+              Toast.makeText(this@PlayerActivity, "Озвучка недоступна для этой серии", Toast.LENGTH_SHORT).show()
+            }
+          }
         }
       }
     }
@@ -1560,9 +1932,130 @@ class PlayerActivity :
       if (quality == viewModel.currentAnimeQualityId.value) return@qualitySelected
       pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
       UserStateStore(this).setPreferredQuality(quality)
+      // Tracked so a dead variant url auto-retries; the retry re-runs applyMovieSeriesStream
+      // directly — it has no duplicate guard, unlike this callback (the first attempt already
+      // updated currentAnimeQualityId, and a guarded re-issue used to no-op into a black screen).
+      beginTrackedStreamLoad(retry = { applyMovieSeriesStream(stream, activeContext, quality) })
       applyMovieSeriesStream(stream, activeContext, quality)
     }
   }
+
+  /**
+   * Resolves a direct-source (ddbb/turbo) episode under [translationId]: picks that dub's own
+   * CDN url from the context candidates. The concrete quality ladder rides along from the
+   * resolver's session catalog when available.
+   *
+   * [allowFallback]: on an EPISODE switch a dub may simply not cover the new season — falling
+   * back to the nearest dub that does keeps binge-watching going (the caller toasts the swap).
+   * On an explicit DUB switch a fallback would play a DIFFERENT voiceover than the one the user
+   * tapped — the "several dubs sound the same" bug — so it is disabled there.
+   */
+  private fun pickDirectSeriesStream(
+    context: MovieSeriesPlaybackContext,
+    episode: MovieEpisodeRef,
+    translationId: String?,
+    allowFallback: Boolean,
+  ): Pair<AnimeMediaStream, String>? {
+    val dubs = context.candidates.filter { !it.translationId.isNullOrBlank() }
+    if (dubs.isEmpty()) return null
+    val ordered = if (allowFallback) {
+      dubs.filter { it.translationId == translationId } + dubs.filter { it.translationId != translationId }
+    } else {
+      dubs.filter { it.translationId == translationId }
+    }
+    for (dub in ordered) {
+      val ref = dub.episodes.firstOrNull {
+        it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber
+      } ?: continue
+      val url = ref.playerUrl
+      if (url.isBlank()) continue
+      val qualities = LinkedHashMap(DdbbStreamResolver.directQualities(context.kinopoiskId, url).orEmpty())
+      val headers = context.directHeaders.ifEmpty { DdbbStreamResolver.directHeaders(context.kinopoiskId) }
+      val stream = AnimeMediaStream(
+        url = url,
+        qualities = qualities,
+        headers = headers,
+        quality = qualities.entries.firstOrNull { it.value == url }?.key ?: "Auto",
+      )
+      return stream to dub.translationId!!
+    }
+    return null
+  }
+
+  /** Shows the stream-loading overlay until the switched file actually loads in mpv. */
+  private fun beginStreamLoadIndicator() {
+    // A plain (untracked) switch must not inherit the PREVIOUS tracked load's retry action:
+    // a stale action firing on an unrelated END_FILE error reloaded an old target out of
+    // nowhere. Tracked loads re-arm it right after this call.
+    streamLoadRetryAction = null
+    viewModel.setLoadingStream(true)
+    pendingStreamLoadIndicator = true
+    streamLoadIndicatorTimeoutJob?.cancel()
+    streamLoadIndicatorTimeoutJob = lifecycleScope.launch {
+      kotlinx.coroutines.delay(15_000)
+      if (pendingStreamLoadIndicator) {
+        pendingStreamLoadIndicator = false
+        viewModel.setLoadingStream(false)
+      }
+    }
+  }
+
+  /**
+   * Like [beginStreamLoadIndicator], but arms the END_FILE-error recovery: if mpv reports a
+   * failed load while this load attempt is pending, [retry] runs with a fresh resolve until
+   * [MAX_STREAM_LOAD_RETRIES] is spent, then the retryable error card takes over (a dead CDN
+   * url must not end in a black screen). The retry BUDGET is NOT reset here — an automatic
+   * retry re-arms through the same path and must not loop forever; manual retries reset it.
+   */
+  private fun beginTrackedStreamLoad(retry: () -> Unit) {
+    viewModel.setPendingResolveError(null)
+    beginStreamLoadIndicator()
+    // Arm AFTER beginStreamLoadIndicator: that call now clears any stale action first.
+    streamLoadRetryAction = retry
+    lastStreamLoadRetry = retry
+  }
+
+  /** Manual «Повторить» (error card / new launch): grant a full auto-retry budget again. */
+  private fun resetStreamLoadRetries() {
+    streamLoadRetries = 0
+  }
+
+  /** Clears the stream-loading overlay (file loaded, or switch failed). */
+  private fun finishStreamLoadIndicator() {
+    if (!pendingStreamLoadIndicator) {
+      viewModel.setLoadingStream(false)
+      return
+    }
+    pendingStreamLoadIndicator = false
+    streamLoadIndicatorTimeoutJob?.cancel()
+    viewModel.setLoadingStream(false)
+  }
+
+  /**
+   * Dub options actually available for [episode]: the catalog lists every dub of the whole
+   * series, but each dub covers only its own episode subset — the rest can't play this episode
+   * and must not appear in the dropdown.
+   */
+  private fun seriesTranslationsFor(
+    context: MovieSeriesPlaybackContext,
+    episode: MovieEpisodeRef,
+  ): List<FlatTranslation> =
+    context.candidates
+      .filter { candidate ->
+        !candidate.translationId.isNullOrBlank() && candidate.episodes.any {
+          it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber
+        }
+      }
+      .map { dub ->
+        val dubTitle = dub.translationTitle ?: dub.translationId.orEmpty()
+        FlatTranslation(
+          source = AnimeSourceType.KODIK,
+          translationId = dub.translationId ?: dubTitle,
+          title = dubTitle,
+          type = if (dubTitle.endsWith("(субтитры)", ignoreCase = true)) "subtitles" else "voice",
+          episodes = emptyList()
+        )
+      }
 
   private fun applyMovieSeriesStream(
     stream: AnimeMediaStream,
@@ -1577,20 +2070,33 @@ class PlayerActivity :
       else stream.qualities[effectiveQuality] ?: stream.url
     val episode = context.currentEpisode
     fileName = "${context.displayTitle} • S${episode.seasonNumber}E${episode.episodeNumber}"
-    mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(url), fileName)
+    mediaIdentifier = "ks_series_${context.kinopoiskId}_s${episode.seasonNumber}e${episode.episodeNumber}"
     MPVLib.setPropertyString("media-title", fileName)
     applyAnimeTransportOptions(false)
     applyHttpHeaders(stream.headers)
     val uiEpisodes = context.episodes.map {
-      AnimeEpisode(it.playerEpisodeKey, "Сезон ${it.seasonNumber}, серия ${it.episodeNumber}", it.playerUrl, it.seasonNumber)
+      // NAMED args: AnimeEpisode's 4th positional is `id`, not `season` — passing seasonNumber
+      // positionally silently nulled every row's season and broke the episode-list filter.
+      AnimeEpisode(
+        number = it.playerEpisodeKey,
+        title = it.title?.takeIf { name -> name.isNotBlank() },
+        link = it.playerUrl,
+        season = it.seasonNumber
+      )
     }
-    // Preserve the dub list and highlight: wiping translations here used to make the voiceover
-    // dropdown vanish after the first episode/quality switch.
+    // Re-filter the dub list for the NEW episode (each dub covers its own episode subset) and
+    // keep the highlight on the dub that is actually playing.
+    val availableTranslations = seriesTranslationsFor(context, episode)
+    val highlightId = translationId
+      ?.takeIf { trId -> availableTranslations.any { it.translationId == trId } }
+      ?: availableTranslations.firstOrNull()?.translationId
+      ?: translationId
+      ?: viewModel.currentAnimeTranslationId.value
     viewModel.setAnimeData(
       uiEpisodes,
-      viewModel.animeTranslations.value,
+      availableTranslations,
       episode.playerEpisodeKey,
-      translationId ?: viewModel.currentAnimeTranslationId.value,
+      highlightId,
       stream.qualities,
       effectiveQuality,
     )
@@ -1599,6 +2105,7 @@ class PlayerActivity :
       episode.seasonNumber,
     )
     currentPlayingUrl = url
+    updateAutoRungHint(stream.qualities, url)
     MPVLib.command("loadfile", url, "replace")
   }
 
@@ -1618,7 +2125,8 @@ class PlayerActivity :
     currentAnimeSourceType = sourceType
     currentAnimeStream = stream
     fileName = "$animeTitle • Серия $episodeNumber"
-    mediaIdentifier = getMediaIdentifierFromUri(Uri.parse(url), fileName)
+    mediaIdentifier = stableKinoshkaIdentifier(episodeOverride = episodeNumber)
+      ?: getMediaIdentifierFromUri(Uri.parse(url), fileName)
     MPVLib.setPropertyString("media-title", fileName)
     applyAnimeTransportOptions(sourceType == AnimeSourceType.ANILIBERTY)
     applyHttpHeaders(stream.headers)
@@ -1634,9 +2142,10 @@ class PlayerActivity :
   }
 
   private fun applyAnimeTransportOptions(disableHttpReuse: Boolean) {
-    val options = if (disableHttpReuse) "http_persistent=0,http_multiple=0" else ""
+    val reuseOptions = if (disableHttpReuse) "http_persistent=0,http_multiple=0," else ""
+    val options = "${reuseOptions}rw_timeout=15000000,reconnect=1,reconnect_streamed=1,reconnect_delay_max=15"
     val result = MPVLib.setPropertyString("demuxer-lavf-o", options)
-    Log.d(TAG, "Anime transport HTTP reuse ${if (disableHttpReuse) "disabled" else "reset"}: result=$result")
+    Log.d(TAG, "Anime transport hardened (http reuse ${if (disableHttpReuse) "disabled" else "default"}): $options, result=$result")
   }
 
   /** Concrete qualities of [stream] sorted best-first (Auto excluded). */
@@ -1645,6 +2154,16 @@ class PlayerActivity :
       .filter { it.key != "Auto" }
       .sortedByDescending { it.key.removeSuffix("p").toIntOrNull() ?: 0 }
       .map { it.key to it.value }
+
+  /**
+   * Remembers which concrete rung "Auto" is currently serving (url → ladder key). The quality
+   * pill shows "Auto · 1080p" immediately — before mpv reports video-params, which used to leave
+   * a bare "Auto" with no indication of what had been picked.
+   */
+  private fun updateAutoRungHint(qualities: Map<String, String>, playingUrl: String?) {
+    val rung = playingUrl?.let { url -> qualities.entries.firstOrNull { it.value == url }?.key }
+    viewModel.setAutoQualityRungHint(rung)
+  }
 
   /**
    * Watches playback while the quality selector is on "Auto": three consecutive 2s samples with
@@ -2044,6 +2563,10 @@ class PlayerActivity :
         // Safety check: don't access MPV during cleanup
         if (!mpvInitialized || player.isExiting || isFinishing) return
 
+        viewModel.setVideoResolution(
+          MPVLib.getPropertyInt("video-params/w"),
+          MPVLib.getPropertyInt("video-params/h"),
+        )
         val aspect = player.getVideoOutAspect()
         Log.d(TAG, "Video dimension changed: $property, aspect: $aspect")
         pipHelper.updatePictureInPictureParams()
@@ -2248,13 +2771,23 @@ class PlayerActivity :
    * Called by the player when critical playback events occur.
    *
    * @param eventId The MPV event ID
+   * @param data Event payload node (reason of END_FILE, etc.)
    */
-  internal fun event(eventId: Int) {
+  internal fun event(
+    eventId: Int,
+    data: MPVNode? = null,
+  ) {
     when (eventId) {
       MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> {
+        // A pending episode/dub switch finished buffering — drop the loading overlay now.
+        streamLoadRetryAction = null
+        streamLoadRetries = 0
+        finishStreamLoadIndicator()
         handleFileLoaded()
         isReady = true
       }
+
+      MPVLib.MpvEvent.MPV_EVENT_END_FILE -> eventEndFile(data)
 
       MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
         player.isExiting = false
@@ -2266,11 +2799,45 @@ class PlayerActivity :
   }
 
   /**
+   * END_FILE with its reason node: a loadfile that mpv could not open (dead/expired CDN url,
+   * HTML page handed to the demuxer, network blackhole). Previously unhandled — the loading
+   * overlay just timed out into a black screen with no error, no retry.
+   *
+   * Reacts ONLY while our own tracked load attempt is pending: ordinary end-of-playback and
+   * user-issued replaces arrive here too (reason=eof/stop) and must be ignored.
+   */
+  internal fun eventEndFile(data: MPVNode?) {
+    if (!pendingStreamLoadIndicator) return
+    val reason = runCatching { data?.asMap()?.get("reason")?.asString() }.getOrNull()
+    Log.w(TAG, "MPV_EVENT_END_FILE while loading (reason=$reason)")
+    if (!reason.equals("error", ignoreCase = true)) return
+
+    val retry = streamLoadRetryAction
+    if (retry != null && streamLoadRetries < MAX_STREAM_LOAD_RETRIES) {
+      streamLoadRetries += 1
+      lifecycleScope.launch {
+        kotlinx.coroutines.delay(800)
+        if (isFinishing || isDestroyed) return@launch
+        Log.i(TAG, "Stream load failed in mpv — auto-retry $streamLoadRetries/$MAX_STREAM_LOAD_RETRIES")
+        retry()
+      }
+    } else {
+      streamLoadRetryAction = null
+      finishStreamLoadIndicator()
+      viewModel.setPendingResolveError(
+        "Не удалось открыть видеопоток. Проверьте подключение и попробуйте ещё раз."
+      )
+    }
+  }
+
+  /**
    * Handles the file loaded event from MPV.
    * Initializes playback state, loads saved playback data, restores custom settings,
    * applies user preferences, and sets up metadata and media session.
    */
   private fun handleFileLoaded() {
+    // video-params of the previous file are stale until the new one reports its own
+    viewModel.setVideoResolution(null, null)
     // Extract fileName from intent only if not already set
     // This preserves fileName set in onNewIntent or onCreate
     if (fileName.isBlank()) {
@@ -2359,8 +2926,9 @@ class PlayerActivity :
 
     applySubtitlePreferences()
 
-    // Don't force media-title for m3u/m3u8 streams - let MPV provide it
-    if (!isCurrentStreamM3U()) {
+    // Kinoshka titles must never show raw URLs/playlist junk from mpv's media-title: our own
+    // fileName always wins, even for HLS where the old code let mpv "provide" the URL instead.
+    if (!isCurrentStreamM3U() || fileName.isNotBlank()) {
       MPVLib.setPropertyString("force-media-title", fileName)
       viewModel.setMediaTitle(fileName)
     }
@@ -2724,56 +3292,61 @@ class PlayerActivity :
         if (kinopoiskId > 0) store.markTitleWatched(kinopoiskId)
       }
 
+      // Resolve never completed — no title-level progress exists to commit.
+      NativePlaybackMode.PENDING_MOVIE -> return
+
       NativePlaybackMode.ANIME -> {
-        val shikimoriId = intent.getIntExtra("anime_shikimori_id", 0)
-        if (shikimoriId <= 0) return
+        val profileKey = libraryProfileKey() ?: return
         val animeTitle = intent.getStringExtra("anime_title").orEmpty()
         val currentEp = viewModel.currentAnimeEpisodeNumber.value ?: intent.getIntExtra("anime_current_episode", 1)
         val totalEps = viewModel.animeEpisodes.value.maxOfOrNull { it.number } ?: viewModel.animeEpisodes.value.size
 
-        UserStateStore(this@PlayerActivity).updateWatchedEpisode(
-          shikimoriId = shikimoriId,
+        UserStateStore(this@PlayerActivity).updateWatchedEpisodeByKey(
+          kinopoiskId = profileKey,
           animeTitle = animeTitle,
           episodeNum = currentEp,
           totalEpisodes = totalEps
         )
         viewModel.setWatchedEpisodesCount(currentEp)
 
-        // Shikimori sync
-        val authStore = ShikimoriAuthStore(this@PlayerActivity)
-        val authState = authStore.getAuthState()
-        if (authState.isLoggedIn && authState.accessToken != null) {
-          lifecycleScope.launch(Dispatchers.IO) {
-            val api = ApiClient.shikimoriApi(this@PlayerActivity)
-             val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
-             val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
-             val newStatus = if (totalEps in 1..currentEp) "completed" else "watching"
-             val authHeader = if (authState.accessToken.startsWith("Bearer ")) authState.accessToken else "Bearer ${authState.accessToken}"
+        // Shikimori sync (only meaningful when the title actually maps to a Shikimori entry)
+        val shikimoriId = intent.getIntExtra("anime_shikimori_id", 0)
+        if (shikimoriId > 0) {
+          val authStore = ShikimoriAuthStore(this@PlayerActivity)
+          val authState = authStore.getAuthState()
+          if (authState.isLoggedIn && authState.accessToken != null) {
+            lifecycleScope.launch(Dispatchers.IO) {
+              val api = ApiClient.shikimoriApi(this@PlayerActivity)
+              val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
+              val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
+              val newStatus = if (totalEps in 1..currentEp) "completed" else "watching"
+              val authHeader = if (authState.accessToken.startsWith("Bearer ")) authState.accessToken else "Bearer ${authState.accessToken}"
 
-             if (existingRate != null) {
-               runCatching {
-                 val updateRequest = hd.kinoshka.app.data.model.UserRateUpdateRequest(
-                   userRate = hd.kinoshka.app.data.model.UserRateUpdateData(
-                     status = newStatus,
-                     episodes = currentEp
-                   )
-                 )
-                 api.updateUserRate(authHeader, existingRate.id, updateRequest)
-               }
-             } else {
-               runCatching {
-                 val createRequest = hd.kinoshka.app.data.model.UserRateRequest(
-                   userRate = hd.kinoshka.app.data.model.UserRateData(
-                     userId = authState.userId,
-                     targetId = shikimoriId,
-                     targetType = "Anime",
-                     status = newStatus,
-                     episodes = currentEp
-                   )
-                 )
-                 api.createUserRate(authHeader, createRequest)
-               }
-             }
+              if (existingRate != null) {
+                runCatching {
+                  val updateRequest = hd.kinoshka.app.data.model.UserRateUpdateRequest(
+                    userRate = hd.kinoshka.app.data.model.UserRateUpdateData(
+                      status = newStatus,
+                      episodes = currentEp
+                    )
+                  )
+                  api.updateUserRate(authHeader, existingRate.id, updateRequest)
+                }
+              } else {
+                runCatching {
+                  val createRequest = hd.kinoshka.app.data.model.UserRateRequest(
+                    userRate = hd.kinoshka.app.data.model.UserRateData(
+                      userId = authState.userId,
+                      targetId = shikimoriId,
+                      targetType = "Anime",
+                      status = newStatus,
+                      episodes = currentEp
+                    )
+                  )
+                  api.createUserRate(authHeader, createRequest)
+                }
+              }
+            }
           }
         }
       }
@@ -2781,8 +3354,104 @@ class PlayerActivity :
   }
 
   private fun currentNativePlaybackMode(): NativePlaybackMode {
+    effectiveNativePlaybackMode?.let { return it }
     val name = intent.getStringExtra("playback_mode")
     return runCatching { NativePlaybackMode.valueOf(name ?: "") }.getOrDefault(NativePlaybackMode.ANIME)
+  }
+
+  /**
+   * Library profile key this playback session must read/write. Anime launched from the Shikimori
+   * section maps to shikimoriId + ANIME_ID_OFFSET; titles opened from regular search have no
+   * shikimori mapping and their profiles live under the raw Kinopoisk id — without this fallback
+   * every such title silently lost episode sync, library status and resume progress.
+   */
+  private fun libraryProfileKey(): Int? {
+    val shikimoriId = intent.getIntExtra("anime_shikimori_id", 0)
+    if (shikimoriId > 0) return shikimoriId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+    val kinopoiskId = intent.getIntExtra("movie_kinopoisk_id", 0)
+    return kinopoiskId.takeIf { it > 0 }
+  }
+
+  /**
+   * Feeds the global preference memory: sources/dubs picked in the player rise to the top of
+   * future lists (the player's voiceover dropdown and the source-selection sheet).
+   */
+  private fun recordPlaybackUsage(source: hd.kinoshka.app.data.model.AnimeSourceType, dubTitle: String) {
+    val store = UserStateStore(this)
+    store.recordSourceUsage(source)
+    store.recordDubUsage(dubTitle)
+  }
+
+  /**
+   * Watches accrued playback time and, once a single file passes [MIN_WATCH_SECONDS_FOR_LIBRARY],
+   * commits REAL progress to the library: flips the seeded profile to WATCHING and adds the
+   * history entry. Merely pressing "Смотреть" must not surface anything in the library — only
+   * actual viewing does. Keyed per media identifier, so every episode re-arms the commit.
+   */
+  private fun startPlaybackProgressLoop() {
+    playbackProgressJob?.cancel()
+    playbackProgressJob = lifecycleScope.launch {
+      while (isActive) {
+        kotlinx.coroutines.delay(5000)
+        if (!mpvInitialized || player.isExiting || isFinishing) continue
+        val identifier = mediaIdentifier
+        if (identifier.isBlank() || identifier == watchingCommittedFor) continue
+        val pos = MPVLib.getPropertyDouble("time-pos") ?: continue
+        if (pos < MIN_WATCH_SECONDS_FOR_LIBRARY) continue
+        val key = libraryProfileKey() ?: continue
+
+        watchingCommittedFor = identifier
+        val store = UserStateStore(this@PlayerActivity)
+        when (currentNativePlaybackMode()) {
+          NativePlaybackMode.MOVIE_SERIES -> movieSeriesContext?.let { ctx ->
+            store.updateSeriesProgress(
+              ctx.kinopoiskId,
+              ctx.currentEpisode.seasonNumber,
+              ctx.currentEpisode.episodeNumber
+            )
+          }
+          NativePlaybackMode.ANIME -> store.updateWatchedEpisodeByKey(
+            kinopoiskId = key,
+            animeTitle = intent.getStringExtra("anime_title").orEmpty(),
+            episodeNum = viewModel.currentAnimeEpisodeNumber.value
+              ?: intent.getIntExtra("anime_current_episode", 1),
+            totalEpisodes = viewModel.animeEpisodes.value.maxOfOrNull { it.number } ?: 0,
+            allowComplete = false,
+          )
+          NativePlaybackMode.QUALITY_ONLY_MOVIE -> {}
+          // Resolve never completed — nothing meaningful to commit.
+          NativePlaybackMode.PENDING_MOVIE -> {}
+        }
+        store.commitRealPlayback(key)
+      }
+    }
+  }
+
+  /**
+   * Session-stable media identifier for Kinoshka streams. Resolved stream URLs rotate between
+   * launches (kodik/ddbb race winner alternates, turbo CDN urls are signed), so hashing the URL
+   * orphaned every saved position on the very next launch. Key by title/episode identity instead.
+   * Null for non-Kinoshka playback — callers keep the legacy uri/fileName behaviour.
+   */
+  private fun stableKinoshkaIdentifier(episodeOverride: Int? = null): String? {
+    // Effective mode (not the raw intent): PENDING_MOVIE resolves into QOM/MOVIE_SERIES and must
+    // key identifiers by the resolved kind, or resume positions would rotate with the stream urls.
+    return when (currentNativePlaybackMode()) {
+      NativePlaybackMode.MOVIE_SERIES ->
+        movieSeriesContext?.let {
+          "ks_series_${it.kinopoiskId}_s${it.currentEpisode.seasonNumber}e${it.currentEpisode.episodeNumber}"
+        }
+      NativePlaybackMode.QUALITY_ONLY_MOVIE ->
+        intent.getIntExtra("movie_kinopoisk_id", 0).takeIf { it > 0 }?.let { "ks_movie_$it" }
+      NativePlaybackMode.ANIME -> {
+        val episode = episodeOverride
+          ?: intent.getIntExtra("anime_current_episode", -1).takeIf { it > 0 }
+          ?: viewModel.currentAnimeEpisodeNumber.value
+        val key = libraryProfileKey()
+        if (episode != null && episode > 0 && key != null) "ks_anime_${key}_e$episode" else null
+      }
+      NativePlaybackMode.PENDING_MOVIE -> null
+    }
   }
 
   /**
@@ -3818,9 +4487,9 @@ class PlayerActivity :
     }
 
     // Update media title (this will trigger UI update)
-    // Don't force media-title for m3u/m3u8 streams - let MPV provide it
+    // Same rule as handleFileLoaded: our clean name wins over mpv's raw HLS/URL title.
     val isM3U = uri.toString().lowercase().contains(".m3u8") || uri.toString().lowercase().contains(".m3u")
-    if (!isM3U) {
+    if (!isM3U || fileName.isNotBlank()) {
       MPVLib.setPropertyString("force-media-title", fileName)
       viewModel.setMediaTitle(fileName)
     }
@@ -3848,18 +4517,16 @@ class PlayerActivity :
 
   /**
    * Get the current video title for controls display.
-   * Used as a fallback when MPV hasn't set the media-title property yet.
-   * For m3u/m3u8 streams, returns the raw media-title from MPV instead of parsing.
+   * Our resolved name always wins: mpv's raw media-title for HLS streams is the stream URL
+   * (or a playlist entry), never a human title. MPV's value is only a last-resort fallback.
    */
   fun getTitleForControls(): String {
-    // For m3u/m3u8 streams, use MPV's raw media-title directly
-    if (isCurrentStreamM3U()) {
-      val rawTitle = MPVLib.getPropertyString("media-title")
-      if (!rawTitle.isNullOrBlank()) {
-        return rawTitle
-      }
+    if (fileName.isNotBlank() && fileName != "Unknown Video") return fileName
+    val rawTitle = MPVLib.getPropertyString("media-title")
+    if (!rawTitle.isNullOrBlank()) {
+      return rawTitle
     }
-    return fileName
+    return fileName.ifBlank { "Unknown Video" }
   }
 
   /**
@@ -3999,16 +4666,17 @@ class PlayerActivity :
       )
       return identifier
     }
-
-    val uri = extractUriFromIntent(intent)
-    return if (uri != null && (uri.scheme?.startsWith("http") == true || uri.scheme == "rtmp" || uri.scheme == "ftp" || uri.scheme == "rtsp" || uri.scheme == "mms")) {
-      // For remote protocols: hash the URI so position is per-episode or per-stream.
-      "${fileName}_${uri.toString().hashCode()}"
-    } else {
-      // For local/file uris and unknown: just use fileName.
-      fileName
+      val uri = extractUriFromIntent(intent)
+      return stableKinoshkaIdentifier()
+        ?: if (uri != null && (uri.scheme?.startsWith("http") == true || uri.scheme == "rtmp"
+            || uri.scheme == "ftp" || uri.scheme == "rtsp" || uri.scheme == "mms")) {
+          // For remote protocols: hash the URI so position is per-episode or per-stream.
+          "${fileName}_${uri.toString().hashCode()}"
+        } else {
+          // For local/file uris and unknown: just use fileName.
+          fileName
+        }
     }
-  }
 
   /**
    * Generate a unique identifier for this media from a URI and name.
@@ -4117,6 +4785,12 @@ class PlayerActivity :
     private const val DELAY_DIVISOR = 1000.0
 
     /**
+     * Minimum accrued playback time (seconds) before a title counts as actually watched and
+     * lands in the library as "Смотрю" — pressing "Смотреть" alone commits nothing.
+     */
+    private const val MIN_WATCH_SECONDS_FOR_LIBRARY = 300
+
+    /**
      * Default playback speed (1.0 = normal).
      */
     private const val DEFAULT_PLAYBACK_SPEED = 1.0
@@ -4125,6 +4799,18 @@ class PlayerActivity :
      * Default subtitle speed (1.0 = normal).
      */
     private const val DEFAULT_SUB_SPEED = 1.0
+
+    /**
+     * Auto-retries for a loadfile mpv reports as failed (END_FILE reason=error) while the
+     * loading overlay is up; past this the retryable error card takes over.
+     */
+    private const val MAX_STREAM_LOAD_RETRIES = 2
+
+    /**
+     * Hard budget for resolving a raw Kodik player link into a playable HLS url when the user
+     * switches voiceover — the multi-endpoint cascade must not outlast the loading overlay.
+     */
+    private const val VOICEOVER_RESOLVE_TIMEOUT_MS = 12_000L
 
     /**
      * General tag for logging from PlayerActivity.

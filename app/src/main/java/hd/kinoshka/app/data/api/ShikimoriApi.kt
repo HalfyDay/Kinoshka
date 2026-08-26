@@ -32,6 +32,7 @@ interface ShikimoriApi {
         @Query("score") score: Int? = null,
         @Query("rating") rating: String? = null,
         @Query("genre") genre: String? = null,
+        @Query("censored") censored: Boolean? = null,
         @Query("limit") limit: Int = 20,
         @Query("page") page: Int = 1
     ): List<ShikimoriAnimeItem>

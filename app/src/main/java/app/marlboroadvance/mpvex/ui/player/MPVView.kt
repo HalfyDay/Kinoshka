@@ -231,6 +231,15 @@ class MPVView(
 
     MPVLib.setOptionString("speed", playerPreferences.defaultSpeed.get().toString())
     MPVLib.setOptionString("vd-lavc-film-grain", "cpu")
+    // HLS master playlists default to the FIRST listed variant, which for Kodik/Aniliberty is a
+    // low rung — force the top-bandwidth one so "Auto" quality actually plays the best stream.
+    MPVLib.setOptionString("hls-bitrate", "max")
+    // Retry failed/stalled network reads (HLS segments, direct mp4) instead of letting the
+    // demuxer skip a whole ~10s segment after a single transport error.
+    MPVLib.setOptionString(
+      "stream-lavf-o",
+      "rw_timeout=15000000,reconnect=1,reconnect_streamed=1,reconnect_delay_max=15",
+    )
 
     val preciseSeek = playerPreferences.usePreciseSeeking.get()
     MPVLib.setOptionString("hr-seek", if (preciseSeek) "yes" else "no")

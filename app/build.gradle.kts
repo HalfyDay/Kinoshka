@@ -15,8 +15,8 @@ android {
         applicationId = "hd.kinoshka.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 4
-        versionName = "1.0.7"
+        versionCode = 5
+        versionName = "1.0.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

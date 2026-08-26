@@ -78,11 +78,12 @@ class AnimeRepository(private val api: ShikimoriApi) {
         genreId: Int? = null,
         order: String? = "popularity",
         scoreFrom: Int? = null,
+        censored: Boolean? = null,
         page: Int = 1
     ): List<ShikimoriAnimeItem> {
         val cleanQuery = query?.trim()?.ifEmpty { null }
         val genreStr = genreId?.toString()
-        val key = "$cleanQuery:$kind:$status:$rating:$genreStr:$order:$scoreFrom:$page"
+        val key = "$cleanQuery:$kind:$status:$rating:$genreStr:$order:$scoreFrom:$censored:$page"
         searchCache.get(key)?.let { return it }
         val loaded = api.search(
             search = cleanQuery,
@@ -92,6 +93,7 @@ class AnimeRepository(private val api: ShikimoriApi) {
             score = scoreFrom,
             rating = rating,
             genre = genreStr,
+            censored = censored,
             limit = 20,
             page = page
         )

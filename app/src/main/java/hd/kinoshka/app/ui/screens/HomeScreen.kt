@@ -1,4 +1,4 @@
-package hd.kinoshka.app.ui.screens
+﻿package hd.kinoshka.app.ui.screens
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.focus.onFocusChanged
@@ -96,6 +96,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import hd.kinoshka.app.ui.components.BottomNavPill
+import hd.kinoshka.app.ui.components.NavPillItem
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -153,6 +155,7 @@ import coil.compose.AsyncImage
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
 import hd.kinoshka.app.data.local.UserFilmStatus
+import hd.kinoshka.app.data.local.UserFilmProfile
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
@@ -180,6 +183,59 @@ private enum class LibraryTab(val title: String) {
     DROPPED("Брошено")
 }
 
+/**
+ * Everything the quick "Прогресс просмотра" sheet needs, assembled from tile data alone —
+ * long-press must open it instantly without any network round-trip or details-page navigation.
+ */
+data class ProgressEditorSeed(
+    val kinopoiskId: Int,
+    val title: String,
+    val year: Int?,
+    val posterUrl: String?,
+    val type: String?,
+    val ratingKinopoisk: Double?,
+    val profile: UserFilmProfile?
+)
+
+private fun LibraryUiItem.toEditorProfile(): UserFilmProfile = UserFilmProfile(
+    kinopoiskId = kinopoiskId,
+    title = title,
+    subtitle = subtitle,
+    posterUrl = posterUrl,
+    ratingText = ratingText,
+    type = type,
+    isRussian = isRussian,
+    status = status,
+    userRating = userRating,
+    note = note,
+    watchedSeasons = watchedSeasons,
+    watchedEpisodes = watchedEpisodes,
+    totalEpisodesInSeason = totalEpisodesInSeason,
+    totalSeasons = totalSeasons,
+    totalEpisodes = totalEpisodes,
+    updatedAt = updatedAt
+)
+
+private fun LibraryUiItem.toProgressEditorSeed(): ProgressEditorSeed = ProgressEditorSeed(
+    kinopoiskId = kinopoiskId,
+    title = title,
+    year = subtitle?.toIntOrNull(),
+    posterUrl = posterUrl,
+    type = type,
+    ratingKinopoisk = ratingText?.replace("KP", "")?.replace("★", "")?.trim()?.toDoubleOrNull(),
+    profile = toEditorProfile()
+)
+
+private fun FilmItem.toProgressEditorSeed(profile: UserFilmProfile?): ProgressEditorSeed = ProgressEditorSeed(
+    kinopoiskId = kinopoiskId,
+    title = nameRu ?: nameOriginal ?: "Без названия",
+    year = year,
+    posterUrl = posterUrlPreview,
+    type = null,
+    ratingKinopoisk = ratingKinopoisk,
+    profile = profile
+)
+
 private data class GridMetrics(
     val columns: Int
 )
@@ -197,6 +253,9 @@ fun HomeScreen(
     onContentTypeSelected: (ContentType) -> Unit = {},
     onOpenFilm: (FilmItem) -> Unit,
     onOpenHistoryFilm: (Int) -> Unit,
+    // Long-press on a library/discover cover opens the "Прогресс просмотра" sheet instantly
+    // from tile-local data — no network, no details-page navigation.
+    onOpenFilmEditor: (ProgressEditorSeed) -> Unit = {},
     onDiscoverCategorySelected: (DiscoverCategory) -> Unit,
     onLoadMore: () -> Unit,
     onRemoveFromHistory: (Int) -> Unit,
@@ -207,6 +266,8 @@ fun HomeScreen(
     onToggleFilterSheet: (Boolean) -> Unit = {},
     onOpenCalendar: () -> Unit = {},
     onOpenFeed: () -> Unit = {},
+    // Тестовый TikTok-фид рекомендаций: кнопка «Лента» в нижней пилюле после «Обзора»
+    onOpenRecommendationsFeed: () -> Unit = {},
     onLibrarySortSelected: (hd.kinoshka.app.data.local.LibrarySortType) -> Unit = {},
     onInstantSearch: (String) -> Unit = {},
     onRemoveSearchHistory: (String) -> Unit = {},
@@ -281,39 +342,68 @@ fun HomeScreen(
         }
     }
 
+    // Переключение раздела нижней пилюли: сохраняем поисковый запрос текущего раздела
+    // и применяем прежнюю логику табов/категорий.
+    val handleNav: (MainSection) -> Unit = { target ->
+        when (section) {
+            MainSection.LIBRARY -> libraryQuery = state.query
+            MainSection.DISCOVER -> discoverQuery = state.query
+            MainSection.MORE -> moreQuery = state.query
+        }
+        section = target
+        when (target) {
+            MainSection.LIBRARY -> {
+                libraryTab = LibraryTab.WATCHING
+                onQueryChange(libraryQuery)
+                onTabSelected(HomeTab.HISTORY)
+            }
+            MainSection.DISCOVER -> {
+                onQueryChange(discoverQuery)
+                onTabSelected(HomeTab.CATALOG)
+                onDiscoverCategorySelected(DiscoverCategory.POPULAR)
+            }
+            MainSection.MORE -> {
+                moreQuery = ""
+                onQueryChange("")
+                onTabSelected(HomeTab.MORE)
+            }
+        }
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
-            BottomSectionBar(
-                section = section,
-                isAmoled = state.themeMode == AppThemeMode.AMOLED,
-                onSectionSelected = { selected ->
-                    when (section) {
-                        MainSection.LIBRARY -> libraryQuery = state.query
-                        MainSection.DISCOVER -> discoverQuery = state.query
-                        MainSection.MORE -> moreQuery = state.query
-                    }
-                    section = selected
-                    when (selected) {
-                        MainSection.LIBRARY -> {
-                            libraryTab = LibraryTab.WATCHING
-                            onQueryChange(libraryQuery)
-                            onTabSelected(HomeTab.HISTORY)
-                        }
-                        MainSection.DISCOVER -> {
-                            onQueryChange(discoverQuery)
-                            onTabSelected(HomeTab.CATALOG)
-                            onDiscoverCategorySelected(DiscoverCategory.POPULAR)
-                        }
-                        MainSection.MORE -> {
-                            moreQuery = ""
-                            onQueryChange("")
-                            onTabSelected(HomeTab.MORE)
-                        }
-                    }
-                }
+            // Единая плавающая пилюля (общий компонент с фидом рекомендаций).
+            BottomNavPill(
+                items = listOf(
+                    NavPillItem(
+                        filledRes = hd.kinoshka.app.R.drawable.ic_nav_library_filled,
+                        outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_library_outlined,
+                        contentDescription = "Библиотека",
+                        selected = section == MainSection.LIBRARY
+                    ) { handleNav(MainSection.LIBRARY) },
+                    NavPillItem(
+                        filledRes = hd.kinoshka.app.R.drawable.ic_nav_discover_filled,
+                        outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_discover_outlined,
+                        contentDescription = "Обзор",
+                        selected = section == MainSection.DISCOVER
+                    ) { handleNav(MainSection.DISCOVER) },
+                    NavPillItem(
+                        filledRes = hd.kinoshka.app.R.drawable.ic_nav_feed_filled,
+                        outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_feed_outlined,
+                        contentDescription = "Лента",
+                        selected = false
+                    ) { onOpenRecommendationsFeed() },
+                    NavPillItem(
+                        filledRes = hd.kinoshka.app.R.drawable.ic_nav_more_filled,
+                        outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_more_outlined,
+                        contentDescription = "Ещё",
+                        selected = section == MainSection.MORE
+                    ) { handleNav(MainSection.MORE) }
+                ),
+                isAmoled = state.themeMode == AppThemeMode.AMOLED
             )
         }
     ) { innerPadding ->
@@ -420,6 +510,7 @@ fun HomeScreen(
                                         items = items,
                                         historyMode = pageTab == LibraryTab.HISTORY,
                                         onOpenHistoryFilm = onOpenHistoryFilm,
+                                        onOpenFilmEditor = onOpenFilmEditor,
                                         onRemoveFromHistory = onRemoveFromHistory,
                                         metrics = libraryMetrics
                                     )
@@ -443,6 +534,7 @@ fun HomeScreen(
                                     progressByFilmId = progressByFilmId,
                                     onRetry = onRetry,
                                     onOpenFilm = onOpenFilm,
+                                    onOpenFilmEditor = onOpenFilmEditor,
                                     onLoadMore = onLoadMore,
                                     onOpenCalendar = onOpenCalendar,
                                     onOpenFeed = onOpenFeed
@@ -937,6 +1029,7 @@ private fun LibraryPageGrid(
     items: List<LibraryUiItem>,
     historyMode: Boolean,
     onOpenHistoryFilm: (Int) -> Unit,
+    onOpenFilmEditor: (ProgressEditorSeed) -> Unit = {},
     onRemoveFromHistory: (Int) -> Unit,
     metrics: GridMetrics
 ) {
@@ -963,6 +1056,9 @@ private fun LibraryPageGrid(
                     onLongPress = {
                         if (historyMode && item.viewedAtMillis != null) {
                             pendingDeleteId = item.kinopoiskId
+                        } else {
+                            // Long-press outside История opens the progress editor.
+                            onOpenFilmEditor(item.toProgressEditorSeed())
                         }
                     }
                 )
@@ -988,6 +1084,9 @@ private fun LibraryPageGrid(
                 onLongPress = {
                     if (historyMode && item.viewedAtMillis != null) {
                         pendingDeleteId = item.kinopoiskId
+                    } else {
+                        // Long-press outside История opens the progress editor.
+                        onOpenFilmEditor(item.toProgressEditorSeed())
                     }
                 }
             )
@@ -1078,10 +1177,16 @@ private fun DiscoverContent(
     progressByFilmId: Map<Int, WatchProgressUi>,
     onRetry: () -> Unit,
     onOpenFilm: (FilmItem) -> Unit,
+    onOpenFilmEditor: (ProgressEditorSeed) -> Unit = {},
     onLoadMore: () -> Unit,
     onOpenCalendar: () -> Unit,
     onOpenFeed: () -> Unit
 ) {
+    // Local profile snapshots for the quick progress editor: matched from the library list
+    // the screen already holds, so long-press never needs to fetch anything.
+    val libraryById = remember(state.library) {
+        state.library.associateBy { it.kinopoiskId }
+    }
     when {
         state.loading -> {
             if (metrics.columns == 1) {
@@ -1126,7 +1231,10 @@ private fun DiscoverContent(
                             film = film,
                             status = statusByFilmId[film.kinopoiskId],
                             watchProgress = progressByFilmId[film.kinopoiskId],
-                            onOpenFilm = onOpenFilm
+                            onOpenFilm = onOpenFilm,
+                            onLongPress = {
+                                onOpenFilmEditor(film.toProgressEditorSeed(libraryById[film.kinopoiskId]?.toEditorProfile()))
+                            }
                         )
                     }
                     if (state.loadingMore) {
@@ -1165,7 +1273,10 @@ private fun DiscoverContent(
                         compactText = metrics.columns >= 3,
                         status = statusByFilmId[film.kinopoiskId],
                         watchProgress = progressByFilmId[film.kinopoiskId],
-                        onOpenFilm = onOpenFilm
+                        onOpenFilm = onOpenFilm,
+                        onLongPress = {
+                            onOpenFilmEditor(film.toProgressEditorSeed(libraryById[film.kinopoiskId]?.toEditorProfile()))
+                        }
                     )
                 }
                 if (state.loadingMore) {
@@ -1316,13 +1427,15 @@ private fun MenuCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DiscoverGridCard(
     film: FilmItem,
     compactText: Boolean,
     status: UserFilmStatus?,
     watchProgress: WatchProgressUi?,
-    onOpenFilm: (FilmItem) -> Unit
+    onOpenFilm: (FilmItem) -> Unit,
+    onLongPress: () -> Unit = {}
 ) {
     val titleText = remember(film.nameRu, film.nameOriginal) {
         film.nameRu ?: film.nameOriginal ?: "Без названия"
@@ -1339,7 +1452,10 @@ private fun DiscoverGridCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .clickable { onOpenFilm(film) }
+            .combinedClickable(
+                onClick = { onOpenFilm(film) },
+                onLongClick = onLongPress
+            )
     ) {
         Box(
             modifier = Modifier
@@ -1603,12 +1719,14 @@ private fun LibraryVerticalRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DiscoverVerticalRow(
     film: FilmItem,
     status: UserFilmStatus?,
     watchProgress: WatchProgressUi?,
-    onOpenFilm: (FilmItem) -> Unit
+    onOpenFilm: (FilmItem) -> Unit,
+    onLongPress: () -> Unit = {}
 ) {
     val titleText = remember(film.nameRu, film.nameOriginal) {
         film.nameRu ?: film.nameOriginal ?: "Без названия"
@@ -1625,7 +1743,10 @@ private fun DiscoverVerticalRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .clickable { onOpenFilm(film) },
+            .combinedClickable(
+                onClick = { onOpenFilm(film) },
+                onLongClick = onLongPress
+            ),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.Top
     ) {
@@ -1886,187 +2007,6 @@ private fun UserFilmStatus.toBadgeIconAndDescription(): Pair<Int?, String> {
         UserFilmStatus.REWATCHING -> android.R.drawable.ic_popup_sync to "Пересматриваю"
         UserFilmStatus.ON_HOLD -> android.R.drawable.ic_media_pause to "Отложено"
         UserFilmStatus.DROPPED -> android.R.drawable.ic_menu_close_clear_cancel to "Брошено"
-    }
-}
-
-@Composable
-private fun BottomSectionBar(
-    section: MainSection,
-    isAmoled: Boolean,
-    onSectionSelected: (MainSection) -> Unit
-) {
-    val containerColor = if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainer
-    val librarySelected = section == MainSection.LIBRARY
-    val discoverSelected = section == MainSection.DISCOVER
-    val moreSelected = section == MainSection.MORE
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 24.dp)
-            .padding(top = 2.dp, bottom = 20.dp),
-        contentAlignment = Alignment.BottomCenter
-    ) {
-        Surface(
-            modifier = Modifier.widthIn(min = 260.dp, max = 300.dp),
-            shape = CircleShape,
-            color = containerColor,
-            tonalElevation = 3.dp,
-            shadowElevation = 8.dp
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                BottomSectionButton(
-                    selected = librarySelected,
-                    onClick = { onSectionSelected(MainSection.LIBRARY) },
-                    icon = { selected ->
-                        Icon(
-                            painter = painterResource(
-                                if (selected) hd.kinoshka.app.R.drawable.ic_nav_library_filled
-                                else hd.kinoshka.app.R.drawable.ic_nav_library_outlined
-                            ),
-                            contentDescription = "Библиотека",
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                )
-                BottomSectionButton(
-                    selected = discoverSelected,
-                    onClick = { onSectionSelected(MainSection.DISCOVER) },
-                    icon = { selected ->
-                        Icon(
-                            painter = painterResource(
-                                if (selected) hd.kinoshka.app.R.drawable.ic_nav_discover_filled
-                                else hd.kinoshka.app.R.drawable.ic_nav_discover_outlined
-                            ),
-                            contentDescription = "Обзор",
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                )
-                BottomSectionButton(
-                    selected = moreSelected,
-                    onClick = { onSectionSelected(MainSection.MORE) },
-                    icon = { selected ->
-                        Icon(
-                            painter = painterResource(
-                                if (selected) hd.kinoshka.app.R.drawable.ic_nav_more_filled
-                                else hd.kinoshka.app.R.drawable.ic_nav_more_outlined
-                            ),
-                            contentDescription = "Ещё",
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun BottomSectionButton(
-    selected: Boolean,
-    onClick: () -> Unit,
-    icon: @Composable (Boolean) -> Unit
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (isPressed) 0.88f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessHigh
-        ),
-        label = "press_scale"
-    )
-
-    Box(
-        modifier = Modifier
-            .size(60.dp)
-            .graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
-            }
-            .clip(CircleShape)
-            .clickable(
-                interactionSource = interactionSource,
-                indication = ripple(
-                    bounded = true,
-                    radius = 28.dp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                ),
-                onClick = onClick
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        NavItemGlyph(
-            icon = { icon(selected) },
-            selected = selected
-        )
-    }
-}
-
-@Composable
-private fun NavItemGlyph(
-    icon: @Composable () -> Unit,
-    selected: Boolean
-) {
-    val bg by animateColorAsState(
-        targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "nav_bg"
-    )
-    val tint by animateColorAsState(
-        targetValue = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
-        label = "nav_tint"
-    )
-    val scale by animateFloatAsState(
-        targetValue = if (selected) 1f else 0.85f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
-        label = "nav_scale"
-    )
-    val glyphSize by animateDpAsState(
-        targetValue = if (selected) 50.dp else 44.dp,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
-        label = "nav_glyph_size"
-    )
-    Surface(
-        shape = CircleShape,
-        color = bg
-    ) {
-        CompositionLocalProvider(LocalContentColor provides tint) {
-            Box(
-                modifier = Modifier
-                    .size(glyphSize)
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                icon()
-            }
-        }
     }
 }
 

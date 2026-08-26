@@ -99,8 +99,12 @@ fun KinoshkaAsyncImage(
 ) {
     val context = LocalContext.current
 
-    val fallbackUrls = remember(model) {
-        val str = model?.toString() ?: return@remember emptyList<String>()
+    // Модель может прийти упакованной в ImageRequest с явным размером (кэш-матч
+    // с префетчем) — для цепочки фолбэков достаём сырую ссылку.
+    val rawUrl = (model as? coil.request.ImageRequest)?.data?.toString() ?: model?.toString()
+
+    val fallbackUrls = remember(rawUrl) {
+        val str = rawUrl ?: return@remember emptyList<String>()
         val urls = mutableListOf<String>()
         urls.add(str)
 
@@ -131,13 +135,17 @@ fun KinoshkaAsyncImage(
         fallbackUrls.getOrElse(attemptIndex) { fallbackUrls.last() }
     } else model
 
-    val imageModel: Any? = remember(currentUrl, useOriginalSize) {
-        if (useOriginalSize && currentUrl != null) {
-            ImageRequest.Builder(context)
+    // Пришедший ImageRequest (с размером под кэш префетча) сохраняем как есть;
+    // иначе строим запрос сами — оригинал или строку по умолчанию.
+    val imageModel: Any? = remember(model, currentUrl, useOriginalSize) {
+        when {
+            model is coil.request.ImageRequest -> model
+            useOriginalSize && currentUrl != null -> ImageRequest.Builder(context)
                 .data(currentUrl)
                 .size(Size.ORIGINAL)
                 .build()
-        } else currentUrl
+            else -> currentUrl
+        }
     }
 
     SubcomposeAsyncImage(
