@@ -228,6 +228,8 @@ object AnimeStreamResolver {
             AnimeSourceType.KODIK -> fetchKodikFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibFlatTranslations(shikimoriId, animeTitle)
+            // ddbb rows exist only in movie/QOM playback lists, never in the anime picker.
+            AnimeSourceType.DDBB -> emptyList()
         }
         sourceMediaCache[cacheKey] = CacheEntry(loaded, System.currentTimeMillis())
         return loaded
@@ -383,6 +385,7 @@ object AnimeStreamResolver {
             AnimeSourceType.KODIK -> fetchKodikTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibTranslations(shikimoriId, animeTitle)
+            AnimeSourceType.DDBB -> emptyList()
         }
     }
 
@@ -396,6 +399,7 @@ object AnimeStreamResolver {
             AnimeSourceType.KODIK -> fetchKodikEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle, translationId)
+            AnimeSourceType.DDBB -> emptyList()
         }
     }
 
@@ -438,6 +442,7 @@ object AnimeStreamResolver {
                 } else {
                     resolveAniLibStream(shikimoriId, animeTitle, episodeNumber, translationId)
                 }
+            AnimeSourceType.DDBB -> null
         }
     }
 
