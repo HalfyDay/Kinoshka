@@ -2085,12 +2085,16 @@ class PlayerActivity :
         }
       }
       .map { dub ->
-        val dubTitle = dub.translationTitle ?: dub.translationId.orEmpty()
+        // DIRECT (ddbb/turbo) series catalogs must surface as DDBB rows — hardcoding KODIK
+        // put every turbo dub under the wrong source chip ("у сериалов вся озвучка Kodik").
+        // splitDubTrack also strips "(субтитры)"/Original markers into proper types.
+        val rawTitle = dub.translationTitle ?: dub.translationId.orEmpty()
+        val (dubTitle, kind) = MovieNativeLauncher.splitDubTrack(rawTitle)
         FlatTranslation(
-          source = AnimeSourceType.KODIK,
-          translationId = dub.translationId ?: dubTitle,
-          title = dubTitle,
-          type = if (dubTitle.endsWith("(субтитры)", ignoreCase = true)) "subtitles" else "voice",
+          source = if (context.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
+          translationId = dub.translationId ?: rawTitle,
+          title = if (rawTitle.isBlank()) "Озвучка" else dubTitle,
+          type = kind,
           episodes = emptyList()
         )
       }
