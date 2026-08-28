@@ -44,12 +44,14 @@ import androidx.navigation.navArgument
 import hd.kinoshka.app.BuildConfig
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import hd.kinoshka.app.data.api.ApiClient
+import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.data.update.AppUpdateManager
 import hd.kinoshka.app.data.update.AppRelease
+import hd.kinoshka.app.ui.screens.DownloadsScreen
 import hd.kinoshka.app.data.update.UpdateCheckResult
 import hd.kinoshka.app.ui.screens.AboutScreen
 import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
@@ -344,12 +346,14 @@ fun KinoApp() {
                                 onOpenProfile = { navController.navigate("profile") },
                                 onOpenSettings = { navController.navigate("settings") },
                                 onOpenAbout = { navController.navigate("about") },
+                                onOpenDownloads = { navController.navigate("downloads") },
                                 onUpdateFilters = vm::updateFilters,
                                 onToggleFilterSheet = vm::setShowFilterSheet,
                                 onOpenCalendar = { navController.navigate("anime_calendar") },
                                 onOpenFeed = { navController.navigate("anime_feed") },
                                 onOpenRecommendationsFeed = { navController.navigate("recommendations_feed") },
                                 onLibrarySortSelected = vm::setLibrarySortType,
+                                onHentaiVisibilityChanged = vm::setHentaiVisibleInLibrary,
                                 onRemoveSearchHistory = vm::removeSearchQueryFromHistory,
                                 onClearSearchHistory = vm::clearSearchHistory
                             )
@@ -391,6 +395,15 @@ fun KinoApp() {
                                     }
                                 )
                             }
+                        }
+                        composable(
+                            route = "downloads",
+                            enterTransition = { fadeIn(animationSpec = tween(140)) },
+                            exitTransition = { fadeOut(animationSpec = tween(120)) },
+                            popEnterTransition = { fadeIn(animationSpec = tween(140)) },
+                            popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                        ) {
+                            DownloadsScreen(onBack = { navController.popBackStack() })
                         }
                         composable(
                             route = "anime_calendar",
@@ -449,6 +462,7 @@ fun KinoApp() {
                                 onShareDiagnostics = { feedVm.shareDiagnostics() },
                                 onLoadTastes = feedVm::tasteSnapshot,
                                 onLoadLiked = feedVm::likedTitles,
+                                onRemoveLiked = feedVm::removeLikedEntry,
                                 onPlan = { item -> feedVm.planForLater(item) { vm.refreshAfterPlayerClosed() } }
                             )
                         }
@@ -516,7 +530,8 @@ fun KinoApp() {
                                 shikimoriAuthState = vm.uiState.shikimoriAuthState,
                                 onSaveShikimoriToken = vm::saveShikimoriToken,
                                 onSaveShikimoriSession = vm::saveShikimoriSession,
-                                onLogoutShikimori = vm::logoutShikimori
+                                onLogoutShikimori = vm::logoutShikimori,
+                                isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED
                             )
                         }
                         composable(

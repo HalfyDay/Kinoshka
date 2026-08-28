@@ -35,6 +35,12 @@ fun tasteFeaturesOf(item: FeedItem, genresOverride: List<String>? = null): Taste
         val k = g.trim().lowercase()
         if (k.isNotBlank()) dims += "g:$k"
     }
+    // Теги хентая — собственные измерения вкуса 18+-раздела: лайк по тегу тянет
+    // за собой похожесть по тегам, а не только общее «хентай».
+    item.tags.forEach { t ->
+        val k = t.trim().lowercase()
+        if (k.isNotBlank()) dims += "h:$k"
+    }
     item.countries.forEach { dims += "c:$it" }
     item.year?.let { dims += "d:${it / 10 * 10}s" }
     dims += when {
@@ -81,6 +87,9 @@ class TasteVectorStore(context: Context, scope: String = "GLOBAL") {
     /** Топ измерений вкуса по модулю — для просмотра «что система про меня поняла». */
     fun centroidTop(): List<Pair<String, Double>> =
         dims.entries.sortedByDescending { kotlin.math.abs(it.value) }.take(14).map { it.key to it.value }
+
+    /** Все измерения вкуса (копия) — для сводки «Всё» поверх векторов разделов. */
+    fun centroidDims(): Map<String, Double> = dims.toMap()
 
     fun applyVote(itemId: Int, features: TasteFeatures, liked: Boolean) {
         val delta = if (liked) LIKE_DELTA else DISLIKE_DELTA

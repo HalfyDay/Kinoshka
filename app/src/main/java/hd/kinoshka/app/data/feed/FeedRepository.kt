@@ -8,6 +8,7 @@ import hd.kinoshka.app.data.model.ShikimoriAnimeItem
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -16,14 +17,18 @@ import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
 /**
- * Движок рекомендательного фида (тестовая функция), v2.
+ * Движок рекомендательного фида (тестовая функция), v3.
  *
- * Персонализация:
+ * Персонализация ПО РАЗДЕЛАМ: у фильмов, сериалов, мультиков, аниме и хентая свой
+ * вектор вкуса и свои источники; голоса пишутся в вектор раздела тайтла.
+ *
  *  - [refreshInterests] раз в 12ч дообогащает историю/библиотеку жанрами через details()
  *    и учит веса (статус + оценка) в InterestProfileStore; лайки/дизлайки корректируют их же.
  *  - Страницы строятся РОТАЦИЕЙ: топ-жанры профиля × порядки сортировки × окна годов,
  *    поэтому последовательные страницы почти не повторяются, а пул не ограничен одной выдачей.
- *  - Чипс ALL = 60% интерес-подборка KP / 20% Shikimori ranked (score≥7) / 20% популярное.
+ *  - Чипс ALL — не отдельный раздел, а общий показ: партии фильмов/сериалов/мультиков/
+ *    аниме ранжируются векторами СВОИХ разделов и чередуются в одном списке (хентай —
+ *    только в своей вкладке 18+). Собственного рейтинга у ALL нет.
  *  - Исключается всё из истории/библиотеки пользователя и ранее показанное во фиде.
  */
 class FeedRepository(
@@ -160,40 +165,121 @@ class FeedRepository(
      * [seedIds] — id недавно просмотренного для «похожих», подмешиваются в первые страницы.
      */
     suspend fun page(chip: FeedChip, pageIndex: Int, seedIds: List<Int> = emptyList()): List<FeedItem> =
-        withContext(Dispatchers.IO) {
-            val raw = runCatching { loadPage(chip, pageIndex) }.getOrElse { e ->
-                Log.w(TAG, "page($chip,$pageIndex) failed: ${e.javaClass.simpleName}")
-                emptyList()
-            }
-            val excluded = excludedIds()
-            val hideRussian = runCatching { userState.getUserPreferences().hideRussianContent }.getOrDefault(false)
-            val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-            val dislikedCountries = runCatching { dislikedCountryNames() }.getOrDefault(emptySet())
+        when (chip) {
+            // «Всё» — общий показ партий всех разделов, каждый со своим рейтингом.
+            FeedChip.ALL -> allMergedPage(pageIndex, seedIds)
+            else -> withContext(Dispatchers.IO) {
+                val raw = runCatching { loadPage(chip, pageIndex) }.getOrElse { e ->
+                    Log.w(TAG, "page($chip,$pageIndex) failed: ${e.javaClass.simpleName}")
+                    emptyList()
+                }
+                val items = filterCandidates(raw)
 
-            val items = raw
-                .filter { it.kinopoiskId > 0 && it.kinopoiskId !in excluded }
-                .filter { it.isShowable(currentYear) } // без постера/инфо и невышедшие — мимо
-                .distinctBy { it.kinopoiskId }
-                // Страна, которую стабильно листаешь мимо (вес < порога), больше не приходит.
-                .filterNot { item -> item.countries.any { it in dislikedCountries } }
-                .filterNot { hideRussian && it.isRussian }
-
-            // Похожие к недавнему — в первые две страницы, поверх основного пула.
-            if (pageIndex <= SEED_PAGES && seedIds.isNotEmpty()) {
-                val existing = items.map { it.kinopoiskId }.toSet()
-                val seeds = runCatching { seedItems(seedIds) }.getOrDefault(emptyList())
-                    .asSequence()
-                    .filter { it.isShowable(currentYear) }
-                    .filter { it.kinopoiskId !in excluded && it.kinopoiskId !in existing }
-                    .take(if (pageIndex == 1) SEEDED_COUNT else SEEDED_COUNT / 2)
-                    .toList()
-                    .withReason("сид по похожим к недавнему")
-                // Франшизы сидов резервируются: основной пул не подсовывает их же сезоны.
-                val reserved = seeds.mapNotNull { franchiseKeyOf(it.title) }.toSet()
-                return@withContext seeds + rankBatch(chip, items, reserved)
+                // Похожие к недавнему — в первые две страницы, поверх основного пула.
+                if (pageIndex <= SEED_PAGES && seedIds.isNotEmpty()) {
+                    val existing = items.map { it.kinopoiskId }.toSet()
+                    val excluded = excludedIds()
+                    val seeds = runCatching { seedItems(seedIds) }.getOrDefault(emptyList())
+                        .asSequence()
+                        .filter { it.isShowable(java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)) }
+                        .filter { it.kinopoiskId !in excluded && it.kinopoiskId !in existing }
+                        .take(if (pageIndex == 1) SEEDED_COUNT else SEEDED_COUNT / 2)
+                        .toList()
+                        .withReason("сид по похожим к недавнему")
+                    // Франшизы сидов резервируются: основной пул не подсовывает их же сезоны.
+                    val reserved = seeds.mapNotNull { franchiseKeyOf(it.title) }.toSet()
+                    return@withContext seeds + rankBatch(chip, items, reserved)
+                }
+                rankBatch(chip, items)
             }
-            rankBatch(chip, items)
         }
+
+    /**
+     * Общая страница «Всё»: сырые партии разделов (кроме хентая) грузятся ПАРАЛЛЕЛЬНО,
+     * каждая ранжируется вектором СВОЕГО раздела, затем очереди чередуются по кругу —
+     * порядок внутри раздела сохраняется, а список выглядит единым. Сиды «похожих»
+     * (только первые страницы) раскладываются по своим разделам.
+     */
+    private suspend fun allMergedPage(pageIndex: Int, seedIds: List<Int>): List<FeedItem> =
+        withContext(Dispatchers.IO) {
+            kotlinx.coroutines.coroutineScope {
+                val buckets = FeedChip.ALL_MIX.associateWith { chip ->
+                    async {
+                        runCatching { rawSectionPage(chip, pageIndex) }.getOrElse { e ->
+                            Log.w(TAG, "all page($chip,$pageIndex) failed: ${e.javaClass.simpleName}")
+                            emptyList()
+                        }
+                    }.await()
+                }.mapValues { (_, raw) -> filterCandidates(raw) }
+
+                var prepared = buckets
+                val reserved = mutableSetOf<String>()
+                val seedBudget = if (pageIndex <= SEED_PAGES && seedIds.isNotEmpty()) {
+                    if (pageIndex == 1) SEEDED_COUNT else SEEDED_COUNT / 2
+                } else 0
+                if (seedBudget > 0) {
+                    val excluded = excludedIds()
+                    val seeds = runCatching { seedItems(seedIds) }.getOrDefault(emptyList())
+                        .asSequence()
+                        .filter { it.isShowable(java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)) }
+                        .filter { it.kinopoiskId !in excluded }
+                        .take(seedBudget)
+                        .toList()
+                    reserved += seeds.mapNotNull { franchiseKeyOf(it.title) }
+                    val seedIdsSet = seeds.map { it.kinopoiskId }.toSet()
+                    val bySection = seeds.groupBy { sectionOf(it) }
+                    prepared = buckets.mapValues { (chip, items) ->
+                        (bySection[chip].orEmpty() + items.filterNot { it.kinopoiskId in seedIdsSet })
+                            .distinctBy { it.kinopoiskId }
+                    }
+                }
+
+                val ranked = prepared.mapValues { (chip, items) -> rankBatch(chip, items, reserved) }
+                val queues = FeedChip.ALL_MIX.map { ArrayDeque(ranked[it].orEmpty()) }
+                val merged = mutableListOf<FeedItem>()
+                while (queues.any { it.isNotEmpty() }) {
+                    queues.forEach { q -> q.removeFirstOrNull()?.let { merged += it } }
+                }
+                merged
+            }
+        }
+
+    /** Сырая страница одного раздела (без фильтров и ранжирования) — источник для «Всё». */
+    private suspend fun rawSectionPage(chip: FeedChip, pageIndex: Int): List<FeedItem> = when (chip) {
+        FeedChip.FILMS -> kpInterestPage(pageIndex - 1, type = "MOVIE", label = "Фильмы", section = chip)
+        FeedChip.SERIES -> kpInterestPage(pageIndex - 1, type = "TV_SERIES", label = "Сериалы", section = chip)
+        FeedChip.CARTOONS -> kpCartoonsPage(pageIndex)
+        FeedChip.ANIME -> shikiRankedPage(pageIndex)
+        else -> emptyList()
+    }
+
+    /**
+     * Раздел тайтла для маршрутизации голосов: явный section, иначе вывод по данным
+     * карточки (сидам «похожих» и спас-популярному section не проставляется).
+     * Метка 18+ всегда означает хентай, аниме-id — аниме.
+     */
+    fun sectionOf(item: FeedItem): FeedChip =
+        item.section ?: when {
+            item.isAdultContent -> FeedChip.HENTAI
+            item.isAnime -> FeedChip.ANIME
+            item.isSeriesLike -> FeedChip.SERIES
+            else -> FeedChip.FILMS
+        }
+
+    /** Общие отсечения партии: битые id, история/виденное, без постера/анонсы, нелюбимые страны. */
+    private suspend fun filterCandidates(raw: List<FeedItem>): List<FeedItem> {
+        val excluded = excludedIds()
+        val hideRussian = runCatching { userState.getUserPreferences().hideRussianContent }.getOrDefault(false)
+        val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        val dislikedCountries = runCatching { dislikedCountryNames() }.getOrDefault(emptySet())
+        return raw
+            .filter { it.kinopoiskId > 0 && it.kinopoiskId !in excluded }
+            .filter { it.isShowable(currentYear) } // без постера/инфо и невышедшие — мимо
+            .distinctBy { it.kinopoiskId }
+            // Страна, которую стабильно листаешь мимо (вес < порога), больше не приходит.
+            .filterNot { item -> item.countries.any { it in dislikedCountries } }
+            .filterNot { hideRussian && it.isRussian }
+    }
 
     /**
      * Ранжирование партии: скор вкуса (центроид + SAR-похожесть на конкретные лайки +
@@ -251,33 +337,21 @@ class FeedRepository(
      * упёрлась в виденное и партия выходит тощей.
      */
     suspend fun rescuePopular(pageIndex: Int): List<FeedItem> = withContext(Dispatchers.IO) {
-        val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-        val excluded = runCatching { excludedIds() }.getOrDefault(emptySet())
-        val dislikedCountries = runCatching { dislikedCountryNames() }.getOrDefault(emptySet())
-        val hideRussian = runCatching { userState.getUserPreferences().hideRussianContent }.getOrDefault(false)
-        runCatching { kpPopularPage(pageIndex) }.getOrElse { emptyList() }
-            .asSequence()
-            .filter { it.kinopoiskId > 0 && it.kinopoiskId !in excluded }
-            .filter { it.isShowable(currentYear) }
-            .filterNot { item -> item.countries.any { it in dislikedCountries } }
-            .filterNot { hideRussian && it.isRussian }
-            .toList()
+        val raw = runCatching { kpPopularPage(pageIndex) }.getOrElse { emptyList() }
+        filterCandidates(raw)
     }
 
     private suspend fun loadPage(chip: FeedChip, pageIndex: Int): List<FeedItem> {
         val slot = (pageIndex - 1).coerceAtLeast(0)
         return when (chip) {
-            FeedChip.FILMS -> kpInterestPage(slot, type = "MOVIE", adult = false, label = "Фильмы")
-            FeedChip.SERIES -> kpInterestPage(slot, type = "TV_SERIES", adult = false, label = "Сериалы")
+            FeedChip.FILMS -> kpInterestPage(slot, type = "MOVIE", label = "Фильмы", section = chip)
+            FeedChip.SERIES -> kpInterestPage(slot, type = "TV_SERIES", label = "Сериалы", section = chip)
             FeedChip.CARTOONS -> kpCartoonsPage(pageIndex)
-            FeedChip.ALL -> when (slot % 5) {
-                in 0..2 -> kpInterestPage(slot / 5 * 5 + slot % 5, type = "ALL", adult = false, label = "Всё")
-                3 -> shikiRankedPage(slot / 5 + 1)
-                else -> kpPopularPage(slot / 5 + 1)
-            }
             FeedChip.ANIME -> shikiRankedPage(pageIndex)
             // Аниме-вкладка разрешает этти (censored=false); хентай вычищает каталог-гард.
             FeedChip.HENTAI -> shikiHentaiPage(pageIndex)
+            // «Всё» строится allMergedPage — сюда не доходит (см. page()).
+            FeedChip.ALL -> emptyList()
         }
     }
 
@@ -285,9 +359,14 @@ class FeedRepository(
      * Интерес-страница KP: слот раскладывается в (apiPage × жанр × порядок × окно годов),
      * каждый чётный слот дополнительно зажимает выдачу любимой страной. Ранние слоты дают
      * лучшие жанры с RATING, дальше — разнообразие без потери качества.
-     * [label] — имя чипса для диагностической метки.
+     * [label] — имя чипса для диагностической метки, [section] — проставляемый раздел.
      */
-    private suspend fun kpInterestPage(slot: Int, type: String, adult: Boolean, label: String): List<FeedItem> {
+    private suspend fun kpInterestPage(
+        slot: Int,
+        type: String,
+        label: String,
+        section: FeedChip
+    ): List<FeedItem> {
         val genres = interestGenreIds()
         if (genres.isEmpty()) {
             // Даже справочник фильтров недоступен — популярное как последний рубеж.
@@ -313,17 +392,17 @@ class FeedRepository(
         val topCountry = if (slot % 2 == 1) sampledPositiveCountry() else null
         val page = kpSearchTyped(
             order = order,
-            typeHint = type.takeIf { it != "ALL" },
+            typeHint = type,
             genreId = genreId,
             yearFrom = years.first,
             yearTo = years.second,
             page = apiPage,
-            adult = adult,
+            adult = false,
             countryId = topCountry?.first
         )
         // Узкое окно/нишевый жанр могут дать пусто — страховка популярным.
         return page.ifEmpty { kpPopularPage(apiPage) }
-            .map { it.copy(sourceGenre = genreName) }
+            .map { it.copy(sourceGenre = genreName, section = section) }
             .withReason(
                 buildList {
                     add("$label · жанр $genreName")
@@ -351,7 +430,7 @@ class FeedRepository(
             page = pageIndex,
             adult = false
         ).withReason("Мультики · $order · ${years.first}–${years.second}")
-            .map { it.copy(sourceGenre = "мультфильм") }
+            .map { it.copy(sourceGenre = "мультфильм", section = FeedChip.CARTOONS) }
     }
 
     /**
@@ -371,7 +450,14 @@ class FeedRepository(
     ): List<FeedItem> {
         var attempt = 0
         while (true) {
-            val typeValue: String? = if (typeHint == null) null else KpTypeProbe.current()
+            // Пробник только для «MOVIE» (единственное значение, которое текущий API
+            // отвечает 400); «TV_SERIES» проходит и обязан идти как есть — иначе запросы
+            // фильмов и сериалов схлопываются в один и тот же URL.
+            val typeValue: String? = when (typeHint) {
+                null -> null
+                "MOVIE" -> KpTypeProbe.current()
+                else -> typeHint
+            }
             try {
                 return films.search(
                     order = order,
@@ -515,6 +601,7 @@ class FeedRepository(
                 anime.search(order = "popularity", censored = false, page = pageIndex)
                     .map { it.toFeedItem(adult = false) }
             }
+            .map { it.copy(section = FeedChip.ANIME) }
             .withReason("Shikimori ranked · score≥$SHIKI_MIN_SCORE · этти разрешён")
     }
 
@@ -527,7 +614,14 @@ class FeedRepository(
                     .map { it.toFeedItem(adult = true) }
             }
             // Штамп жанра: вектор хентай-раздела учится на своём измерении.
-            .map { it.copy(sourceGenre = "хентай") }
+            .map { it.copy(sourceGenre = "хентай", section = FeedChip.HENTAI) }
+            // Теги каталога hanime: показ на карточке + измерения вкуса 18+-раздела.
+            .map { item ->
+                val tags = runCatching {
+                    hd.kinoshka.app.data.source.HentaiStreamResolver.hentaiTags(item.originalTitle, item.title)
+                }.getOrDefault(emptyList())
+                item.copy(tags = tags)
+            }
             .withReason("Shikimori hentai")
     }
 

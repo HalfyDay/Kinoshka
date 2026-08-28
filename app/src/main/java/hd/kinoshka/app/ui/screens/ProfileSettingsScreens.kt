@@ -87,6 +87,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -132,7 +133,8 @@ fun ProfileScreen(
     shikimoriAuthState: hd.kinoshka.app.data.local.ShikimoriAuthState = hd.kinoshka.app.data.local.ShikimoriAuthState(),
     onSaveShikimoriToken: (String) -> Unit = {},
     onSaveShikimoriSession: (token: String, userId: Int, nickname: String, avatarUrl: String?) -> Unit = { _, _, _, _ -> },
-    onLogoutShikimori: () -> Unit = {}
+    onLogoutShikimori: () -> Unit = {},
+    isAmoled: Boolean = false
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -194,13 +196,17 @@ fun ProfileScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(
-                            androidx.compose.ui.graphics.Brush.linearGradient(
-                                colors = listOf(
-                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                    MaterialTheme.colorScheme.surface
+                            if (isAmoled) {
+                                SolidColor(MaterialTheme.colorScheme.surface)
+                            } else {
+                                androidx.compose.ui.graphics.Brush.linearGradient(
+                                    colors = listOf(
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                        MaterialTheme.colorScheme.surface
+                                    )
                                 )
-                            )
+                            }
                         )
                         .padding(20.dp)
                 ) {

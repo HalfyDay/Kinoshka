@@ -72,6 +72,17 @@ object RutubeClipSource {
             .getOrNull()
     }
 
+    /** Известная страница/embed-ссылка Rutube → HLS-манифест. null — не Rutube или резолв не удался. */
+    suspend fun resolveClip(url: String): RutubeClip? {
+        val videoId = videoIdFromUrl(url) ?: return null
+        return fetchPlayOptions(videoId)
+    }
+
+    /** id видео из ссылок вида rutube.ru/video/&lt;id&gt;/… и rutube.ru/play/embed/&lt;id&gt;/… */
+    fun videoIdFromUrl(url: String): String? =
+        Regex("rutube\\.ru/(?:video|play/embed)/([0-9a-f]{32})", RegexOption.IGNORE_CASE)
+            .find(url)?.groupValues?.get(1)
+
     /** play/options → HLS-манифест + обложка. */
     private fun fetchPlayOptions(videoId: String): RutubeClip? {
         val body = httpGet("$BASE/api/play/options/$videoId/?format=json") ?: return null

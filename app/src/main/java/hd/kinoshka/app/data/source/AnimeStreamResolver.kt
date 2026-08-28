@@ -29,6 +29,10 @@ import java.util.concurrent.TimeUnit
 object AnimeStreamResolver {
 
     private const val TAG = "AnimeStreamResolver"
+
+    // AniStar: одна озвучка на статью, стабильные id для persisted-ключей плеера.
+    private const val ANISTAR_TRANSLATION_ID = "anistar"
+    private const val ANISTAR_TITLE = "Русская озвучка"
     // Kodik's de-facto top variant (resolveStream also prefers the 720p track); used as the
     // quality-badge fallback when a player link carries no explicit quality tag.
     private const val KODIK_DEFAULT_QUALITY = "720p"
@@ -228,8 +232,14 @@ object AnimeStreamResolver {
             AnimeSourceType.KODIK -> fetchKodikFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibFlatTranslations(shikimoriId, animeTitle)
-            // ddbb rows exist only in movie/QOM playback lists, never in the anime picker.
-            AnimeSourceType.DDBB -> emptyList()
+            AnimeSourceType.ANISTAR -> fetchAniStarFlatTranslations(animeTitle)
+            // ddbb/hentai rows exist only in movie/QOM playback lists, never in the anime picker.
+            AnimeSourceType.DDBB,
+            AnimeSourceType.HENTAI_ALLHENTAI,
+            AnimeSourceType.HENTAI_HENTAIDREAM,
+            AnimeSourceType.HENTAI_HENTAIZ,
+            AnimeSourceType.HENTAI_HANIME1,
+            AnimeSourceType.HENTAI_OPPAI -> emptyList()
         }
         sourceMediaCache[cacheKey] = CacheEntry(loaded, System.currentTimeMillis())
         return loaded
@@ -385,7 +395,14 @@ object AnimeStreamResolver {
             AnimeSourceType.KODIK -> fetchKodikTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibTranslations(shikimoriId, animeTitle)
-            AnimeSourceType.DDBB -> emptyList()
+            AnimeSourceType.ANISTAR -> fetchAniStarTranslations(animeTitle)
+            // ddbb/hentai rows are QOM voiceovers with direct links — nothing to fetch here.
+            AnimeSourceType.DDBB,
+            AnimeSourceType.HENTAI_ALLHENTAI,
+            AnimeSourceType.HENTAI_HENTAIDREAM,
+            AnimeSourceType.HENTAI_HENTAIZ,
+            AnimeSourceType.HENTAI_HANIME1,
+            AnimeSourceType.HENTAI_OPPAI -> emptyList()
         }
     }
 
@@ -399,7 +416,14 @@ object AnimeStreamResolver {
             AnimeSourceType.KODIK -> fetchKodikEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle, translationId)
-            AnimeSourceType.DDBB -> emptyList()
+            AnimeSourceType.ANISTAR -> fetchAniStarEpisodes(animeTitle)
+            // ddbb/hentai rows are QOM voiceovers with direct links — nothing to fetch here.
+            AnimeSourceType.DDBB,
+            AnimeSourceType.HENTAI_ALLHENTAI,
+            AnimeSourceType.HENTAI_HENTAIDREAM,
+            AnimeSourceType.HENTAI_HENTAIZ,
+            AnimeSourceType.HENTAI_HANIME1,
+            AnimeSourceType.HENTAI_OPPAI -> emptyList()
         }
     }
 
@@ -436,13 +460,20 @@ object AnimeStreamResolver {
         when (sourceType) {
             AnimeSourceType.KODIK -> resolveKodikStream(shikimoriId, animeTitle, translationId, episodeNumber)
             AnimeSourceType.ANILIBERTY -> resolveAniLibertyStream(shikimoriId, animeTitle, episodeNumber, translationId)
+            AnimeSourceType.ANISTAR -> resolveAniStarStream(animeTitle, episodeNumber)
             AnimeSourceType.ANILIB ->
                 if (translationId.startsWith("L")) {
                     resolveAniLibLegacyStream(shikimoriId, animeTitle, translationId, episodeNumber)
                 } else {
                     resolveAniLibStream(shikimoriId, animeTitle, episodeNumber, translationId)
                 }
-            AnimeSourceType.DDBB -> null
+            AnimeSourceType.DDBB,
+            // Hentai tracks carry direct links played by the QOM path — never resolved here.
+            AnimeSourceType.HENTAI_ALLHENTAI,
+            AnimeSourceType.HENTAI_HENTAIDREAM,
+            AnimeSourceType.HENTAI_HENTAIZ,
+            AnimeSourceType.HENTAI_HANIME1,
+            AnimeSourceType.HENTAI_OPPAI -> null
         }
     }
 
@@ -537,6 +568,79 @@ object AnimeStreamResolver {
                 )
             )
         }
+    }
+
+    // ============================ AniStar ============================
+    // v30.astar.bz: своя студия озвучки, статьи DLE с плеером-iframe (см. AniStarResolver).
+    // Одна озвучка на статью → один FlatTranslation "Русская озвучка"; номера серий — из меток.
+
+    private suspend fun fetchAniStarFlatTranslations(animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        runCatching {
+            val episodes = AniStarResolver.findEpisodes(buildAnimeSearchQueries(animeTitle))
+            if (episodes == null || episodes.isEmpty()) {
+                Log.w(TAG, "[AniStar] no episodes found for \"$animeTitle\"")
+                return@runCatching emptyList<FlatTranslation>()
+            }
+            Log.i(TAG, "[AniStar] found \"${episodes.first().label}\"… ${episodes.size} episodes for \"$animeTitle\"")
+            listOf(
+                FlatTranslation(
+                    source = AnimeSourceType.ANISTAR,
+                    translationId = ANISTAR_TRANSLATION_ID,
+                    title = ANISTAR_TITLE,
+                    type = "voice",
+                    episodes = episodes.map { ep ->
+                        AnimeEpisode(
+                            number = ep.number,
+                            title = ep.label,
+                            maxQuality = ep.bestQuality
+                        )
+                    }
+                )
+            )
+        }.getOrElse { e ->
+            Log.e(TAG, "[AniStar] search failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    private suspend fun fetchAniStarTranslations(animeTitle: String): List<AnimeTranslation> = withContext(Dispatchers.IO) {
+        val episodes = runCatching { AniStarResolver.findEpisodes(buildAnimeSearchQueries(animeTitle)) }.getOrNull()
+        if (episodes.isNullOrEmpty()) return@withContext emptyList()
+        listOf(
+            AnimeTranslation(
+                id = ANISTAR_TRANSLATION_ID,
+                title = ANISTAR_TITLE,
+                type = "voice",
+                episodesCount = episodes.size
+            )
+        )
+    }
+
+    private suspend fun fetchAniStarEpisodes(animeTitle: String): List<AnimeEpisode> = withContext(Dispatchers.IO) {
+        runCatching { AniStarResolver.findEpisodes(buildAnimeSearchQueries(animeTitle)) }.getOrNull()
+            ?.map { ep -> AnimeEpisode(number = ep.number, title = ep.label, maxQuality = ep.bestQuality) }
+            ?.sortedBy { it.number }
+            ?: emptyList()
+    }
+
+    private suspend fun resolveAniStarStream(animeTitle: String, episodeNumber: Int): AnimeMediaStream? = withContext(Dispatchers.IO) {
+        Log.i(TAG, "[AniStar] resolveStream: \"$animeTitle\", ep=$episodeNumber")
+        val episodes = runCatching { AniStarResolver.findEpisodes(buildAnimeSearchQueries(animeTitle)) }.getOrNull()
+            ?: return@withContext null
+        val episode = episodes.firstOrNull { it.number == episodeNumber }
+            ?: episodes.getOrNull(episodeNumber - 1)
+            ?: run {
+                Log.w(TAG, "[AniStar] episode $episodeNumber not found (${episodes.size} available)")
+                return@withContext null
+            }
+        val quality = episode.bestQuality
+        val url = episode.bestUrl ?: return@withContext null
+        AnimeMediaStream(
+            url = url,
+            qualities = episode.qualities,
+            quality = quality ?: "Auto",
+            headers = AniStarResolver.streamHeaders()
+        )
     }
 
     private suspend fun fetchAniLibertyTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> = withContext(Dispatchers.IO) {
@@ -1090,7 +1194,7 @@ object AnimeStreamResolver {
         }.getOrNull()
     }
 
-    private fun buildAnimeSearchQueries(animeTitle: String): List<String> {
+    internal fun buildAnimeSearchQueries(animeTitle: String): List<String> {
         val raw = animeTitle.trim()
         if (raw.isBlank()) return emptyList()
 
@@ -2028,8 +2132,21 @@ object AnimeStreamResolver {
         val seeders: Int,
         val leechers: Int,
         val magnet: String?,
-        val torrentUrl: String?
-    )
+        val torrentUrl: String?,
+        /** Диапазон серий / название раздачи («1-12», имя релиза у Rutor). */
+        val label: String? = null,
+        /** btih-хэш — из него строится magnet, когда ссылка на .torrent умерла. */
+        val hash: String? = null,
+        /** Дата залития («2024-01-02»). */
+        val uploadedAt: String? = null,
+        /** Каталог-источник раздачи («AniLiberty», «AniStar», «Rutor»). */
+        val source: String = "AniLiberty"
+    ) {
+        /** Основная ссылка для отдачи в ОС: magnet предпочтительнее — живёт дольше .torrent. */
+        val primaryUri: String? get() = magnet ?: torrentUrl
+        /** Дополнительная ссылка (когда есть обе). */
+        val secondaryUri: String? get() = if (magnet != null) torrentUrl else null
+    }
 
     internal suspend fun kodikSearchByKinopoiskId(kinopoiskId: Int): List<JSONObject> {
         val tokens = loadKodikTokens()
@@ -2130,9 +2247,6 @@ object AnimeStreamResolver {
                 ?: return@runCatching emptyList()
             (0 until torrents.length()).mapNotNull { i ->
                 val t = torrents.optJSONObject(i) ?: return@mapNotNull null
-                val magnet = t.optString("magnet").ifBlank { t.optString("magnet_link") }.takeIf { it.isNotBlank() }
-                val torrentUrl = t.optString("torrent_url").ifBlank { t.optString("url") }.takeIf { it.isNotBlank() }
-                if (magnet == null && torrentUrl == null) return@mapNotNull null
 
                 // Parse quality string / object (AniLiberty sometimes formats quality as {"value":"720p","description":"720p"})
                 val qObj = t.optJSONObject("quality")
@@ -2149,13 +2263,34 @@ object AnimeStreamResolver {
                 }
                 val quality = rawQuality.ifBlank { t.optString("resolution") }.ifBlank { "?" }
 
+                // Размер приходит либо готовой строкой («1.36 GB»), либо числом байт.
+                val sizeStr = t.optString("size").ifBlank { t.optString("total_size") }
+                val size = sizeStr.toLongOrNull()
+                    ?.takeIf { it > 0 }
+                    ?.let { hd.kinoshka.app.data.download.formatBytes(it) }
+                    ?: sizeStr.ifBlank { "?" }
+
+                val hash = t.optString("hash").takeIf { it.isNotBlank() }
+                // magnet строится из btih-хэша: у AniLiberty поля magnet часто нет вовсе.
+                val magnet = t.optString("magnet").ifBlank { t.optString("magnet_link") }.takeIf { it.isNotBlank() }
+                    ?: hash?.takeIf { it.length == 40 || it.length == 32 }
+                        ?.let { "magnet:?xt=urn:btih:${it.lowercase()}" }
+                var torrentUrl = t.optString("torrent_url").ifBlank { t.optString("url") }.takeIf { it.isNotBlank() }
+                if (torrentUrl?.startsWith("/") == true) torrentUrl = "https://anilibria.top$torrentUrl"
+
+                if (magnet == null && torrentUrl == null) return@mapNotNull null
+
                 TorrentLink(
                     quality = quality,
-                    size = t.optString("size").ifBlank { t.optString("total_size") }.ifBlank { "?" },
+                    size = size,
                     seeders = t.optInt("seeders", t.optInt("peers", 0)),
                     leechers = t.optInt("leechers", 0),
                     magnet = magnet,
-                    torrentUrl = torrentUrl
+                    torrentUrl = torrentUrl,
+                    label = t.optString("description").ifBlank { null },
+                    hash = hash,
+                    uploadedAt = t.optString("uploaded_datetime").takeIf { it.isNotBlank() }?.substringBefore("T"),
+                    source = "AniLiberty"
                 )
             }
         }.getOrDefault(emptyList())
@@ -2223,7 +2358,9 @@ object AnimeStreamResolver {
                         seeders = seeders,
                         leechers = leechers,
                         magnet = magnet,
-                        torrentUrl = fullTorrentUrl
+                        torrentUrl = fullTorrentUrl,
+                        label = tTitle.takeIf { it.isNotBlank() },
+                        source = "Rutor"
                     )
                 )
             }

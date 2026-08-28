@@ -95,6 +95,9 @@ fun KinoshkaAsyncImage(
     /** When true, requests the full-resolution image (no Coil downsampling). Use on large/detail views. */
     useOriginalSize: Boolean = false,
     fadeDurationMs: Int = 520,
+    /** Рисуется, когда [model] и его внутренняя цепочка фолбэков не загрузились
+     *  (например, превью YouTube-трейлера недоступно без VPN — показываем постер тайтла). */
+    fallbackModel: Any? = null,
     onSuccess: ((AsyncImagePainter.State.Success) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -181,6 +184,14 @@ fun KinoshkaAsyncImage(
                     attemptIndex++
                 }
                 Box(modifier = Modifier.fillMaxSize().shimmerEffect())
+            } else if (fallbackModel != null) {
+                KinoshkaAsyncImage(
+                    model = fallbackModel,
+                    contentDescription = contentDescription,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = contentScale,
+                    fadeDurationMs = fadeDurationMs
+                )
             } else {
                 Box(
                     modifier = Modifier

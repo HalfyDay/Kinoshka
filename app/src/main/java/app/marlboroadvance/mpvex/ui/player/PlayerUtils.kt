@@ -180,6 +180,9 @@ internal fun Uri.resolveUri(context: Context): String? {
     "file" -> path
     "content" -> openContentFd(context)
     "data" -> "data://$schemeSpecificPart"
+    // mpv EDL (edl://…;!new_stream;…) — склейка раздельных видео/аудио дорожек
+    // (HD-трейлеры YouTube в Kino). В AAR-овском Utils.PROTOCOLS этой схемы нет.
+    "edl" -> toString()
     in Utils.PROTOCOLS -> toString()
     else -> {
       Log.e(TAG, "Unsupported URI scheme: $scheme")

@@ -1,7 +1,12 @@
 ﻿package hd.kinoshka.app.ui.screens
 
+import android.app.Activity
+import android.content.ContextWrapper
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -82,6 +87,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -96,6 +102,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import hd.kinoshka.app.ui.components.BottomNavPill
 import hd.kinoshka.app.ui.components.NavPillItem
 import androidx.compose.material3.Tab
@@ -113,6 +120,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import hd.kinoshka.app.data.model.FilterItem
+import hd.kinoshka.app.data.model.ANIME_GENRE_NAME
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
@@ -242,6 +250,7 @@ private data class GridMetrics(
 
 private val FloatingBottomContentPadding = 112.dp
 private val SearchChromeHeight = 70.dp
+private val ExitConfirmWindowMs = 2_000L
 
 @Composable
 fun HomeScreen(
@@ -262,6 +271,8 @@ fun HomeScreen(
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAbout: () -> Unit,
+    // Офлайн-библиотека: активные скачивания и скачанные серии.
+    onOpenDownloads: () -> Unit = {},
     onUpdateFilters: (SearchFilterState) -> Unit = {},
     onToggleFilterSheet: (Boolean) -> Unit = {},
     onOpenCalendar: () -> Unit = {},
@@ -269,6 +280,7 @@ fun HomeScreen(
     // Тестовый TikTok-фид рекомендаций: кнопка «Лента» в нижней пилюле после «Обзора»
     onOpenRecommendationsFeed: () -> Unit = {},
     onLibrarySortSelected: (hd.kinoshka.app.data.local.LibrarySortType) -> Unit = {},
+    onHentaiVisibilityChanged: (Boolean) -> Unit = {},
     onInstantSearch: (String) -> Unit = {},
     onRemoveSearchHistory: (String) -> Unit = {},
     onClearSearchHistory: () -> Unit = {}
@@ -312,6 +324,30 @@ fun HomeScreen(
             kotlinx.coroutines.delay(350)
             onInstantSearch(discoverQuery)
         }
+    }
+    val isDiscoverSearchActive = section == MainSection.DISCOVER && discoverQuery.isNotEmpty()
+    // Root screen: a single Back gesture must not kill the app. The first Back shows a hint and
+    // arms a short confirm window; a second Back inside it exits. While a Discover search is
+    // active this is disabled so Back closes the search instead (handler below).
+    var lastBackExitAttemptAt by remember { mutableStateOf(0L) }
+    val context = LocalContext.current
+    BackHandler(enabled = !isDiscoverSearchActive) {
+        val now = System.currentTimeMillis()
+        if (now - lastBackExitAttemptAt < ExitConfirmWindowMs) {
+            context.findActivity()?.finish()
+        } else {
+            lastBackExitAttemptAt = now
+            Toast.makeText(context, "Повторите жест «Назад», чтобы закрыть приложение", Toast.LENGTH_SHORT).show()
+        }
+    }
+    // System Back on an active Discover search closes the search and results (reload the
+    // discover feed) instead of exiting.
+    BackHandler(enabled = isDiscoverSearchActive) {
+        isSearchFocused = false
+        focusManager.clearFocus()
+        discoverQuery = ""
+        onQueryChange("")
+        onDiscoverCategorySelected(state.discoverCategory)
     }
     var libraryTab by rememberSaveable { mutableStateOf(LibraryTab.WATCHING) }
     var libraryFilter by rememberSaveable { mutableStateOf(LibraryFilterType.ALL) }
@@ -411,13 +447,17 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f),
-                            MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.16f),
-                            MaterialTheme.colorScheme.background
+                    if (state.themeMode == AppThemeMode.AMOLED) {
+                        SolidColor(MaterialTheme.colorScheme.background)
+                    } else {
+                        Brush.verticalGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f),
+                                MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.16f),
+                                MaterialTheme.colorScheme.background
+                            )
                         )
-                    )
+                    }
                 )
                 .padding(top = innerPadding.calculateTopPadding())
                 .imePadding()
@@ -448,6 +488,8 @@ fun HomeScreen(
                                 librarySort = sortType
                                 onLibrarySortSelected(sortType)
                             },
+                            showHentaiInLibrary = state.showHentaiInLibrary,
+                            onHentaiVisibilityChanged = onHentaiVisibilityChanged,
                             isFilterActive = state.filterState.isActive,
                             onFilterClick = { onToggleFilterSheet(true) },
                             onQueryChange = { value ->
@@ -547,7 +589,8 @@ fun HomeScreen(
                                 query = state.query.trim(),
                                 onOpenProfile = onOpenProfile,
                                 onOpenSettings = onOpenSettings,
-                                onOpenAbout = onOpenAbout
+                                onOpenAbout = onOpenAbout,
+                                onOpenDownloads = onOpenDownloads
                             )
                         }
                     }
@@ -624,6 +667,8 @@ private fun SearchRow(
     onLibraryFilterSelected: ((LibraryFilterType) -> Unit)? = null,
     librarySort: hd.kinoshka.app.data.local.LibrarySortType = hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED,
     onLibrarySortSelected: ((hd.kinoshka.app.data.local.LibrarySortType) -> Unit)? = null,
+    showHentaiInLibrary: Boolean = true,
+    onHentaiVisibilityChanged: ((Boolean) -> Unit)? = null,
     isFilterActive: Boolean = false,
     onFilterClick: (() -> Unit)? = null,
     onFocusChanged: ((Boolean) -> Unit)? = null
@@ -799,6 +844,23 @@ private fun SearchRow(
                             }
                         )
                     }
+                    HorizontalDivider()
+                    // Показ 18+-тайтлов в библиотеке: меню не закрываем — можно донастроить сортировку.
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "Показывать хентай",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        },
+                        trailingIcon = {
+                            Switch(
+                                checked = showHentaiInLibrary,
+                                onCheckedChange = null
+                            )
+                        },
+                        onClick = { onHentaiVisibilityChanged?.invoke(!showHentaiInLibrary) }
+                    )
                 }
             }
 
@@ -1343,9 +1405,15 @@ private fun MoreContent(
     query: String,
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenAbout: () -> Unit
+    onOpenAbout: () -> Unit,
+    onOpenDownloads: () -> Unit = {}
 ) {
     val allItems = listOf(
+        MoreMenuItem(
+            title = "Загрузки",
+            subtitle = "Скачанные серии и активные загрузки",
+            onClick = onOpenDownloads
+        ),
         MoreMenuItem(
             title = "Профиль",
             subtitle = "Иконка профиля и график активности",
@@ -2203,7 +2271,11 @@ private fun SearchFilterBottomSheet(
     var countrySearchQuery by remember { mutableStateOf("") }
 
     val sortedGenres = remember(availableGenres) {
-        availableGenres.sortedBy { it.genre.orEmpty().lowercase(Locale("ru")) }
+        // «Аниме» — не жанр для Kinopoisk-поиска: такие результаты вырезаются в FilmsRepository,
+        // чип лишь обещал бы пустую выдачу.
+        availableGenres
+            .filter { !it.genre.isNullOrBlank() && !it.genre.equals(ANIME_GENRE_NAME, ignoreCase = true) }
+            .sortedBy { it.genre.orEmpty().lowercase(Locale("ru")) }
     }
     val sortedCountries = remember(availableCountries) {
         availableCountries.sortedBy { it.country.orEmpty().lowercase(Locale("ru")) }
@@ -2682,6 +2754,14 @@ private fun SearchFilterBottomSheet(
             }
             Spacer(modifier = Modifier.height(8.dp))
         }
+    }
+}
+
+private tailrec fun android.content.Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }
 

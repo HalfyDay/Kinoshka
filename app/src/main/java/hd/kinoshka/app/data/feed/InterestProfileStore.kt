@@ -9,8 +9,30 @@ import org.json.JSONObject
  * Полностью автономен (свой SharedPreferences-файл), чтобы тестовую функцию фида
  * можно было удалить, не трогая UserStateStore.
  */
-/** Лайкнутый тайтл: id, название и жанры на момент голоса — для списка «мои лайки». */
-data class LikedTitle(val id: Int, val title: String, val genres: List<String> = emptyList())
+/** Лайкнутый тайтл: id, название, жанры на момент голоса, постер и раздел — для страницы «Мои лайки». */
+data class LikedTitle(
+    val id: Int,
+    val title: String,
+    val genres: List<String> = emptyList(),
+    /** Постер на момент лайка; у старых записей может отсутствовать — рисуем заглушку. */
+    val posterUrl: String? = null,
+    /** Раздел рекомендаций, к которому отнесён тайтл (имя FeedChip); null = только «Все». */
+    val section: String? = null
+) {
+    /**
+     * Раздел страницы лайков. Явный — если записан; старые записи выводим по тому,
+     * что известно: аниме-id + жанр «хентай» → Хентай/Аниме, жанр «мультфильм» → Мультики.
+     * Фильм/сериал по старой записи неразличимы — такие видны только в «Все».
+     */
+    fun sectionOrNull(): FeedChip? {
+        section?.let { return FeedChip.entries.firstOrNull { c -> c.name == it } }
+        if (id >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
+            return if (genres.any { it.equals("хентай", ignoreCase = true) }) FeedChip.HENTAI else FeedChip.ANIME
+        }
+        if (genres.any { it.contains("мульт", ignoreCase = true) }) return FeedChip.CARTOONS
+        return null
+    }
+}
 
 /**
  * Профиль интересов фида: веса жанров/стран/десятилетий + служебные ключи.
@@ -205,7 +227,9 @@ class InterestProfileStore(context: Context) {
                 LikedTitle(
                     id = id,
                     title = o.optString("t", "Тайтл"),
-                    genres = (0 until (gArr?.length() ?: 0)).mapNotNull { gArr?.optString(it) }
+                    genres = (0 until (gArr?.length() ?: 0)).mapNotNull { gArr?.optString(it) },
+                    posterUrl = o.optString("p").takeIf { it.isNotBlank() },
+                    section = o.optString("s").takeIf { it.isNotBlank() }
                 )
             }
         }.getOrDefault(emptyList())
@@ -224,7 +248,14 @@ class InterestProfileStore(context: Context) {
     private fun writeLiked(items: List<LikedTitle>) {
         val arr = JSONArray()
         items.forEach { t ->
-            arr.put(JSONObject().put("i", t.id).put("t", t.title).put("g", JSONArray(t.genres)))
+            arr.put(
+                JSONObject()
+                    .put("i", t.id)
+                    .put("t", t.title)
+                    .put("g", JSONArray(t.genres))
+                    .put("p", t.posterUrl ?: "")
+                    .put("s", t.section ?: "")
+            )
         }
         prefs.edit().putString(KEY_LIKED_SEEDS, JSONObject().put("items", arr).toString()).apply()
     }

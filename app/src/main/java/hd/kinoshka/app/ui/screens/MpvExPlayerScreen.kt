@@ -100,6 +100,9 @@ fun MpvExPlayerScreen(
             putExtra("anime_title", animeTitle)
             putExtra("anime_source_type", sourceType)
             putExtra("anime_disable_http_reuse", sourceType == "ANILIBERTY")
+            // Трейлеры — конечное VOD: плеер не должен навешивать reconnect-харденинг
+            // (см. PlayerActivity, демuxer-lavf-o).
+            putExtra("vod_stream", sourceType == "Трейлер")
             putExtra("anime_current_episode", episodeNumber)
             putExtra("anime_current_translation_id", currentTranslationId)
             movieSeriesContext?.let { ctx ->

@@ -206,9 +206,8 @@ fun BottomPlayerControlsPortrait(
 ) {
   val animeQualities by viewModel.animeQualities.collectAsState()
   val currentQualityId by viewModel.currentAnimeQualityId.collectAsState()
-  // Quality selector lives at the bottom-right; hidden entirely when the source offers no
-  // concrete variants (a lone "Auto" entry is not a choice).
-  val showQuality = animeQualities.keys.any { !it.equals("Auto", true) }
+  // Quality selector lives at the bottom-right; always visible. When the source shipped no
+  // concrete rungs (single "Auto") the dropdown simply stays closed (canChoose=false inside).
   Box(
     modifier = Modifier
       .fillMaxWidth()
@@ -245,20 +244,18 @@ fun BottomPlayerControlsPortrait(
         }
       }
     }
-    if (showQuality) {
-      Box(
-        modifier = Modifier
-          .align(Alignment.BottomEnd)
-          .padding(end = MaterialTheme.spacing.small),
-      ) {
-        AnimeQualityDropdown(
-          qualities = animeQualities,
-          currentQualityId = currentQualityId,
-          hideBackground = hideBackground,
-          viewModel = viewModel,
-          onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
-        )
-      }
+    Box(
+      modifier = Modifier
+        .align(Alignment.BottomEnd)
+        .padding(end = MaterialTheme.spacing.small),
+    ) {
+      AnimeQualityDropdown(
+        qualities = animeQualities,
+        currentQualityId = currentQualityId,
+        hideBackground = hideBackground,
+        viewModel = viewModel,
+        onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
+      )
     }
   }
 }

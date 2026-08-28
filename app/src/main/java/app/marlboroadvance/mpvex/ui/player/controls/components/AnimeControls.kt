@@ -62,6 +62,8 @@ fun AnimeSeriesDropdown(
     var showDialog by remember { mutableStateOf(false) }
     var selectedSeason by remember { mutableStateOf<Int?>(currentSeason) }
     val watchedEpisodesCount by viewModel.watchedEpisodesCount.collectAsState()
+    val watchedSeasons by viewModel.watchedSeasons.collectAsState()
+    val watchedPerSeason by viewModel.watchedPerSeason.collectAsState()
 
     LaunchedEffect(showDialog) {
         viewModel.setAnimeModalOpen(showDialog)
@@ -180,7 +182,16 @@ fun AnimeSeriesDropdown(
                             items(visibleEpisodes) { ep ->
                                 val isSelected = ep.number == currentEpisode
                                 val rowSeason = effectiveSeason(ep)
-                                val isWatched = rowSeason == null && ep.number <= watchedEpisodesCount
+                                // Сериалы: watchedSeasons — текущий сезон из «Прогресса просмотра»,
+                                // предыдущие сезоны просмотрены целиком, в текущем — серии до счётчика.
+                                // Аниме (плоский список без сезонов) — старое правило по счётчику.
+                                val isWatched = when {
+                                    rowSeason != null && watchedPerSeason ->
+                                        rowSeason < watchedSeasons ||
+                                            (rowSeason == watchedSeasons && ep.number % 100_000 <= watchedEpisodesCount)
+                                    rowSeason == null -> ep.number <= watchedEpisodesCount
+                                    else -> false
+                                }
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
                                     color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),

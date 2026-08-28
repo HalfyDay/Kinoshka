@@ -8,8 +8,12 @@ import hd.kinoshka.app.data.model.FilmLinkItem
 import hd.kinoshka.app.data.model.FilmVideoItem
 import hd.kinoshka.app.data.model.FiltersResponse
 import hd.kinoshka.app.data.model.SeasonItem
+import hd.kinoshka.app.data.model.containsAnimeGenre
 
 class FilmsRepository(private val api: KinopoiskApi) {
+    // Аниме в приложении — задача Shikimori; Kinopoisk отдаёт его в поиске и подборках,
+    // поэтому аниме-строки вырезаются до кэша, а не в точках использования.
+    private fun List<FilmItem>.withoutAnime(): List<FilmItem> = filterNot { it.genres.containsAnimeGenre() }
     private val popularCache = BoundedCache<String, List<FilmItem>>()
     private val searchCache = BoundedCache<String, List<FilmItem>>()
     private val detailsCache = BoundedCache<Int, FilmDetails>()
@@ -29,7 +33,7 @@ class FilmsRepository(private val api: KinopoiskApi) {
         // Дедупликация на входе: одна страница Kinopoisk может содержать повторяющийся
         // kinopoiskId, а keyed-списки в UI (key = { film.kinopoiskId }) на дубликате падают.
         // Делаем это ДО cache.put, иначе битая страница живёт в кэше.
-        val loaded = api.popular(type = collectionType, page = page).items.distinctBy { it.kinopoiskId }
+        val loaded = api.popular(type = collectionType, page = page).items.distinctBy { it.kinopoiskId }.withoutAnime()
         popularCache.put(key, loaded)
         return loaded
     }
@@ -60,7 +64,7 @@ class FilmsRepository(private val api: KinopoiskApi) {
             yearFrom = yearFrom,
             yearTo = yearTo,
             page = page
-        ).items.distinctBy { it.kinopoiskId } // см. popular(): дубликат id ломает keyed-списки UI
+        ).items.distinctBy { it.kinopoiskId }.withoutAnime() // см. popular(): дубликат id ломает keyed-списки UI
         searchCache.put(key, loaded)
         return loaded
     }

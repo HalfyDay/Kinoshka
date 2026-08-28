@@ -61,6 +61,7 @@ import `is`.xyz.mpv.MPVNode
 import `is`.xyz.mpv.Utils
 import hd.kinoshka.app.BuildConfig
 import hd.kinoshka.app.data.api.ApiClient
+import hd.kinoshka.app.data.download.toAnimeMediaStream
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.AnimeEpisode
@@ -285,6 +286,7 @@ class PlayerActivity :
   // mpv still buffered for seconds. The overlay now stays up until MPV_EVENT_FILE_LOADED.
   private var pendingStreamLoadIndicator = false
   private var streamLoadIndicatorTimeoutJob: kotlinx.coroutines.Job? = null
+  private var nextEpisodeCountdownJob: kotlinx.coroutines.Job? = null
 
   // Auto-quality watchdog: while the quality selector sits on "Auto", poll mpv's demuxer cache;
   // sustained stalls step the stream down the quality ladder (best-first) preserving position.
@@ -570,7 +572,14 @@ class PlayerActivity :
     mediaIdentifier = getMediaIdentifier(intent, fileName)
 
     // Set network options and headers before the demuxer opens the stream.
-    applyAnimeTransportOptions(intent.getBooleanExtra("anime_disable_http_reuse", false))
+    if (intent.getBooleanExtra("vod_stream", false)) {
+      // VOD-трейлеры (HLS КП/Rutube): reconnect_streamed зацикливает конечные chunked-плейлисты —
+      // естественный EOF трактуется как обрыв, демuxер вечно переподключается и «не находит поток».
+      MPVLib.setPropertyString("demuxer-lavf-o", "")
+      Log.d(TAG, "VOD stream transport: default lavf options (no reconnect hardening)")
+    } else {
+      applyAnimeTransportOptions(intent.getBooleanExtra("anime_disable_http_reuse", false))
+    }
     setHttpHeadersFromExtras(intent.extras)
 
     // Manual «Повторить» on the error card re-issues the last tracked stream load and grants
@@ -1350,7 +1359,11 @@ class PlayerActivity :
         viewModel.setAnimeData(episodes, translations, epNum, trId, viewModel.animeQualities.value, viewModel.currentAnimeQualityId.value)
 
         lifecycleScope.launch(Dispatchers.IO) {
-          val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+          // Local-first: скачанная серия играет из офлайн-библиотеки без сети и резолва.
+          val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
+            .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
+            ?.toAnimeMediaStream()
+            ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
           withContext(Dispatchers.Main) {
             if (stream != null) {
               applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
@@ -1379,7 +1392,11 @@ class PlayerActivity :
         viewModel.setAnimeData(episodes, translations, epNum, trId, viewModel.animeQualities.value, viewModel.currentAnimeQualityId.value)
 
         lifecycleScope.launch(Dispatchers.IO) {
-          val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+          // Local-first: скачанная серия играет из офлайн-библиотеки без сети и резолва.
+          val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
+            .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
+            ?.toAnimeMediaStream()
+            ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
           withContext(Dispatchers.Main) {
             if (stream != null) {
               applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
@@ -1408,7 +1425,11 @@ class PlayerActivity :
           val srcType = currentAnimeSourceType
 
           lifecycleScope.launch(Dispatchers.IO) {
-            val stream = AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+            // Local-first: скачанная серия играет из офлайн-библиотеки без сети и резолва.
+          val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
+            .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
+            ?.toAnimeMediaStream()
+            ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
             withContext(Dispatchers.Main) {
               if (stream != null) {
                 applyAnimeStream(stream, srcType, "Auto", animeTitle, epNum, trId, episodes, translations)
@@ -1825,10 +1846,11 @@ class PlayerActivity :
    */
   private suspend fun resolveVoiceoverLink(link: String): String? =
     kotlinx.coroutines.withTimeoutOrNull(VOICEOVER_RESOLVE_TIMEOUT_MS) {
-      // Direct media files play as-is; Kodik player pages AND collaps/obrut api links
-      // (extensionless stream/… urls with dated tokens) need HLS extraction — playing those
-      // raw fed mpv a link that 404'd ("switching voiceover hangs").
-      if (link.contains(".mp4") || link.contains(".m3u8") || link.contains(".webm")) return@withTimeoutOrNull link
+      // Direct media files play as-is; Kodik player pages need HLS extraction.
+      // UTN streams (ddbb turbo) are extensionless HLS playlists that mpv handles
+      // directly via its lavf HLS demuxer — re-resolving them as Kodik corrupts
+      // the token (binary � in log) and 404s.
+      if (link.contains(".mp4") || link.contains(".m3u8") || link.contains(".webm") || link.contains("/stream/UTN")) return@withTimeoutOrNull link
       val looksKodik = listOf("kodik", "vsh.my", "kdkonl", "aniqit", "kodi.my", "obrut.show", "/seria/", "/video/").any { link.contains(it, ignoreCase = true) }
       if (!looksKodik) return@withTimeoutOrNull link
       val qualities = runCatching {
@@ -1905,6 +1927,11 @@ class PlayerActivity :
     // re-filters the episode list (no playback change) until an episode is chosen.
     val seasons = context.episodes.map { it.seasonNumber }.distinct().sorted()
     viewModel.setAnimeSeasons(seasons, context.currentEpisode.seasonNumber)
+    // Галочки «просмотрено» в списке серий повторяют отметку из библиотечного «Прогресса просмотра».
+    libraryProfileKey()?.let { key ->
+      val profile = UserStateStore(this).getProfile(key)
+      viewModel.setWatchedSeriesProgress(profile?.watchedSeasons ?: 0, profile?.watchedEpisodes ?: 0)
+    }
     viewModel.onAnimeSeasonSelected = seasonSelected@{ season ->
       if (season == viewModel.currentAnimeSeason.value) return@seasonSelected
       viewModel.setAnimeSeasons(seasons, season)
@@ -2095,6 +2122,7 @@ class PlayerActivity :
     // A plain (untracked) switch must not inherit the PREVIOUS tracked load's retry action:
     // a stale action firing on an unrelated END_FILE error reloaded an old target out of
     // nowhere. Tracked loads re-arm it right after this call.
+    cancelNextEpisodeCountdown()
     streamLoadRetryAction = null
     viewModel.setLoadingStream(true)
     pendingStreamLoadIndicator = true
@@ -2104,8 +2132,52 @@ class PlayerActivity :
       if (pendingStreamLoadIndicator) {
         pendingStreamLoadIndicator = false
         viewModel.setLoadingStream(false)
+        // Файл не открылся за 15 c (лог live kp=30276: CDN отдаёт сегменты по 20 c и рвёт
+        // TLS). В Auto делаем одноразовый спуск рунга; иначе — карточка с «Повторить»,
+        // чтобы не оставлять молчаливый чёрный экран.
+        if (autoDowngradeOnSlowStart()) return@launch
+        if (lastStreamLoadRetry == null) {
+          // ANIME-launch path не трекает загрузку — «Повторить» реплеит текущий url.
+          lastStreamLoadRetry = {
+            viewModel.setPendingResolveError(null)
+            beginStreamLoadIndicator()
+            (currentPlayingUrl ?: currentAnimeStream?.url)
+              ?.let { MPVLib.command("loadfile", it, "replace") }
+          }
+        }
+        viewModel.setPendingResolveError(
+          "Поток не удаётся загрузить: сеть или CDN слишком медленные. Попробуйте другую озвучку или качество."
+        )
       }
     }
+  }
+
+  /**
+   * Медленный старт при Auto: одноразовый спуск на рунг ниже того, что Auto обслуживает.
+   * Режим остаётся Auto — пилюля продолжает писать «Auto · <рунг>» (через rung-hint), как при
+   * обычном степ-дауне [startAutoQualityWatchdog]; этот хендлер нужен потому, что watchdog
+   * ждёт time-pos > 0 и молчит, пока файл вообще не открылся. Возвращает true, если спуск
+   * запущен (новое окно загрузки уже открыто).
+   */
+  private fun autoDowngradeOnSlowStart(): Boolean {
+    if (viewModel.currentAnimeQualityId.value?.equals("Auto", ignoreCase = true) != true) return false
+    val stream = currentAnimeStream ?: return false
+    val ladder = orderedConcreteQualities(stream.qualities)
+    if (ladder.size < 2) return false
+    val idx = ladder.indexOfFirst { it.second == currentPlayingUrl }.takeIf { it >= 0 } ?: 0
+    val next = ladder.getOrNull(idx + 1) ?: return false
+    Log.i(TAG, "Stream load timed out in Auto — stepping down ${ladder[idx].first} -> ${next.first}")
+    // Файл не начал играть — продолжать нечего, позицию не восстанавливаем.
+    pendingSeekPosition = null
+    currentPlayingUrl = next.second
+    viewModel.setAutoQualityRungHint(next.first)
+    beginTrackedStreamLoad(retry = {
+      applyHttpHeaders(stream.headers)
+      MPVLib.command("loadfile", next.second, "replace")
+    })
+    MPVLib.command("loadfile", next.second, "replace")
+    Toast.makeText(this, "Auto: качество снижено до ${next.first}", Toast.LENGTH_SHORT).show()
+    return true
   }
 
   /**
@@ -2792,12 +2864,51 @@ class PlayerActivity :
         }
         // If autoplay is off and closeAfterReachingEndOfVideo is off, just stay on current video
       } else {
-        // Single video playback (no playlist)
-        if (playerPreferences.closeAfterReachingEndOfVideo.get()) {
+        // Single video playback (no playlist): конец серии аниме/сериала не закрывает плеер —
+        // показываем оверлей «Следующая серия» с обратным отсчётом (нажатие или истечение
+        // включают её). Закрытие по префу остаётся для последних серий и одиночных видео.
+        val nextEpisode = nextEpisodeNumberOrNull()
+        if (nextEpisode != null) {
+          flushOutgoingEpisodeProgress()
+          viewModel.showNextEpisodeOverlay(nextEpisode, NEXT_EPISODE_COUNTDOWN_SECONDS)
+          viewModel.showControls()
+          startNextEpisodeCountdown(nextEpisode)
+        } else if (playerPreferences.closeAfterReachingEndOfVideo.get()) {
           finishAndRemoveTask()
         }
       }
     }
+  }
+
+  /** Номер следующей серии в списке эпизодов игрока; null, когда текущая — последняя (или списка нет). */
+  private fun nextEpisodeNumberOrNull(): Int? {
+    val current = viewModel.currentAnimeEpisodeNumber.value ?: return null
+    val episodes = viewModel.animeEpisodes.value
+    if (episodes.isEmpty()) return null
+    val idx = episodes.indexOfFirst { it.number == current }
+    if (idx < 0 || idx + 1 >= episodes.size) return null
+    return episodes[idx + 1].number
+  }
+
+  /** Тикает раз в секунду и по нулю запускает следующую серию через штатный выбор эпизода. */
+  private fun startNextEpisodeCountdown(nextEpisode: Int) {
+    nextEpisodeCountdownJob?.cancel()
+    nextEpisodeCountdownJob = lifecycleScope.launch {
+      while (viewModel.nextEpisodeCountdown.value > 0) {
+        kotlinx.coroutines.delay(1000)
+        if (isFinishing || isDestroyed) return@launch
+        viewModel.setNextEpisodeCountdown(viewModel.nextEpisodeCountdown.value - 1)
+      }
+      viewModel.hideNextEpisodeOverlay()
+      viewModel.onAnimeEpisodeSelected?.invoke(nextEpisode)
+    }
+  }
+
+  /** Любой запуск новой загрузки гасит оверлей и отсчёт. */
+  internal fun cancelNextEpisodeCountdown() {
+    nextEpisodeCountdownJob?.cancel()
+    nextEpisodeCountdownJob = null
+    viewModel.hideNextEpisodeOverlay()
   }
 
   /**
@@ -3397,6 +3508,8 @@ class PlayerActivity :
           episode.episodeNumber,
           finished = finishedRun,
         )
+        // Диалог «Выберите серию» должен увидеть новую галочку без перезапуска плеера.
+        viewModel.setWatchedSeriesProgress(episode.seasonNumber, episode.episodeNumber)
       }
 
       NativePlaybackMode.QUALITY_ONLY_MOVIE -> {
@@ -4875,6 +4988,9 @@ class PlayerActivity :
      * Constant for "brightness not set".
      */
     private const val BRIGHTNESS_NOT_SET = -1f
+
+    /** Обратный отсчёт до автовключения следующей серии (секунды). */
+    private const val NEXT_EPISODE_COUNTDOWN_SECONDS = 10
 
     /**
      * Constant used when playback position is not set.

@@ -55,7 +55,7 @@ data class UserPreferences(
     val showFpsCounter: Boolean = false,
     val contentType: hd.kinoshka.app.ui.screens.ContentType = hd.kinoshka.app.ui.screens.ContentType.FILMS,
     val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
-    val playerMode: PlayerMode = PlayerMode.DDBB
+    val playerMode: PlayerMode = PlayerMode.MPVEX
 )
 
 data class HistoryRecord(
@@ -146,6 +146,10 @@ data class ShikimoriAnimeCache(
     val kind: String?,
     val score: String?,
     val status: String?,
+    // Хентай-флаг по жанру/рейтингу Shikimori (вычисляется при дозагрузке деталей оценок).
+    // Boolean?, а не Boolean: Gson не применяет Kotlin-дефолты — в старых кэшах поле
+    // отсутствует и десериализуется как null.
+    val isAdult: Boolean? = null,
     val savedAtMs: Long = System.currentTimeMillis()
 ) {
     val displayTitle: String get() = russian?.takeIf { it.isNotBlank() } ?: name ?: "Аниме #$shikimoriId"
@@ -204,6 +208,7 @@ class UserStateStore(context: Context) {
     private val preferredQualityKey = "preferred_quality"
     private val shikimoriAnimeCacheKey = "shikimori_anime_cache"
     private val librarySortKey = "library_sort_type"
+    private val showHentaiInLibraryKey = "show_hentai_in_library"
     private val searchHistoryKey = "search_history_json"
     private val playbackUsageKey = "playback_usage_json"
     private val movieVoiceoverKeyPrefix = "movie_voiceovers_"
@@ -255,6 +260,13 @@ class UserStateStore(context: Context) {
         prefs.edit().putString(librarySortKey, sortType.name).apply()
     }
 
+    /** Переключатель «Показывать хентай» в библиотеке: по умолчанию включён (как раньше). */
+    fun isHentaiVisibleInLibrary(): Boolean = prefs.getBoolean(showHentaiInLibraryKey, true)
+
+    fun setHentaiVisibleInLibrary(visible: Boolean) {
+        prefs.edit().putBoolean(showHentaiInLibraryKey, visible).apply()
+    }
+
     fun getPlaybackSequence(): PlaybackSequenceOption {
         return readEnum(playbackSequenceKey, PlaybackSequenceOption.SOURCES_FIRST)
     }
@@ -266,7 +278,7 @@ class UserStateStore(context: Context) {
     private val playerModeKey = "player_mode"
 
     fun getPlayerMode(): PlayerMode {
-        return readEnum(playerModeKey, PlayerMode.DDBB)
+        return readEnum(playerModeKey, PlayerMode.MPVEX)
     }
 
     fun setPlayerMode(mode: PlayerMode) {

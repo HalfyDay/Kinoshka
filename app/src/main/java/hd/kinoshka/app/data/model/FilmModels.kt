@@ -9,8 +9,20 @@ data class FilmItem(
     @SerializedName("posterUrlPreview") val posterUrlPreview: String?,
     @SerializedName("ratingKinopoisk") val ratingKinopoisk: Double?,
     @SerializedName("year") val year: Int?,
-    @SerializedName("countries") val countries: List<NameOnly> = emptyList()
+    @SerializedName("countries") val countries: List<NameOnly> = emptyList(),
+    @SerializedName("genres") val genres: List<NameOnly> = emptyList()
 )
+
+const val ANIME_GENRE_NAME = "аниме"
+
+/** Аниме у Kinopoisk помечается жанром «аниме» (в старых карточках встречается латиница). */
+fun List<NameOnly>?.containsAnimeGenre(): Boolean {
+    if (this == null) return false
+    return any { g ->
+        val n = g.genre?.trim()?.lowercase()
+        n == ANIME_GENRE_NAME || n == "anime"
+    }
+}
 
 data class FilmsResponse(
     @SerializedName("items") val items: List<FilmItem>
@@ -139,5 +151,24 @@ data class FilmVideoItem(
     @SerializedName("name") val name: String? = null,
     @SerializedName("site") val site: String? = null,
     @SerializedName("official") val official: Boolean? = null
+)
+
+/**
+ * Трейлер/превью для карточки «Кадры» на странице тайтла (блоки Кинопоиска/Shikimori).
+ * Играет только mpvEx: YouTube-поток извлекается через InnerTube при нажатии
+ * (YouTubeStreamResolver), Rutube HLS и HLS виджета Кинопоиска кладутся в nativeUrl сразу.
+ * Веб-плееры (YouTube-страница, vk, sibnet, Yandex) не открываются вовсе.
+ */
+data class FilmTrailer(
+    /** Страница трейлера на площадке (метаданные; воспроизведение — nativeUrl). */
+    val url: String,
+    /** Прямой поток (mp4/m3u8), если он известен сразу; null — mpvEx извлечёт при нажатии. */
+    val nativeUrl: String? = null,
+    val posterUrl: String? = null,
+    val title: String? = null,
+    /** Заголовки для нативного плеера (UA/Referer отдельных площадок). */
+    val nativeHeaders: Map<String, String> = emptyMap(),
+    /** Площадка недоступна из РФ без VPN (YouTube) — карточка помечается бейджем VPN. */
+    val needsVpn: Boolean = false
 )
 

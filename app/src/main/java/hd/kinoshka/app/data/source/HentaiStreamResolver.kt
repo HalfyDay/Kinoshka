@@ -5,6 +5,8 @@ import android.util.Log
 import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.FilmImageItem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
 import okhttp3.Cookie
 import okhttp3.CookieJar
@@ -63,8 +65,15 @@ data class HentaiStream(
     val headers: Map<String, String> = emptyMap(),
     val quality: String = "Auto",
     val title: String = "",
-    /** (label, direct url) per episode; empty for single-video titles. */
-    val episodes: List<Pair<String, String>> = emptyList()
+    /** Per episode; empty for single-video titles. */
+    val episodes: List<HentaiEpisode> = emptyList()
+)
+
+/** One episode of a hentai series: label, direct url, best advertised quality (e.g. "720p"). */
+data class HentaiEpisode(
+    val label: String,
+    val url: String,
+    val maxQuality: String? = null
 )
 
 object HentaiStreamResolver {
@@ -81,7 +90,34 @@ object HentaiStreamResolver {
     private const val HD_BASE = "https://hentaidream.fun"
     private const val OPPAI_BASE = "https://oppai.stream"
 
+    /** Зеркало hentaiz: основной домен hentaiz.org РФ-недоступен (SNI-блок), зеркало отдаёт
+     *  страницы, скриншоты и видео старых тайтлов; видео новых лежит только на hentaiz.org. */
+    private const val HZ_BASE = "https://ru.hentaiiz.org"
+
     private const val HANIME_CATALOG_URL = "https://guest.freeanimehentai.net/api/v11/search_hvs"
+
+    /** Дисковая копия каталога hanime; mtime файла = время загрузки (TTL тот же). */
+    private const val CATALOG_DISK_FILE = "hanime_catalog.json"
+
+    /** Кадры из видео: доли длительности первой серии, по которым снимаются кадры. */
+    private val VIDEO_FRAME_FRACTIONS = listOf(0.08f, 0.22f, 0.36f, 0.50f, 0.64f, 0.78f)
+
+    /** retriever'ов работает параллельно: каждый seek — отдельное HTTP-соединение (~1.5с),
+     *  и последовательные 6 кадров = 9+ секунд. 3 соединения на CDN — безопасно. */
+    private const val VIDEO_FRAME_PARALLELISM = 3
+
+    /** Потолок на весь шаг извлечения кадров: зависший retriever не должен держать «Кадры». */
+    private const val VIDEO_FRAMES_TIMEOUT_MS = 60 * 1000L
+
+    /** Длинная сторона сохраняемого кадра — 220dp-карточки и просмотрщика хватает. */
+    private const val VIDEO_FRAME_MAX_SIDE = 720
+
+    /** Application context для MediaMetadataRetriever (сетевые источники требуют Context+Uri). */
+    @Volatile private var appContext: android.content.Context? = null
+
+    fun init(context: android.content.Context) {
+        appContext = context.applicationContext
+    }
 
     /** Preferred rendition order; anything outside falls back to max height. */
     private val QUALITY_LADDER = listOf("1080p", "720p", "480p")
@@ -171,6 +207,23 @@ object HentaiStreamResolver {
     @Volatile private var catalogCache: List<CatalogEntry>? = null
     @Volatile private var catalogFetchedAtMs: Long = 0L
 
+    /**
+     * Нормализованные (name, altTitles) каталога. isKnownHentai вызывается синхронно на
+     * main-потоке (загрузка страницы аниме, кнопка «Смотреть»), а normalizeTitle на каждую
+     * запись каталога — секунды регэкспов: считаем их один раз здесь, при загрузке, на IO.
+     */
+    @Volatile private var catalogIndex: List<Pair<String, String>> = emptyList()
+
+    /** Мемо isKnownHentai по паре заголовков: фид/страница деталей спрашивают одни и те же. */
+    private val knownHentaiMemo = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /** Мемо тегов по паре заголовков: страница ленты хентая спрашивает их пачками. */
+    private val tagsMemo = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+
+    private fun rebuildCatalogIndex(entries: List<CatalogEntry>) {
+        catalogIndex = entries.map { normalizeTitle(it.name) to normalizeTitle(it.altTitles) }
+    }
+
     /** Last successfully resolved stream per provider+title. The source sheet seeds its episode
      *  list from this while a fresh (slow, VPN-dependent) resolution runs in the background. */
     private val seriesBackup = ConcurrentHashMap<String, HentaiStream>()
@@ -188,6 +241,8 @@ object HentaiStreamResolver {
             if (queries.isEmpty()) return@withContext null
             resolveViaAllHentai(queries)?.let { return@withContext it }
             resolveViaHentaiDream(queries)?.let { return@withContext it }
+            resolveViaAniStar(queries)?.let { return@withContext it }
+            resolveViaHentaiz(queries)?.let { return@withContext it }
             resolveViaHanime1(queries)?.let { return@withContext it }
             resolveViaOppai(queries)?.let { return@withContext it }
             Log.i(TAG, "no hentai stream found for $queries")
@@ -209,6 +264,8 @@ object HentaiStreamResolver {
         val stream = when (provider) {
             HentaiProvider.ALLHENTAI -> resolveViaAllHentai(queries)
             HentaiProvider.HENTAIDREAM -> resolveViaHentaiDream(queries)
+            HentaiProvider.ANISTAR -> resolveViaAniStar(queries)
+            HentaiProvider.HENTAIZ -> resolveViaHentaiz(queries)
             HentaiProvider.HANIME1 -> resolveViaHanime1(queries)
             HentaiProvider.OPPAI -> resolveViaOppai(queries)
         }
@@ -233,7 +290,8 @@ object HentaiStreamResolver {
         'ы' to "y", 'ь' to "", 'э' to "e", 'ю' to "yu", 'я' to "ya"
     )
 
-    private fun translitRu(query: String): String? {
+    /** Видимость internal: слаги DLE-статей AniStar тоже транслит, ищет AniStarResolver. */
+    internal fun translitRu(query: String): String? {
         if (!query.any { it in 'а'..'я' || it == 'ё' || it in 'А'..'Я' || it == 'Ё' }) return null
         return buildString {
             for (ch in query.lowercase()) CYR_MAP[ch]?.let(::append) ?: append(ch)
@@ -288,12 +346,19 @@ object HentaiStreamResolver {
             for (alias in aliasQueries(entry).filter { alias -> alias.any { it.code >= 0x2E80 } }) {
                 val items: List<H1Item> = runCatching { searchH1(alias) }.getOrDefault(emptyList())
                 Log.i(TAG, "h1(alias=\"$alias\") -> ${items.size} hits")
-                // CJK aliases are pre-verified by the catalog dump — accept first hit without
-                // strict scoring because JP/CN character variants defeat exact title matching.
-                if (items.isNotEmpty()) {
-                    Log.i(TAG, "h1 CJK alias \"$alias\" accepted first hit \"${items.first().title}\"")
-                    resolveH1WithSeries(items, items.first().id)?.let { return it }
+                if (items.isEmpty()) continue
+                // CJK aliases are pre-verified by the catalog dump, but short/fragment aliases
+                // still bring back unrelated hits — accept a hit only when its title actually
+                // carries the alias (equality or the alias followed by an episode suffix).
+                val wanted = foldKana(normalizeTitle(alias))
+                val hit = items.firstOrNull { item ->
+                    foldKana(normalizeTitle(item.title)).startsWith(wanted)
+                } ?: run {
+                    Log.i(TAG, "h1 CJK alias \"$alias\": no hit title carries the alias, skipping")
+                    continue
                 }
+                Log.i(TAG, "h1 CJK alias \"$alias\" accepted \"${hit.title}\"")
+                resolveH1WithSeries(items, hit.id)?.let { return it }
             }
             break // one catalog lookup is enough to gather aliases
         }
@@ -317,7 +382,171 @@ object HentaiStreamResolver {
         return null
     }
 
-    // ---- provider 4: oppai.stream (4K catalog, VPN-gated, direct MP4 + Referer-locked CDN) ----
+    // ---- provider 4: AniStar (аниме-каталог с хентаем; см. AniStarResolver) ----
+    private suspend fun resolveViaAniStar(queries: List<String>): HentaiStream? {
+        val attempts = (queries + queries.mapNotNull(::translitRu)).distinct()
+        val episodes = AniStarResolver.findEpisodes(attempts) ?: return null
+        Log.i(TAG, "anistar: ${episodes.size} episode(s) for \"$queries\"")
+        return anistarEpisodesToStream(queries.firstOrNull() ?: "AniStar", episodes)
+    }
+
+    private fun anistarEpisodesToStream(
+        query: String,
+        episodes: List<AniStarResolver.AniStarEpisode>
+    ): HentaiStream {
+        val first = episodes.first()
+        val eps = episodes.mapIndexedNotNull { index, ep ->
+            val url = ep.bestUrl ?: return@mapIndexedNotNull null
+            HentaiEpisode(ep.label.ifBlank { "Серия ${index + 1}" }, url, ep.bestQuality)
+        }
+        return HentaiStream(
+            url = first.bestUrl ?: first.qualities.values.first(),
+            qualities = first.qualities,
+            headers = AniStarResolver.streamHeaders(),
+            quality = first.bestQuality ?: "Auto",
+            title = query,
+            episodes = eps.takeIf { it.size > 1 }.orEmpty()
+        )
+    }
+
+    // ---- provider 5: hentaiz.org / ru.hentaiiz.org (DLE; источники кадров «СКРИНШОТЫ») ----
+    private suspend fun resolveViaHentaiz(queries: List<String>): HentaiStream? {
+        for (query in queries) {
+            val found = findHentaizEntry(query) ?: continue
+            Log.i(TAG, "hentaiz matched ${found.first} for \"$query\" (track=${found.second?.key})")
+            hentaizEntryToStream(found)?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Статья hentaiz: путь + распарсенный allData-плеер — дорожка (translator/subtitles/original)
+     * со списком (метка серии, лестница качеств).
+     */
+    private data class HentaizTrack(val key: String, val episodes: List<Pair<String, List<Pair<String, String>>>>)
+
+    /**
+     * Статья hentaiz по поисковому запросу: путь + HTML страницы. Общая для видео
+     * (allData-плеер) и кадров (блок «СКРИНШОТЫ»).
+     */
+    private fun findHentaizPage(query: String): Pair<String, String>? {
+        // Одиночный токен (ромадзи-слово «Imouto», «Overflow») никогда не пройдёт матчинг,
+        // но успевает сходить в сеть за дефолтной лентой — отсекаем до запроса.
+        if (reducedHentaizTokens(query).size < 2) return null
+        val url = "$HZ_BASE/index.php?do=search&subaction=search&story=${java.net.URLEncoder.encode(query, "UTF-8")}"
+        val body = runCatching { httpGet(url, referer = "$HZ_BASE/") }.getOrNull() ?: return null
+        val articles = Regex("""href="(?:https?://[a-z0-9.-]+)?/(\d{2,6}-[a-z0-9-]+\.html)"""")
+            .findAll(body)
+            .map { m ->
+                val path = "/${m.groupValues[1]}"
+                val label = path.substringAfterLast('/')
+                    .substringBefore(".html")
+                    .replace(Regex("""^\d+-"""), "")
+                    .replace('-', ' ')
+                    .trim()
+                AhArticle(path, label.ifBlank { path })
+            }
+            .distinctBy { it.path }
+            .toList()
+        if (articles.isEmpty()) return null
+        // Слаги каталога hentaiz — транслит русского названия диалектом DLE (я→ja, й→y),
+        // не совпадающий с таблицей резолвера (я→ya, й→j), поэтому общий pickBest здесь
+        // не матчит: «абсолютный» даёт absolyutnyj против слага absolyutnyy. Статьи ранжируются
+        // релевантностью самим поиском — берём первую, чьи редуцированные токены покрывают запрос.
+        val matched = articles.firstOrNull { hentaizArticleMatches(query, it) } ?: return null
+        val page = runCatching { httpGet(HZ_BASE + matched.path, referer = "$HZ_BASE/") }.getOrNull()
+            ?: return null
+        return matched.path to page
+    }
+
+    /**
+     * Редукция к общему виду для матчинга hentaiz: транслит кириллицы (любая таблица),
+     * не-буквы в пробелы, из токенов выкидываются j/y («ja/ya», «absolyutnyj/absolyutnyy»
+     * дают одинаковые токены), «shh» схлопывается в «sh» (щ: shh против sha). Короткие
+     * токены (<3) отбрасываются.
+     */
+    private fun reducedHentaizTokens(text: String): Set<String> {
+        val translit = buildString {
+            for (ch in text.lowercase()) CYR_MAP[ch]?.let(::append) ?: append(ch)
+        }.replace("shh", "sh")
+        return translit.replace(Regex("[^a-z0-9]+"), " ")
+            .split(" ")
+            .mapNotNull { token -> token.filter { it != 'j' && it != 'y' }.takeIf { it.length >= 3 } }
+            .toSet()
+    }
+
+    /** Запрос покрывает статью, когда все его значимые токены есть в слаге; одиночный
+     *  токен не допускается — ловит чужие статьи из дефолтной ленты пустого поиска. */
+    private fun hentaizArticleMatches(query: String, article: AhArticle): Boolean {
+        val wanted = reducedHentaizTokens(query)
+        if (wanted.size < 2) return false
+        val candidate = reducedHentaizTokens(slugWords(article.path))
+        return wanted.all { it in candidate }
+    }
+
+    private fun findHentaizEntry(query: String): Pair<String, HentaizTrack?>? =
+        findHentaizPage(query)?.let { (path, page) -> path to parseHentaizAllData(page) }
+
+    /**
+     * const allData = {translator|subtitles|original:[{title:"1 серия",file:"[720p]URL"},…], …};
+     * Дорожки без списка серий не считаются дорожкой. URL не переписываются: старые тайтлы
+     * раздаёт videos.hentaiz.org (РФ-доступен), новые лежат на hentaiz.org — зеркало их
+     * не хостит (404), так что под РФ-блокировкой эта дорожка просто недоступна.
+     */
+    private fun parseHentaizAllData(page: String): HentaizTrack? {
+        val m = Regex("""const\s+allData\s*=\s*(\{.*?\})\s*;""", RegexOption.DOT_MATCHES_ALL).find(page)
+            ?: return null
+        val json = runCatching { org.json.JSONObject(m.groupValues[1]) }.getOrNull() ?: return null
+        for (key in listOf("translator", "subtitles", "original", "player")) {
+            val arr = json.optJSONArray(key) ?: continue
+            val episodes = (0 until arr.length()).mapNotNull { i ->
+                val item = arr.optJSONObject(i) ?: return@mapNotNull null
+                val ladder = parseHentaizFile(item.optString("file").trim())
+                if (ladder.isEmpty()) return@mapNotNull null
+                val label = item.optString("title").trim().ifBlank { "Серия ${i + 1}" }
+                label to ladder
+            }
+            if (episodes.isNotEmpty()) return HentaizTrack(key, episodes)
+        }
+        return null
+    }
+
+    /** Playerjs-формат file: "[720p]url" или мульти-качество "[360p]url1,[720p]url2". */
+    private fun parseHentaizFile(file: String): List<Pair<String, String>> {
+        val ladder = Regex("""\[(\d+p)\](https?://[^,\]]+)""").findAll(file)
+            .map { it.groupValues[1] to it.groupValues[2].trim() }
+            .toList()
+        if (ladder.isNotEmpty()) return ladder
+        val url = file.trim()
+        return if (url.startsWith("http")) listOf("Auto" to url) else emptyList()
+    }
+
+    private fun hentaizEntryToStream(entry: Pair<String, HentaizTrack?>): HentaiStream? {
+        val (path, track) = entry
+        if (track == null) {
+            Log.i(TAG, "hentaiz $path: no allData player")
+            return null
+        }
+        // Серии с разным качеством: каждая играет своим лучшим качеством; лестница первой
+        // серии идёт в качества потока (переключатель плеера для текущей серии).
+        val episodes = track.episodes.mapNotNull { (label, ladder) ->
+            val best = ladder.maxByOrNull { (q, _) -> q.removeSuffix("p").toIntOrNull() ?: 0 }
+            best?.let { (q, url) -> HentaiEpisode(label, url, q.takeIf { key -> key != "Auto" }) }
+        }
+        if (episodes.isEmpty()) return null
+        val qualities = linkedMapOf<String, String>()
+        track.episodes.first().second.forEach { (q, u) -> qualities.putIfAbsent(q, u) }
+        return HentaiStream(
+            url = episodes.first().url,
+            qualities = qualities,
+            headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$HZ_BASE/"),
+            quality = qualities.keys.maxByOrNull { it.removeSuffix("p").toIntOrNull() ?: 0 } ?: "Auto",
+            title = path,
+            episodes = episodes.takeIf { it.size > 1 }.orEmpty()
+        )
+    }
+
+    // ---- provider 6: oppai.stream (4K catalog, VPN-gated, direct MP4 + Referer-locked CDN) ----
     private suspend fun resolveViaOppai(queries: List<String>): HentaiStream? {
         // Fast path: construct slug directly from title and try the watch page.
         // After first hit, probe for additional episodes (-2, -3, …) and collect them all.
@@ -336,10 +565,10 @@ object HentaiStreamResolver {
 
                 // Found ep1 — probe for siblings up to 20.
                 Log.i(TAG, "oppai DIRECT hit: \"$ep1Slug\" — probing for more episodes")
-                val eps = mutableListOf("Серия 1" to ep1.url)
+                val eps = mutableListOf(HentaiEpisode("Серия 1", ep1.url, ep1.quality))
                 for (n in 2..20) {
                     val sib = fetchOppaiStream("$slugVariant-$n") ?: break
-                    eps.add(("Серия $n") to sib.url)
+                    eps.add(HentaiEpisode("Серия $n", sib.url, sib.quality))
                 }
                 Log.i(TAG, "oppai series: ${eps.size} episode(s)")
                 return HentaiStream(
@@ -439,7 +668,7 @@ object HentaiStreamResolver {
 
     // ============================ allhentai.fun ============================
 
-    private fun slugWords(path: String): String =
+    internal fun slugWords(path: String): String =
         path.substringAfterLast('/').substringBefore(".html").replace('-', ' ')
 
     private fun searchAllHentai(query: String): List<AhArticle> {
@@ -475,6 +704,66 @@ object HentaiStreamResolver {
      * article embeds `new Playerjs({..., file:"/pl/<cat>/<id>/playlist.txt", ...})` whose
      * target is a JSON array of {title,file} with direct MP4s.
      */
+    /** DLE CDN filenames often embed the rendition ("…_720p.mp4") — surfaces as episode badge. */
+    private fun qualityFromUrl(url: String): String? =
+        Regex("(\\d{3,4})p").findAll(url).mapNotNull { it.groupValues[1].toIntOrNull() }
+            .maxOrNull()?.let { "${it}p" }
+
+    /** Кэш пробинга разрешения файлов (url → "720p"): по одному range-запросу на серию. */
+    private val mp4QualityCache = ConcurrentHashMap<String, String>()
+
+    /**
+     * Разрешение видеофайла без его загрузки: faststart-MP4 держат moov в голове, а tkhd несёт
+     * width/height. Один range-запрос 128 КБ; null, когда moov в хвосте или парсинг не удался.
+     */
+    private fun probeMp4Quality(url: String, referer: String?): String? {
+        mp4QualityCache[url]?.let { return it }
+        val height = runCatching {
+            val builder = Request.Builder().url(url)
+                .header("User-Agent", USER_AGENT)
+                .header("Range", "bytes=0-131071")
+            referer?.let { builder.header("Referer", it) }
+            httpClient.newCall(builder.build()).execute().use { response ->
+                if (!response.isSuccessful) return@runCatching null
+                val head = response.body?.bytes() ?: return@runCatching null
+                parseMp4VideoHeight(head)
+            }
+        }.getOrNull() ?: return null
+        val quality = "${height}p"
+        mp4QualityCache[url] = quality
+        return quality
+    }
+
+    /** Высота видеодорожки из атомов moov→trak→tkhd (16.16 fixed-point, старшие 16 бит). */
+    private fun parseMp4VideoHeight(data: ByteArray): Int? {
+        var best = 0
+        fun walk(from: Int, until: Int) {
+            var pos = from
+            while (pos + 8 <= until) {
+                val bb = java.nio.ByteBuffer.wrap(data, pos, 8)
+                val size = bb.int
+                if (size < 8 || pos + size > until) return
+                val type = String(data, pos + 4, 4, Charsets.US_ASCII)
+                when (type) {
+                    "moov", "trak", "mdia", "minf", "stbl" -> walk(pos + 8, pos + size)
+                    "tkhd" -> {
+                        val bodyLen = if (data[pos + 8].toInt() == 1) 96 else 84
+                        val end = pos + 8 + bodyLen
+                        if (end <= pos + size && end <= until) {
+                            val tail = java.nio.ByteBuffer.wrap(data, end - 8, 8)
+                            val width = tail.int ushr 16
+                            val height = tail.int ushr 16
+                            if (width in 100..8192 && height in 100..8192 && height > best) best = height
+                        }
+                    }
+                }
+                pos += size
+            }
+        }
+        walk(0, data.size)
+        return best.takeIf { it > 0 }
+    }
+
     private fun fetchPlaylistStream(base: String, path: String): HentaiStream? {
         val body = httpGet(base + path, referer = "$base/") ?: return null
         val playlistPath = Regex("file:\"(/pl/[^\"]+playlist\\.txt)").find(body)?.groupValues?.get(1)
@@ -492,20 +781,25 @@ object HentaiStreamResolver {
                         val label = Regex("^(\\w+?)\\s*(\\d+)$").find(raw)?.let { m ->
                             m.groupValues[1].replaceFirstChar { it.uppercase() } + " " + m.groupValues[2]
                         } ?: raw.ifBlank { "Серия ${i + 1}" }
-                        add(label to file)
+                        add(HentaiEpisode(label, file, qualityFromUrl(file)))
                     }
                 }
             }
         }.getOrDefault(emptyList())
         if (episodes.isEmpty()) { Log.i(TAG, "playlist empty"); return null }
         Log.i(TAG, "playlist: ${episodes.size} episode(s)")
-        val (firstLabel, firstUrl) = episodes.first()
+        // Плейлисты DLE не публикуют ренду — серии без метки пробиваются по голове файла
+        // (faststart-MP4 отдают moov первыми 128 КБ).
+        val withQuality = episodes.map { ep ->
+            if (ep.maxQuality == null) ep.copy(maxQuality = probeMp4Quality(ep.url, "$base/")) else ep
+        }
+        val first = withQuality.first()
         return HentaiStream(
-            url = firstUrl,
+            url = first.url,
             headers = mapOf("User-Agent" to USER_AGENT),
-            quality = "Auto",
-            title = firstLabel,
-            episodes = episodes.takeIf { it.size > 1 }.orEmpty()
+            quality = first.maxQuality ?: "Auto",
+            title = first.label,
+            episodes = withQuality.takeIf { it.size > 1 }.orEmpty()
         )
     }
 
@@ -589,27 +883,72 @@ object HentaiStreamResolver {
      * When the picked hit has numbered siblings inside the same result page, resolve each sibling's
      * watch page (capped) and surface them as the series switcher; single hits stay untouched.
      */
+    /** Katakana→hiragana fold so "タイム" matches "たいむ" — dump aliases and site titles mix scripts. */
+    private fun foldKana(raw: String): String = buildString {
+        for (ch in raw) append(if (ch in '\u30A1'..'\u30F6') ch - 0x60 else ch)
+    }
+
+    /**
+     * Splits a normalized h1 title into (series base, episode number). hanime1 names franchise
+     * episodes "Title 7", "Title7" and "Title 第7話"; the base must not end in a digit so
+     * 4-digit numbers ("2024") never become an episode. Null when there is no episode suffix.
+     */
+    private fun h1SeriesSplit(normalized: String): Pair<String, Int>? {
+        Regex("^(.+?)\\s*第(\\d{1,3})話$").find(normalized)?.let { m ->
+            val base = m.groupValues[1].trim()
+            val num = m.groupValues[2].toIntOrNull()
+            if (base.length >= 2 && num != null) return base to num
+        }
+        Regex("^(.+?\\D)\\s*(\\d{1,3})$").find(normalized)?.let { m ->
+            val base = m.groupValues[1].trim()
+            val num = m.groupValues[2].toIntOrNull()
+            if (base.length >= 2 && num != null) return base to num
+        }
+        return null
+    }
+
     private fun resolveH1WithSeries(items: List<H1Item>, matchedId: String): HentaiStream? {
         val matched = items.firstOrNull { it.id == matchedId } ?: return null
         val main = fetchH1Stream(matchedId) ?: return null
-        val base = normalizeTitle(matched.title).replace(Regex("\\s*\\d{1,3}$"), "").trim()
+        val matchedSplit = h1SeriesSplit(normalizeTitle(matched.title))
+        val base = (matchedSplit?.first ?: normalizeTitle(matched.title)).trim()
         if (base.length < 2) return main
+        val currentNum = matchedSplit?.second ?: 1
+        // Siblings from the same search page: same series base, any episode suffix form.
         data class Sibling(val num: Int, val id: String)
         val siblings = items.mapNotNull { item ->
             if (item.id == matchedId) return@mapNotNull null
-            val norm = normalizeTitle(item.title)
-            val m = Regex("^(.*) (\\d{1,3})$").find(norm) ?: return@mapNotNull null
-            if (m.groupValues[1].trim() != base) return@mapNotNull null
-            Sibling(m.groupValues[2].toIntOrNull() ?: return@mapNotNull null, item.id)
+            val split = h1SeriesSplit(normalizeTitle(item.title)) ?: return@mapNotNull null
+            if (split.first != base) return@mapNotNull null
+            Sibling(split.second, item.id)
         }.distinctBy { it.num }.sortedBy { it.num }.take(9)
-        if (siblings.isEmpty()) return main
-        Log.i(TAG, "h1 series \"${matched.title}\": +${siblings.size} sibling episode(s)")
-        val currentNum = trailingEpisode(normalizeTitle(matched.title))
-            .let { if (it == Int.MAX_VALUE) 1 else it }
-        val entries = mutableListOf(currentNum to ("Серия $currentNum" to main.url))
+        Log.i(TAG, "h1 series \"${matched.title}\": base=\"$base\" cur=$currentNum, ${siblings.size} sibling(s) on page")
+        val seen = mutableSetOf(currentNum)
+        val entries = mutableListOf(currentNum to HentaiEpisode("Серия $currentNum", main.url, main.quality))
         for (sibling in siblings) {
+            if (sibling.num in seen) continue
             val siblingStream = runCatching { fetchH1Stream(sibling.id) }.getOrNull() ?: continue
-            entries += sibling.num to ("Серия ${sibling.num}" to siblingStream.url)
+            seen += sibling.num
+            entries += sibling.num to HentaiEpisode("Серия ${sibling.num}", siblingStream.url, siblingStream.quality)
+        }
+        // Search pages cap results and fragment aliases may miss part of the franchise, so
+        // probe numbers directly ("base N") until two consecutive misses.
+        if (entries.size < 2) {
+            var misses = 0
+            for (n in 1..12) {
+                if (n == currentNum || n in seen) continue
+                if (misses >= 2) break
+                val hit = searchH1("$base $n").firstOrNull { item ->
+                    val norm = foldKana(normalizeTitle(item.title))
+                    norm == foldKana("$base $n") || norm == foldKana("$base$n") ||
+                        norm == foldKana("$base 第${n}話")
+                } ?: run { misses++; continue }
+                misses = 0
+                val stream = runCatching { fetchH1Stream(hit.id) }.getOrNull() ?: continue
+                seen += n
+                Log.i(TAG, "h1 series probe: +\"${hit.title}\"")
+                entries += n to HentaiEpisode("Серия $n", stream.url, stream.quality)
+            }
         }
         if (entries.size < 2) return main
         return main.copy(episodes = entries.sortedBy { it.first }.map { it.second })
@@ -621,19 +960,58 @@ object HentaiStreamResolver {
      * Safe to call from composition; returns false when catalog isn't loaded yet.
      */
     fun isKnownHentai(originalTitle: String?, russianTitle: String?): Boolean {
-        val cached = catalogCache ?: return false
+        val key = "${originalTitle.orEmpty().trim()}|${russianTitle.orEmpty().trim()}"
+        knownHentaiMemo[key]?.let { return it }
+        val index = catalogIndex
+        // Каталог ещё грузится — не отвечаем и НЕ мемоизируем: после прогрева ответ изменится.
+        if (index.isEmpty()) return false
         val queries = listOfNotNull(
             originalTitle?.trim()?.takeIf { it.isNotEmpty() },
             russianTitle?.trim()?.takeIf { it.isNotEmpty() }
         ).distinct()
-        return queries.any { q ->
-            cached.any { titleMatches(it.name, it.altTitles, q) }
+        val result = queries.any { q ->
+            val wanted = normalizeTitle(q)
+            wanted.isNotEmpty() && index.any { (normName, normAlt) ->
+                normalizedContains(normName, wanted) || normalizedContains(normAlt, wanted)
+            }
         }
+        if (knownHentaiMemo.size > 512) knownHentaiMemo.clear()
+        knownHentaiMemo[key] = result
+        return result
+    }
+
+    /** Целословное вхождение [wanted] в преднормализованной строке — без регэкспов на запись. */
+    private fun normalizedContains(candidate: String, wanted: String): Boolean {
+        if (candidate.isEmpty()) return false
+        if (candidate == wanted) return true
+        var idx = candidate.indexOf(wanted)
+        while (idx >= 0) {
+            val beforeOk = idx == 0 || candidate[idx - 1] == ' '
+            val after = idx + wanted.length
+            val afterOk = after == candidate.length || candidate[after] == ' '
+            if (beforeOk && afterOk) return true
+            idx = candidate.indexOf(wanted, idx + 1)
+        }
+        return false
     }
 
     /** Pre-warms the catalog cache so [isKnownHentai] works synchronously. Call from IO scope. */
     suspend fun preloadCatalog() {
         withContext(Dispatchers.IO) { loadCatalog() }
+    }
+
+    /**
+     * Фоновый прогрев каталога при старте приложения: теги/трейлер/кадры первой открытой
+     * 18+-страницы не ждут загрузки 4.3 МБ (диск отдаёт копию мгновенно, сеть обновляет).
+     */
+    fun warmCatalogAsync() {
+        if (catalogCache != null) return
+        Thread {
+            runCatching { loadCatalog() }
+        }.apply {
+            name = "hentai-catalog-warm"
+            isDaemon = true
+        }.start()
     }
 
     // ====================== хентай-теги (жанры 18+ тайтлов) ======================
@@ -743,13 +1121,21 @@ object HentaiStreamResolver {
      */
     suspend fun hentaiTags(originalTitle: String?, russianTitle: String?): List<String> =
         withContext(Dispatchers.IO) {
+            val key = "${originalTitle.orEmpty().trim()}|${russianTitle.orEmpty().trim()}"
+            tagsMemo[key]?.let { return@withContext it }
             val queries = titleQueries(originalTitle, russianTitle)
             if (queries.isEmpty()) return@withContext emptyList()
             val catalog = runCatching { loadCatalog() }.getOrDefault(emptyList())
             val entry = queries.firstNotNullOfOrNull { q ->
                 catalog.firstOrNull { titleMatches(it.name, it.altTitles, q) }
-            } ?: return@withContext emptyList()
-            localizeTags(entry.tags)
+            }
+            val tags = entry?.let { localizeTags(it.tags) } ?: emptyList()
+            // Пустой каталог (сбой загрузки) не мемоизируем: ответ изменится после ретрая.
+            if (catalog.isNotEmpty()) {
+                if (tagsMemo.size > 2048) tagsMemo.clear()
+                tagsMemo[key] = tags
+            }
+            tags
         }
 
     // ============================ превью-клип («трейлер») ============================
@@ -833,11 +1219,12 @@ object HentaiStreamResolver {
 
     /**
      * Кадры для блока «Кадры». Источники по надёжности:
-     *  1. Галереи DLE-статей allhentai.fun/hentaidream.fun (/uploads/posts/star.webp) — РФ-доступны
-     *     без VPN, отдают настоящие скриншоты (проверено). Совпадение статьи — тем же
-     *     pickBest, что и при разрешении потока.
+     *  0. Блок «СКРИНШОТЫ» на страницах тайтлов hentaiz (зеркало ru.hentaiiz.org) — быстрый
+     *     путь, при наличии скриншотов фолбэки не запускаются.
+     *  1. Кадры из первой серии стабильного DLE-источника (hentaidream → allhentai):
+     *     MediaMetadataRetriever по ключевым кадрам, файлы кэшируются на диск.
      *  2. Скрейп hanime1-страницы записи каталога (слайдер предпросмотров, затем вся страница);
-     *     работает не из всех сетей — поэтому вторым шагом.
+     *     работает не из всех сетей.
      *  3. Обложка и постер из каталога hanime — чтобы блок никогда не был пустым.
      */
     suspend fun hentaiFrames(originalTitle: String?, russianTitle: String?): List<FilmImageItem> =
@@ -855,19 +1242,68 @@ object HentaiStreamResolver {
                 }
             }
 
-            // Каталог нужен всем трём источникам: алиасы для DLE-поиска, videoId hanime1 и арт.
+            // −1. Дисковый кэш кадров из видео: повторное открытие тайтла — мгновенно,
+            //     без единого запроса (раньше кэш проверялся лишь после промаха hentaiz-поиска,
+            //     что стоило ~4с). Сетевые источники не трогаем вовсе.
+            val context = appContext
+            if (context != null) {
+                val dir = java.io.File(context.cacheDir, "hentai_frames")
+                val cached = dir.listFiles { f -> f.name.startsWith(cacheKeySha(cacheKey) + "-") }
+                    ?.sortedBy { it.name }
+                    .orEmpty()
+                if (cached.isNotEmpty()) {
+                    val instant = cached.map(::fileFrame)
+                    Log.i(TAG, "hentaiFrames [${queries.firstOrNull()}] disk-cache ${instant.size} imgs -> instant")
+                    framesCache[cacheKey] = instant
+                    return@withContext instant
+                }
+            }
+
+            // 0. Блок «СКРИНШОТЫ» на страницах тайтлов hentaiz — настоящие кадры тайтла
+            //    (screen_*-галерея), а не обложки соседних блоков. Быстрый путь: два запроса
+            //    (~1-2с) — и результат сразу в UI; фолбэки ниже в сумме могут висеть минуты
+            //    на таймаутах недоступных сетей, поэтому при наличии скриншотов они не
+            //    запускаются вовсе (и не подмешивают обложки). Транслит-запрос не нужен:
+            //    DLE ищет по тексту статьи (русскому), а не по слагам.
+            val hentaizScreens = runCatching {
+                findHentaizScreens(queries)
+            }.onFailure { Log.w(TAG, "hentaiz screens step failed: ${it.javaClass.simpleName}") }
+                .getOrDefault(emptyList())
+            if (hentaizScreens.isNotEmpty()) {
+                hentaizScreens.forEach(::addFrame)
+                val result = frames.take(FRAMES_LIMIT)
+                Log.i(TAG, "hentaiFrames [${queries.firstOrNull()}] hz=${result.size} -> fast path")
+                framesCache[cacheKey] = result
+                return@withContext result
+            }
+
+            // Каталог нужен фолбэк-шагам: videoId hanime1 и арт.
             val catalog: List<CatalogEntry> = runCatching { loadCatalog() }.getOrDefault(emptyList())
             if (catalog.isEmpty()) Log.w(TAG, "hentaiFrames: hanime catalog unavailable")
             val entry = queries.firstNotNullOfOrNull { q ->
                 catalog.firstOrNull { titleMatches(it.name, it.altTitles, q) }
             }
 
-            // 1. Галереи DLE-статей; промах прямых запросов добирается алиасами каталога:
-            //    каталог allhentai транслитерирован, русский заголовок часто не матчится.
-            runCatching {
-                findDleGalleryImages(queries, entry?.let(::aliasQueries).orEmpty()).forEach(::addFrame)
-            }.onFailure { Log.w(TAG, "dle gallery step failed: ${it.javaClass.simpleName}") }
-            val dleCount = frames.size
+            // 1. Кадры из первой серии стабильного DLE-источника (hentaidream → allhentai):
+            //    у тайтлов без блока СКРИНШОТЫ это единственный источник настоящих кадров.
+            //    Готовые файлы кэша переиспользуются без сети.
+            val videoFrames = runCatching {
+                kotlinx.coroutines.withTimeoutOrNull(VIDEO_FRAMES_TIMEOUT_MS) {
+                    extractVideoFrames(cacheKey, queries)
+                }
+            }.onFailure { Log.w(TAG, "video frames step failed: ${it.javaClass.simpleName}") }
+                .getOrNull()
+                .orEmpty()
+            videoFrames.forEach { frame ->
+                if (frames.none { it.imageUrl == frame.imageUrl }) frames.add(frame)
+            }
+            if (frames.isNotEmpty()) {
+                val result = frames.take(FRAMES_LIMIT)
+                Log.i(TAG, "hentaiFrames [${queries.firstOrNull()}] vf=${result.size} -> video frames")
+                framesCache[cacheKey] = result
+                return@withContext result
+            }
+
             // 2. Страница просмотра hanime1 (когда доступна): сначала слайдер, потом вся страница.
             var h1Count = 0
             if (entry != null && entry.videoId.isNotEmpty() && frames.size < FRAMES_LIMIT) {
@@ -901,7 +1337,7 @@ object HentaiStreamResolver {
             val result = frames.take(FRAMES_LIMIT)
             Log.i(
                 TAG,
-                "hentaiFrames [${queries.firstOrNull()}] dle=${dleCount} h1=$h1Count art=${frames.size - beforeArt} " +
+                "hentaiFrames [${queries.firstOrNull()}] h1=$h1Count art=${frames.size - beforeArt} " +
                     "-> ${result.size} imgs" + (entry?.let { " (catalog: \"${it.name}\")" } ?: "")
             )
             // Пустой результат не кэшируем: разовый сбой сети не должен убить «Кадры» до рестарта.
@@ -910,91 +1346,282 @@ object HentaiStreamResolver {
         }
 
     /**
-     * Ищет статью о тайтле на DLE-сайтах (движок allhentai) и вытаскивает её галерею
-     * /uploads/posts/… — абсолютные URL картинок статьи. Пусто, если статья не найдена.
-     * [aliases] — алиасы записи каталога hanime: статьи AH названы транслитом/ромадзи,
-     * поэтому русский запрос добирается ими во второй волне поиска.
+     * Кадры из первой серии стабильного DLE-источника: MediaMetadataRetriever читает
+     * диапазоны по ключевым кадрам (OPTION_CLOSEST_SYNC), не скачивая файл целиком.
+     * Фреймворк на каждый seek открывает новое HTTP-соединение (~1.3-1.5с), поэтому кадры
+     * снимаются ПАРАЛЛЕЛЬНО несколькими retriever'ами на одну ссылку — иначе 6 кадров
+     * тянутся 9+ секунд последовательно. Файлы складываются в
+     * cacheDir/hentai_frames/<ключ>-N.jpg и живут до очистки кэша системой — повторное
+     * открытие тайтла не трогает сеть.
      */
-    private fun findDleGalleryImages(queries: List<String>, aliases: List<String> = emptyList()): List<String> {
-        val attempts = (queries + aliases + queries.mapNotNull(::translitRu)).distinct()
-        for (base in listOf(AH_BASE, HD_BASE)) {
-            for (query in attempts) {
-                val articles = runCatching { searchAllHentaiOn(base, query) }.getOrDefault(emptyList())
-                val picked = pickBest(
-                    articles.map { CandidateView(it.path, "${it.label} ${slugWords(it.path)}") },
-                    query
-                ) ?: continue
-                val path = articles.first { it.path == picked }.path
-                val body = httpGet(base + path, referer = "$base/") ?: continue
-                val urls = Regex("""(?:src|href)="((?:https?://[^"/]+)?/uploads/posts/[^"]+\.(?:webp|jpe?g|png)[^"]*)""", RegexOption.IGNORE_CASE)
-                    .findAll(body)
+    private suspend fun extractVideoFrames(
+        cacheKey: String,
+        queries: List<String>
+    ): List<FilmImageItem> = withContext(Dispatchers.IO) {
+        val context = appContext ?: return@withContext emptyList()
+        val dir = java.io.File(context.cacheDir, "hentai_frames").apply { mkdirs() }
+        val prefix = cacheKeySha(cacheKey) + "-"
+
+        // Только hentaidream: движок и каталог у него общие с allhentai, а allhentai на
+        // части РФ-сетей блокирован — его поисковые таймауты (2×30с на запрос) подвешивали
+        // шаг кадров на минуты после обычного промаха матчинга. Для ПОТОКА фолбэк остаётся.
+        val stream = resolveViaHentaiDream(queries) ?: run {
+            Log.i(TAG, "video frames: no hentaidream stream for $queries")
+            return@withContext emptyList()
+        }
+
+        // Делим кадры между retriever'ами с сохранением исходного индекса: имя файла
+        // (= порядок в UI) не зависит от параллелизма.
+        val chunkSize = VIDEO_FRAME_FRACTIONS.size / VIDEO_FRAME_PARALLELISM + 1
+        val chunks = VIDEO_FRAME_FRACTIONS
+            .withIndex()
+            .groupBy { it.index / chunkSize }
+            .values
+            .map { chunk -> chunk.sortedBy { it.index } }
+
+        val written = kotlinx.coroutines.coroutineScope {
+            chunks.map { chunk ->
+                async(Dispatchers.IO) { grabFrames(stream, chunk, dir, prefix) }
+            }.awaitAll()
+        }.flatten().filterNotNull()
+
+        Log.i(TAG, "video frames [${stream.url.takeLast(48)}] -> ${written.size} imgs")
+        written.map(::fileFrame)
+    }
+
+    /** Одна партия кадров своим retriever'ом: null — кадр снять не удалось. */
+    private fun grabFrames(
+        stream: HentaiStream,
+        chunk: List<IndexedValue<Float>>,
+        dir: java.io.File,
+        prefix: String
+    ): List<java.io.File?> {
+        val retriever = android.media.MediaMetadataRetriever()
+        try {
+            runCatching { retriever.setDataSource(stream.url, stream.headers) }.getOrElse {
+                Log.w(TAG, "video frames: setDataSource failed: ${it.javaClass.simpleName}")
+                return List(chunk.size) { null }
+            }
+            val durationMs = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()
+                ?.takeIf { it > 0 } ?: return List(chunk.size) { null }
+            // Декод сразу в целевом размере (API 27+): дешевле, чем полноразмерный кадр +
+            // createScaledBitmap. Пропорции сохраняем по размерам видео.
+            val srcW = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            val srcH = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            var dstW = 0
+            var dstH = 0
+            if (srcW > 0 && srcH > 0 && maxOf(srcW, srcH) > VIDEO_FRAME_MAX_SIDE) {
+                val scale = VIDEO_FRAME_MAX_SIDE.toFloat() / maxOf(srcW, srcH)
+                dstW = (srcW * scale).toInt().coerceAtLeast(1)
+                dstH = (srcH * scale).toInt().coerceAtLeast(1)
+            }
+            return chunk.map { (index, fraction) ->
+                val timeUs = (durationMs * fraction).toLong() * 1000
+                val bitmap = runCatching {
+                    if (dstW > 0 && android.os.Build.VERSION.SDK_INT >= 27) {
+                        retriever.getScaledFrameAtTime(
+                            timeUs,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            dstW,
+                            dstH
+                        )
+                    } else {
+                        retriever.getFrameAtTime(
+                            timeUs,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                        )
+                    }
+                }.getOrNull() ?: return@map null
+                val scaled = if (bitmap.width <= VIDEO_FRAME_MAX_SIDE && bitmap.height <= VIDEO_FRAME_MAX_SIDE) {
+                    bitmap
+                } else {
+                    val resized = scaleDown(bitmap, VIDEO_FRAME_MAX_SIDE)
+                    if (resized !== bitmap) bitmap.recycle()
+                    resized
+                }
+                val file = java.io.File(dir, "$prefix$index.jpg")
+                runCatching {
+                    java.io.FileOutputStream(file).use { out ->
+                        scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                    }
+                }.onFailure {
+                    file.delete()
+                    return@map null
+                }
+                scaled.recycle()
+                file
+            }
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+
+    private fun fileFrame(file: java.io.File) = FilmImageItem(
+        imageUrl = android.net.Uri.fromFile(file).toString(),
+        previewUrl = android.net.Uri.fromFile(file).toString()
+    )
+
+    private fun scaleDown(bitmap: android.graphics.Bitmap, maxSide: Int): android.graphics.Bitmap {
+        val largest = maxOf(bitmap.width, bitmap.height)
+        if (largest <= maxSide) return bitmap
+        val scale = maxSide.toFloat() / largest
+        return android.graphics.Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * scale).toInt().coerceAtLeast(1),
+            (bitmap.height * scale).toInt().coerceAtLeast(1),
+            true
+        )
+    }
+
+    private fun cacheKeySha(cacheKey: String): String =
+        MessageDigest.getInstance("MD5").digest(cacheKey.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+            .take(12)
+
+    /**
+     * Кадры из блока «СКРИНШОТЫ» hentaiz: на странице тайтла галерея data-fancybox с
+     * /uploads/posts/<date>/screen_<id>.jpg (у постеров соседних тайтлов префикс poster_ —
+     * их не берём). Поисковые запросы гоняются параллельно (последовательный перебор стоил
+     * ~2с на каждый промах), приоритет — исходный порядок запросов.
+     */
+    private suspend fun findHentaizScreens(queries: List<String>): List<String> =
+        kotlinx.coroutines.coroutineScope {
+            val pages = queries.map { query ->
+                async(Dispatchers.IO) {
+                    query to runCatching { findHentaizPage(query)?.second }.getOrNull()
+                }
+            }.awaitAll()
+            for ((query, page) in pages) {
+                if (page == null) continue
+                val urls = Regex("""(?:href|data-src)="([^"]*/uploads/posts/[^"/]+/screen_[^"]+\.(?:jpe?g|png|webp)[^"]*)""")
+                    .findAll(page)
                     .map { m ->
-                        val raw = m.groupValues[1].trim()
-                        if (raw.startsWith("http")) raw else base + raw
+                        val raw = unescapeHtml(m.groupValues[1]).trim()
+                        if (raw.startsWith("http")) raw else HZ_BASE + raw
                     }
                     .distinct()
                     .toList()
                 if (urls.isNotEmpty()) {
-                    Log.i(TAG, "dle gallery \"$path\" @ $base (query=\"$query\") -> ${urls.size} imgs")
-                    return urls
+                    Log.i(TAG, "hentaiz screens (query=\"$query\") -> ${urls.size} imgs")
+                    return@coroutineScope urls
                 }
             }
+            Log.w(TAG, "hentaiz screens: no article with СКРИНШОТЫ matched, attempts=$queries")
+            emptyList()
         }
-        Log.w(TAG, "dle gallery: no article matched, attempts=$attempts")
-        return emptyList()
-    }
 
     // ============================== hanime.tv ==============================
 
+    /**
+     * Каталог hanime (4.3 МБ JSON) нужен тегам/трейлеру/кадрам одновременно: без блокировки
+     * холодное открытие страницы 18+ качало его трижды параллельно. synchronized на IO-потоках
+     * — осознанно: ждущие корутины получают ОДИН результат; fetch монополизирован.
+     * Свежая копия хранится на диске (mtime = время загрузки) — рестарт приложения не
+     * перекачивает каталог, а сетевой сбой откатывается к устаревшей дисковой копии.
+     */
     private fun loadCatalog(): List<CatalogEntry> {
         catalogCache?.let { cached ->
             if (System.currentTimeMillis() - catalogFetchedAtMs < CATALOG_TTL_MS) return cached
         }
-        val parsed = runCatching {
-            httpClient.newCall(
-                Request.Builder()
-                    .url(HANIME_CATALOG_URL)
-                    .header("User-Agent", USER_AGENT)
-                    .header("Referer", HANIME_REFERER)
-                    .get()
-                    .build()
-            ).execute().use { response ->
-                if (!response.isSuccessful) {
-                    Log.i(TAG, "catalog http ${response.code}")
-                    return@runCatching emptyList<CatalogEntry>()
-                }
-                val body = response.body?.string()
-                    ?: return@runCatching emptyList<CatalogEntry>()
-                val data = JSONObject(body).optJSONArray("data")
-                    ?: return@runCatching emptyList<CatalogEntry>()
-                buildList {
-                    for (i in 0 until data.length()) {
-                        val entry = data.optJSONObject(i) ?: continue
-                        val slug = entry.optString("slug").trim()
-                        if (slug.isEmpty()) continue
-                        add(
-                            CatalogEntry(
-                                slug = slug,
-                                name = entry.optString("name").trim(),
-                                altTitles = entry.optString("search_titles").trim(),
-                                videoId = entry.optString("id").trim(),
-                                coverUrl = entry.optString("cover_url").trim(),
-                                posterUrl = entry.optString("poster_url").trim(),
-                                tags = entry.optJSONArray("tags")
-                                    ?.let { arr -> (0 until arr.length()).mapNotNull { k -> arr.optString(k).trim().takeIf(String::isNotEmpty) } }
-                                    .orEmpty()
-                            )
-                        )
+        synchronized(this) {
+            catalogCache?.let { cached ->
+                if (System.currentTimeMillis() - catalogFetchedAtMs < CATALOG_TTL_MS) return cached
+            }
+            val diskFile = appContext?.let { java.io.File(it.cacheDir, CATALOG_DISK_FILE) }
+            val diskFresh = diskFile?.takeIf { it.isFile }?.let { file ->
+                System.currentTimeMillis() - file.lastModified() < CATALOG_TTL_MS
+            } ?: false
+            if (diskFile != null && diskFresh && readCatalogDisk(diskFile).also { parsed ->
+                    if (parsed.isNotEmpty()) {
+                        catalogCache = parsed
+                        catalogFetchedAtMs = System.currentTimeMillis()
+                        rebuildCatalogIndex(parsed)
                     }
+                }.isNotEmpty()) {
+                Log.i(TAG, "catalog: fresh disk copy loaded (${catalogCache?.size ?: 0} entries)")
+                return catalogCache.orEmpty()
+            }
+
+            val parsed = runCatching {
+                httpClient.newCall(
+                    Request.Builder()
+                        .url(HANIME_CATALOG_URL)
+                        .header("User-Agent", USER_AGENT)
+                        .header("Referer", HANIME_REFERER)
+                        .get()
+                        .build()
+                ).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.i(TAG, "catalog http ${response.code}")
+                        return@runCatching emptyList<CatalogEntry>()
+                    }
+                    val body = response.body?.string()
+                        ?: return@runCatching emptyList<CatalogEntry>()
+                    if (diskFile != null) writeCatalogDisk(diskFile, body)
+                    parseCatalogBody(body)
+                }
+            }.onFailure { Log.w(TAG, "catalog fetch failed: ${it.javaClass.simpleName}") }
+                .getOrDefault(emptyList())
+            if (parsed.isNotEmpty()) {
+                catalogCache = parsed
+                catalogFetchedAtMs = System.currentTimeMillis()
+                rebuildCatalogIndex(parsed)
+                return parsed
+            }
+            // Сеть не отдала каталог — устаревшая дисковая копия лучше пустоты (теги/кадры живы).
+            if (diskFile != null && diskFile.isFile) {
+                readCatalogDisk(diskFile).takeIf { it.isNotEmpty() }?.let { stale ->
+                    catalogCache = stale
+                    rebuildCatalogIndex(stale)
+                    Log.w(TAG, "catalog: network failed, using stale disk copy (${stale.size} entries)")
+                    return stale
                 }
             }
-        }.onFailure { Log.w(TAG, "catalog fetch failed: ${it.javaClass.simpleName}") }
-            .getOrDefault(emptyList())
-        if (parsed.isNotEmpty()) {
-            catalogCache = parsed
-            catalogFetchedAtMs = System.currentTimeMillis()
+            return emptyList()
         }
-        return parsed
+    }
+
+    /** Сохраняет/читает сырой JSON каталога; запись отдельной функцией (см. writeCatalogDisk). */
+    private fun readCatalogDisk(file: java.io.File): List<CatalogEntry> = runCatching {
+        parseCatalogBody(file.readText())
+    }.onFailure { Log.w(TAG, "catalog disk read failed: ${it.javaClass.simpleName}") }
+        .getOrDefault(emptyList())
+
+    private fun parseCatalogBody(body: String): List<CatalogEntry> {
+        val data = JSONObject(body).optJSONArray("data") ?: return emptyList()
+        return buildList {
+            for (i in 0 until data.length()) {
+                val entry = data.optJSONObject(i) ?: continue
+                val slug = entry.optString("slug").trim()
+                if (slug.isEmpty()) continue
+                add(
+                    CatalogEntry(
+                        slug = slug,
+                        name = entry.optString("name").trim(),
+                        altTitles = entry.optString("search_titles").trim(),
+                        videoId = entry.optString("id").trim(),
+                        coverUrl = entry.optString("cover_url").trim(),
+                        posterUrl = entry.optString("poster_url").trim(),
+                        tags = entry.optJSONArray("tags")
+                            ?.let { arr -> (0 until arr.length()).mapNotNull { k -> arr.optString(k).trim().takeIf(String::isNotEmpty) } }
+                            .orEmpty()
+                    )
+                )
+            }
+        }
+    }
+
+    private fun writeCatalogDisk(file: java.io.File, body: String) {
+        runCatching {
+            file.parentFile?.mkdirs()
+            val tmp = java.io.File(file.parentFile, file.name + ".tmp")
+            tmp.writeText(body)
+            if (!tmp.renameTo(file)) {
+                file.writeText(body)
+                tmp.delete()
+            }
+        }.onFailure { Log.w(TAG, "catalog disk write failed: ${it.javaClass.simpleName}") }
     }
 
     /**
@@ -1005,13 +1632,21 @@ object HentaiStreamResolver {
     private fun aliasQueries(entry: CatalogEntry): List<String> {
         val aliases = linkedSetOf<String>()
         if (entry.name.length >= 4) aliases.add(entry.name)
-        Regex("[\\p{IsHan}\\p{InHiragana}\\p{InKatakana}]{2,}").findAll(entry.altTitles)
-            .forEach { aliases.add(it.value) }
-        return aliases.toList().take(4)
+        val runs = Regex("[\\p{IsHan}\\p{InHiragana}\\p{InKatakana}]{2,}").findAll(entry.altTitles)
+            .map { it.value }.toList()
+        // hanime1 indexes titles without word separators; a spaced alt title ("はつこい たいむ")
+        // fragments into short per-word runs that over-match unrelated shows ("たいむ" = "time"),
+        // so the glued full form goes first and per-word runs stay as fallbacks.
+        if (runs.size > 1) {
+            val glued = runs.joinToString("")
+            if (glued.length >= 4) aliases.add(glued)
+        }
+        aliases.addAll(runs)
+        return aliases.toList().take(6)
     }
 
     /** Normalized title view of a search hit, keyed for picking. */
-    private data class CandidateView(val key: String, val title: String)
+    internal data class CandidateView(val key: String, val title: String)
 
     /**
      * Scores every hit and returns the key of the best one (null when nothing is credible).
@@ -1020,8 +1655,10 @@ object HentaiStreamResolver {
      * a small episode number ("Bible Black 1" beats "Bible Black 5" and any spinoff) > weak
      * containment. Containment additionally requires the wanted phrase to be long enough
      * (≥6 latin chars or ≥3 CJK chars) so generic words can never produce a match.
+     *
+     * internal: тот же скоринг матчит статьи на AniStar (AniStarResolver).
      */
-    private fun pickBest(items: List<CandidateView>, query: String): String? {
+    internal fun pickBest(items: List<CandidateView>, query: String): String? {
         val wanted = normalizeTitle(query)
         if (wanted.isEmpty()) return null
         val cjkWanted = wanted.any { it.code >= 0x2E80 }
@@ -1076,6 +1713,10 @@ object HentaiStreamResolver {
         if (wanted.length >= minContain &&
             Regex("(^| )${Regex.escape(wanted)}( |$)").containsMatchIn(candidate)
         ) return 60
+        // Ромадзи-тире: Shikimori «Oneechan» против каталога «Onee-chan» — после нормализации
+        // это одно слово против двух, фразовые проверки выше рвутся. Сравниваем без пробелов.
+        val solidWanted = wanted.replace(" ", "")
+        if (solidWanted.length >= minContain && candidate.replace(" ", "").contains(solidWanted)) return 50
         return -1
     }
 
@@ -1159,18 +1800,28 @@ enum class HentaiProvider(
 ) {
     ALLHENTAI(
         "AllHentai",
-        "Русская озвучка/сабы, нативные MP4, без VPN",
-        "RU", false
+        "Русская озвучка/сабы, нативные MP4",
+        "RU", true
     ),
     HENTAIDREAM(
         "HentaiDream",
         "Русская озвучка/сабы, нативные MP4, без VPN",
         "RU", false
     ),
+    ANISTAR(
+        "AniStar",
+        "Русская озвучка AniStar, MP4/HLS до 720p, без VPN",
+        "RU", false
+    ),
+    HENTAIZ(
+        "HentaiZ",
+        "Оригинал и озвучки, нативные MP4, без VPN; источники кадров",
+        "RU", false
+    ),
     HANIME1(
         "Hanime1.me",
         "Оригинал с японскими титрами, потоки 480–1080p",
-        "JA", true
+        "JA", false
     ),
     OPPAI(
         "Oppai.Stream",
@@ -1178,4 +1829,15 @@ enum class HentaiProvider(
         "JA", true
     );
 }
+
+/** Источник строки хентая для шита озвучек плеера: реальное имя провайдера, а не «Kodik». */
+fun HentaiProvider.toAnimeSourceType(): hd.kinoshka.app.data.model.AnimeSourceType =
+    when (this) {
+        HentaiProvider.ALLHENTAI -> hd.kinoshka.app.data.model.AnimeSourceType.HENTAI_ALLHENTAI
+        HentaiProvider.HENTAIDREAM -> hd.kinoshka.app.data.model.AnimeSourceType.HENTAI_HENTAIDREAM
+        HentaiProvider.ANISTAR -> hd.kinoshka.app.data.model.AnimeSourceType.ANISTAR
+        HentaiProvider.HENTAIZ -> hd.kinoshka.app.data.model.AnimeSourceType.HENTAI_HENTAIZ
+        HentaiProvider.HANIME1 -> hd.kinoshka.app.data.model.AnimeSourceType.HENTAI_HANIME1
+        HentaiProvider.OPPAI -> hd.kinoshka.app.data.model.AnimeSourceType.HENTAI_OPPAI
+    }
 

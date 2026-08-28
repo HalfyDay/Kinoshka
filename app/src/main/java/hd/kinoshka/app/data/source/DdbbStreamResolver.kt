@@ -581,6 +581,12 @@ object DdbbStreamResolver {
         val ladders: Map<String, Map<String, String>>
     )
 
+    private fun isValidStreamUrl(url: String): Boolean {
+        if (url.contains('�')) return false
+        if (url.any { it.code < 32 || it.code > 126 }) return false
+        return runCatching { java.net.URI(url); true }.getOrDefault(false)
+    }
+
     private fun parseLadder(fileField: String): Map<String, String> {
         val out = linkedMapOf<String, String>()
         TURBO_FILE_REGEX.findAll(fileField).forEach { match ->
@@ -588,6 +594,7 @@ object DdbbStreamResolver {
             if (!TURBO_LABEL_REGEX.matches(label)) return@forEach
             val url = match.groupValues[2].trim()
             if (!url.startsWith("http") || url.length < 20) return@forEach
+            if (!isValidStreamUrl(url)) return@forEach
             if (!out.containsKey(label)) out[label] = url
         }
         return out
@@ -847,6 +854,7 @@ object DdbbStreamResolver {
             // Quality labels only ("720p", "Auto") — this skips subtitle tracks "[Russian]...srt"
             // and poster fields that share the same bracket syntax.
             if (!TURBO_LABEL_REGEX.matches(label)) return@forEach
+            if (!isValidStreamUrl(url)) return@forEach
             if (url.startsWith("http") && url.length > 20 && !qualities.containsKey(label)) {
                 qualities[label] = url
             }

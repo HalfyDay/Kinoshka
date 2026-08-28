@@ -245,21 +245,19 @@ fun BottomRightPlayerControlsLandscape(
 ) {
     val animeQualities by viewModel.animeQualities.collectAsState()
     val currentQualityId by viewModel.currentAnimeQualityId.collectAsState()
-    // Hidden entirely when the source offers no concrete variants (a lone "Auto" is not a choice).
-    val showQuality = animeQualities.keys.any { !it.equals("Auto", true) }
+    // Always visible; when the source shipped no concrete rungs (single "Auto") the dropdown
+    // simply stays closed (canChoose=false inside AnimeQualityDropdown).
     Row(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),
   ) {
-    if (showQuality) {
-      AnimeQualityDropdown(
-        qualities = animeQualities,
-        currentQualityId = currentQualityId,
-        hideBackground = hideBackground,
-        viewModel = viewModel,
-        onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
-      )
-    }
+    AnimeQualityDropdown(
+      qualities = animeQualities,
+      currentQualityId = currentQualityId,
+      hideBackground = hideBackground,
+      viewModel = viewModel,
+      onQualitySelected = { viewModel.onAnimeQualitySelected?.invoke(it) }
+    )
     buttons.forEach { button ->
       RenderPlayerButton(
         button = button,
