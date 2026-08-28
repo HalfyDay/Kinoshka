@@ -30,6 +30,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import hd.kinoshka.app.data.model.*
+import hd.kinoshka.app.data.download.DownloadBridges
+import hd.kinoshka.app.data.download.DownloadPhase
+import hd.kinoshka.app.data.download.DownloadTaskState
+import hd.kinoshka.app.data.download.EpisodeDownloadManager
+import hd.kinoshka.app.data.download.animeItemKey
+import hd.kinoshka.app.data.download.offlineKey
+import hd.kinoshka.app.data.download.toAnimeMediaStream
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import kotlinx.coroutines.Dispatchers
@@ -142,6 +149,51 @@ fun AnimePlaybackSelectionScreen(
         sourceStates.values.filterIsInstance<SourceLoadState.Ready>().flatMap { it.translations }
     }
 
+    // Офлайн-озвучки: скачанные серии видны в пикере всегда, даже когда сеть недоступна.
+    // Дубликаты по (source, translationId) прячутся за сетевой строкой — local-first резолв
+    // всё равно играет локальный файл.
+    val itemKey = animeItemKey(shikimoriId, kinopoiskId)
+    val library by EpisodeDownloadManager.library.collectAsState()
+    val downloadTasks by EpisodeDownloadManager.tasks.collectAsState()
+    val offlineTranslations = remember(library, allTranslations, itemKey) {
+        EpisodeDownloadManager.offlineTranslations(itemKey, animeTitle).filter { off ->
+            allTranslations.none { it.source == off.source && it.translationId == off.translationId }
+        }
+    }
+    val effectiveTranslations = remember(allTranslations, offlineTranslations) {
+        allTranslations + offlineTranslations
+    }
+
+    // Скачивание из пикера: кнопка на озвучке качает все её серии, кнопка на серии — одну.
+    fun downloadedCountFor(tr: FlatTranslation): Int = tr.episodes.count { ep ->
+        EpisodeDownloadManager.findLibraryEntry(offlineKey(itemKey, tr.source.name, tr.translationId, ep.number)) != null
+    }
+    fun activeCountFor(tr: FlatTranslation): Int = downloadTasks.values.count {
+        it.itemKey == itemKey && it.translationId == tr.translationId && it.phase != DownloadPhase.FAILED
+    }
+    fun downloadTranslationAll(tr: FlatTranslation) {
+        EpisodeDownloadManager.enqueueAll(
+            DownloadBridges.animeRequests(shikimoriId, kinopoiskId, animeTitle, tr)
+        )
+    }
+    fun downloadSingleEpisode(episode: AnimeEpisode, tr: FlatTranslation) {
+        EpisodeDownloadManager.enqueue(
+            EpisodeDownloadManager.EpisodeDownloadRequest(
+                itemKey = itemKey,
+                title = animeTitle,
+                source = tr.source.name,
+                translationId = tr.translationId,
+                translationTitle = tr.title,
+                episodeNumber = episode.number,
+                episodeLabel = episode.title?.takeIf { it.isNotBlank() } ?: "Серия ${episode.number}",
+                resolve = {
+                    AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, tr.source, tr.translationId, episode.number)
+                        ?.let { hd.kinoshka.app.data.download.MediaDownloader.MediaSource(it.url, it.headers) }
+                }
+            )
+        )
+    }
+
     fun startSource(source: AnimeSourceType) {
         if (sourceStatesFlow.value[source] is SourceLoadState.Loading) return
         sourceStatesFlow.update { it + (source to SourceLoadState.Loading) }
@@ -211,11 +263,11 @@ fun AnimePlaybackSelectionScreen(
 
     // Сопоставляем запись с реально загруженными озвучками: точный id, затем совпадение по имени;
     // серия — сохранённая, ближайшая ниже неё или первая доступная.
-    val resumeSuggestion = remember(lastPlayback, allTranslations) {
+    val resumeSuggestion = remember(lastPlayback, effectiveTranslations) {
         val last = lastPlayback ?: return@remember null
         val translation = (
-            allTranslations.firstOrNull { it.source == last.source && it.translationId == last.translationId }
-                ?: allTranslations.firstOrNull { it.source == last.source && it.title == last.translationTitle }
+            effectiveTranslations.firstOrNull { it.source == last.source && it.translationId == last.translationId }
+                ?: effectiveTranslations.firstOrNull { it.source == last.source && it.title == last.translationTitle }
             )?.takeIf { it.episodes.isNotEmpty() } ?: return@remember null
         val episode = translation.episodes.firstOrNull { it.number == last.episodeNumber }
             ?: translation.episodes.lastOrNull { it.number < last.episodeNumber }
@@ -230,16 +282,16 @@ fun AnimePlaybackSelectionScreen(
     // Full error state only when every source has settled and none produced usable content.
     val allSourcesSettled = ANIME_PICKER_SOURCES.all { sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Failed }
     val isLoadingSources = sourceStates.values.any { it is SourceLoadState.Loading }
-    val errorMessage = if (allSourcesSettled && !isLoadingSources && allTranslations.isEmpty()) {
+    val errorMessage = if (allSourcesSettled && !isLoadingSources && effectiveTranslations.isEmpty()) {
         "Не удалось найти видео для этого аниме.\nДля 18+ тайтлов используйте веб-плеер."
     } else {
         null
     }
 
     // Pre-compute derived data once when translations load
-    val episodeTranslationCountMap = remember(allTranslations) {
+    val episodeTranslationCountMap = remember(effectiveTranslations) {
         buildMap {
-            for (tr in allTranslations) {
+            for (tr in effectiveTranslations) {
                 for (ep in tr.episodes) {
                     merge(ep.number, 1, Int::plus)
                 }
@@ -247,20 +299,20 @@ fun AnimePlaybackSelectionScreen(
         }
     }
 
-    val mergedEpisodes = remember(allTranslations) {
+    val mergedEpisodes = remember(effectiveTranslations) {
         // Prefer a real episode title over the synthetic "Серия N" that Kodik emits. Kodik is
         // awaited/added before AniLiberty, so plain distinctBy{number} kept Kodik's synthetic
         // title and dropped AniLiberty's real name — which then got suppressed by the UI guard,
         // so the merged view showed no titles at all. Keep the entry with a real title per number.
-        allTranslations
+        effectiveTranslations
             .flatMap { it.episodes }
             .groupBy { it.number }
             .map { (_, eps) -> eps.firstOrNull { hasRealTitle(it) } ?: eps.first() }
             .sortedBy { it.number }
     }
 
-    val mergedEpisodesBySource = remember(allTranslations) {
-        allTranslations
+    val mergedEpisodesBySource = remember(effectiveTranslations) {
+        effectiveTranslations
             .groupBy { it.source }
             .mapValues { (_, translations) ->
                 translations
@@ -294,13 +346,17 @@ fun AnimePlaybackSelectionScreen(
         isResolvingStream = true
         scope.launch {
             try {
-                val stream = AnimeStreamResolver.resolveStream(
-                    shikimoriId,
-                    animeTitle,
-                    source,
-                    translation.translationId,
-                    episode.number
-                )
+                // Local-first: скачанная серия играется из офлайн-библиотеки без сети и резолва.
+                val stream = EpisodeDownloadManager
+                    .findLocal(shikimoriId, kinopoiskId, source.name, translation.translationId, episode.number)
+                    ?.toAnimeMediaStream()
+                    ?: AnimeStreamResolver.resolveStream(
+                        shikimoriId,
+                        animeTitle,
+                        source,
+                        translation.translationId,
+                        episode.number
+                    )
                 isResolvingStream = false
                 if (stream != null) {
                     // Save last watched position. Keyed per-title: shikimori id when known,
@@ -330,7 +386,7 @@ fun AnimePlaybackSelectionScreen(
                         source,
                         translation.title,
                         translation.episodes,
-                        allTranslations,
+                        effectiveTranslations,
                         translation.translationId
                     )
                     onDismissRequest()
@@ -533,7 +589,7 @@ fun AnimePlaybackSelectionScreen(
                                             selectedSource = filterSourceType,
                                             onSourceSelected = { filterSourceType = it },
                                             selectedEpisode = selectedEpisode,
-                                            allTranslations = allTranslations,
+                                            allTranslations = effectiveTranslations,
                                             sourceStates = sourceStates,
                                             onRetrySource = ::startSource,
                                             resumeSuggestion = activeResumeSuggestion,
@@ -541,14 +597,14 @@ fun AnimePlaybackSelectionScreen(
                                             onTranslationSelected = { tr ->
                                                 selectedTranslation = tr
                                                 selectedSourceType = tr.source
-                                                
+
                                                 // Skip redundant TRANSLATION step if it follows
                                                 var nextIdx = currentStepIndex + 1
-                                                while (nextIdx < playbackSequence.steps.size && 
+                                                while (nextIdx < playbackSequence.steps.size &&
                                                     playbackSequence.steps[nextIdx] == SelectionStep.TRANSLATION) {
                                                     nextIdx++
                                                 }
-                                                
+
                                                 if (nextIdx < playbackSequence.steps.size) {
                                                     currentStepIndex = nextIdx
                                                 } else {
@@ -558,7 +614,10 @@ fun AnimePlaybackSelectionScreen(
                                                     }
                                                 }
                                             },
-                                            playbackUsage = playbackUsage
+                                            playbackUsage = playbackUsage,
+                                            downloadedCountFor = ::downloadedCountFor,
+                                            activeCountFor = ::activeCountFor,
+                                            onDownloadTranslation = ::downloadTranslationAll
                                         )
                                     }
                                     SelectionStep.TRANSLATION -> {
@@ -566,7 +625,7 @@ fun AnimePlaybackSelectionScreen(
                                             selectedSource = selectedSourceType ?: filterSourceType,
                                             onSourceSelected = { selectedSourceType = it },
                                             selectedEpisode = selectedEpisode,
-                                            allTranslations = allTranslations,
+                                            allTranslations = effectiveTranslations,
                                             sourceStates = sourceStates,
                                             onRetrySource = ::startSource,
                                             onTranslationSelected = { tr ->
@@ -590,7 +649,10 @@ fun AnimePlaybackSelectionScreen(
                                                     }
                                                 }
                                             },
-                                            playbackUsage = playbackUsage
+                                            playbackUsage = playbackUsage,
+                                            downloadedCountFor = ::downloadedCountFor,
+                                            activeCountFor = ::activeCountFor,
+                                            onDownloadTranslation = ::downloadTranslationAll
                                         )
                                     }
                                     SelectionStep.EPISODE -> {
@@ -614,6 +676,23 @@ fun AnimePlaybackSelectionScreen(
                                                 } else {
                                                     val tr = selectedTranslation ?: return@SelectEpisodeStep
                                                     resolveAndPlay(ep, tr, selectedSourceType ?: tr.source)
+                                                }
+                                            },
+                                            // Кнопка «скачать» на серии видна, когда озвучка уже выбрана —
+                                            // иначе непонятно, какую озвучку качать.
+                                            onDownloadEpisode = selectedTranslation?.let { tr ->
+                                                { ep: AnimeEpisode -> downloadSingleEpisode(ep, tr) }
+                                            },
+                                            isEpisodeDownloaded = { num ->
+                                                selectedTranslation?.let { tr ->
+                                                    EpisodeDownloadManager.findLibraryEntry(
+                                                        offlineKey(itemKey, tr.source.name, tr.translationId, num)
+                                                    ) != null
+                                                } ?: false
+                                            },
+                                            episodeTaskFor = { num ->
+                                                selectedTranslation?.let { tr ->
+                                                    downloadTasks[offlineKey(itemKey, tr.source.name, tr.translationId, num)]
                                                 }
                                             }
                                         )
@@ -655,7 +734,11 @@ private fun SelectTranslationStep(
     resumeSuggestion: Pair<FlatTranslation, AnimeEpisode>? = null,
     onResumeSelected: ((FlatTranslation, AnimeEpisode) -> Unit)? = null,
     onTranslationSelected: (FlatTranslation) -> Unit,
-    playbackUsage: hd.kinoshka.app.data.local.PlaybackUsageStats = hd.kinoshka.app.data.local.PlaybackUsageStats()
+    playbackUsage: hd.kinoshka.app.data.local.PlaybackUsageStats = hd.kinoshka.app.data.local.PlaybackUsageStats(),
+    // Офлайн-скачивание: кнопка на озвучке качает все её серии; счётчики питают бейджи.
+    downloadedCountFor: (FlatTranslation) -> Int = { 0 },
+    activeCountFor: (FlatTranslation) -> Int = { 0 },
+    onDownloadTranslation: ((FlatTranslation) -> Unit)? = null
 ) {
     val sourceTranslations = remember(allTranslations, selectedSource, selectedEpisode) {
         var list = allTranslations
@@ -915,6 +998,47 @@ private fun SelectTranslationStep(
                                     Spacer(modifier = Modifier.width(8.dp))
                                 }
                             }
+                            // Кнопка скачивания всех серий озвучки в офлайн-библиотеку.
+                            if (onDownloadTranslation != null && tr.episodes.isNotEmpty()) {
+                                val downloaded = downloadedCountFor(tr)
+                                val active = activeCountFor(tr)
+                                val allDownloaded = downloaded >= tr.episodes.size
+                                when {
+                                    allDownloaded -> {
+                                        Icon(
+                                            imageVector = Icons.Default.DownloadDone,
+                                            contentDescription = "Вся озвучка скачана",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    active > 0 -> {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "$active",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    else -> {
+                                        IconButton(
+                                            onClick = { onDownloadTranslation(tr) },
+                                            modifier = Modifier.size(30.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Download,
+                                                contentDescription = "Скачать все серии озвучки",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                }
+                            }
                             if (tr.episodes.isNotEmpty()) {
                                 Text(
                                     text = "${tr.episodes.size} эп.",
@@ -1073,7 +1197,12 @@ private fun SelectEpisodeStep(
     // «Продолжить с…»: последняя озвучка/серия; карточка показывается только на первом шаге.
     resumeSuggestion: Pair<FlatTranslation, AnimeEpisode>? = null,
     onResumeSelected: ((FlatTranslation, AnimeEpisode) -> Unit)? = null,
-    onEpisodeSelected: (AnimeEpisode) -> Unit
+    onEpisodeSelected: (AnimeEpisode) -> Unit,
+    // Офлайн-скачивание: кнопка на серии видна, когда озвучка выбрана (иначе неизвестно,
+    // какую озвучку качать — скачивание «всё» живёт на строках озвучек).
+    onDownloadEpisode: ((AnimeEpisode) -> Unit)? = null,
+    isEpisodeDownloaded: (Int) -> Boolean = { false },
+    episodeTaskFor: (Int) -> DownloadTaskState? = { null }
 ) {
     var isSortAscending by remember { mutableStateOf(true) }
 
@@ -1238,6 +1367,60 @@ private fun SelectEpisodeStep(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                            }
+                        }
+                        // Кнопка скачивания серии (когда озвучка выбрана).
+                        if (onDownloadEpisode != null) {
+                            val task = episodeTaskFor(ep.number)
+                            when {
+                                isEpisodeDownloaded(ep.number) -> {
+                                    Icon(
+                                        imageVector = Icons.Default.DownloadDone,
+                                        contentDescription = "Скачано",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                task != null && task.phase == DownloadPhase.FAILED -> {
+                                    IconButton(
+                                        onClick = { EpisodeDownloadManager.retry(task.key) },
+                                        modifier = Modifier.size(30.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "Повторить скачивание",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                    }
+                                }
+                                task != null -> {
+                                    CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    IconButton(
+                                        onClick = { EpisodeDownloadManager.cancel(task.key) },
+                                        modifier = Modifier.size(30.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Отменить скачивание",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    IconButton(
+                                        onClick = { onDownloadEpisode(ep) },
+                                        modifier = Modifier.size(30.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Download,
+                                            contentDescription = "Скачать серию",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

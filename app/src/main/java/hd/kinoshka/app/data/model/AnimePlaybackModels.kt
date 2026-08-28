@@ -7,14 +7,22 @@ enum class AnimeSourceType(val displayName: String, val description: String) {
     KODIK("Kodik", "Большой каталог озвучек и субтитров"),
     ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p"),
     ANILIB("AniLib", "Каталог AniLib (animelib.org), озвучки по командам"),
+    ANISTAR("AniStar", "Свои озвучки AniStar, MP4/HLS 360–720p"),
     /** Direct CDN links (ddbb aggregator: turbo/collaps/alloha/veoveo). Movie/QOM rows only —
      *  never offered by the anime picker (see ANIME_PICKER_SOURCES). */
-    DDBB("DDBB", "Прямые ссылки Turbo/Collaps/Alloha/Veoveo")
+    DDBB("DDBB", "Прямые ссылки Turbo/Collaps/Alloha/Veoveo"),
+    /** Hentai provider rows for the player's voiceover switcher (hentai flow in DetailsScreen);
+     *  never offered by the anime picker (not in ANIME_PICKER_SOURCES). */
+    HENTAI_ALLHENTAI("AllHentai", "Хентай-источник: русские озвучки"),
+    HENTAI_HENTAIDREAM("HentaiDream", "Хентай-источник: русские озвучки"),
+    HENTAI_HENTAIZ("HentaiZ", "Хентай-источник: оригинал и озвучки"),
+    HENTAI_HANIME1("Hanime1.me", "Хентай-источник: оригинал с японскими титрами"),
+    HENTAI_OPPAI("Oppai.Stream", "Хентай-источник: MP4 720/1080p")
 }
 
 /** Sources the anime selection screen races/loads; DDBB is movie-playback-only. */
 val ANIME_PICKER_SOURCES: List<AnimeSourceType> =
-    listOf(AnimeSourceType.KODIK, AnimeSourceType.ANILIBERTY, AnimeSourceType.ANILIB)
+    listOf(AnimeSourceType.KODIK, AnimeSourceType.ANILIBERTY, AnimeSourceType.ANILIB, AnimeSourceType.ANISTAR)
 
 /**
  * Shared quality preference, best first: the default pick for any ladder (Kodik HLS, ddbb
@@ -57,15 +65,21 @@ fun qualityRank(quality: String?): Int =
     quality?.substringBefore("p")?.takeIf { it.length <= 4 }?.toIntOrNull() ?: 0
 
 /**
- * Short badge label for the selection sheets: 2160p→"4К", 1440p→"2К", 1080p→"FHD", 720p→"HD".
- * Lower resolutions get no badge at all.
+ * Short badge label for the selection sheets: 2160p→"4К", 1440p→"2К", 1080p→"FHD", 720p→"HD";
+ * всё, что ниже 720p, →"SD", ниже 240p →"LD"; нестандартные высоты выше 720 — как "Np".
  */
-fun qualityBadgeLabel(quality: String?): String? = when (quality) {
-    "2160p" -> "4К"
-    "1440p" -> "2К"
-    "1080p" -> "FHD"
-    "720p" -> "HD"
-    else -> null
+fun qualityBadgeLabel(quality: String?): String? {
+    val height = quality?.substringBefore("p")?.takeIf { it.length <= 4 }?.toIntOrNull() ?: return null
+    if (height < 100) return null
+    return when {
+        height == 2160 -> "4К"
+        height == 1440 -> "2К"
+        height == 1080 -> "FHD"
+        height == 720 -> "HD"
+        height < 240 -> "LD"
+        height < 720 -> "SD"
+        else -> "${height}p"
+    }
 }
 
 @Serializable

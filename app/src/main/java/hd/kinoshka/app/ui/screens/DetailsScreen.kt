@@ -24,17 +24,14 @@ import hd.kinoshka.app.ui.components.AnimePlaybackSelectionSheet
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
 
 import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
-import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
-import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
+import hd.kinoshka.app.data.feed.YouTubeStreamResolver
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -137,7 +134,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -149,6 +145,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.ui.graphics.vector.VectorPainter
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.filled.PlayArrow
@@ -175,6 +172,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -218,10 +216,12 @@ import hd.kinoshka.app.data.model.SeasonItem
 import hd.kinoshka.app.data.model.MovieContentKind
 import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.MovieStreamResult
+import hd.kinoshka.app.data.model.qualityBadgeLabel
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.HentaiStream
 import hd.kinoshka.app.data.source.HentaiStreamResolver
+import hd.kinoshka.app.data.source.toAnimeSourceType
 import hd.kinoshka.app.data.source.MovieStreamResolver
 import kotlinx.coroutines.async
 import hd.kinoshka.app.data.source.KodikMovieParser
@@ -269,7 +269,7 @@ fun DetailsScreen(
         movieSeriesContext: hd.kinoshka.app.data.model.MovieSeriesPlaybackContext?
     ) -> Unit)? = null,
     playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
-    playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.DDBB
+    playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.MPVEX
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -278,8 +278,6 @@ fun DetailsScreen(
     var imageViewerStartIndex by remember(filmId) { mutableIntStateOf(-1) }
     var showProfileEditor by remember(filmId) { mutableStateOf(false) }
     var selectedCharacterId by remember(filmId) { mutableStateOf<Int?>(null) }
-    var adGuardDnsActive by remember { mutableStateOf(isAdGuardDnsActive(context)) }
-    var showDnsSheet by remember { mutableStateOf(false) }
     var isInteractive by remember { mutableStateOf(true) }
     var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
     // 18+ titles open a full-screen source page (like the anime selection screen): every provider
@@ -317,11 +315,10 @@ fun DetailsScreen(
         }
     }
 
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner, context) {
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
-                    adGuardDnsActive = isAdGuardDnsActive(context)
                     isInteractive = true
                 }
                 Lifecycle.Event.ON_PAUSE,
@@ -376,6 +373,37 @@ fun DetailsScreen(
                 }
             }
 
+            state.error != null && state.animeBlocked -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 32.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(64.dp)
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        text = "Это аниме",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = state.error.orEmpty(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
             state.error != null -> {
                 Column(
                     modifier = Modifier
@@ -422,6 +450,63 @@ fun DetailsScreen(
                 val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.any { it.genre?.lowercase() == "аниме" }
                 val scope = rememberCoroutineScope()
                 val scrollState = rememberLazyListState()
+                // Трейлер играет только mpvEx. Прямой поток (hanime mp4) уже в nativeUrl;
+                // YouTube-трейлер из блока Кинопоиска/Shikimori извлекаем в момент нажатия
+                // (ссылки googlevideo живут ~6ч). Веб-плееры не открываем.
+                val playTrailer: (hd.kinoshka.app.data.model.FilmTrailer) -> Unit = { trailer ->
+                    val nativeUrl = trailer.nativeUrl
+                    if (nativeUrl != null) {
+                        onOpenNativePlayer?.invoke(
+                            nativeUrl,
+                            trailer.nativeHeaders,
+                            emptyMap(),
+                            item.nameRu ?: item.nameOriginal ?: "Аниме",
+                            1,
+                            "Трейлер",
+                            0,
+                            item.kinopoiskId,
+                            "Трейлер",
+                            emptyList(),
+                            emptyList(),
+                            "",
+                            null
+                        )
+                    } else {
+                        val videoId = youTubeVideoIdOf(trailer.url)
+                        if (videoId == null) {
+                            Toast.makeText(context, "Трейлер недоступен для mpvEx", Toast.LENGTH_SHORT).show()
+                        } else {
+                            scope.launch {
+                                val stream = runCatching {
+                                    withContext(Dispatchers.IO) { YouTubeStreamResolver.resolve(videoId) }
+                                }.getOrNull()
+                                if (stream == null) {
+                                    Toast.makeText(
+                                        context,
+                                        "Не удалось получить поток трейлера — YouTube недоступен без VPN",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    onOpenNativePlayer?.invoke(
+                                        stream.url,
+                                        stream.headers,
+                                        emptyMap(),
+                                        item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                        1,
+                                        "Трейлер",
+                                        0,
+                                        item.kinopoiskId,
+                                        "Трейлер",
+                                        emptyList(),
+                                        emptyList(),
+                                        "",
+                                        null
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 val contentAlpha by animateFloatAsState(
                     targetValue = if (contentVisible) 1f else 0f,
                     animationSpec = tween(300, easing = FastOutSlowInEasing),
@@ -483,29 +568,9 @@ fun DetailsScreen(
                             },
                             onOpenCharacter = { charId -> selectedCharacterId = charId },
                             onOpenGenre = onOpenGenre,
-                            // Превью 18+ тайтла играет нативный плеер как одиночный ролик
-                            // (shikimoriId=0 + без эпизодов → QUALITY_ONLY_MOVIE).
-                            onPlayTrailer = { url ->
-                                if (url.startsWith("http")) {
-                                    onOpenNativePlayer?.invoke(
-                                        url,
-                                        mapOf(
-                                            "User-Agent" to hd.kinoshka.app.data.source.HentaiStreamResolver.HENTAI_USER_AGENT
-                                        ),
-                                        emptyMap(),
-                                        item.nameRu ?: item.nameOriginal ?: "Аниме",
-                                        1,
-                                        "Превью",
-                                        0,
-                                        item.kinopoiskId,
-                                        "Превью",
-                                        emptyList(),
-                                        emptyList(),
-                                        "",
-                                        null
-                                    )
-                                }
-                            }
+                            // Трейлер: прямой поток (Rutube HLS / hanime mp4) играет нативный
+                            // плеер, веб-площадки (YouTube, Sibnet) открываются встроенным браузером.
+                            onPlayTrailer = playTrailer
                         )
                         // Шит поверх живого DetailsLayout (не вместо): демонтаж всего экрана на
                         // время выбора источника давал ~4с фриза на открытие и на закрытие.
@@ -604,28 +669,113 @@ fun DetailsScreen(
                                 label: String,
                                 provider: hd.kinoshka.app.data.source.HentaiProvider
                             ) {
-                                // Multi-episode entries become a voiceover-style series switcher;
-                                // the picked episode is preselected in the player.
-                                val seriesVoiceovers = stream.episodes.mapIndexed { index, entry ->
-                                    val (epLabel, epUrl) = entry
-                                    hd.kinoshka.app.data.model.FlatTranslation(
-                                        source = hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
-                                        translationId = epLabel,
-                                        title = epLabel,
-                                        episodes = listOf(
-                                            hd.kinoshka.app.data.model.AnimeEpisode(
-                                                number = index + 1,
-                                                title = epLabel,
-                                                link = epUrl
+                                // Local-first: скачанная серия играет из офлайн-библиотеки без сети.
+                                val episodeNumber = if (stream.episodes.isNotEmpty()) {
+                                    stream.episodes.indexOfFirst { it.label == label }.takeIf { it >= 0 }?.plus(1) ?: 1
+                                } else 1
+                                val hentaiTrId = if (stream.episodes.isNotEmpty()) {
+                                    "hentai:${provider.name}:$label"
+                                } else {
+                                    "hentai:${provider.name}"
+                                }
+                                val local = if (item.kinopoiskId > 0) {
+                                    hd.kinoshka.app.data.download.EpisodeDownloadManager.findLocal(
+                                        0, item.kinopoiskId, provider.name, hentaiTrId, episodeNumber
+                                    )
+                                } else null
+                                val effectiveUrl = local?.filePath ?: url
+                                val effectiveHeaders = if (local != null) emptyMap() else stream.headers
+                                val effectiveQualities = if (local != null) emptyMap() else stream.qualities
+                                // Переключатель озвучек плеера показывает ВСЕ найденные хентай-
+                                // источники тайтла: каждая серия каждого провайдера — отдельная
+                                // дорожка с реальным именем источника (не «Kodik»). Prepared-
+                                // стримы несут заголовки конкретного провайдера, чтобы смена
+                                // дорожки играла с правильным Referer.
+                                val ordered = listOf(provider to stream) +
+                                    hentaiSources.entries.mapNotNull { (p, st) ->
+                                        (st as? HentaiSourceState.Ready)
+                                            ?.takeIf { p != provider }?.let { p to it.stream }
+                                    } +
+                                    hentaiBackups.entries.mapNotNull { (p, s) ->
+                                        s?.takeIf {
+                                            p != provider && hentaiSources[p] !is HentaiSourceState.Ready
+                                        }?.let { p to it }
+                                    }
+                                val voiceovers = mutableListOf<hd.kinoshka.app.data.model.FlatTranslation>()
+                                val prepared = mutableMapOf<String, hd.kinoshka.app.data.model.AnimeMediaStream>()
+                                for ((p, s) in ordered) {
+                                    val src = p.toAnimeSourceType()
+                                    // hanime1/oppai — оригинал без русской озвучки: шит должен
+                                    // писать «Оригинал (без перевода)», а не «Озвучка».
+                                    val type = if (src == hd.kinoshka.app.data.model.AnimeSourceType.HENTAI_HANIME1) "orig" else "voice"
+                                    if (s.episodes.isNotEmpty()) {
+                                        s.episodes.forEachIndexed { index, ep ->
+                                            val trId = "hentai:${p.name}:${ep.label}"
+                                            voiceovers += hd.kinoshka.app.data.model.FlatTranslation(
+                                                source = src,
+                                                translationId = trId,
+                                                title = ep.label,
+                                                type = type,
+                                                episodes = listOf(
+                                                    hd.kinoshka.app.data.model.AnimeEpisode(
+                                                        number = index + 1,
+                                                        title = ep.label,
+                                                        link = ep.url,
+                                                        maxQuality = ep.maxQuality
+                                                    )
+                                                )
+                                            )
+                                            prepared[trId] = hd.kinoshka.app.data.model.AnimeMediaStream(
+                                                url = ep.url,
+                                                qualities = ep.maxQuality
+                                                    ?.let { linkedMapOf(it to ep.url) }
+                                                    ?: LinkedHashMap(s.qualities),
+                                                headers = s.headers
+                                            )
+                                        }
+                                    } else {
+                                        val trId = "hentai:${p.name}"
+                                        voiceovers += hd.kinoshka.app.data.model.FlatTranslation(
+                                            source = src,
+                                            translationId = trId,
+                                            title = "Фильм",
+                                            type = type,
+                                            episodes = listOf(
+                                                hd.kinoshka.app.data.model.AnimeEpisode(
+                                                    number = 1,
+                                                    title = "Фильм",
+                                                    link = s.url
+                                                )
                                             )
                                         )
+                                        prepared[trId] = hd.kinoshka.app.data.model.AnimeMediaStream(
+                                            url = s.url,
+                                            qualities = LinkedHashMap(s.qualities),
+                                            headers = s.headers
+                                        )
+                                    }
+                                }
+                                if (item.kinopoiskId > 0) {
+                                    hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.put(
+                                        item.kinopoiskId, prepared
                                     )
                                 }
-                                // shikimoriId=0 + empty episodes → QUALITY_ONLY_MOVIE.
+                                val currentTrId = if (stream.episodes.isNotEmpty()) {
+                                    "hentai:${provider.name}:$label"
+                                } else {
+                                    "hentai:${provider.name}"
+                                }
+                                // Скачанная серия: подменяем её дорожку в prepared-потоках на локальный файл,
+                                // чтобы смена дорожек в плеере не уводила обратно в сеть.
+                                if (local != null) {
+                                    prepared[currentTrId]?.let { s ->
+                                        prepared[currentTrId] = s.copy(url = local.filePath, headers = emptyMap())
+                                    }
+                                }
                                 onOpenNativePlayer?.invoke(
-                                    url,
-                                    stream.headers,
-                                    stream.qualities,
+                                    effectiveUrl,
+                                    effectiveHeaders,
+                                    effectiveQualities,
                                     item.nameRu ?: item.nameOriginal ?: "Аниме",
                                     1,
                                     label,
@@ -633,13 +783,14 @@ fun DetailsScreen(
                                     item.kinopoiskId,
                                     provider.name.take(10),
                                     emptyList(),
-                                    seriesVoiceovers,
-                                    label,
+                                    voiceovers,
+                                    currentTrId,
                                     null
                                 )
                             }
                             HentaiSourceScreen(
                                 filmTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                kinopoiskId = item.kinopoiskId,
                                 states = hentaiSources,
                                 backups = hentaiBackups,
                                 onBack = {
@@ -754,11 +905,7 @@ fun DetailsScreen(
                                             onOpenUrl(item.toWatchUrl())
                                         }
                                     },
-                                    onOpenEditor = { showProfileEditor = true },
-                                    showDisableAdsButton = !adGuardDnsActive,
-                                    onDisableAds = {
-                                        showDnsSheet = true
-                                    }
+                                    onOpenEditor = { showProfileEditor = true }
                                 )
                             }
                         }
@@ -777,9 +924,12 @@ fun DetailsScreen(
                         item {
                             ImagesCard(
                                 images = state.images,
+                                trailer = state.trailer,
+                                onPlayTrailer = playTrailer,
                                 onPreview = { index ->
                                     imageViewerStartIndex = index
-                                }
+                                },
+                                fallbackPosterUrl = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview
                             )
                         }
 
@@ -913,70 +1063,6 @@ fun DetailsScreen(
                     showProfileEditor = false
                 }
             )
-        }
-
-        if (showDnsSheet) {
-            ModalBottomSheet(
-                onDismissRequest = { showDnsSheet = false },
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                containerColor = MaterialTheme.colorScheme.surface
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Text(
-                        text = "Отключение рекламы",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Для блокировки рекламы в плеерах включите Private DNS с сервером AdGuard.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Text(
-                                text = "Инструкция:",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text("1. Нажмите кнопку ниже", style = MaterialTheme.typography.bodySmall)
-                            Text("2. В поле \"Имя хоста\" вставьте: dns.adguard.com", style = MaterialTheme.typography.bodySmall)
-                            Text("3. Нажмите Сохранить", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        onClick = {
-                            openPrivateDnsWithAdGuard(context)
-                            showDnsSheet = false
-                            adGuardDnsActive = isAdGuardDnsActive(context)
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "Перейти к настройкам",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 14.dp),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
-            }
         }
 
         selectedCharacterId?.let { charId ->
@@ -1310,9 +1396,7 @@ private fun ActionPanel(
     profile: UserFilmProfile?,
     seasons: List<hd.kinoshka.app.data.model.SeasonItem> = emptyList(),
     onWatch: () -> Unit,
-    onOpenEditor: () -> Unit,
-    showDisableAdsButton: Boolean,
-    onDisableAds: () -> Unit
+    onOpenEditor: () -> Unit
 ) {
     val status = profile?.status
     val watchedSeasons = profile?.watchedSeasons
@@ -1472,19 +1556,6 @@ private fun ActionPanel(
                         color = MaterialTheme.colorScheme.onPrimary
                     )
                 }
-            }
-        }
-
-        if (showDisableAdsButton) {
-            OutlinedButton(
-                onClick = onDisableAds,
-                enabled = enabled,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(42.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("Отключить рекламу", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -2190,12 +2261,25 @@ private fun HorizontalFilmsCard(
 @Composable
 private fun ImagesCard(
     images: List<FilmImageItem>,
-    trailer: hd.kinoshka.app.data.source.HentaiStreamResolver.HentaiTrailer? = null,
-    onPlayTrailer: (String) -> Unit = {},
-    onPreview: (Int) -> Unit
+    trailer: hd.kinoshka.app.data.model.FilmTrailer? = null,
+    onPlayTrailer: (hd.kinoshka.app.data.model.FilmTrailer) -> Unit = {},
+    onPreview: (Int) -> Unit,
+    /** Постер тайтла — фолбэк, если обложка трейлера не загрузилась (напр. YouTube без VPN). */
+    fallbackPosterUrl: String? = null
 ) {
     val listState = rememberLazyListState()
     val snapFling = rememberSnapFlingBehavior(lazyListState = listState)
+
+    // Трейлер приезжает асинхронно в НАЧАЛО уже показанной строки: LazyRow держит якорь
+    // на первой видимой ячейке (по ключу), и новая ячейка остаётся за левым краем до
+    // прокрутки. При появлении трейлера возвращаем строку к началу.
+    var hadTrailer by remember { mutableStateOf(false) }
+    LaunchedEffect(trailer) {
+        if (trailer != null && !hadTrailer) {
+            listState.scrollToItem(0)
+        }
+        hadTrailer = trailer != null
+    }
 
     Column(
         modifier = Modifier
@@ -2230,12 +2314,13 @@ private fun ImagesCard(
                 flingBehavior = snapFling,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Превью 18+ тайтла — первой ячейкой, без автозапуска: постер + Play.
+                // Трейлер страницы (KP / Shikimori) — первой ячейкой, без автозапуска: постер + Play.
                 if (trailer != null) {
                     item(key = "trailer") {
                         TrailerCard(
                             trailer = trailer,
-                            onPlay = { onPlayTrailer(trailer.previewUrl) }
+                            fallbackPosterUrl = fallbackPosterUrl,
+                            onPlay = { onPlayTrailer(trailer) }
                         )
                     }
                 }
@@ -2272,9 +2357,14 @@ private fun ImagesCard(
     }
 }
 
+/** videoId из любых форматов YouTube-ссылок (watch?v=, youtu.be/, embed/, shorts/, live/). */
+private fun youTubeVideoIdOf(url: String): String? =
+    Regex("(?:v=|youtu\\.be/|embed/|shorts/|live/)([A-Za-z0-9_-]{11})").find(url)?.groupValues?.get(1)
+
 @Composable
 private fun TrailerCard(
-    trailer: hd.kinoshka.app.data.source.HentaiStreamResolver.HentaiTrailer,
+    trailer: hd.kinoshka.app.data.model.FilmTrailer,
+    fallbackPosterUrl: String? = null,
     onPlay: () -> Unit
 ) {
     Box(
@@ -2289,7 +2379,10 @@ private fun TrailerCard(
         ) {
             Box(modifier = Modifier.fillMaxWidth()) {
                 KinoshkaAsyncImage(
-                    model = trailer.posterUrl ?: trailer.previewUrl,
+                    // posterUrl == null → Coil не начнёт запрос вовсе (Empty), поэтому
+                    // фолбэк сразу подставляется моделью, а не через error-слот.
+                    model = trailer.posterUrl ?: fallbackPosterUrl,
+                    fallbackModel = if (trailer.posterUrl != null) fallbackPosterUrl else null,
                     contentDescription = "Превью",
                     contentScale = ContentScale.Crop,
                     fadeDurationMs = 1200,
@@ -2303,6 +2396,24 @@ private fun TrailerCard(
                         .matchParentSize()
                         .background(Color.Black.copy(alpha = 0.28f))
                 )
+                // Площадка трейлера недоступна из РФ без VPN (YouTube) — предупреждаем до тапа.
+                if (trailer.needsVpn) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            text = "VPN",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
                 Surface(
                     shape = RoundedCornerShape(50),
                     color = Color.Black.copy(alpha = 0.55f),
@@ -2321,7 +2432,7 @@ private fun TrailerCard(
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = "Превью",
+                            text = "Трейлер",
                             color = Color.White,
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold
@@ -2637,60 +2748,6 @@ private fun String?.toLocalizedType(): String? {
     }
 }
 
-private fun openPrivateDnsWithAdGuard(context: Context) {
-    val dnsHost = "dns.adguard.com"
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-    clipboard?.setPrimaryClip(ClipData.newPlainText("Private DNS", dnsHost))
-
-    val privateDnsIntent = Intent("android.settings.PRIVATE_DNS_SETTINGS").apply {
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
-
-    val opened = runCatching { context.startActivity(privateDnsIntent) }.isSuccess
-    if (!opened) {
-        val fallbackIntent = Intent(Settings.ACTION_WIRELESS_SETTINGS).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        runCatching { context.startActivity(fallbackIntent) }
-    }
-
-    Toast.makeText(
-        context,
-        "Скопировано: dns.adguard.com. Вставьте в поле Private DNS hostname.",
-        Toast.LENGTH_LONG
-    ).show()
-}
-
-@android.annotation.SuppressLint("MissingPermission")
-private fun isAdGuardDnsActive(context: Context): Boolean {
-    val targetHost = "dns.adguard.com"
-    val fromSettings = runCatching {
-        val mode = Settings.Global.getString(context.contentResolver, "private_dns_mode")
-            ?.trim()
-            ?.lowercase(Locale.US)
-        val specifier = Settings.Global.getString(context.contentResolver, "private_dns_specifier")
-            ?.trim()
-            ?.lowercase(Locale.US)
-        mode == "hostname" && specifier == targetHost
-    }.getOrDefault(false)
-
-    if (fromSettings) return true
-
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
-
-    return runCatching {
-        val connectivity =
-            context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        val activeNetwork = connectivity?.activeNetwork
-        val dnsServerName = connectivity
-            ?.getLinkProperties(activeNetwork)
-            ?.privateDnsServerName
-            ?.trim()
-            ?.lowercase(Locale.US)
-        dnsServerName == targetHost
-    }.getOrDefault(false)
-}
-
 @Composable
 private fun AnimeDetailsLayout(
     scrollState: LazyListState,
@@ -2704,7 +2761,7 @@ private fun AnimeDetailsLayout(
     onPosterClick: (Offset) -> Unit,
     onOpenCharacter: (Int) -> Unit,
     onOpenGenre: ((genreName: String, isAnime: Boolean) -> Unit)? = null,
-    onPlayTrailer: (String) -> Unit = {}
+    onPlayTrailer: (hd.kinoshka.app.data.model.FilmTrailer) -> Unit = {}
 ) {
     val item = state.item ?: return
     val anime = state.animeDetails
@@ -2859,9 +2916,7 @@ private fun AnimeDetailsLayout(
                     onWatch = {
                         onWatch(item)
                     },
-                    onOpenEditor = onOpenEditor,
-                    showDisableAdsButton = false,
-                    onDisableAds = {}
+                    onOpenEditor = onOpenEditor
                 )
             }
         }
@@ -2897,7 +2952,8 @@ private fun AnimeDetailsLayout(
                 images = state.images,
                 trailer = state.trailer,
                 onPlayTrailer = onPlayTrailer,
-                onPreview = onPreviewImage
+                onPreview = onPreviewImage,
+                fallbackPosterUrl = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview
             )
         }
 
@@ -4086,9 +4142,6 @@ private fun DetailsTopBar(
     val context = LocalContext.current
     val density = LocalDensity.current
     var showTorrentSheet by remember { mutableStateOf(false) }
-    var torrentLinks by remember { mutableStateOf<List<AnimeStreamResolver.TorrentLink>>(emptyList()) }
-    var torrentLoading by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
 
     val thresholdPx = with(density) { (if (isAnime) 380.dp else 200.dp).toPx() }
     val fadeRangePx = with(density) { 40.dp.toPx() }
@@ -4149,24 +4202,7 @@ private fun DetailsTopBar(
                 )
 
                 IconButton(
-                    onClick = {
-                        torrentLoading = true
-                        showTorrentSheet = true
-                        scope.launch {
-                            val links = withContext(Dispatchers.IO) {
-                                if (isAnime) {
-                                    val shikimoriId = item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
-                                    AnimeStreamResolver.fetchTorrents(shikimoriId, item.nameRu ?: item.nameOriginal ?: "")
-                                } else {
-                                    val title = (item.nameRu ?: item.nameOriginal ?: "").trim()
-                                    val yearStr = item.year?.toString()
-                                    AnimeStreamResolver.fetchFilmTorrents(title, yearStr)
-                                }
-                            }
-                            torrentLinks = links
-                            torrentLoading = false
-                        }
-                    }
+                    onClick = { showTorrentSheet = true }
                 ) {
                     Icon(
                         imageVector = Icons.Default.Download,
@@ -4198,80 +4234,13 @@ private fun DetailsTopBar(
         }
     }
 
-    // Torrent picker (anime). Hands magnet/.torrent links to the OS, which opens the user's
-    // torrent client — no in-app torrent engine. Films use the external-browser path above.
+    // Шит загрузки: торренты (AniLiberty/AniStar/Rutor) + скачивание серий в офлайн-библиотеку.
     if (showTorrentSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showTorrentSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = MaterialTheme.colorScheme.surface
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    text = "Торренты (AniLiberty)",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "Ссылка откроется во внешнем торрент-клиенте.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (torrentLoading) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
-                } else if (torrentLinks.isEmpty()) {
-                    Text(
-                        text = "Торренты не найдены для этого тайтла.",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(8.dp)
-                    )
-                } else {
-                    torrentLinks.forEach { link ->
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            onClick = {
-                                val uri = (link.magnet ?: link.torrentUrl) ?: return@Surface
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                runCatching { context.startActivity(intent) }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(14.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = link.quality,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = "${link.size} • ↑${link.seeders} ↓${link.leechers}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Icon(
-                                    imageVector = Icons.Default.Download,
-                                    contentDescription = "Скачать",
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        TitleDownloadSheet(
+            item = item,
+            isAnime = isAnime,
+            onDismiss = { showTorrentSheet = false }
+        )
     }
 }
 
@@ -4449,6 +4418,7 @@ sealed class HentaiSourceState {
 @Composable
 private fun HentaiSourceScreen(
     filmTitle: String,
+    kinopoiskId: Int = 0,
     states: Map<hd.kinoshka.app.data.source.HentaiProvider, HentaiSourceState>,
     backups: Map<hd.kinoshka.app.data.source.HentaiProvider, hd.kinoshka.app.data.source.HentaiStream?> = emptyMap(),
     onBack: () -> Unit,
@@ -4614,11 +4584,23 @@ private fun HentaiSourceScreen(
                                 is HentaiSourceState.Ready -> {
                                     val stream = st.stream
                                     if (stream.episodes.isNotEmpty()) {
-                                        stream.episodes.forEachIndexed { _, episode ->
+                                        stream.episodes.forEachIndexed { index, episode ->
                                             HentaiEpisodeRow(
-                                                label = episode.first,
+                                                label = episode.label,
                                                 subtitle = "Прямая ссылка",
-                                                onClick = { onPlay(stream, episode.second, episode.first, provider) }
+                                                maxQuality = episode.maxQuality,
+                                                onClick = { onPlay(stream, episode.url, episode.label, provider) },
+                                                trailing = {
+                                                    HentaiDownloadButton(
+                                                        title = filmTitle,
+                                                        kinopoiskId = kinopoiskId,
+                                                        provider = provider,
+                                                        label = episode.label,
+                                                        episodeNumber = index + 1,
+                                                        episodeUrl = episode.url,
+                                                        headers = stream.headers
+                                                    )
+                                                }
                                             )
                                         }
                                     } else {
@@ -4626,7 +4608,19 @@ private fun HentaiSourceScreen(
                                             label = "Смотреть",
                                             subtitle = stream.qualities.keys.minOrNull()?.let { "До $it" }
                                                 ?: "Прямая ссылка",
-                                            onClick = { onPlay(stream, stream.url, "Фильм", provider) }
+                                            maxQuality = stream.quality,
+                                            onClick = { onPlay(stream, stream.url, "Фильм", provider) },
+                                            trailing = {
+                                                HentaiDownloadButton(
+                                                    title = filmTitle,
+                                                    kinopoiskId = kinopoiskId,
+                                                    provider = provider,
+                                                    label = "Фильм",
+                                                    episodeNumber = 1,
+                                                    episodeUrl = stream.url,
+                                                    headers = stream.headers
+                                                )
+                                            }
                                         )
                                     }
                                 }
@@ -4655,15 +4649,17 @@ private fun HentaiBackupRows(
     if (stream.episodes.isNotEmpty()) {
         stream.episodes.forEach { episode ->
             HentaiEpisodeRow(
-                label = episode.first,
+                label = episode.label,
                 subtitle = "Кэш · прямая ссылка",
-                onClick = { onPlay(stream, episode.second, episode.first, provider) }
+                maxQuality = episode.maxQuality,
+                onClick = { onPlay(stream, episode.url, episode.label, provider) }
             )
         }
     } else {
         HentaiEpisodeRow(
             label = "Смотреть",
             subtitle = "Кэш · " + (stream.qualities.keys.minOrNull()?.let { "до $it" } ?: "прямая ссылка"),
+            maxQuality = stream.quality,
             onClick = { onPlay(stream, stream.url, "Фильм", provider) }
         )
     }
@@ -4733,7 +4729,13 @@ private fun HentaiFailedRow(message: String, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun HentaiEpisodeRow(label: String, subtitle: String, onClick: () -> Unit) {
+private fun HentaiEpisodeRow(
+    label: String,
+    subtitle: String,
+    maxQuality: String? = null,
+    onClick: () -> Unit,
+    trailing: (@Composable androidx.compose.foundation.layout.RowScope.() -> Unit)? = null
+) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(16.dp),
@@ -4762,21 +4764,115 @@ private fun HentaiEpisodeRow(label: String, subtitle: String, onClick: () -> Uni
             }
             Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    qualityBadgeLabel(maxQuality)?.let { badge ->
+                        Surface(
+                            modifier = Modifier.padding(start = 8.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                        ) {
+                            Text(
+                                text = badge,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            trailing?.invoke(this)
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** Кнопка скачивания хентай-серии в офлайн-библиотеку (состояние: скачать/прогресс/скачано/ошибка). */
+@Composable
+private fun HentaiDownloadButton(
+    title: String,
+    kinopoiskId: Int,
+    provider: hd.kinoshka.app.data.source.HentaiProvider,
+    label: String,
+    episodeNumber: Int,
+    episodeUrl: String?,
+    headers: Map<String, String>
+) {
+    if (kinopoiskId <= 0 || episodeUrl.isNullOrBlank()) return
+    val itemKey = hd.kinoshka.app.data.download.animeItemKey(0, kinopoiskId)
+    val translationId = if (label == "Фильм") "hentai:${provider.name}" else "hentai:${provider.name}:$label"
+    val key = hd.kinoshka.app.data.download.offlineKey(itemKey, provider.name, translationId, episodeNumber)
+    val tasks by hd.kinoshka.app.data.download.EpisodeDownloadManager.tasks.collectAsState()
+    val library by hd.kinoshka.app.data.download.EpisodeDownloadManager.library.collectAsState()
+    val task = tasks[key]
+    val downloaded = library.any { it.key == key }
+    when {
+        downloaded -> Icon(
+            imageVector = Icons.Default.DownloadDone,
+            contentDescription = "Скачано",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp)
+        )
+        task != null && task.phase == hd.kinoshka.app.data.download.DownloadPhase.FAILED -> IconButton(
+            onClick = { hd.kinoshka.app.data.download.EpisodeDownloadManager.retry(key) },
+            modifier = Modifier.size(32.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = "Повторить скачивание",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        task != null -> IconButton(
+            onClick = { hd.kinoshka.app.data.download.EpisodeDownloadManager.cancel(key) },
+            modifier = Modifier.size(32.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Отменить скачивание",
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        else -> IconButton(
+            onClick = {
+                hd.kinoshka.app.data.download.EpisodeDownloadManager.enqueue(
+                    hd.kinoshka.app.data.download.EpisodeDownloadManager.EpisodeDownloadRequest(
+                        itemKey = itemKey,
+                        title = title,
+                        source = provider.name,
+                        translationId = translationId,
+                        translationTitle = "${provider.displayName} · $label",
+                        episodeNumber = episodeNumber,
+                        episodeLabel = label,
+                        resolve = {
+                            hd.kinoshka.app.data.download.MediaDownloader.MediaSource(episodeUrl, headers)
+                        }
+                    )
+                )
+            },
+            modifier = Modifier.size(32.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Download,
+                contentDescription = "Скачать серию",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(19.dp)
             )
         }
     }

@@ -29,6 +29,14 @@ class KinoApplication : Application(), ImageLoaderFactory {
         // Headless-WebView stream extractor needs an application context.
         hd.kinoshka.app.data.source.WebViewStreamHarvester.init(this)
 
+        // Кадры «Кадров» из видео (MediaMetadataRetriever) требуют контекста.
+        hd.kinoshka.app.data.source.HentaiStreamResolver.init(this)
+        // Каталог hanime (теги/трейлер/кадры 18+) прогревается фоном со старта.
+        hd.kinoshka.app.data.source.HentaiStreamResolver.warmCatalogAsync()
+
+        // Офлайн-библиотека: подхват персистентного списка скачанных серий.
+        hd.kinoshka.app.data.download.EpisodeDownloadManager.init(this)
+
         // Initialize FastThumbnails from mpv-android-lib
         `is`.xyz.mpv.FastThumbnails.initialize(this)
     }
@@ -36,6 +44,10 @@ class KinoApplication : Application(), ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader {
         val imageHttpCache = Cache(cacheDir.resolve("http_image_cache"), 80L * 1024L * 1024L)
         val imageClient = OkHttpClient.Builder()
+            // Тот же DNS, что у стрим-резолверов: на РФ-сетях системный DNS отравлен
+            // для части хостов с картинками (зеркала каталогов, shikimori-CDN) — без DoH
+            // найденные резолвером кадры/постеры не скачивались самим загрузчиком.
+            .dns(hd.kinoshka.app.utils.DohFallbackDns)
             .cache(imageHttpCache)
             .build()
 

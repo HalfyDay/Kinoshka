@@ -17,15 +17,19 @@ import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.FilmLinkItem
+import hd.kinoshka.app.data.model.FilmTrailer
 import hd.kinoshka.app.data.model.FilterItem
 import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+import hd.kinoshka.app.data.model.containsAnimeGenre
 import hd.kinoshka.app.data.model.SeasonItem
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.utils.SearchQueryUtils
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import retrofit2.HttpException
 import java.text.DateFormat
 import java.util.Date
@@ -138,6 +142,7 @@ data class HomeUiState(
     val loadingMore: Boolean = false,
     val themeMode: AppThemeMode = AppThemeMode.CURRENT,
     val hideRussianContent: Boolean = false,
+    val showHentaiInLibrary: Boolean = true,
     val discoverTileSize: FilmTileSize = FilmTileSize.MEDIUM,
     val libraryTileSize: FilmTileSize = FilmTileSize.MEDIUM,
     val showFpsCounter: Boolean = false,
@@ -152,7 +157,7 @@ data class HomeUiState(
     val calendarLoading: Boolean = false,
     val topicsLoading: Boolean = false,
     val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
-    val playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.DDBB,
+    val playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.MPVEX,
     val searchHistory: List<hd.kinoshka.app.data.local.SearchHistoryRecord> = emptyList(),
     val isInstantSearch: Boolean = false
 )
@@ -160,6 +165,8 @@ data class HomeUiState(
 data class DetailsUiState(
     val loading: Boolean = false,
     val error: String? = null,
+    /** true, когда страница не открыта, потому что Kinopoisk-тайтл оказался аниме (смотрится только через Shikimori). */
+    val animeBlocked: Boolean = false,
     val item: FilmDetails? = null,
     val seasons: List<SeasonItem> = emptyList(),
     val similars: List<FilmLinkItem> = emptyList(),
@@ -167,8 +174,8 @@ data class DetailsUiState(
     val fullChronology: List<FilmLinkItem> = emptyList(),
     val franchiseResponse: hd.kinoshka.app.data.model.ShikimoriFranchiseResponse? = null,
     val images: List<FilmImageItem> = emptyList(),
-    /** Превью-клип 18+ тайтла (первая ячейка «Кадров», без автозапуска). */
-    val trailer: hd.kinoshka.app.data.source.HentaiStreamResolver.HentaiTrailer? = null,
+    /** YouTube-трейлер страницы из блока Кинопоиска/Shikimori; прямой поток mpvEx извлекает при нажатии. */
+    val trailer: FilmTrailer? = null,
     val userProfile: UserFilmProfile? = null,
     val savingProfile: Boolean = false,
     val animeDetails: hd.kinoshka.app.data.model.ShikimoriAnimeDetails? = null,
@@ -199,6 +206,10 @@ class FilmsViewModel(
     private var lastResumeRefreshMs = 0L
     private companion object {
         const val RESUME_REFRESH_THROTTLE_MS = 1_000L
+
+        /** Превью-клип hanime1 на 18+-страницах выключен (протухающий токен, чужие тайтлы);
+         *  переключение обратно включает фетч + карточку без прочих правок. */
+        const val HENTAI_PREVIEW_ENABLED = false
     }
 
     var uiState by mutableStateOf(buildInitialState())
@@ -211,6 +222,7 @@ class FilmsViewModel(
         loadDiscoverFirstPage(uiState.discoverCategory)
         loadFilters()
         refreshShikimoriAuth()
+        ensureLibraryAdultVerdicts()
         loadCalendar()
         loadTopics()
         uiState = uiState.copy(searchHistory = userStateStore.getSearchHistory())
@@ -331,7 +343,8 @@ class FilmsViewModel(
                                                 episodesAired = details.episodesAired,
                                                 kind = details.kind,
                                                 score = details.score,
-                                                status = details.status
+                                                status = details.status,
+                                                isAdult = isAdultAnime(details)
                                             )
                                         )
                                     }
@@ -343,11 +356,94 @@ class FilmsViewModel(
                         deferreds.forEach { it.await() }
                         cachedShikimoriRates = updatedRates
                         uiState = uiState.copy(library = buildLibraryItems())
+                        ensureLibraryAdultVerdicts()
                     }
                 }
             } else {
                 cachedShikimoriRates = emptyList()
                 uiState = uiState.copy(library = buildLibraryItems())
+                ensureLibraryAdultVerdicts()
+            }
+        }
+    }
+
+    private var adultVerdictJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Дозагрузка 18+-вердиктов для аниме из библиотеки без кэша деталей (история/профили
+     * без оценки Shikimori). Фильтр «Показывать хентай» синхронный, а каталог hanime
+     * сопоставляет названия ненадёжно — добираем детали Shikimori и сохраняем isAdult
+     * в кэш, после чего пересобираем библиотеку.
+     */
+    private fun ensureLibraryAdultVerdicts() {
+        if (userStateStore.isHentaiVisibleInLibrary()) return
+        if (adultVerdictJob?.isActive == true) return
+        adultVerdictJob = viewModelScope.launch(Dispatchers.IO) {
+            val offset = ANIME_ID_OFFSET
+            val semaphore = kotlinx.coroutines.sync.Semaphore(4)
+            val totalSaved = java.util.concurrent.atomic.AtomicInteger(0)
+            // Порции по 40 (как в дозагрузке деталей оценок); раунд продолжается, только
+            // если предыдущий дал хотя бы один новый вердикт — иначе тайтлы недоступны.
+            // Список тайтлов пересчитываем в каждом раунде: оценки Shikimori приезжают
+            // асинхронно и расширяют библиотеку.
+            var rounds = 0
+            while (rounds < 3) {
+                rounds++
+                val libraryIds = buildSet {
+                    userStateStore.getHistory().forEach { if (it.kinopoiskId >= offset) add(it.kinopoiskId) }
+                    userStateStore.getProfiles().forEach { if (it.kinopoiskId >= offset) add(it.kinopoiskId) }
+                    cachedShikimoriRates.forEach { if (it.targetId > 0) add(it.targetId + offset) }
+                }
+                val cache = userStateStore.getShikimoriAnimeCache()
+                val pending = libraryIds.filter { cache[it - offset]?.isAdult == null }
+                if (pending.isEmpty()) break
+                val savedInRound = java.util.concurrent.atomic.AtomicInteger(0)
+                pending.take(40).map { kpId ->
+                    async {
+                        semaphore.acquire()
+                        try {
+                            val shikimoriId = kpId - offset
+                            val details = runCatching { animeRepository.details(shikimoriId) }.getOrNull()
+                                ?: return@async
+                            val animeItem = hd.kinoshka.app.data.model.ShikimoriAnimeItem(
+                                id = details.id,
+                                name = details.name,
+                                russian = details.russian,
+                                image = details.image,
+                                url = details.url,
+                                kind = details.kind,
+                                score = details.score,
+                                status = details.status,
+                                episodes = details.episodes,
+                                episodesAired = details.episodesAired
+                            )
+                            userStateStore.saveShikimoriAnimeInfo(
+                                hd.kinoshka.app.data.local.ShikimoriAnimeCache(
+                                    shikimoriId = shikimoriId,
+                                    name = details.name,
+                                    russian = details.russian,
+                                    posterUrl = animeItem.posterUrl,
+                                    episodes = details.episodes,
+                                    episodesAired = details.episodesAired,
+                                    kind = details.kind,
+                                    score = details.score,
+                                    status = details.status,
+                                    isAdult = isAdultAnime(details)
+                                )
+                            )
+                            savedInRound.incrementAndGet()
+                        } finally {
+                            semaphore.release()
+                        }
+                    }
+                }.forEach { it.await() }
+                totalSaved.addAndGet(savedInRound.get())
+                if (savedInRound.get() == 0) break
+            }
+            if (totalSaved.get() > 0) {
+                withContext(Dispatchers.Main) {
+                    uiState = uiState.copy(library = buildLibraryItems())
+                }
             }
         }
     }
@@ -719,6 +815,12 @@ class FilmsViewModel(
         uiState = uiState.copy(library = buildLibraryItems())
     }
 
+    fun setHentaiVisibleInLibrary(visible: Boolean) {
+        userStateStore.setHentaiVisibleInLibrary(visible)
+        uiState = uiState.copy(showHentaiInLibrary = visible, library = buildLibraryItems())
+        ensureLibraryAdultVerdicts()
+    }
+
     fun setShowFpsCounter(enabled: Boolean) {
         userStateStore.setFpsCounterEnabled(enabled)
         uiState = uiState.copy(showFpsCounter = enabled)
@@ -779,15 +881,31 @@ class FilmsViewModel(
                                 }
                             }
                         }
-                        launch {
-                            val trailer = runCatching {
-                                hd.kinoshka.app.data.source.HentaiStreamResolver.hentaiTrailer(
-                                    animeDetails.name,
-                                    animeDetails.russian
-                                )
-                            }.getOrNull()
-                            if (trailer != null) {
-                                detailsState = detailsState.copy(trailer = trailer)
+                        // Превью-клип hanime1 на 18+-страницах отключён: токен hembed живёт
+                        // недолго и к моменту нажатия Play часто уже протухал, а матчинг
+                        // каталога периодически отдавал превью чужого тайтла. Технология
+                        // (HentaiStreamResolver.hentaiTrailer + карточка в ImagesCard)
+                        // сохранена для переиспользования на аниме/кино.
+                        if (HENTAI_PREVIEW_ENABLED) {
+                            launch {
+                                val trailer = runCatching {
+                                    hd.kinoshka.app.data.source.HentaiStreamResolver.hentaiTrailer(
+                                        animeDetails.name,
+                                        animeDetails.russian
+                                    )
+                                }.getOrNull()
+                                if (trailer != null) {
+                                    detailsState = detailsState.copy(
+                                        trailer = FilmTrailer(
+                                            url = trailer.previewUrl,
+                                            nativeUrl = trailer.previewUrl,
+                                            posterUrl = trailer.posterUrl,
+                                            nativeHeaders = mapOf(
+                                                "User-Agent" to hd.kinoshka.app.data.source.HentaiStreamResolver.HENTAI_USER_AGENT
+                                            )
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
@@ -811,6 +929,10 @@ class FilmsViewModel(
                             }.getOrDefault(emptyList())
                             detailsState = detailsState.copy(images = hentaiFrames)
                         }
+                    }
+                    launch {
+                        val trailer = loadShikimoriTrailer(shikimoriId)
+                        if (trailer != null) detailsState = detailsState.copy(trailer = trailer)
                     }
                     launch {
                         val relatedList = runCatching { animeRepository.related(shikimoriId) }.getOrDefault(emptyList())
@@ -878,28 +1000,43 @@ class FilmsViewModel(
                     }
                 } else {
                     val details = repository.details(id)
-                    detailsState = DetailsUiState(
-                        item = details,
-                        userProfile = getUserProfileForFilm(id),
-                        loading = false
-                    )
+                    // Страницы аниме открываются только через Shikimori (id >= ANIME_ID_OFFSET).
+                    // Списки (поиск, подборки) уже отфильтрованы в FilmsRepository — это барьер
+                    // для остальных путей до Kinopoisk-аниме: история, «похожие», лента.
+                    if (details.genres.containsAnimeGenre()) {
+                        val title = details.nameRu ?: details.nameOriginal ?: details.nameEn ?: "Этот тайтл"
+                        detailsState = DetailsUiState(
+                            error = "«$title» — аниме. Аниме открываются только через Shikimori — найдите его в разделе «Аниме».",
+                            animeBlocked = true
+                        )
+                    } else {
+                        detailsState = DetailsUiState(
+                            item = details,
+                            userProfile = getUserProfileForFilm(id),
+                            loading = false
+                        )
 
-                    launch {
-                        if (details.type == "TV_SERIES") {
-                            val seasons = runCatching { repository.seasons(id) }.getOrDefault(emptyList())
-                            detailsState = detailsState.copy(seasons = seasons)
+                        launch {
+                            if (details.type == "TV_SERIES") {
+                                val seasons = runCatching { repository.seasons(id) }.getOrDefault(emptyList())
+                                detailsState = detailsState.copy(seasons = seasons)
+                            }
                         }
-                    }
-                    launch {
-                        val relations = runCatching { repository.relations(id) }.getOrDefault(emptyList())
-                            .filter { it.id > 0 }
-                            .distinctBy { it.id }
-                        detailsState = detailsState.copy(relations = relations)
-                    }
-                    launch {
-                        val images = runCatching { repository.images(id = id, page = 1) }.getOrDefault(emptyList())
-                            .filter { !it.previewUrl.isNullOrBlank() || !it.imageUrl.isNullOrBlank() }
-                        detailsState = detailsState.copy(images = images)
+                        launch {
+                            val relations = runCatching { repository.relations(id) }.getOrDefault(emptyList())
+                                .filter { it.id > 0 }
+                                .distinctBy { it.id }
+                            detailsState = detailsState.copy(relations = relations)
+                        }
+                        launch {
+                            val images = runCatching { repository.images(id = id, page = 1) }.getOrDefault(emptyList())
+                                .filter { !it.previewUrl.isNullOrBlank() || !it.imageUrl.isNullOrBlank() }
+                            detailsState = detailsState.copy(images = images)
+                        }
+                        launch {
+                            val trailer = loadKinopoiskTrailer(id)
+                            if (trailer != null) detailsState = detailsState.copy(trailer = trailer)
+                        }
                     }
                 }
             }.onFailure { ex ->
@@ -907,6 +1044,127 @@ class FilmsViewModel(
             }
         }
     }
+
+    /** Элемент блока трейлеров (KP /videos или Shikimori «Видео») до выбора лучшей площадки. */
+    private data class TrailerCandidate(
+        val url: String,
+        val posterUrl: String?,
+        val title: String?,
+        val official: Boolean
+    )
+
+    /**
+     * Трейлер для KP-страниц (фильмы/сериалы/мультфильмы): берём из блока /videos.
+     * Площадку выбирает pickTrailer: виджет КП или Rutube (HLS сразу) либо
+     * YouTube (извлечение при нажатии).
+     */
+    private suspend fun loadKinopoiskTrailer(id: Int): FilmTrailer? = withContext(Dispatchers.IO) {
+        val videos = runCatching { repository.videos(id) }.getOrDefault(emptyList())
+        pickTrailer(
+            videos.mapNotNull { v ->
+                val url = v.url?.trim()?.takeIf { it.startsWith("http") } ?: return@mapNotNull null
+                TrailerCandidate(url, posterUrl = null, title = v.name, official = v.official == true)
+            }
+        )
+    }
+
+    /**
+     * Трейлер для аниме: блок «Видео» Shikimori. Площадку выбирает pickTrailer:
+     * Rutube (HLS сразу) или YouTube (извлечение при нажатии); vk/sibnet не подходят.
+     */
+    private suspend fun loadShikimoriTrailer(shikimoriId: Int): FilmTrailer? = withContext(Dispatchers.IO) {
+        val videos = runCatching { animeRepository.videos(shikimoriId) }.getOrDefault(emptyList())
+        pickTrailer(
+            videos.mapNotNull { v ->
+                val url = normalizeHttpUrl(v.playerUrl ?: v.url) ?: return@mapNotNull null
+                // Shikimori отдаёт image_url в вида http://… или //… — приводим к https,
+                // иначе Coil не грузит превью трейлера.
+                TrailerCandidate(url, posterUrl = normalizeHttpUrl(v.imageUrl), title = v.name, official = false)
+            }
+        )
+    }
+
+    /** Строка → абсолютный https-URL ("//host", "http://host"). null — не похоже на URL. */
+    private fun normalizeHttpUrl(raw: String?): String? {
+        val trimmed = raw?.trim() ?: return null
+        return when {
+            trimmed.startsWith("https://") -> trimmed
+            trimmed.startsWith("http://") -> "https://${trimmed.removePrefix("http://")}"
+            trimmed.startsWith("//") -> "https:$trimmed"
+            else -> null
+        }
+    }
+
+    /**
+     * Выбор трейлера из блоков Кинопоиска / Shikimori. Играет только mpvEx, поэтому
+     * берём кандидатов с прямым потоком:
+     *  — Rutube: HLS резолвится сразу через RutubeClipSource (как клипы фида) — без VPN;
+     *  — виджет Кинопоиска (site=KINOPOISK_WIDGET, основная масса трейлеров в /videos):
+     *    HLS из страницы виджета через KinopoiskTrailerResolver — без VPN;
+     *  — YouTube: поток извлекается при нажатии через InnerTube, но площадка недоступна
+     *    из РФ без VPN — карточка помечается бейджем (needsVpn).
+     * Официальные — вперёд; для каждого кандидата резолв неудался — идём к следующему.
+     */
+    private suspend fun pickTrailer(candidates: List<TrailerCandidate>): FilmTrailer? {
+        val ranked = candidates
+            .sortedWith(compareBy { !it.official })
+            .distinctBy { it.url }
+        var youtube: TrailerCandidate? = null
+        // Капы на резолвы: у KP почти все кандидаты — виджет-ссылки; если механизм
+        // не работает, не молотим всю строку подряд (каждый резолв — сетевой запрос).
+        var rutubeTries = 0
+        var widgetTries = 0
+        for (candidate in ranked) {
+            val rutubeId = hd.kinoshka.app.data.feed.RutubeClipSource.videoIdFromUrl(candidate.url)
+            if (rutubeId != null) {
+                if (rutubeTries < 2) {
+                    rutubeTries++
+                    val clip = hd.kinoshka.app.data.feed.RutubeClipSource.resolveClip(candidate.url)
+                    if (clip != null) {
+                        return FilmTrailer(
+                            url = candidate.url,
+                            nativeUrl = clip.hlsUrl,
+                            posterUrl = candidate.posterUrl ?: clip.thumbnailUrl,
+                            title = candidate.title
+                        )
+                    }
+                }
+                continue
+            }
+            if (hd.kinoshka.app.data.source.KinopoiskTrailerResolver.trailerIdFromUrl(candidate.url) != null) {
+                if (widgetTries < 2) {
+                    widgetTries++
+                    val widget = hd.kinoshka.app.data.source.KinopoiskTrailerResolver.resolve(candidate.url)
+                    if (widget != null) {
+                        return FilmTrailer(
+                            url = candidate.url,
+                            nativeUrl = widget.hlsUrl,
+                            posterUrl = candidate.posterUrl ?: widget.posterUrl,
+                            title = candidate.title
+                        )
+                    }
+                }
+                continue
+            }
+            if (youtube == null && youTubeVideoId(candidate.url) != null) youtube = candidate
+        }
+        val candidate = youtube ?: return null
+        val videoId = youTubeVideoId(candidate.url).orEmpty()
+        return FilmTrailer(
+            url = candidate.url,
+            posterUrl = candidate.posterUrl ?: youTubeThumbUrl(videoId),
+            title = candidate.title,
+            needsVpn = true
+        )
+    }
+
+    /** videoId из любых форматов YouTube-ссылок (watch?v=, youtu.be/, embed/, shorts/, live/). */
+    private fun youTubeVideoId(url: String): String? =
+        Regex("(?:v=|youtu\\.be/|embed/|shorts/|live/)([A-Za-z0-9_-]{11})").find(url)?.groupValues?.get(1)
+
+    /** Обложка YouTube-ролика, когда площадка не отдала свою. */
+    private fun youTubeThumbUrl(videoId: String): String =
+        "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
 
     /**
      * Adult-детект для ветки загрузки деталей: рейтинг Shikimori, жанр или совпадение
@@ -945,6 +1203,9 @@ class FilmsViewModel(
     }
 
     private fun loadDiscoverFirstPage(category: DiscoverCategory) {
+        // Cancel any in-flight search so a slow older request can't clobber the discover feed
+        // (mirrors loadSearchFirstPage; matters when Back dismisses a search mid-flight).
+        searchJob?.cancel()
         viewModelScope.launch {
             uiState = uiState.copy(
                 loading = true,
@@ -1176,6 +1437,7 @@ class FilmsViewModel(
             discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
             libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
             showFpsCounter = preferences.showFpsCounter,
+            showHentaiInLibrary = userStateStore.isHentaiVisibleInLibrary(),
             contentType = preferences.contentType,
             playbackSequence = preferences.playbackSequence,
             playerMode = preferences.playerMode
@@ -1209,6 +1471,7 @@ class FilmsViewModel(
         if (!detailsState.loading && item != null) {
             detailsState = detailsState.copy(userProfile = getUserProfileForFilm(item.kinopoiskId))
         }
+        ensureLibraryAdultVerdicts()
     }
 
     private fun refreshFromStore() {
@@ -1319,6 +1582,19 @@ class FilmsViewModel(
                     nextEpisodeAt = cal.nextEpisodeAt ?: existing.nextEpisodeAt,
                     episodesAired = existing.episodesAired ?: cal.anime?.episodesAired
                 )
+            }
+        }
+
+        // Переключатель «Показывать хентай»: выкл — прячем 18+ аниме. Вердикт Shikimori
+        // (жанр «хентай»/рейтинг rx из кэша деталей) приоритетнее; пока флага нет —
+        // синхронная проверка по каталогу hanime.
+        if (!userStateStore.isHentaiVisibleInLibrary()) {
+            result.removeAll { item ->
+                if (item.kinopoiskId < hd.kinoshka.app.data.model.ANIME_ID_OFFSET) return@removeAll false
+                val cachedAdult = localAnimeCache[item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET]?.isAdult
+                cachedAdult == true ||
+                    (cachedAdult == null &&
+                        hd.kinoshka.app.data.source.HentaiStreamResolver.isKnownHentai(item.title, item.subtitle))
             }
         }
 

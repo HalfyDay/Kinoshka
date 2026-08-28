@@ -47,6 +47,11 @@ interface ShikimoriApi {
         @Path("id") id: Int
     ): List<ShikimoriScreenshot>
 
+    @GET("api/animes/{id}/videos")
+    suspend fun videos(
+        @Path("id") id: Int
+    ): List<hd.kinoshka.app.data.model.ShikimoriVideoItem>
+
     @GET("api/animes/{id}/related")
     suspend fun related(
         @Path("id") id: Int

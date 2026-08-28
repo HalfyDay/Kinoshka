@@ -178,6 +178,27 @@ class PlayerViewModel(
     _autoQualityRungHint.value = rung
   }
 
+  // Конец серии аниме/сериала: вместо закрытия показывается оверлей «Следующая серия»
+  // с обратным отсчётом. nextEpisodeOverlay = номер следующей серии (null = скрыт).
+  private val _nextEpisodeOverlay = MutableStateFlow<Int?>(null)
+  val nextEpisodeOverlay: StateFlow<Int?> = _nextEpisodeOverlay.asStateFlow()
+
+  private val _nextEpisodeCountdown = MutableStateFlow(0)
+  val nextEpisodeCountdown: StateFlow<Int> = _nextEpisodeCountdown.asStateFlow()
+
+  fun showNextEpisodeOverlay(nextEpisode: Int, countdownSeconds: Int) {
+    _nextEpisodeOverlay.value = nextEpisode
+    _nextEpisodeCountdown.value = countdownSeconds
+  }
+
+  fun setNextEpisodeCountdown(seconds: Int) {
+    _nextEpisodeCountdown.value = seconds
+  }
+
+  fun hideNextEpisodeOverlay() {
+    _nextEpisodeOverlay.value = null
+  }
+
   // Multi-season series (movie-series mode): distinct season numbers for the season dropdown and
   // the currently selected one. The episode dropdown shows only the active season's episodes.
   private val _animeSeasons = MutableStateFlow<List<Int>>(emptyList())
@@ -194,8 +215,24 @@ class PlayerViewModel(
   private val _watchedEpisodesCount = MutableStateFlow(0)
   val watchedEpisodesCount: StateFlow<Int> = _watchedEpisodesCount.asStateFlow()
 
+  // Сериалы (MOVIE_SERIES): watchedSeasons — сезон, в котором пользователь сейчас (счётчик серий
+  // считается внутри него); значение приходит из библиотечного «Прогресса просмотра». Аниме
+  // хранит плоский счётчик по всему тайтлу, поэтому season-правило включается только флагом ниже.
+  private val _watchedSeasons = MutableStateFlow(0)
+  val watchedSeasons: StateFlow<Int> = _watchedSeasons.asStateFlow()
+
+  private val _watchedPerSeason = MutableStateFlow(false)
+  val watchedPerSeason: StateFlow<Boolean> = _watchedPerSeason.asStateFlow()
+
   fun setWatchedEpisodesCount(count: Int) {
     _watchedEpisodesCount.value = count
+    _watchedPerSeason.value = false
+  }
+
+  fun setWatchedSeriesProgress(seasons: Int, episodes: Int) {
+    _watchedSeasons.value = seasons
+    _watchedEpisodesCount.value = episodes
+    _watchedPerSeason.value = true
   }
 
   private val _isLoadingStream = MutableStateFlow(false)

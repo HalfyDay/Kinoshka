@@ -33,6 +33,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -310,6 +311,9 @@ fun PlayerControls(
         val seekbar = createRef()
         val (playerUpdates) = createRefs()
         val (warnings) = createRefs()
+        val loadingOverlay = createRef()
+        val pendingOverlay = createRef()
+        val nextEpisodeOverlayRef = createRef()
 
         val isBrightnessSliderShown by viewModel.isBrightnessSliderShown.collectAsState()
         val isVolumeSliderShown by viewModel.isVolumeSliderShown.collectAsState()
@@ -357,26 +361,8 @@ fun PlayerControls(
 
         val areSlidersShown = isBrightnessSliderShown || isVolumeSliderShown
 
-        AnimatedVisibility(
-          isBrightnessSliderShown,
-          enter =
-            if (!reduceMotion) {
-              slideInHorizontally(playerControlsEnterAnimationSpec()) {
-                if (swapVolumeAndBrightness) -it else it
-              } + fadeIn(playerControlsEnterAnimationSpec())
-            } else {
-              fadeIn(playerControlsEnterAnimationSpec())
-            },
-          exit =
-            if (!reduceMotion) {
-              slideOutHorizontally(playerControlsExitAnimationSpec()) {
-                if (swapVolumeAndBrightness) -it else it
-              } + fadeOut(playerControlsExitAnimationSpec())
-            } else {
-              fadeOut(playerControlsExitAnimationSpec())
-            },
-          modifier =
-            Modifier.constrainAs(brightnessSlider) {
+                Box(
+          modifier = Modifier.constrainAs(brightnessSlider) {
               if (swapVolumeAndBrightness) {
                 start.linkTo(parent.start, if (isPortrait) spacing.large else spacing.extraLarge)
               } else {
@@ -384,91 +370,137 @@ fun PlayerControls(
               }
               top.linkTo(parent.top, spacing.larger)
               bottom.linkTo(parent.bottom, spacing.extraLarge)
+            }
+        ) {
+          AnimatedVisibility(
+            isBrightnessSliderShown,
+            enter =
+            if (!reduceMotion) {
+            slideInHorizontally(playerControlsEnterAnimationSpec()) {
+            if (swapVolumeAndBrightness) -it else it
+            } + fadeIn(playerControlsEnterAnimationSpec())
+            } else {
+            fadeIn(playerControlsEnterAnimationSpec())
             },
-        ) { BrightnessSlider(brightness, 0f..1f) }
+            exit =
+            if (!reduceMotion) {
+            slideOutHorizontally(playerControlsExitAnimationSpec()) {
+            if (swapVolumeAndBrightness) -it else it
+            } + fadeOut(playerControlsExitAnimationSpec())
+            } else {
+            fadeOut(playerControlsExitAnimationSpec())
+            }
+          ) { BrightnessSlider(brightness, 0f..1f) 
+          }
+        }
 
         if (isLoadingStream) {
-            androidx.compose.foundation.layout.Box(
-                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)),
-                contentAlignment = Alignment.Center
-            ) {
-                KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
+          Box(
+            modifier = Modifier.constrainAs(loadingOverlay) {
+              top.linkTo(parent.top)
+              bottom.linkTo(parent.bottom)
+              start.linkTo(parent.start)
+              end.linkTo(parent.end)
+              width = Dimension.fillToConstraints
+              height = Dimension.fillToConstraints
             }
+          ) {
+            androidx.compose.foundation.layout.Box(
+              modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)),
+              contentAlignment = Alignment.Center
+            ) {
+              KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
+            }
+          }
+        }
+
+        // Конец серии аниме/сериала: компактная пилюля над таймлайном с обратным отсчётом —
+        // плеер не закрывается, следующая серия включается кнопкой или по истечении.
+        val nextEpisode by viewModel.nextEpisodeOverlay.collectAsState()
+        val nextEpisodeCountdown by viewModel.nextEpisodeCountdown.collectAsState()
+        nextEpisode?.let { ep ->
+          Box(
+            modifier = Modifier.constrainAs(nextEpisodeOverlayRef) {
+              bottom.linkTo(seekbar.top, spacing.small)
+              start.linkTo(parent.start)
+              end.linkTo(parent.end)
+            },
+            contentAlignment = Alignment.Center
+          ) {
+            NextEpisodeOverlay(
+              countdown = nextEpisodeCountdown,
+              onPlayNext = { viewModel.onAnimeEpisodeSelected?.invoke(ep) },
+              onCancel = { activity.cancelNextEpisodeCountdown() }
+            )
+          }
         }
 
         // PENDING_MOVIE: background stream resolve failed — retry or fall back to the web player.
         val pendingResolveError by viewModel.pendingResolveError.collectAsState()
         val pendingWebFallbackUrl by viewModel.pendingWebFallbackUrl.collectAsState()
         if (pendingResolveError != null) {
+          Box(
+            modifier = Modifier.constrainAs(pendingOverlay) {
+              top.linkTo(parent.top)
+              bottom.linkTo(parent.bottom)
+              start.linkTo(parent.start)
+              end.linkTo(parent.end)
+              width = Dimension.fillToConstraints
+              height = Dimension.fillToConstraints
+            }
+          ) {
             val activity = LocalActivity.current
             androidx.compose.foundation.layout.Box(
-                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.65f)),
-                contentAlignment = Alignment.Center
+              modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.65f)),
+              contentAlignment = Alignment.Center
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.padding(horizontal = 40.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Warning,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(44.dp)
-                    )
-                    Text(
-                        text = "Не удалось найти поток",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White
-                    )
-                    Text(
-                        text = pendingResolveError.orEmpty(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.7f),
-                        textAlign = TextAlign.Center
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        androidx.compose.material3.Button(onClick = { viewModel.retryPendingResolve() }) {
-                            Text("Повторить")
-                        }
-                        if (pendingWebFallbackUrl != null && activity != null) {
-                            androidx.compose.material3.OutlinedButton(onClick = {
-                                runCatching {
-                                    activity.startActivity(
-                                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(pendingWebFallbackUrl))
-                                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    )
-                                }
-                            }) {
-                                Text("Веб-плеер", color = Color.White)
-                            }
-                        }
+              Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(horizontal = 40.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Warning,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.error,
+                  modifier = Modifier.size(44.dp)
+                )
+                Text(
+                  text = "Не удалось найти поток",
+                  style = MaterialTheme.typography.titleMedium,
+                  fontWeight = FontWeight.SemiBold,
+                  color = Color.White
+                )
+                Text(
+                  text = pendingResolveError.orEmpty(),
+                  style = MaterialTheme.typography.bodySmall,
+                  color = Color.White.copy(alpha = 0.7f),
+                  textAlign = TextAlign.Center
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                  androidx.compose.material3.Button(onClick = { viewModel.retryPendingResolve() }) {
+                    Text("Повторить")
+                  }
+                  if (pendingWebFallbackUrl != null && activity != null) {
+                    androidx.compose.material3.OutlinedButton(onClick = {
+                      runCatching {
+                        activity.startActivity(
+                          android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(pendingWebFallbackUrl))
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                      }
+                    }) {
+                      Text("Веб-плеер", color = Color.White)
                     }
+                  }
                 }
+              }
             }
+          }
         }
 
-        AnimatedVisibility(
-          isVolumeSliderShown,
-          enter =
-            if (!reduceMotion) {
-              slideInHorizontally(playerControlsEnterAnimationSpec()) {
-                if (swapVolumeAndBrightness) it else -it
-              } + fadeIn(playerControlsEnterAnimationSpec())
-            } else {
-              fadeIn(playerControlsEnterAnimationSpec())
-            },
-          exit =
-            if (!reduceMotion) {
-              slideOutHorizontally(playerControlsExitAnimationSpec()) {
-                if (swapVolumeAndBrightness) it else -it
-              } + fadeOut(playerControlsExitAnimationSpec())
-            } else {
-              fadeOut(playerControlsExitAnimationSpec())
-            },
-          modifier =
-            Modifier.constrainAs(volumeSlider) {
+                Box(
+          modifier = Modifier.constrainAs(volumeSlider) {
               if (swapVolumeAndBrightness) {
                 end.linkTo(parent.end, if (isPortrait) spacing.large else spacing.extraLarge)
               } else {
@@ -476,8 +508,27 @@ fun PlayerControls(
               }
               top.linkTo(parent.top, spacing.larger)
               bottom.linkTo(parent.bottom, spacing.extraLarge)
-            },
+            }
         ) {
+          AnimatedVisibility(
+            isVolumeSliderShown,
+            enter =
+            if (!reduceMotion) {
+            slideInHorizontally(playerControlsEnterAnimationSpec()) {
+            if (swapVolumeAndBrightness) it else -it
+            } + fadeIn(playerControlsEnterAnimationSpec())
+            } else {
+            fadeIn(playerControlsEnterAnimationSpec())
+            },
+            exit =
+            if (!reduceMotion) {
+            slideOutHorizontally(playerControlsExitAnimationSpec()) {
+            if (swapVolumeAndBrightness) it else -it
+            } + fadeOut(playerControlsExitAnimationSpec())
+            } else {
+            fadeOut(playerControlsExitAnimationSpec())
+            }
+          ) {
           val boostCap by audioPreferences.volumeBoostCap.collectAsState()
           val displayVolumeAsPercentage by playerPreferences.displayVolumeAsPercentage.collectAsState()
           
@@ -493,6 +544,8 @@ fun PlayerControls(
             boostRange = if (showBoost) 0..effBoostCap else null,
             displayAsPercentage = displayVolumeAsPercentage,
           )
+        
+          }
         }
 
         val holdForMultipleSpeed by playerPreferences.holdForMultipleSpeed.collectAsState()
@@ -512,12 +565,8 @@ fun PlayerControls(
           viewModel.playerUpdate.update { PlayerUpdates.None }
         }
 
-        AnimatedVisibility(
-          currentPlayerUpdate !is PlayerUpdates.None,
-          enter = fadeIn(playerControlsEnterAnimationSpec()),
-          exit = fadeOut(playerControlsExitAnimationSpec()),
-          modifier =
-            Modifier
+                Box(
+          modifier = Modifier
               .then(
                 if (showSystemStatusBar) {
                   Modifier.windowInsetsPadding(WindowInsets.statusBars)
@@ -528,8 +577,13 @@ fun PlayerControls(
               .constrainAs(playerUpdates) {
                 linkTo(parent.start, parent.end)
                 top.linkTo(parent.top, if (isPortrait) 104.dp else 64.dp)
-              },
+              }
         ) {
+          AnimatedVisibility(
+            currentPlayerUpdate !is PlayerUpdates.None,
+            enter = fadeIn(playerControlsEnterAnimationSpec()),
+            exit = fadeOut(playerControlsExitAnimationSpec())
+          ) {
           when (currentPlayerUpdate) {
             is PlayerUpdates.MultipleSpeed -> MultipleSpeedPlayerUpdate(currentSpeed = holdForMultipleSpeed)
             is PlayerUpdates.DynamicSpeedControl -> {
@@ -662,6 +716,8 @@ fun PlayerControls(
 
             else -> {}
           }
+        
+          }
         }
 
         val thermalWarning by viewModel.thermalWarning.collectAsState()
@@ -669,104 +725,101 @@ fun PlayerControls(
         val shaderWarning by viewModel.shaderWarning.collectAsState()
         val shaderWarningPermanent by viewModel.shaderWarningPermanent.collectAsState()
 
-        // Permanent shader warning (stays visible until dismissed by user)
-        AnimatedVisibility(
-          visible = shaderWarningPermanent != null,
-          enter = fadeIn() + expandVertically(),
-          exit = fadeOut() + shrinkVertically(),
+        Box(
           modifier = Modifier.constrainAs(warnings) {
             top.linkTo(playerUpdates.bottom, 16.dp)
             start.linkTo(parent.start)
             end.linkTo(parent.end)
           }
         ) {
-          Surface(
-            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
-            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.padding(horizontal = 16.dp)
+          Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
           ) {
-            Row(
-              modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            AnimatedVisibility(
+              visible = shaderWarningPermanent != null,
+              enter = fadeIn() + expandVertically(),
+              exit = fadeOut() + shrinkVertically()
             ) {
-              Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(18.dp))
-              Text(
-                text = shaderWarningPermanent ?: "",
-                style = MaterialTheme.typography.labelMedium
-              )
-              // Dismiss button so the user can close the permanent warning
-              Icon(
-                imageVector = Icons.Default.Cancel,
-                contentDescription = "Dismiss",
-                modifier = Modifier
-                  .size(18.dp)
-                  .clip(CircleShape)
-                  .clickable { viewModel.setShaderWarningPermanent(null) }
-              )
+              Surface(
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.padding(horizontal = 16.dp)
+              ) {
+                Row(
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(18.dp))
+                  Text(
+                    text = shaderWarningPermanent ?: "",
+                    style = MaterialTheme.typography.labelMedium
+                  )
+                  Icon(
+                    imageVector = Icons.Default.Cancel,
+                    contentDescription = "Dismiss",
+                    modifier = Modifier
+                      .size(18.dp)
+                      .clip(CircleShape)
+                      .clickable { viewModel.setShaderWarningPermanent(null) }
+                  )
+                }
+              }
             }
-          }
-        }
-
-        // Temporary warnings: thermal, lag, shader (auto-dismiss after delay)
-        AnimatedVisibility(
-          visible = thermalWarning != null || lagWarning != null || shaderWarning != null,
-          enter = fadeIn() + expandVertically(),
-          exit = fadeOut() + shrinkVertically(),
-          modifier = Modifier.constrainAs(warnings) {
-            top.linkTo(playerUpdates.bottom, 16.dp)
-            start.linkTo(parent.start)
-            end.linkTo(parent.end)
-          }
-        ) {
-          Surface(
-            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
-            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.padding(horizontal = 16.dp)
-          ) {
-            Row(
-              modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            AnimatedVisibility(
+              visible = thermalWarning != null || lagWarning != null || shaderWarning != null,
+              enter = fadeIn() + expandVertically(),
+              exit = fadeOut() + shrinkVertically()
             ) {
-              Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(18.dp))
-              // Shader warnings take priority, then thermal, then lag
-              Text(
-                text = shaderWarning ?: thermalWarning ?: lagWarning ?: "",
-                style = MaterialTheme.typography.labelMedium
-              )
+              Surface(
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.padding(horizontal = 16.dp)
+              ) {
+                Row(
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(18.dp))
+                  Text(
+                    text = shaderWarning ?: thermalWarning ?: lagWarning ?: "",
+                    style = MaterialTheme.typography.labelMedium
+                  )
+                }
+              }
             }
           }
         }
 
         val areButtonsVisible = controlsShown && !areControlsLocked && !areSlidersShown
 
-        AnimatedVisibility(
-          visible = controlsShown && areControlsLocked,
-          enter = fadeIn(),
-          exit = fadeOut(),
-          modifier =
-            Modifier
+                Box(
+          modifier = Modifier
               .constrainAs(unlockControlsButton) {
                 bottom.linkTo(parent.bottom, spacing.extraLarge)
                 start.linkTo(parent.start)
                 end.linkTo(parent.end)
-              },
+              }
         ) {
+          AnimatedVisibility(
+            visible = controlsShown && areControlsLocked,
+            enter = fadeIn(),
+            exit = fadeOut()
+          ) {
           SlideToUnlock(
             onUnlock = { viewModel.unlockControls() },
             onDraggingChanged = { isDragging -> isUnlockSliderDragging = isDragging },
           )
+        
+          }
         }
 
-        AnimatedVisibility(
-          visible = controlsShown && !areControlsLocked,
-          enter = fadeIn(playerControlsEnterAnimationSpec()),
-          exit = fadeOut(playerControlsExitAnimationSpec()),
-          modifier =
-            Modifier.constrainAs(playerPauseButton) {
+                Box(
+          modifier = Modifier.constrainAs(playerPauseButton) {
               end.linkTo(parent.absoluteRight)
               start.linkTo(parent.absoluteLeft)
               if (isPortrait) {
@@ -775,8 +828,13 @@ fun PlayerControls(
                 top.linkTo(parent.top)
                 bottom.linkTo(parent.bottom)
               }
-            },
+            }
         ) {
+          AnimatedVisibility(
+            visible = controlsShown && !areControlsLocked,
+            enter = fadeIn(playerControlsEnterAnimationSpec()),
+            exit = fadeOut(playerControlsExitAnimationSpec())
+          ) {
           val showLoadingCircle by playerPreferences.showLoadingCircle.collectAsState()
           val icon = AnimatedImageVector.animatedVectorResource(R.drawable.anim_play_to_pause)
           val interaction = remember { MutableInteractionSource() }
@@ -980,26 +1038,12 @@ fun PlayerControls(
               }
             }
           }
+        
+          }
         }
 
-        AnimatedVisibility(
-          visible = controlsShown && !areControlsLocked,
-          enter =
-            if (!reduceMotion) {
-              slideInVertically(playerControlsEnterAnimationSpec()) { it } +
-                fadeIn(playerControlsEnterAnimationSpec())
-            } else {
-              fadeIn(playerControlsEnterAnimationSpec())
-            },
-          exit =
-            if (!reduceMotion) {
-              slideOutVertically(playerControlsExitAnimationSpec()) { it } +
-                fadeOut(playerControlsExitAnimationSpec())
-            } else {
-              fadeOut(playerControlsExitAnimationSpec())
-            },
-          modifier =
-            Modifier
+                Box(
+          modifier = Modifier
               .then(
                 if (showSystemNavigationBar) {
                   val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
@@ -1019,8 +1063,25 @@ fun PlayerControls(
                 }
                 start.linkTo(parent.start, spacing.large)
                 end.linkTo(parent.end, spacing.large)
-              },
+              }
         ) {
+          AnimatedVisibility(
+            visible = controlsShown && !areControlsLocked,
+            enter =
+            if (!reduceMotion) {
+            slideInVertically(playerControlsEnterAnimationSpec()) { it } +
+            fadeIn(playerControlsEnterAnimationSpec())
+            } else {
+            fadeIn(playerControlsEnterAnimationSpec())
+            },
+            exit =
+            if (!reduceMotion) {
+            slideOutVertically(playerControlsExitAnimationSpec()) { it } +
+            fadeOut(playerControlsExitAnimationSpec())
+            } else {
+            fadeOut(playerControlsExitAnimationSpec())
+            }
+          ) {
           val invertDuration by playerPreferences.invertDuration.collectAsState()
           val seekbarStyle by appearancePreferences.seekbarStyle.collectAsState()
           var wasPlayerAlreadyPaused by remember { mutableStateOf(false) }
@@ -1061,26 +1122,12 @@ fun PlayerControls(
             loopStart = abLoopA?.toFloat(),
             loopEnd = abLoopB?.toFloat(),
           )
+        
+          }
         }
 
-        AnimatedVisibility(
-          visible = controlsShown && !areControlsLocked,
-          enter =
-            if (!reduceMotion) {
-              slideInHorizontally(playerControlsEnterAnimationSpec()) { -it } +
-                fadeIn(playerControlsEnterAnimationSpec())
-            } else {
-              fadeIn(playerControlsEnterAnimationSpec())
-            },
-          exit =
-            if (!reduceMotion) {
-              slideOutHorizontally(playerControlsExitAnimationSpec()) { -it } +
-                fadeOut(playerControlsExitAnimationSpec())
-            } else {
-              fadeOut(playerControlsExitAnimationSpec())
-            },
-          modifier =
-            Modifier
+                Box(
+          modifier = Modifier
               .then(
                 if (showSystemStatusBar) {
                   Modifier.windowInsetsPadding(WindowInsets.statusBars)
@@ -1109,8 +1156,25 @@ fun PlayerControls(
                   width = Dimension.fillToConstraints
                   end.linkTo(topRightControls.start, spacing.extraSmall)
                 }
-              },
+              }
         ) {
+          AnimatedVisibility(
+            visible = controlsShown && !areControlsLocked,
+            enter =
+            if (!reduceMotion) {
+            slideInHorizontally(playerControlsEnterAnimationSpec()) { -it } +
+            fadeIn(playerControlsEnterAnimationSpec())
+            } else {
+            fadeIn(playerControlsEnterAnimationSpec())
+            },
+            exit =
+            if (!reduceMotion) {
+            slideOutHorizontally(playerControlsExitAnimationSpec()) { -it } +
+            fadeOut(playerControlsExitAnimationSpec())
+            } else {
+            fadeOut(playerControlsExitAnimationSpec())
+            }
+          ) {
           if (isPortrait) {
             TopPlayerControlsPortrait(
               mediaTitle = mediaTitle,
@@ -1128,26 +1192,12 @@ fun PlayerControls(
               viewModel = viewModel,
             )
           }
+        
+          }
         }
 
-        AnimatedVisibility(
-          visible = controlsShown && !areControlsLocked && !isPortrait,
-          enter =
-            if (!reduceMotion) {
-              slideInHorizontally(playerControlsEnterAnimationSpec()) { it } +
-                fadeIn(playerControlsEnterAnimationSpec())
-            } else {
-              fadeIn(playerControlsEnterAnimationSpec())
-            },
-          exit =
-            if (!reduceMotion) {
-              slideOutHorizontally(playerControlsExitAnimationSpec()) { it } +
-                fadeOut(playerControlsExitAnimationSpec())
-            } else {
-              fadeOut(playerControlsExitAnimationSpec())
-            },
-          modifier =
-            Modifier
+                Box(
+          modifier = Modifier
               .then(
                 if (showSystemStatusBar) {
                   Modifier.windowInsetsPadding(WindowInsets.statusBars)
@@ -1169,8 +1219,25 @@ fun PlayerControls(
               .constrainAs(topRightControls) {
                 top.linkTo(parent.top, spacing.small)
                 end.linkTo(parent.end, spacing.large)
-              },
+              }
         ) {
+          AnimatedVisibility(
+            visible = controlsShown && !areControlsLocked && !isPortrait,
+            enter =
+            if (!reduceMotion) {
+            slideInHorizontally(playerControlsEnterAnimationSpec()) { it } +
+            fadeIn(playerControlsEnterAnimationSpec())
+            } else {
+            fadeIn(playerControlsEnterAnimationSpec())
+            },
+            exit =
+            if (!reduceMotion) {
+            slideOutHorizontally(playerControlsExitAnimationSpec()) { it } +
+            fadeOut(playerControlsExitAnimationSpec())
+            } else {
+            fadeOut(playerControlsExitAnimationSpec())
+            }
+          ) {
           TopRightPlayerControlsLandscape(
             buttons = topRightButtons,
             chapters = chapters,
@@ -1188,26 +1255,12 @@ fun PlayerControls(
             viewModel = viewModel,
             activity = activity,
           )
+        
+          }
         }
 
-        AnimatedVisibility(
-          visible = controlsShown && !areControlsLocked && !areSlidersShown,
-          enter =
-            if (!reduceMotion) {
-              slideInHorizontally(playerControlsEnterAnimationSpec()) { it } +
-                fadeIn(playerControlsEnterAnimationSpec())
-            } else {
-              fadeIn(playerControlsEnterAnimationSpec())
-            },
-          exit =
-            if (!reduceMotion) {
-              slideOutHorizontally(playerControlsExitAnimationSpec()) { it } +
-                fadeOut(playerControlsExitAnimationSpec())
-            } else {
-              fadeOut(playerControlsExitAnimationSpec())
-            },
-          modifier =
-            Modifier
+                Box(
+          modifier = Modifier
               .then(
                 if (showSystemNavigationBar) {
                   val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
@@ -1229,8 +1282,25 @@ fun PlayerControls(
                   bottom.linkTo(seekbar.top, spacing.small)
                   end.linkTo(parent.end, spacing.large)
                 }
-              },
+              }
         ) {
+          AnimatedVisibility(
+            visible = controlsShown && !areControlsLocked && !areSlidersShown,
+            enter =
+            if (!reduceMotion) {
+            slideInHorizontally(playerControlsEnterAnimationSpec()) { it } +
+            fadeIn(playerControlsEnterAnimationSpec())
+            } else {
+            fadeIn(playerControlsEnterAnimationSpec())
+            },
+            exit =
+            if (!reduceMotion) {
+            slideOutHorizontally(playerControlsExitAnimationSpec()) { it } +
+            fadeOut(playerControlsExitAnimationSpec())
+            } else {
+            fadeOut(playerControlsExitAnimationSpec())
+            }
+          ) {
           if (isPortrait) {
             BottomPlayerControlsPortrait(
               buttons = portraitBottomButtons,
@@ -1268,26 +1338,12 @@ fun PlayerControls(
               activity = activity,
             )
           }
+        
+          }
         }
 
-        AnimatedVisibility(
-          visible = controlsShown && !areControlsLocked && !isPortrait && !areSlidersShown,
-          enter =
-            if (!reduceMotion) {
-              slideInHorizontally(playerControlsEnterAnimationSpec()) { -it } +
-                fadeIn(playerControlsEnterAnimationSpec())
-            } else {
-              fadeIn(playerControlsEnterAnimationSpec())
-            },
-          exit =
-            if (!reduceMotion) {
-              slideOutHorizontally(playerControlsExitAnimationSpec()) { -it } +
-                fadeOut(playerControlsExitAnimationSpec())
-            } else {
-              fadeOut(playerControlsExitAnimationSpec())
-            },
-          modifier =
-            Modifier
+                Box(
+          modifier = Modifier
               .then(
                 if (showSystemNavigationBar) {
                   val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
@@ -1304,8 +1360,25 @@ fun PlayerControls(
                 start.linkTo(parent.start, spacing.large)
                 width = Dimension.fillToConstraints
                 end.linkTo(bottomRightControls.start, spacing.small)
-              },
+              }
         ) {
+          AnimatedVisibility(
+            visible = controlsShown && !areControlsLocked && !isPortrait && !areSlidersShown,
+            enter =
+            if (!reduceMotion) {
+            slideInHorizontally(playerControlsEnterAnimationSpec()) { -it } +
+            fadeIn(playerControlsEnterAnimationSpec())
+            } else {
+            fadeIn(playerControlsEnterAnimationSpec())
+            },
+            exit =
+            if (!reduceMotion) {
+            slideOutHorizontally(playerControlsExitAnimationSpec()) { -it } +
+            fadeOut(playerControlsExitAnimationSpec())
+            } else {
+            fadeOut(playerControlsExitAnimationSpec())
+            }
+          ) {
           BottomLeftPlayerControlsLandscape(
             buttons = bottomLeftButtons,
             chapters = chapters,
@@ -1323,6 +1396,8 @@ fun PlayerControls(
             viewModel = viewModel,
             activity = activity,
           )
+        
+          }
         }
 
       }
@@ -1381,5 +1456,64 @@ fun PlayerControls(
       panelShown = panel,
       onDismissRequest = { onOpenPanel(Panels.None) },
     )
+  }
+}
+
+/**
+ * Конец серии аниме/сериала: компактная пилюля над таймлайном — «Следующая серия через N с»
+ * с кнопками «включить сейчас» и отменой отсчёта. Не перекрывает видео и не затемняет экран.
+ */
+@Composable
+private fun NextEpisodeOverlay(
+  countdown: Int,
+  onPlayNext: () -> Unit,
+  onCancel: () -> Unit,
+) {
+  Surface(
+    shape = RoundedCornerShape(50),
+    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+    modifier = Modifier.padding(horizontal = 24.dp)
+  ) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+      modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp)
+    ) {
+      Text(
+        text = "Следующая серия через ${countdown} с",
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1
+      )
+      Box(
+        modifier = Modifier
+          .size(34.dp)
+          .clip(CircleShape)
+          .background(MaterialTheme.colorScheme.primary)
+          .clickable(onClick = onPlayNext),
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(
+          imageVector = Icons.Default.SkipNext,
+          contentDescription = "Включить сейчас",
+          tint = MaterialTheme.colorScheme.onPrimary,
+          modifier = Modifier.size(18.dp)
+        )
+      }
+      Box(
+        modifier = Modifier
+          .size(34.dp)
+          .clip(CircleShape)
+          .clickable(onClick = onCancel),
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(
+          imageVector = Icons.Default.Cancel,
+          contentDescription = "Отмена",
+          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier.size(20.dp)
+        )
+      }
+    }
   }
 }

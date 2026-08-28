@@ -304,6 +304,19 @@ data class ShikimoriRelatedItem(
     @SerializedName("anime") val anime: ShikimoriAnimeItem? = null
 )
 
+/** Элемент блока «Видео» на странице аниме (api/animes/{id}/videos). */
+data class ShikimoriVideoItem(
+    @SerializedName("id") val id: Int = 0,
+    /** Страница ролика на хостинге (youtube.com/watch?v=…, video.sibnet.ru/…). */
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("image_url") val imageUrl: String? = null,
+    /** Embed-плеер хостинга; для ютуба обычно дублирует url. */
+    @SerializedName("player_url") val playerUrl: String? = null,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("website") val website: String? = null,
+    @SerializedName("kind") val kind: String? = null
+)
+
 data class ShikimoriStat(
     @SerializedName("name") val name: Any? = null,
     @SerializedName("value") val value: Int? = 0

@@ -553,6 +553,19 @@ private fun FeedInfoBlock(item: FeedItem, extras: FeedItemExtras?, expanded: Boo
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            // Теги хентая — отдельной строкой другим цветом, чтобы не путались с жанрами.
+            val tagsLine = item.tags.ifEmpty { extras?.hentaiTags.orEmpty() }
+                .take(if (expanded) 6 else 3).joinToString(" · ")
+            if (item.isAdultContent && tagsLine.isNotBlank()) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = tagsLine,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.95f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             val description = extras?.description ?: item.shortDescription
             if (!description.isNullOrBlank()) {
                 Spacer(Modifier.height(6.dp))

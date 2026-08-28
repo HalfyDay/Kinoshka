@@ -2,7 +2,14 @@ package hd.kinoshka.app.data.feed
 
 import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
 
-/** Верхние чипсы фида. Хентай скрыт за гейтом 18+ до подтверждения возраста. */
+/**
+ * Верхние чипсы фида. Хентай скрыт за гейтом 18+ до подтверждения возраста.
+ *
+ * Рекомендации строятся по разделам отдельно: у FILMS/SERIES/CARTOONS/ANIME/HENTAI
+ * свой вектор вкуса и свои источники. ALL — не самостоятельный раздел, а общий показ:
+ * контент разделов (кроме хентая) в одном списке, каждый тайтл ранжируется вектором
+ * СВОЕГО раздела; свой рейтинг у ALL отсутствует.
+ */
 enum class FeedChip(val title: String) {
     ALL("Всё"),
     FILMS("Фильмы"),
@@ -15,7 +22,15 @@ enum class FeedChip(val title: String) {
     val isAdultChip: Boolean get() = this == HENTAI
 
     /** Разделы с «взрослой» подачей — муль туда не прорывается. */
-    val excludesAnimation: Boolean get() = this == FILMS || this == SERIES || this == ALL
+    val excludesAnimation: Boolean get() = this == FILMS || this == SERIES
+
+    /** Разделы, входящие в общий показ «Всё». Хентай всегда показывается отдельно. */
+    val isInAllMix: Boolean get() = this in setOf(FILMS, SERIES, CARTOONS, ANIME)
+
+    companion object {
+        /** Разделы-источники общего показа, в порядке чередования в ленте. */
+        val ALL_MIX: List<FeedChip> = FeedChip.entries.filter { it.isInAllMix }
+    }
 }
 
 /**
@@ -46,7 +61,14 @@ data class FeedItem(
      */
     val reason: String? = null,
     /** Жанр поискового слота, которым кандидат был добыт (у KP выдача жанров не отдаёт). */
-    val sourceGenre: String? = null
+    val sourceGenre: String? = null,
+    /**
+     * Раздел-источник карточки. Голос в «Всё» уходит в вектор СВОЕГО раздела,
+     * а не в общий — у ALL собственного рейтинга нет.
+     */
+    val section: FeedChip? = null,
+    /** Теги хентая (RU, из каталога hanime) — показ на карточке и измерения вкуса 18+. */
+    val tags: List<String> = emptyList()
 ) {
     /** Фильм ли это с точки зрения мгновенного запуска (сериалы ведут на страницу тайтла). */
     val isLikelyMovie: Boolean

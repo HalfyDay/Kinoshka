@@ -16,6 +16,7 @@ class AnimeRepository(private val api: ShikimoriApi) {
     private val searchCache = BoundedCache<String, List<ShikimoriAnimeItem>>()
     private val detailsCache = BoundedCache<Int, ShikimoriAnimeDetails>()
     private val screenshotsCache = BoundedCache<Int, List<ShikimoriScreenshot>>()
+    private val videosCache = BoundedCache<Int, List<hd.kinoshka.app.data.model.ShikimoriVideoItem>>()
     private val relatedCache = BoundedCache<Int, List<hd.kinoshka.app.data.model.ShikimoriRelatedItem>>()
     private val franchiseCache = BoundedCache<Int, hd.kinoshka.app.data.model.ShikimoriFranchiseResponse>()
     private val rolesCache = BoundedCache<Int, List<hd.kinoshka.app.data.model.ShikimoriRole>>()
@@ -112,6 +113,13 @@ class AnimeRepository(private val api: ShikimoriApi) {
         screenshotsCache.get(shikimoriId)?.let { return it }
         val loaded = api.screenshots(shikimoriId)
         screenshotsCache.put(shikimoriId, loaded)
+        return loaded
+    }
+
+    suspend fun videos(shikimoriId: Int): List<hd.kinoshka.app.data.model.ShikimoriVideoItem> {
+        videosCache.get(shikimoriId)?.let { return it }
+        val loaded = runCatching { api.videos(shikimoriId) }.getOrDefault(emptyList())
+        videosCache.put(shikimoriId, loaded)
         return loaded
     }
 

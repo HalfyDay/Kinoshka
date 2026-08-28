@@ -351,9 +351,9 @@ fun InAppWebScreen(
     val activity = context.findActivity()
     val playerMode = remember {
         val prefs = context.getSharedPreferences("kino_user_state", android.content.Context.MODE_PRIVATE)
-        val modeName = prefs.getString("player_mode", null) ?: "DDBB"
+        val modeName = prefs.getString("player_mode", null) ?: "MPVEX"
         runCatching { hd.kinoshka.app.data.local.PlayerMode.valueOf(modeName) }
-            .getOrDefault(hd.kinoshka.app.data.local.PlayerMode.DDBB)
+            .getOrDefault(hd.kinoshka.app.data.local.PlayerMode.MPVEX)
     }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var inVideoFullscreen by remember { mutableStateOf(false) }

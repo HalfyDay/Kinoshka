@@ -1,17 +1,20 @@
 package hd.kinoshka.app.ui.screens
 
+import androidx.activity.compose.BackHandler
 import android.widget.Toast
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,12 +24,16 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.PlayArrow
@@ -34,9 +41,14 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,6 +61,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -57,6 +70,7 @@ import hd.kinoshka.app.data.feed.FeedChip
 import hd.kinoshka.app.data.feed.FeedClipState
 import hd.kinoshka.app.data.feed.FeedItem
 import hd.kinoshka.app.ui.components.BottomNavPill
+import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.ui.components.NavPillItem
 
 /**
@@ -87,7 +101,8 @@ fun RecommendationFeedScreen(
     onResetSeen: () -> Unit,
     onShareDiagnostics: () -> Unit,
     onLoadTastes: () -> List<Pair<String, Double>>,
-    onLoadLiked: () -> List<hd.kinoshka.app.data.feed.LikedTitle>
+    onLoadLiked: () -> List<hd.kinoshka.app.data.feed.LikedTitle>,
+    onRemoveLiked: (hd.kinoshka.app.data.feed.LikedTitle) -> Unit
 ) {
     // Первый показ за сессию: обогащение интересов + визард вкусов.
     LaunchedEffect(Unit) { onOpened() }
@@ -107,10 +122,8 @@ fun RecommendationFeedScreen(
                 onPlan = onPlan,
                 onToggleSound = onToggleSound,
                 onResetSeen = onResetSeen,
-            onShareDiagnostics = onShareDiagnostics,
-            onLoadTastes = onLoadTastes,
-            onLoadLiked = onLoadLiked
-        )
+                onShareDiagnostics = onShareDiagnostics
+            )
         }
 
         FeedChipsRow(
@@ -126,9 +139,6 @@ fun RecommendationFeedScreen(
 
         if (showTastes) {
             TasteInsightsDialog(tastes = onLoadTastes(), onDismiss = { showTastes = false })
-        }
-        if (showLiked) {
-            LikedTitlesDialog(entries = onLoadLiked(), onDismiss = { showLiked = false })
         }
 
         // Плавающая навигация — ТОТ ЖЕ общий компонент, что и на главном экране.
@@ -163,6 +173,17 @@ fun RecommendationFeedScreen(
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
+        // Полноценная страница «Мои лайки»: разделы как в рекомендациях, сетка постеров.
+        if (showLiked) {
+            LikedFeedPage(
+                entries = onLoadLiked(),
+                adultUnlocked = state.adultUnlocked,
+                onClose = { showLiked = false },
+                onOpen = onOpenDetails,
+                onRemove = onRemoveLiked
+            )
+        }
+
         if (state.showAdultGate) {
             AdultGateDialog(onConfirm = onAdultGateConfirm, onDismiss = onAdultGateDismiss)
         }
@@ -189,9 +210,7 @@ private fun FeedPagerContent(
     onPlan: (FeedItem) -> Unit,
     onToggleSound: () -> Unit,
     onResetSeen: () -> Unit,
-    onShareDiagnostics: () -> Unit,
-    onLoadTastes: () -> List<Pair<String, Double>>,
-    onLoadLiked: () -> List<hd.kinoshka.app.data.feed.LikedTitle>
+    onShareDiagnostics: () -> Unit
 ) {
     val items = state.items
     val pagerState = rememberPagerState(pageCount = { items.size })
@@ -388,53 +407,198 @@ private fun FeedChipsRow(
     }
 }
 
-/** Диалог «мои лайки»: лайкнутые тайтлы, сгруппированные по первому жанру. */
+/**
+ * Полноценная страница «Мои лайки» поверх ленты: та же структура разделов, что и в
+ * рекомендациях («Все» + разделы с лайками, хентай — после подтверждения 18+),
+ * сетка постеров как в библиотеке. Тап — страница тайтла, долгий тап — снять лайк.
+ */
 @Composable
-private fun LikedTitlesDialog(entries: List<hd.kinoshka.app.data.feed.LikedTitle>, onDismiss: () -> Unit) {
-    val grouped = remember(entries) {
-        entries.groupBy { it.genres.firstOrNull() ?: "без жанра" }
-            .toList()
-            .sortedByDescending { it.second.size }
+private fun LikedFeedPage(
+    entries: List<hd.kinoshka.app.data.feed.LikedTitle>,
+    adultUnlocked: Boolean,
+    onClose: () -> Unit,
+    onOpen: (Int) -> Unit,
+    onRemove: (hd.kinoshka.app.data.feed.LikedTitle) -> Unit
+) {
+    var list by remember(entries) { mutableStateOf(entries) }
+    var pendingRemove by remember { mutableStateOf<hd.kinoshka.app.data.feed.LikedTitle?>(null) }
+
+    // Разделы: «Все» + разделы рекомендаций, где есть лайки (порядок как в фиде).
+    val sections = remember(list, adultUnlocked) {
+        val bySection = list.groupBy { it.sectionOrNull() }
+        buildList {
+            add(null to list)
+            FeedChip.ALL_MIX.forEach { chip -> bySection[chip]?.let { add(chip to it) } }
+            if (adultUnlocked) bySection[FeedChip.HENTAI]?.let { add(FeedChip.HENTAI to it) }
+        }
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Мои лайки · ${entries.size}") },
-        text = {
-            if (entries.isEmpty()) {
-                Text("Пока нет лайков. Жмите сердечко вверх на понравившихся карточках.")
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    grouped.forEach { (genre, titles) ->
-                        Text(
-                            genre.replaceFirstChar { it.uppercase() } + " · ${titles.size}",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = Color(0xFF66BB6A),
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        titles.take(8).forEach { t ->
-                            Row {
-                                Text("•  ", color = Color.White.copy(alpha = 0.5f))
-                                Text(
-                                    t.title,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                        if (titles.size > 8) {
-                            Text(
-                                "…и ещё ${titles.size - 8}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.45f)
+    var selected by remember { mutableStateOf<FeedChip?>(null) }
+    val shown = sections.firstOrNull { it.first == selected }?.second ?: list
+
+    BackHandler(onBack = onClose)
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp)
+            ) {
+                IconButton(onClick = onClose) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                }
+                Text(
+                    "Мои лайки · ${list.size}",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            if (sections.size > 1) {
+                val selectedIndex = sections.indexOfFirst { it.first == selected }.coerceAtLeast(0)
+                ScrollableTabRow(
+                    selectedTabIndex = selectedIndex,
+                    edgePadding = 10.dp,
+                    containerColor = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                    indicator = { tabPositions ->
+                        if (selectedIndex < tabPositions.size) {
+                            TabRowDefaults.SecondaryIndicator(
+                                Modifier.tabIndicatorOffset(tabPositions[selectedIndex]),
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
+                    },
+                    divider = {},
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    sections.forEachIndexed { index, (chip, items) ->
+                        val isSelected = index == selectedIndex
+                        Tab(
+                            selected = isSelected,
+                            onClick = { selected = chip },
+                            modifier = Modifier.height(40.dp),
+                            text = {
+                                Text(
+                                    "${chip?.title ?: "Все"} · ${items.size}",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                )
+                            },
+                            selectedContentColor = MaterialTheme.colorScheme.primary,
+                            unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
-    )
+
+            if (shown.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(bottom = 80.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Пока нет лайков. Жмите «нравится» на карточках ленты — они соберутся здесь по разделам.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 32.dp)
+                    )
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(3),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    gridItems(shown, key = { it.id }, contentType = { "liked_item" }) { entry ->
+                        LikedGridCard(
+                            entry = entry,
+                            onOpen = { onOpen(entry.id) },
+                            onLongPress = { pendingRemove = entry }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    pendingRemove?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { pendingRemove = null },
+            title = { Text("Убрать лайк?") },
+            text = { Text("«${entry.title}» пропадёт из списка и перестанет влиять на рекомендации.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRemove = null
+                    list = list.filterNot { it.id == entry.id }
+                    onRemove(entry)
+                }) { Text("Убрать") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemove = null }) { Text("Отмена") }
+            }
+        )
+    }
+}
+
+/** Карточка лайка: постер 2:3, название и жанры; долгий тап — снятие лайка. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun LikedGridCard(
+    entry: hd.kinoshka.app.data.feed.LikedTitle,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            contentAlignment = Alignment.Center
+        ) {
+            if (entry.posterUrl.isNullOrBlank()) {
+                Icon(
+                    Icons.Filled.Favorite,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(32.dp)
+                )
+            } else {
+                KinoshkaAsyncImage(
+                    model = entry.posterUrl,
+                    contentDescription = entry.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = entry.title,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 2.dp)
+        )
+        val genresLine = entry.genres.take(2).joinToString(" · ")
+        if (genresLine.isNotBlank()) {
+            Text(
+                text = genresLine,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 2.dp)
+            )
+        }
+    }
 }
 
 /** Диалог «что система про вас поняла»: топ измерений вкуса по модулю вклада. */
