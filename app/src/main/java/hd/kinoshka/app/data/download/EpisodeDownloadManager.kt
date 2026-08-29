@@ -183,6 +183,8 @@ object EpisodeDownloadManager {
     private suspend fun runTask(request: EpisodeDownloadRequest) {
         val key = itKey(request)
         currentKey = key
+        // Foreground-сервис держит процесс и показывает прогресс-уведомление, пока очередь жива.
+        DownloadForegroundService.start(appContext)
         val job = scope.launch {
             val myJob = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
             fun update(transform: (DownloadTaskState) -> DownloadTaskState) {
@@ -319,7 +321,8 @@ object EpisodeDownloadManager {
     /**
      * Офлайн-озвучки для пикера: группирует скачанные серии в FlatTranslation-ы с исходными
      * (source, translationId) — local-first резолв подхватывает их без префиксов. Показываются
-     * всегда, даже когда сеть лежит.
+     * всегда, даже когда сеть лежит. Заголовок помечается «(офлайн)», чтобы в списке озвучек
+     * и в шите плеера было видно, что дорожка играет из скачивания.
      */
     fun offlineTranslations(itemKey: String, fallbackTitle: String): List<FlatTranslation> {
         val episodes = offlineEpisodesFor(itemKey)
@@ -329,11 +332,12 @@ object EpisodeDownloadManager {
             .map { (groupKey, eps) ->
                 val (source, translationId) = groupKey
                 val sorted = eps.sortedBy { it.episodeNumber }
+                val baseTitle = sorted.first().translationTitle.ifBlank { "Офлайн" }
                 FlatTranslation(
                     source = runCatching { AnimeSourceType.valueOf(source) }
                         .getOrElse { AnimeSourceType.KODIK },
                     translationId = translationId,
-                    title = sorted.first().translationTitle.ifBlank { "Офлайн" },
+                    title = if (baseTitle.contains("офлайн", ignoreCase = true)) baseTitle else "$baseTitle (офлайн)",
                     type = "voice",
                     episodes = sorted.map { ep ->
                         AnimeEpisode(

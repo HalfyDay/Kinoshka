@@ -58,11 +58,19 @@ import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Notes
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -74,6 +82,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -92,6 +102,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
@@ -130,6 +141,8 @@ fun ProfileScreen(
     library: List<LibraryUiItem>,
     onBack: () -> Unit,
     onAvatarSelected: (String) -> Unit,
+    onExportLibrary: () -> String,
+    onImportLibrary: (String) -> Result<Unit>,
     shikimoriAuthState: hd.kinoshka.app.data.local.ShikimoriAuthState = hd.kinoshka.app.data.local.ShikimoriAuthState(),
     onSaveShikimoriToken: (String) -> Unit = {},
     onSaveShikimoriSession: (token: String, userId: Int, nickname: String, avatarUrl: String?) -> Unit = { _, _, _, _ -> },
@@ -140,6 +153,16 @@ fun ProfileScreen(
     val scope = rememberCoroutineScope()
     var cropSourceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var showWebLoginDialog by remember { mutableStateOf(false) }
+
+    // Cloud library backup (Yandex Disk / WebDAV) — reinstall survival for the whole library.
+    LaunchedEffect(context) { hd.kinoshka.app.data.cloud.CloudBackupManager.init(context) }
+    var showYandexLogin by remember { mutableStateOf(false) }
+    var showWebDavDialog by remember { mutableStateOf(false) }
+    var showRestoreConfirm by remember { mutableStateOf(false) }
+    var cloudConfig by remember {
+        mutableStateOf(hd.kinoshka.app.data.local.CloudSyncStore(context).getConfig())
+    }
+    val cloudStatus by hd.kinoshka.app.data.cloud.CloudBackupManager.status.collectAsState()
 
     if (showWebLoginDialog) {
         ShikimoriWebLoginDialog(
@@ -166,6 +189,33 @@ fun ProfileScreen(
                 cropSourceBitmap = bitmap
             }
         }
+    }
+
+    val createExportFile = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            val json = onExportLibrary()
+            context.contentResolver.openOutputStream(uri)?.use {
+                it.write(json.toByteArray(Charsets.UTF_8))
+            } ?: error("Не удалось открыть файл для записи")
+        }
+            .onSuccess { Toast.makeText(context, "Экспорт завершен", Toast.LENGTH_SHORT).show() }
+            .onFailure { ex -> Toast.makeText(context, "Ошибка экспорта: ${ex.message}", Toast.LENGTH_LONG).show() }
+    }
+
+    val openImportFile = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                ?: error("Не удалось прочитать файл")
+            onImportLibrary(text).getOrThrow()
+        }
+            .onSuccess { Toast.makeText(context, "Импорт завершен", Toast.LENGTH_SHORT).show() }
+            .onFailure { ex -> Toast.makeText(context, "Ошибка импорта: ${ex.message}", Toast.LENGTH_LONG).show() }
     }
 
     val activity = remember(library) { buildActivityBars(library) }
@@ -278,64 +328,42 @@ fun ProfileScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    ElevatedCard(
+                    StatCard(
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(20.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text("📚 Всего", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("${library.size}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    ElevatedCard(
+                        icon = Icons.Filled.VideoLibrary,
+                        label = "Всего",
+                        value = "${library.size}"
+                    )
+                    StatCard(
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(20.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text("👁️ Смотрю", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("${library.count { it.status == UserFilmStatus.WATCHING }}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
+                        icon = Icons.Filled.Visibility,
+                        label = "Смотрю",
+                        value = "${library.count { it.status == UserFilmStatus.WATCHING }}",
+                        valueColor = MaterialTheme.colorScheme.primary
+                    )
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    ElevatedCard(
+                    StatCard(
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(20.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text("✅ Завершено", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("${library.count { it.status == UserFilmStatus.COMPLETED }}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
-                        }
-                    }
-                    ElevatedCard(
+                        icon = Icons.Filled.CheckCircle,
+                        label = "Завершено",
+                        value = "${library.count { it.status == UserFilmStatus.COMPLETED }}",
+                        valueColor = Color(0xFF4CAF50)
+                    )
+                    StatCard(
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(20.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text("📝 С заметками", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("${library.count { !it.note.isNullOrBlank() }}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        }
-                    }
+                        icon = Icons.AutoMirrored.Filled.Notes,
+                        label = "С заметками",
+                        value = "${library.count { !it.note.isNullOrBlank() }}"
+                    )
                 }
             }
         }
 
-        // Shikimori Account Integration Section
+        // Accounts & backups: Shikimori binding, cloud sync and local file backup in one place
         item {
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -347,25 +375,20 @@ fun ProfileScreen(
                         .animateContentSize(),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Аккаунт Shikimori",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (shikimoriAuthState.isLoggedIn) {
-                            OutlinedButton(
-                                onClick = onLogoutShikimori,
-                                shape = RoundedCornerShape(14.dp)
-                            ) {
-                                Text("Отключить")
+                    ProfileSectionHeader(
+                        icon = Icons.Filled.AccountCircle,
+                        title = "Аккаунт Shikimori",
+                        action = if (shikimoriAuthState.isLoggedIn) {
+                            {
+                                OutlinedButton(
+                                    onClick = onLogoutShikimori,
+                                    shape = RoundedCornerShape(14.dp)
+                                ) {
+                                    Text("Отключить")
+                                }
                             }
-                        }
-                    }
+                        } else null
+                    )
                     if (shikimoriAuthState.isLoggedIn) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -404,6 +427,64 @@ fun ProfileScreen(
                         ) {
                             Text("Войти через сайт Shikimori", fontWeight = FontWeight.SemiBold)
                         }
+                    }
+
+                    HorizontalDivider()
+
+                    CloudBackupSection(
+                        config = cloudConfig,
+                        status = cloudStatus,
+                        onConnectYandex = {
+                            if (hd.kinoshka.app.data.cloud.CloudBackupManager.yandexConfigured()) {
+                                showYandexLogin = true
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Создайте приложение на oauth.yandex.ru (тип «Доступ к API», доступы Яндекс Диска: «информация о Диске» и «папка приложения») и добавьте YANDEX_DISK_CLIENT_ID и YANDEX_DISK_CLIENT_SECRET в local.properties",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
+                        onConnectWebDav = { showWebDavDialog = true },
+                        onDisconnect = {
+                            hd.kinoshka.app.data.cloud.CloudBackupManager.disconnect(context)
+                            cloudConfig = hd.kinoshka.app.data.local.CloudSyncStore(context).getConfig()
+                        },
+                        onUpload = { hd.kinoshka.app.data.cloud.CloudBackupManager.uploadBackup(context) },
+                        onRestore = { showRestoreConfirm = true },
+                        onAutoSyncChanged = { enabled ->
+                            hd.kinoshka.app.data.cloud.CloudBackupManager.setAutoSync(context, enabled)
+                            cloudConfig = hd.kinoshka.app.data.local.CloudSyncStore(context).getConfig()
+                        }
+                    )
+
+                    HorizontalDivider()
+
+                    ProfileSectionHeader(
+                        icon = Icons.Filled.Backup,
+                        title = "Резервная копия в файл"
+                    )
+                    Text(
+                        text = "Экспорт сохраняет историю, статусы, оценки, заметки, прогресс, аватар и настройки.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = {
+                            val fileName = "kinoshka-library-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.json"
+                            createExportFile.launch(fileName)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Text("Экспорт библиотеки")
+                    }
+                    OutlinedButton(
+                        onClick = { openImportFile.launch(arrayOf("application/json", "text/plain")) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Text("Импорт библиотеки")
                     }
                 }
             }
@@ -450,6 +531,64 @@ fun ProfileScreen(
             }
         )
     }
+
+    if (showYandexLogin) {
+        OAuthWebLoginDialog(
+            title = "Вход через Яндекс ID",
+            authorizeUrl = buildYandexAuthorizeUrl(),
+            redirectUri = YANDEX_VERIFICATION_REDIRECT,
+            onDismiss = { showYandexLogin = false },
+            onCode = { code ->
+                showYandexLogin = false
+                scope.launch {
+                    hd.kinoshka.app.data.cloud.CloudBackupManager.loginYandex(context, code)
+                        .onSuccess { Toast.makeText(context, "Яндекс Диск подключен", Toast.LENGTH_LONG).show() }
+                        .onFailure {
+                            Toast.makeText(context, "Ошибка входа: ${it.message}", Toast.LENGTH_LONG).show()
+                        }
+                    cloudConfig = hd.kinoshka.app.data.local.CloudSyncStore(context).getConfig()
+                }
+            }
+        )
+    }
+
+    if (showWebDavDialog) {
+        WebDavConfigDialog(
+            onDismiss = { showWebDavDialog = false },
+            onSave = { url, user, pass ->
+                runCatching { hd.kinoshka.app.data.cloud.CloudBackupManager.saveWebDav(context, url, user, pass) }
+                    .onSuccess {
+                        showWebDavDialog = false
+                        Toast.makeText(context, "WebDAV подключен", Toast.LENGTH_LONG).show()
+                    }
+                    .onFailure {
+                        Toast.makeText(context, "Ошибка: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+                cloudConfig = hd.kinoshka.app.data.local.CloudSyncStore(context).getConfig()
+            }
+        )
+    }
+
+    if (showRestoreConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showRestoreConfirm = false },
+            title = { Text("Восстановить из облака?") },
+            text = {
+                Text("Локальная библиотека (статусы, прогресс, оценки, история) будет заменена содержимым резервной копии.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRestoreConfirm = false
+                        hd.kinoshka.app.data.cloud.CloudBackupManager.restoreFromCloud(context)
+                    }
+                ) { Text("Восстановить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestoreConfirm = false }) { Text("Отмена") }
+            }
+        )
+    }
 }
 
 @Composable
@@ -468,42 +607,13 @@ fun SettingsScreen(
     onHideRussianChanged: (Boolean) -> Unit,
     onDiscoverTileSizeSelected: (FilmTileSize) -> Unit,
     onLibraryTileSizeSelected: (FilmTileSize) -> Unit,
-    onShowFpsCounterChanged: (Boolean) -> Unit,
-    onExportLibrary: () -> String,
-    onImportLibrary: (String) -> Result<Unit>
+    onShowFpsCounterChanged: (Boolean) -> Unit
 ) {
-    val context = LocalContext.current
     var showThemePicker by remember { mutableStateOf(false) }
     var showDiscoverTileSizePicker by remember { mutableStateOf(false) }
     var showLibraryTileSizePicker by remember { mutableStateOf(false) }
     var showPlaybackSequencePicker by remember { mutableStateOf(false) }
     var showPlayerModePicker by remember { mutableStateOf(false) }
-    val createExportFile = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json")
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            val json = onExportLibrary()
-            context.contentResolver.openOutputStream(uri)?.use {
-                it.write(json.toByteArray(Charsets.UTF_8))
-            } ?: error("Не удалось открыть файл для записи")
-        }
-            .onSuccess { Toast.makeText(context, "Экспорт завершен", Toast.LENGTH_SHORT).show() }
-            .onFailure { ex -> Toast.makeText(context, "Ошибка экспорта: ${ex.message}", Toast.LENGTH_LONG).show() }
-    }
-
-    val openImportFile = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                ?: error("Не удалось прочитать файл")
-            onImportLibrary(text).getOrThrow()
-        }
-            .onSuccess { Toast.makeText(context, "Импорт завершен", Toast.LENGTH_SHORT).show() }
-            .onFailure { ex -> Toast.makeText(context, "Ошибка импорта: ${ex.message}", Toast.LENGTH_LONG).show() }
-    }
 
     LazyColumn(
         modifier = Modifier
@@ -596,38 +706,6 @@ fun SettingsScreen(
                                 onCheckedChange = onShowFpsCounterChanged
                             )
                         }
-                    }
-                }
-            }
-        }
-        item {
-            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
-                Column(
-                    modifier = Modifier
-                        .padding(14.dp)
-                        .animateContentSize(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text("Резервная копия", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        text = "Экспорт сохраняет историю, статусы, оценки, заметки, прогресс, аватар и настройки.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Button(
-                        onClick = {
-                            val fileName = "kinoshka-library-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.json"
-                            createExportFile.launch(fileName)
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Экспорт библиотеки")
-                    }
-                    OutlinedButton(
-                        onClick = { openImportFile.launch(arrayOf("application/json", "text/plain")) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Импорт библиотеки")
                     }
                 }
             }
@@ -1060,48 +1138,117 @@ private fun HeaderCard(
 }
 
 @Composable
+private fun StatCard(
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    label: String,
+    value: String,
+    valueColor: Color? = null
+) {
+    ElevatedCard(modifier = modifier, shape = RoundedCornerShape(20.dp)) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                value,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = valueColor ?: Color.Unspecified
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProfileSectionHeader(
+    icon: ImageVector,
+    title: String,
+    action: (@Composable () -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+        action?.invoke()
+    }
+}
+
+@Composable
 private fun AvatarPreview(
     avatar: String,
     onClick: () -> Unit
 ) {
     val hasCustomAvatar = avatar.isCustomAvatarUri()
 
-    Surface(
-        modifier = Modifier.size(92.dp).clickable(onClick = onClick),
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.primaryContainer
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            if (hasCustomAvatar) {
-                KinoshkaAsyncImage(
-                    model = avatar,
-                    contentDescription = "Аватар",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().clip(CircleShape)
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.Person,
-                    contentDescription = "Выбрать аватар",
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(46.dp)
-                )
+    // Badge lives outside the circular Surface: inside it the circle clip cuts the "+" in half.
+    Box(contentAlignment = Alignment.BottomEnd) {
+        Surface(
+            modifier = Modifier.size(92.dp).clickable(onClick = onClick),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                if (hasCustomAvatar) {
+                    KinoshkaAsyncImage(
+                        model = avatar,
+                        contentDescription = "Аватар",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().clip(CircleShape)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.Person,
+                        contentDescription = "Выбрать аватар",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(46.dp)
+                    )
+                }
             }
+        }
 
-            if (!hasCustomAvatar) {
-                Surface(
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(2.dp).size(28.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primary
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Filled.Add,
-                            contentDescription = "Добавить",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
+        if (!hasCustomAvatar) {
+            Surface(
+                modifier = Modifier.size(28.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "Добавить",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
             }
         }
@@ -1527,6 +1674,314 @@ private fun ShikimoriWebLoginDialog(
                                 }
                             }
                             webView.loadUrl(oauthUrl)
+                            webView
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    if (isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Yandex's built-in "confirmation code" redirect (always registered, can't be removed):
+// after consent the webview lands on this page carrying ?code=..., which the login dialog
+// captures — no custom redirect URI needs to be registered in the OAuth console.
+private const val YANDEX_VERIFICATION_REDIRECT = "https://oauth.yandex.ru/verification_code"
+
+private fun buildYandexAuthorizeUrl(): String {
+    // No redirect_uri: Yandex serves the code on its verification page (OOB-style flow).
+    return "https://oauth.yandex.ru/authorize?response_type=code" +
+        "&client_id=${hd.kinoshka.app.BuildConfig.YANDEX_DISK_CLIENT_ID}"
+}
+
+@Composable
+private fun CloudBackupSection(
+    config: hd.kinoshka.app.data.local.CloudSyncConfig,
+    status: hd.kinoshka.app.data.cloud.CloudBackupManager.SyncStatus,
+    onConnectYandex: () -> Unit,
+    onConnectWebDav: () -> Unit,
+    onDisconnect: () -> Unit,
+    onUpload: () -> Unit,
+    onRestore: () -> Unit,
+    onAutoSyncChanged: (Boolean) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        ProfileSectionHeader(
+            icon = Icons.Filled.Cloud,
+            title = "Резервная копия в облаке",
+            action = if (config.isConnected) {
+                {
+                    OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(12.dp)) {
+                        Text("Отключить")
+                    }
+                }
+            } else null
+        )
+        Text(
+            text = "Вся библиотека (статусы, просмотренные эпизоды, оценки, история) выгружается одним файлом. После переустановки приложения прогресс восстанавливается из облака.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        when {
+            config.type == hd.kinoshka.app.data.local.CloudSyncType.YANDEX -> {
+                Text(
+                    text = "Хранилище: Яндекс Диск (папка приложения Kinoshka)",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            config.type == hd.kinoshka.app.data.local.CloudSyncType.WEBDAV -> {
+                Text(
+                    text = "Хранилище: WebDAV — ${config.webDavUrl.orEmpty()}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            else -> {
+                // Same one-tap UX as the Shikimori login: the button is always visible,
+                // the OAuth webview does the rest (login, permissions, code capture).
+                Button(
+                    onClick = onConnectYandex,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Подключить Яндекс Диск", fontWeight = FontWeight.SemiBold)
+                }
+                OutlinedButton(
+                    onClick = onConnectWebDav,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Подключить WebDAV")
+                }
+            }
+        }
+
+        if (config.isConnected) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onUpload,
+                    enabled = !status.busy,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Выгрузить")
+                }
+                OutlinedButton(
+                    onClick = onRestore,
+                    enabled = !status.busy,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Восстановить")
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Автосохранение после просмотра",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Switch(checked = config.autoSync, onCheckedChange = onAutoSyncChanged)
+            }
+        }
+
+        if (status.busy) {
+            androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        val lastDate = if (status.lastSyncAt > 0) {
+            java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date(status.lastSyncAt))
+        } else null
+        val statusLine = buildString {
+            lastDate?.let { append("Последняя синхронизация: $it") }
+            status.lastResult?.takeIf { it.isNotBlank() }?.let {
+                if (isNotEmpty()) append(" • ")
+                append(it)
+            }
+        }
+        if (statusLine.isNotBlank()) {
+            Text(
+                text = statusLine,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (!status.message.isNullOrBlank()) {
+            Text(
+                text = status.message.orEmpty(),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (status.message.orEmpty().startsWith("Ошибка")) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun WebDavConfigDialog(
+    onDismiss: () -> Unit,
+    onSave: (url: String, user: String, password: String) -> Unit
+) {
+    var url by remember { mutableStateOf("https://") }
+    var user by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Подключение WebDAV") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Файл копии будет сохранён как <адрес>/Kinoshka/library_backup.json",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("Адрес сервера") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = user,
+                    onValueChange = { user = it },
+                    label = { Text("Логин") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Пароль") },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(url, user, password) },
+                enabled = url.trim().length > "https://".length && user.isNotBlank() && password.isNotBlank()
+            ) { Text("Подключить") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OAuthWebLoginDialog(
+    title: String,
+    authorizeUrl: String,
+    redirectUri: String,
+    onDismiss: () -> Unit,
+    onCode: (String) -> Unit
+) {
+    var isLoading by remember { mutableStateOf(true) }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                    }
+                }
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    AndroidView(
+                        factory = { ctx ->
+                            val webView = WebView(ctx)
+                            webView.layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            webView.settings.javaScriptEnabled = true
+                            webView.settings.domStorageEnabled = true
+                            var codeHandled = false
+
+                            fun deliverCode(code: String?): Boolean {
+                                if (codeHandled || code.isNullOrBlank()) return false
+                                codeHandled = true
+                                onCode(code)
+                                return true
+                            }
+
+                            webView.webViewClient = object : WebViewClient() {
+                                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                                    isLoading = true
+                                }
+
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    isLoading = false
+                                    if (url?.startsWith(redirectUri) != true) return
+                                    // Primary path: ?code=... in the URL. Fallback: some providers
+                                    // (Yandex verification_code) render the code only in the page
+                                    // body — scrape it like the Shikimori dialog does.
+                                    val fromUrl = Uri.parse(url).getQueryParameter("code")
+                                    if (deliverCode(fromUrl)) return
+                                    view?.evaluateJavascript(
+                                        """
+                                        (function() {
+                                            var m = window.location.search.match(/code=([a-zA-Z0-9_-]+)/);
+                                            if (m && m[1]) return m[1];
+                                            var text = (document.body && document.body.innerText) || '';
+                                            var t = text.match(/(?:код подтверждения|verification code|confirmation code)[^a-zA-Z0-9]*([a-zA-Z0-9_-]{4,})/i);
+                                            return t ? t[1] : '';
+                                        })();
+                                        """.trimIndent()
+                                    ) { result ->
+                                        val scraped = result?.trim()?.removeSurrounding("\"")
+                                        deliverCode(scraped?.ifBlank { null })
+                                    }
+                                }
+
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: WebResourceRequest?
+                                ): Boolean {
+                                    val url = request?.url?.toString() ?: return false
+                                    if (url.startsWith(redirectUri)) {
+                                        val code = Uri.parse(url).getQueryParameter("code")
+                                        if (deliverCode(code)) return true
+                                    }
+                                    return false
+                                }
+                            }
+                            webView.loadUrl(authorizeUrl)
                             webView
                         },
                         modifier = Modifier.fillMaxSize()

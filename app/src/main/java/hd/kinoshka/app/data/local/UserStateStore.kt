@@ -212,6 +212,7 @@ class UserStateStore(context: Context) {
     private val searchHistoryKey = "search_history_json"
     private val playbackUsageKey = "playback_usage_json"
     private val movieVoiceoverKeyPrefix = "movie_voiceovers_"
+    private val detailsCacheKeyPrefix = "details_cache_"
 
     private val prettyGson: Gson = GsonBuilder().setPrettyPrinting().create()
 
@@ -877,6 +878,21 @@ class UserStateStore(context: Context) {
     fun saveMovieVoiceoverCache(key: String, cache: MovieVoiceoverCache) {
         if (cache.rows.isEmpty()) return
         prefs.edit().putString(movieVoiceoverKeyPrefix + key, gson.toJson(cache)).apply()
+    }
+
+    // Дисковый кэш карточки тайтла (FilmDetails): страница открывается офлайн, чтобы
+    // нажать Смотреть и сыграть скачанные серии. Не разрушается Gson-ом: у FilmDetails
+    // все поля либо @SerializedName-nullable, либо примитивы.
+    fun getDetailsCache(id: Int): FilmDetails? {
+        val raw = prefs.getString(detailsCacheKeyPrefix + id, null) ?: return null
+        return runCatching { gson.fromJson(raw, FilmDetails::class.java) }.getOrNull()
+    }
+
+    fun saveDetailsCache(id: Int, details: FilmDetails) {
+        if (id <= 0) return
+        synchronized(BLOB_LOCK) {
+            prefs.edit().putString(detailsCacheKeyPrefix + id, gson.toJson(details)).apply()
+        }
     }
 
     /**

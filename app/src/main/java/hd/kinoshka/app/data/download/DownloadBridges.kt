@@ -8,6 +8,7 @@ import hd.kinoshka.app.data.model.MovieEpisodeRef
 import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.KodikMovieCandidate
 import hd.kinoshka.app.data.model.MovieStreamResult
+import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.HentaiProvider
 import hd.kinoshka.app.data.source.HentaiStream
@@ -20,8 +21,18 @@ import hd.kinoshka.app.data.source.MovieStreamResolver
  */
 object DownloadBridges {
 
-    private fun fromStream(stream: AnimeMediaStream) =
-        MediaDownloader.MediaSource(url = stream.url, headers = stream.headers)
+    /**
+     * Резолвер отдаёт свой дефолт в url (у Kodik и AniLiberty это 720p — так настроен
+     * онлайн-плей) и полную лестницу в qualities. Скачивание должно брать максимум
+     * лестницы, а не дефолт.
+     */
+    fun mediaSource(stream: AnimeMediaStream): MediaDownloader.MediaSource {
+        val bestKey = QUALITY_PREFERENCE_DESC.firstOrNull { stream.qualities.containsKey(it) }
+        val url = bestKey?.let { stream.qualities[it] } ?: stream.url
+        return MediaDownloader.MediaSource(url = url, headers = stream.headers)
+    }
+
+    private fun fromStream(stream: AnimeMediaStream) = mediaSource(stream)
 
     // ------------------------------------------------------------------
     // Аниме (Kodik / AniLiberty / AniLib / AniStar)

@@ -125,6 +125,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.rounded.Star
@@ -1027,11 +1028,12 @@ private fun AvatarBadge(avatar: String) {
                     .clip(CircleShape)
             )
         } else {
-            Text(
-                text = avatar.ifBlank { "🎬" },
-                color = MaterialTheme.colorScheme.onPrimary,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+            // Same generic avatar icon as the profile's AvatarPreview — no emoji fallbacks.
+            Icon(
+                imageVector = Icons.Filled.Person,
+                contentDescription = "Аватар",
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(28.dp)
             )
         }
     }

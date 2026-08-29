@@ -3,6 +3,8 @@ package hd.kinoshka.app.ui.screens
 import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.Schedule
+import hd.kinoshka.app.data.download.tryRequestNotificationPermission
+import hd.kinoshka.app.data.download.toPlayableUriString
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.TimeZone
@@ -592,7 +594,11 @@ fun DetailsScreen(
                                     if (normalizedUrl.startsWith("//")) {
                                         normalizedUrl = "https:$normalizedUrl"
                                     }
-                                    if (normalizedUrl.startsWith("http", ignoreCase = true)) {
+                                    // file:// и абсолютные пути — скачанные серии из офлайн-библиотеки:
+                                    // они играются тем же плеером, но без сети и заголовков.
+                                    val isLocal = normalizedUrl.startsWith("file:", ignoreCase = true) ||
+                                        (normalizedUrl.startsWith("/") && !normalizedUrl.startsWith("//"))
+                                    if (normalizedUrl.startsWith("http", ignoreCase = true) || isLocal) {
                                         onOpenNativePlayer?.invoke(
                                             normalizedUrl,
                                             stream.headers,
@@ -683,7 +689,8 @@ fun DetailsScreen(
                                         0, item.kinopoiskId, provider.name, hentaiTrId, episodeNumber
                                     )
                                 } else null
-                                val effectiveUrl = local?.filePath ?: url
+                                val localPlayable = local?.toPlayableUriString()
+                                val effectiveUrl = localPlayable ?: url
                                 val effectiveHeaders = if (local != null) emptyMap() else stream.headers
                                 val effectiveQualities = if (local != null) emptyMap() else stream.qualities
                                 // Переключатель озвучек плеера показывает ВСЕ найденные хентай-
@@ -769,7 +776,7 @@ fun DetailsScreen(
                                 // чтобы смена дорожек в плеере не уводила обратно в сеть.
                                 if (local != null) {
                                     prepared[currentTrId]?.let { s ->
-                                        prepared[currentTrId] = s.copy(url = local.filePath, headers = emptyMap())
+                                        prepared[currentTrId] = s.copy(url = localPlayable!!, headers = emptyMap())
                                     }
                                 }
                                 onOpenNativePlayer?.invoke(
@@ -4814,6 +4821,7 @@ private fun HentaiDownloadButton(
     headers: Map<String, String>
 ) {
     if (kinopoiskId <= 0 || episodeUrl.isNullOrBlank()) return
+    val context = androidx.compose.ui.platform.LocalContext.current
     val itemKey = hd.kinoshka.app.data.download.animeItemKey(0, kinopoiskId)
     val translationId = if (label == "Фильм") "hentai:${provider.name}" else "hentai:${provider.name}:$label"
     val key = hd.kinoshka.app.data.download.offlineKey(itemKey, provider.name, translationId, episodeNumber)
@@ -4851,6 +4859,7 @@ private fun HentaiDownloadButton(
         }
         else -> IconButton(
             onClick = {
+                context.tryRequestNotificationPermission()
                 hd.kinoshka.app.data.download.EpisodeDownloadManager.enqueue(
                     hd.kinoshka.app.data.download.EpisodeDownloadManager.EpisodeDownloadRequest(
                         itemKey = itemKey,

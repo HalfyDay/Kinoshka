@@ -72,12 +72,20 @@ fun formatBytes(bytes: Long): String {
     }
 }
 
-/** Локальный поток для плеера: mpv играет файл/локальный плейлист без HTTP-заголовков. */
+/**
+ * Локальный поток для плеера: mpv играет файл/локальный плейлист без HTTP-заголовков.
+ * file://-URI обязателен: голый абсолютный путь через Uri.parse теряет схему и
+ * отбрасывается валидацией запуска плеера (а пути с «#» ломаются без кодирования).
+ */
 fun OfflineEpisode.toAnimeMediaStream(): hd.kinoshka.app.data.model.AnimeMediaStream =
     hd.kinoshka.app.data.model.AnimeMediaStream(
-        url = filePath,
+        url = android.net.Uri.fromFile(java.io.File(filePath)).toString(),
         qualities = emptyMap(),
         headers = emptyMap(),
         quality = "Offline",
         title = "$title — $episodeLabel"
     )
+
+/** file://-URI скачанной серии — для мест, строящих интент запуска плеера вручную. */
+fun OfflineEpisode.toPlayableUriString(): String =
+    android.net.Uri.fromFile(java.io.File(filePath)).toString()

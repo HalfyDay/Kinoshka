@@ -9,11 +9,15 @@ import org.json.JSONObject
  * Полностью автономен (свой SharedPreferences-файл), чтобы тестовую функцию фида
  * можно было удалить, не трогая UserStateStore.
  */
-/** Лайкнутый тайтл: id, название, жанры на момент голоса, постер и раздел — для страницы «Мои лайки». */
+/** Лайкнутый тайтл: id, название, жанры на момент голоса, год, рейтинг, постер и раздел — для страницы «Мои лайки». */
 data class LikedTitle(
     val id: Int,
     val title: String,
     val genres: List<String> = emptyList(),
+    /** Год выпуска на момент лайка; у старых записей может отсутствовать. */
+    val year: Int? = null,
+    /** Рейтинг Кинопоиска на момент лайка; у старых записей может отсутствовать. */
+    val rating: Double? = null,
     /** Постер на момент лайка; у старых записей может отсутствовать — рисуем заглушку. */
     val posterUrl: String? = null,
     /** Раздел рекомендаций, к которому отнесён тайтл (имя FeedChip); null = только «Все». */
@@ -228,6 +232,8 @@ class InterestProfileStore(context: Context) {
                     id = id,
                     title = o.optString("t", "Тайтл"),
                     genres = (0 until (gArr?.length() ?: 0)).mapNotNull { gArr?.optString(it) },
+                    year = o.optInt("y", 0).takeIf { it > 0 },
+                    rating = o.optDouble("r", Double.NaN).takeIf { !it.isNaN() },
                     posterUrl = o.optString("p").takeIf { it.isNotBlank() },
                     section = o.optString("s").takeIf { it.isNotBlank() }
                 )
@@ -253,6 +259,8 @@ class InterestProfileStore(context: Context) {
                     .put("i", t.id)
                     .put("t", t.title)
                     .put("g", JSONArray(t.genres))
+                    .put("y", t.year ?: 0)
+                    .put("r", t.rating ?: 0.0)
                     .put("p", t.posterUrl ?: "")
                     .put("s", t.section ?: "")
             )
@@ -282,6 +290,6 @@ class InterestProfileStore(context: Context) {
         const val DECAY = 0.98
         const val SEEN_TTL_MS = 7L * 24L * 60L * 60L * 1000L
         const val SEEN_MAX = 400
-        const val LIKED_SEEDS_MAX = 10
+        const val LIKED_SEEDS_MAX = 100
     }
 }

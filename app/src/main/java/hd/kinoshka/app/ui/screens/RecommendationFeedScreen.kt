@@ -251,7 +251,10 @@ private fun FeedPagerContent(
             VerticalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
-                beyondViewportPageCount = 4,
+                // Соседнюю страницу держим только одну: каждая удержанная карточка —
+                // полноэкранная картинка с блюром; удержание четырёх с каждой стороны
+                // давило компоновку main-потока вплоть до ANR на старте ленты.
+                beyondViewportPageCount = 1,
                 key = { page -> items[page].kinopoiskId },
                 // Мягкое доводение: tween вместо пружины — свайп не «втыкается».
                 flingBehavior = PagerDefaults.flingBehavior(
@@ -541,7 +544,7 @@ private fun LikedFeedPage(
     }
 }
 
-/** Карточка лайка: постер 2:3, название и жанры; долгий тап — снятие лайка. */
+/** Карточка лайка: вид плитки библиотеки — постер 2:3, название и строка «год • ★рейтинг • жанры». */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun LikedGridCard(
@@ -549,17 +552,24 @@ private fun LikedGridCard(
     onOpen: () -> Unit,
     onLongPress: () -> Unit
 ) {
+    val metaText = remember(entry.year, entry.rating, entry.genres) {
+        listOfNotNull(
+            entry.year?.toString(),
+            entry.rating?.let { String.format(java.util.Locale.US, "★ %.1f", it) },
+            entry.genres.take(2).joinToString(", ").takeIf { it.isNotBlank() }
+        ).joinToString(" • ")
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(14.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh),
             contentAlignment = Alignment.Center
         ) {
@@ -579,24 +589,26 @@ private fun LikedGridCard(
                 )
             }
         }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = entry.title,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 2.dp)
-        )
-        val genresLine = entry.genres.take(2).joinToString(" · ")
-        if (genresLine.isNotBlank()) {
+        Spacer(modifier = Modifier.height(6.dp))
+        Column(
+            modifier = Modifier.padding(horizontal = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
             Text(
-                text = genresLine,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 2.dp)
+                text = entry.title,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
+            if (metaText.isNotBlank()) {
+                Text(
+                    text = metaText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
