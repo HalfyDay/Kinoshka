@@ -527,6 +527,8 @@ fun KinoApp() {
                                 library = vm.uiState.library,
                                 onBack = { navController.popBackStack() },
                                 onAvatarSelected = vm::setProfileAvatar,
+                                onExportLibrary = vm::exportLibraryJson,
+                                onImportLibrary = vm::importLibraryJson,
                                 shikimoriAuthState = vm.uiState.shikimoriAuthState,
                                 onSaveShikimoriToken = vm::saveShikimoriToken,
                                 onSaveShikimoriSession = vm::saveShikimoriSession,
@@ -556,9 +558,7 @@ fun KinoApp() {
                                 onHideRussianChanged = vm::setHideRussianContent,
                                 onDiscoverTileSizeSelected = vm::setDiscoverTileSize,
                                 onLibraryTileSizeSelected = vm::setLibraryTileSize,
-                                onShowFpsCounterChanged = vm::setShowFpsCounter,
-                                onExportLibrary = vm::exportLibraryJson,
-                                onImportLibrary = vm::importLibraryJson
+                                onShowFpsCounterChanged = vm::setShowFpsCounter
                             )
                         }
                         composable(
@@ -575,7 +575,7 @@ fun KinoApp() {
                                 onCheckUpdates = { runUpdateCheck(true, true) },
                                 onOpenGithub = { openInBrowser("https://github.com/HalfyDay/Kinoshka") },
                                 onOpenTelegram = { openInBrowser("https://t.me/Kinoshka_HalfDay") },
-                                onOpenShikimori = { openInBrowser("https://shiki.one") }
+                                onOpenShikimori = { openInBrowser("https://shikimori.me") }
                             )
                         }
                         composable(

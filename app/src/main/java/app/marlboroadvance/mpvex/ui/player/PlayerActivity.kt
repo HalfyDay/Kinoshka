@@ -3508,13 +3508,17 @@ class PlayerActivity :
           episode.episodeNumber,
           finished = finishedRun,
         )
+        hd.kinoshka.app.data.cloud.CloudBackupManager.onLibraryChanged(this@PlayerActivity)
         // Диалог «Выберите серию» должен увидеть новую галочку без перезапуска плеера.
         viewModel.setWatchedSeriesProgress(episode.seasonNumber, episode.episodeNumber)
       }
 
       NativePlaybackMode.QUALITY_ONLY_MOVIE -> {
         val kinopoiskId = intent.getIntExtra("movie_kinopoisk_id", 0)
-        if (kinopoiskId > 0) store.markTitleWatched(kinopoiskId)
+        if (kinopoiskId > 0) {
+          store.markTitleWatched(kinopoiskId)
+          hd.kinoshka.app.data.cloud.CloudBackupManager.onLibraryChanged(this@PlayerActivity)
+        }
       }
 
       // Resolve never completed — no title-level progress exists to commit.

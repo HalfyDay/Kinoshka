@@ -111,11 +111,35 @@ class FeedViewModel(
     var uiState by mutableStateOf(FeedUiState(adultUnlocked = interests.isAdultConfirmed()))
         private set
 
+    /**
+     * Единая точка read-modify-write uiState из фоновых джобов. Раньше параллельные
+     * copy()-записи (8 валидационных воркеров + добор + прогрев) затирали друг друга:
+     * терялись батчи и прорывались дубли kinopoiskId — краш пейджера
+     * «Key ... was already used». Мьютекс сериализует фоновые записи; main-поток
+     * пишет напрямую только там, где фоновая джоба ленты заведомо остановлена
+     * (selectChip, тумблеры UI).
+     */
+    private val stateLock = Mutex()
+
+    private suspend fun mutateState(transform: (FeedUiState) -> FeedUiState) {
+        stateLock.withLock { uiState = transform(uiState) }
+    }
+
     private var pageIndex = 0
     private var rescuePageIndex = 0
     private var consecutiveEmptyRuns = 0
     /** Готовая к мгновенной отдаче партия СВОЕГО раздела, обогретая фоном заранее. */
-    private data class ReadyBatch(val chip: FeedChip, val items: List<FeedItem>)
+    private data class ReadyBatch(
+        val chip: FeedChip,
+        val items: List<FeedItem>,
+        val extras: Map<Int, FeedItemExtras> = emptyMap()
+    )
+
+    /** Результат валидации: принятые карточки и их extras. Воркеры валидации стейт
+     *  не пишут — extras прикладывает вызывающий одним обновлением вместе с items. */
+    private class ValidatedBatch(val items: List<FeedItem>, val extras: Map<Int, FeedItemExtras>) {
+        companion object { val EMPTY = ValidatedBatch(emptyList(), emptyMap()) }
+    }
 
     /** Префетч следующей партии; применяется только к своему разделу. */
     @Volatile private var pendingBatch: ReadyBatch? = null
@@ -131,9 +155,11 @@ class FeedViewModel(
     /** Id стартовой партии в локальном дедупе — выбрасывается вместе с ней при сбросе. */
     private val warmSeenIds: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
-    private val seenCandidateIds = mutableSetOf<Int>()
-    private val inFlightClips = mutableSetOf<Int>()
-    private val inFlightExtras = mutableSetOf<Int>()
+    // Дедуп кандидатов чешется из нескольких фоновых джобов (прогрев/добор/префетч):
+    // обычный HashSet под конкурентной записью терял записи и пробивал дедуп ленты.
+    private val seenCandidateIds: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val inFlightClips: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val inFlightExtras: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     /** Соседи, чьи детали уже прогреты — повторный свайп не бьёт по сети. */
     private val warmedIds = mutableSetOf<Int>()
     private var loadJob: kotlinx.coroutines.Job? = null
@@ -176,14 +202,14 @@ class FeedViewModel(
                         raw.none { it.kinopoiskId == item.kinopoiskId }
                 }.forEach { raw += it }
             }
-            val validated = runCatching { validateBatch(chip, raw) }.getOrDefault(emptyList())
+            val validated = runCatching { validateBatch(chip, raw) }.getOrDefault(ValidatedBatch.EMPTY)
             // Пока прогревались, визард вкусов пересчитал партию — результат устарел.
             if (epoch != warmEpoch) return@launch
-            seenCandidateIds.addAll(validated.map { it.kinopoiskId })
-            warmSeenIds.addAll(validated.map { it.kinopoiskId })
-            if (validated.isNotEmpty()) {
-                warmBatch = ReadyBatch(chip, validated)
-                FeedDiagnostics.record("прогрев при старте: ${validated.size} карточек «${chip.title}»")
+            seenCandidateIds.addAll(validated.items.map { it.kinopoiskId })
+            warmSeenIds.addAll(validated.items.map { it.kinopoiskId })
+            if (validated.items.isNotEmpty()) {
+                warmBatch = ReadyBatch(chip, validated.items, validated.extras)
+                FeedDiagnostics.record("прогрев при старте: ${validated.items.size} карточек «${chip.title}»")
             }
         }
     }
@@ -316,19 +342,20 @@ class FeedViewModel(
                 pendingBatch?.let { pre ->
                     pendingBatch = null
                     if (pre.chip == chip &&
-                        applyReadyBatch(chip, pre.items, "партия «${chip.title}» из префетча: +")
+                        applyReadyBatch(pre, "партия «${chip.title}» из префетча: +")
                     ) return@runCatching
                 }
                 val warm = warmBatch
                 if (warm != null && warm.chip == chip) {
                     warmBatch = null
                     warmSeenIds.clear()
-                    if (applyReadyBatch(chip, warm.items, "стартовая партия «${chip.title}» из прогрева: +")) {
+                    if (applyReadyBatch(warm, "стартовая партия «${chip.title}» из прогрева: +")) {
                         return@runCatching
                     }
                 }
 
                 val collected = mutableListOf<FeedItem>()
+                val collectedExtras = mutableMapOf<Int, FeedItemExtras>()
                 var attempts = 0
                 val rawCandidates = mutableListOf<FeedItem>()
                 while (collected.size < MIN_BATCH && attempts < MAX_PAGES_PER_LOAD) {
@@ -352,8 +379,9 @@ class FeedViewModel(
 
                 // Валидация ДО показа: рейтинг ≥ порога, живой постер, жанры по разделу.
                 val validated = validateBatch(chip, rawCandidates)
-                seenCandidateIds.addAll(validated.map { it.kinopoiskId })
-                collected += validated
+                seenCandidateIds.addAll(validated.items.map { it.kinopoiskId })
+                collected += validated.items
+                collectedExtras += validated.extras
 
                 // Спасательный круг: ротация источников упёрлась в виденное — добираем
                 // чистым популярным со своим счётчиком, чтобы не крутить одни и те же слоты.
@@ -371,8 +399,9 @@ class FeedViewModel(
                         }
                         if (freshRaw.isEmpty()) continue
                         val freshValidated = validateBatch(chip, freshRaw.take(VALIDATION_BATCH))
-                        freshValidated.forEach { seenCandidateIds.add(it.kinopoiskId) }
-                        collected += freshValidated
+                        freshValidated.items.forEach { seenCandidateIds.add(it.kinopoiskId) }
+                        collected += freshValidated.items
+                        collectedExtras += freshValidated.extras
                     }
                     if (rescueAttempts > 0) {
                         FeedDiagnostics.record("спас-добор «${chip.title}»: +${collected.size} всего после $rescueAttempts стр. популярного")
@@ -386,14 +415,19 @@ class FeedViewModel(
                     interests.markSeenInFeed(collected.map { it.kinopoiskId })
                     consecutiveEmptyRuns = 0
                     FeedDiagnostics.record("партия «${chip.title}»: +${collected.size} карточек за $attempts стр.")
-                    uiState = uiState.copy(
-                        items = uiState.items + collected,
-                        loading = false,
-                        loadingMore = false,
-                        canLoadMore = true,
-                        exhausted = false,
-                        errorMessage = null
-                    )
+                    mutateState { st ->
+                        st.copy(
+                            // Дедуп на границе стейта: сквозной барьер — никакая гонка
+                            // дедупа кандидатов не должна ронять пейджер дублем ключа.
+                            items = (st.items + collected).distinctBy { it.kinopoiskId },
+                            extras = st.extras + collectedExtras,
+                            loading = false,
+                            loadingMore = false,
+                            canLoadMore = true,
+                            exhausted = false,
+                            errorMessage = null
+                        )
+                    }
                     // Сразу греем следующую: к моменту добора она уже готова.
                     scheduleRefill(chip)
                     return@runCatching
@@ -402,23 +436,27 @@ class FeedViewModel(
                 consecutiveEmptyRuns++
                 // Исчерпание фиксируем после двух пустых забегов подряд: без повторов.
                 val exhaustedNow = consecutiveEmptyRuns >= 2 || uiState.items.isEmpty()
-                uiState = uiState.copy(
-                    loading = false,
-                    loadingMore = false,
-                    canLoadMore = !exhaustedNow,
-                    exhausted = exhaustedNow && uiState.items.isNotEmpty(),
-                    errorMessage = if (uiState.items.isEmpty()) "Не удалось загрузить рекомендации. Проверьте сеть." else null
-                )
+                mutateState { st ->
+                    st.copy(
+                        loading = false,
+                        loadingMore = false,
+                        canLoadMore = !exhaustedNow,
+                        exhausted = exhaustedNow && st.items.isNotEmpty(),
+                        errorMessage = if (st.items.isEmpty()) "Не удалось загрузить рекомендации. Проверьте сеть." else null
+                    )
+                }
             }.onFailure { e ->
                 // Отмена (переключение вкладки) — легальный исход, пробрасываем дальше.
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e(TAG, "load($chip) failed", e)
-                uiState = uiState.copy(
-                    loading = false,
-                    loadingMore = false,
-                    canLoadMore = uiState.items.isNotEmpty(),
-                    errorMessage = if (uiState.items.isEmpty()) "Не удалось загрузить рекомендации. Проверьте сеть." else null
-                )
+                mutateState { st ->
+                    st.copy(
+                        loading = false,
+                        loadingMore = false,
+                        canLoadMore = st.items.isNotEmpty(),
+                        errorMessage = if (st.items.isEmpty()) "Не удалось загрузить рекомендации. Проверьте сеть." else null
+                    )
+                }
             }
         }
     }
@@ -427,24 +465,30 @@ class FeedViewModel(
      * Готовая партия (префетч добора / стартовый прогрев) прикладывается мгновенно:
      * дедуп против уже показанного, пометка «виденное», сразу греем следующую.
      */
-    private fun applyReadyBatch(chip: FeedChip, batch: List<FeedItem>, logPrefix: String): Boolean {
-        val freshNow = batch.filter { live ->
-            seenCandidateIds.add(live.kinopoiskId) && uiState.items.none { it.kinopoiskId == live.kinopoiskId }
+    private suspend fun applyReadyBatch(batch: ReadyBatch, logPrefix: String): Boolean {
+        var freshIds: List<Int> = emptyList()
+        mutateState { st ->
+            val freshNow = batch.items.filter { live ->
+                seenCandidateIds.add(live.kinopoiskId) && st.items.none { it.kinopoiskId == live.kinopoiskId }
+            }
+            freshIds = freshNow.map { it.kinopoiskId }
+            if (freshNow.isEmpty()) st else st.copy(
+                // Дедуп на границе стейта — см. комментарий в loadMoreInternal.
+                items = (st.items + freshNow).distinctBy { it.kinopoiskId },
+                extras = st.extras + batch.extras,
+                loading = false,
+                loadingMore = false,
+                canLoadMore = true,
+                exhausted = false,
+                errorMessage = null
+            )
         }
-        if (freshNow.isEmpty()) return false
-        interests.markSeenInFeed(freshNow.map { it.kinopoiskId })
+        if (freshIds.isEmpty()) return false
+        interests.markSeenInFeed(freshIds)
         consecutiveEmptyRuns = 0
-        FeedDiagnostics.record("$logPrefix${freshNow.size}")
-        uiState = uiState.copy(
-            items = uiState.items + freshNow,
-            loading = false,
-            loadingMore = false,
-            canLoadMore = true,
-            exhausted = false,
-            errorMessage = null
-        )
+        FeedDiagnostics.record("$logPrefix${freshIds.size}")
         // Сразу греем следующую: к моменту добора она уже готова.
-        scheduleRefill(chip)
+        scheduleRefill(batch.chip)
         return true
     }
 
@@ -485,10 +529,10 @@ class FeedViewModel(
                         uiState.items.none { it.kinopoiskId == item.kinopoiskId }
                 }.forEach { raw += it }
             }
-            val validated = runCatching { validateBatch(chip, raw) }.getOrDefault(emptyList())
-            if (validated.isNotEmpty()) {
-                pendingBatch = ReadyBatch(chip, validated)
-                FeedDiagnostics.record("префетч «${chip.title}» готов: ${validated.size} карточек")
+            val validated = runCatching { validateBatch(chip, raw) }.getOrDefault(ValidatedBatch.EMPTY)
+            if (validated.items.isNotEmpty()) {
+                pendingBatch = ReadyBatch(chip, validated.items, validated.extras)
+                FeedDiagnostics.record("префетч «${chip.title}» готов: ${validated.items.size} карточек")
             }
         }
     }
@@ -600,12 +644,18 @@ class FeedViewModel(
             }
         }
         if (removedBefore == 0) return
-        uiState = uiState.copy(
-            items = items.filterIndexed { i, it -> !(i < currentIndex && it.kinopoiskId in pending) },
-            pendingDropIds = pending - removedIds,
-            currentPageIndex = (currentIndex - removedBefore).coerceAtLeast(0),
-            dropCommitToken = uiState.dropCommitToken + 1
-        )
+        // items берём из СВЕЖЕГО стейта под мьютексом: переданный в onItemShown список
+        // мог устареть — прямая перезапись стёрла бы батч, прилепившийся с добора.
+        viewModelScope.launch {
+            mutateState { st ->
+                st.copy(
+                    items = st.items.filterIndexed { i, it -> !(i < currentIndex && it.kinopoiskId in pending) },
+                    pendingDropIds = st.pendingDropIds - removedIds,
+                    currentPageIndex = (currentIndex - removedBefore).coerceAtLeast(0),
+                    dropCommitToken = st.dropCommitToken + 1
+                )
+            }
+        }
     }
 
     /**
@@ -631,8 +681,10 @@ class FeedViewModel(
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching {
                         val extras = loadExtras(neighbor, withStills = false) ?: return@runCatching
-                        if (neighbor.kinopoiskId !in uiState.extras) {
-                            uiState = uiState.copy(extras = uiState.extras + (neighbor.kinopoiskId to extras))
+                        mutateState { st ->
+                            if (neighbor.kinopoiskId !in st.extras) {
+                                st.copy(extras = st.extras + (neighbor.kinopoiskId to extras))
+                            } else st
                         }
                         preloadImages(listOf(extras.fullPosterUrl))
                     }
@@ -704,7 +756,7 @@ class FeedViewModel(
                 }
             }
 
-            uiState = uiState.copy(extras = uiState.extras + (item.kinopoiskId to extras))
+            mutateState { st -> st.copy(extras = st.extras + (item.kinopoiskId to extras)) }
             // Кадры/полный постер этой карточки — в кэш Coil, карусель не будет мигать.
             preloadImages(listOf(extras.fullPosterUrl) + extras.stills)
         }
@@ -740,22 +792,27 @@ class FeedViewModel(
      *  3. жанры из details: гард раздела и каталог хентая срабатывают ЗАРАНЕЕ,
      *     а не когда пользователь долистал до карточки. Кадры не качаются — они
      *     ленивые (ensureExtras), трафик экономится для десятков отвергаемых.
-     * Принятые карточки сразу кладут extras в стейт — появляются готовыми.
+     * Стейт здесь НЕ пишется: раньше каждый воркер делал copy(extras=...) и
+     * параллельные записи затирали друг друга (потерянные батчи, дубли ключей
+     * пейджера). extras прикладывает вызывающий одним обновлением.
      */
-    private suspend fun validateBatch(chip: FeedChip, raw: List<FeedItem>): List<FeedItem> =
+    private suspend fun validateBatch(chip: FeedChip, raw: List<FeedItem>): ValidatedBatch =
         kotlinx.coroutines.coroutineScope {
             val mutex = Mutex()
             val semaphore = Semaphore(VALIDATION_CONCURRENCY)
-            val accepted = mutableListOf<FeedItem>()
+            val accepted = mutableListOf<Pair<FeedItem, FeedItemExtras>>()
             raw.take(VALIDATION_BATCH).map { item ->
                 async(Dispatchers.IO) {
                     semaphore.withPermit {
-                        val ok = runCatching { passesValidation(chip, item) }.getOrDefault(false)
-                        if (ok) mutex.withLock { accepted += item }
+                        val extras = runCatching { passesValidation(chip, item) }.getOrNull()
+                        if (extras != null) mutex.withLock { accepted += item to extras }
                     }
                 }
             }.joinAll()
-            accepted
+            ValidatedBatch(
+                items = accepted.map { it.first },
+                extras = accepted.associate { it.first.kinopoiskId to it.second }
+            )
         }
 
     /** Проба постера при валидации: маленький размер — дёшево по трафику и декоду. */
@@ -764,11 +821,12 @@ class FeedViewModel(
         (dm.widthPixels / 4).coerceIn(180, 320) to (dm.heightPixels / 4).coerceIn(270, 480)
     }
 
-    private suspend fun passesValidation(chip: FeedChip, item: FeedItem): Boolean {
+    /** Карточка прошла гарды и постер-пробу — возвращаем её extras; иначе null. */
+    private suspend fun passesValidation(chip: FeedChip, item: FeedItem): FeedItemExtras? {
         // Синтетические аниме-id проходят только в аниме/хентай/общий показ.
-        if (item.isAnime && chip !in setOf(FeedChip.ANIME, FeedChip.HENTAI, FeedChip.ALL)) return false
-        if (!item.isAnime && (item.rating == null || item.rating < MIN_KP_RATING)) return false
-        if (item.posterUrl.isNullOrBlank()) return false
+        if (item.isAnime && chip !in setOf(FeedChip.ANIME, FeedChip.HENTAI, FeedChip.ALL)) return null
+        if (!item.isAnime && (item.rating == null || item.rating < MIN_KP_RATING)) return null
+        if (item.posterUrl.isNullOrBlank()) return null
 
         // Постер обязан загрузиться; маленькая проба кладёт оригинал в дисковый кэш,
         // так что экранный запрос потом не пойдёт в сеть повторно.
@@ -785,31 +843,30 @@ class FeedViewModel(
                 )
             }
         }.getOrNull()
-        if (posterResult !is coil.request.SuccessResult) return false
+        if (posterResult !is coil.request.SuccessResult) return null
 
         // Детали обязательны: без жанров валидация бессмысленна — не рискуем.
-        val extras = loadExtras(item, withStills = false) ?: return false
-        if (extras.genres.isEmpty() && extras.fullPosterUrl == null && extras.description == null) return false
-        if (violatesSectionTaste(chip, extras.genres)) return false
+        val extras = loadExtras(item, withStills = false) ?: return null
+        if (extras.genres.isEmpty() && extras.fullPosterUrl == null && extras.description == null) return null
+        if (violatesSectionTaste(chip, extras.genres)) return null
         // Каталог хентая (включая теги) чистит аниме-подачу и общий показ ДО показа.
         if ((chip == FeedChip.ANIME || chip == FeedChip.ALL) &&
             HentaiStreamResolver.isKnownHentai(item.originalTitle, item.title)
-        ) return false
+        ) return null
 
         // Карточка войдёт в ленту уже обогащённой: греем только полноразмерный постер —
         // фоновую картинку карточки. Кадры доберутся лениво, когда карточку покажут.
-        uiState = uiState.copy(extras = uiState.extras + (item.kinopoiskId to extras))
         preloadImages(listOf(extras.fullPosterUrl))
-        return true
+        return extras
     }
 
     /** Тихо пометить карточку (гард/битый постер): уйдёт из ленты, когда её пролистают. */
-    private fun dropQuietly(item: FeedItem, why: String) {
+    private suspend fun dropQuietly(item: FeedItem, why: String) {
         if (item.kinopoiskId in uiState.pendingDropIds) return
         interests.markSeenInFeed(setOf(item.kinopoiskId))
         seenCandidateIds.add(item.kinopoiskId)
         // НЕ вырезаем из середины списка: пейджер под пальцем сдвигать нельзя.
-        uiState = uiState.copy(pendingDropIds = uiState.pendingDropIds + item.kinopoiskId)
+        mutateState { st -> st.copy(pendingDropIds = st.pendingDropIds + item.kinopoiskId) }
         FeedDiagnostics.record("$why: «${item.title}» отложена к удалению")
     }
 
@@ -875,15 +932,19 @@ class FeedViewModel(
         val id = item.kinopoiskId
         if (id in uiState.clipStates || id in inFlightClips) return
         if (item.isAdultContent) {
-            uiState = uiState.copy(clipStates = uiState.clipStates + (id to FeedClipState.PosterOnly))
+            viewModelScope.launch {
+                mutateState { st -> st.copy(clipStates = st.clipStates + (id to FeedClipState.PosterOnly)) }
+            }
             return
         }
         inFlightClips.add(id)
-        uiState = uiState.copy(clipStates = uiState.clipStates + (id to FeedClipState.Loading))
+        viewModelScope.launch {
+            mutateState { st -> st.copy(clipStates = st.clipStates + (id to FeedClipState.Loading)) }
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val state = resolveClip(item)
             inFlightClips.remove(id)
-            uiState = uiState.copy(clipStates = uiState.clipStates + (id to state))
+            mutateState { st -> st.copy(clipStates = st.clipStates + (id to state)) }
             // Карточка без видео живёт кадрами — добираем их сразу после
             // того, как стало ясно, что клипа не будет.
             if (state is FeedClipState.PosterOnly) ensureExtras(item)
@@ -981,6 +1042,8 @@ class FeedViewModel(
                         id = item.kinopoiskId,
                         title = item.title,
                         genres = genres.take(4),
+                        year = item.year,
+                        rating = item.rating,
                         posterUrl = item.posterUrl,
                         section = chip.name
                     )

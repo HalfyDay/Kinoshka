@@ -66,6 +66,7 @@ import hd.kinoshka.app.data.download.MediaDownloader
 import hd.kinoshka.app.data.download.animeItemKey
 import hd.kinoshka.app.data.download.formatBytes
 import hd.kinoshka.app.data.download.offlineKey
+import hd.kinoshka.app.data.download.tryRequestNotificationPermission
 import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeSourceType
@@ -479,6 +480,7 @@ private fun AnimeOfflineSection(
     itemKey: String,
     displayTitle: String
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var sourceStates by remember(shikimoriId) {
         mutableStateOf<Map<AnimeSourceType, AnimeOfflineSourceState>>(emptyMap())
@@ -591,6 +593,7 @@ private fun AnimeOfflineSection(
                     expanded = expandedKey == trKey,
                     onToggleExpand = { expandedKey = if (expandedKey == trKey) null else trKey },
                     onDownloadAll = {
+                        context.tryRequestNotificationPermission()
                         EpisodeDownloadManager.enqueueAll(
                             DownloadBridges.animeRequests(shikimoriId, kinopoiskId, displayTitle, tr)
                         )
@@ -634,6 +637,7 @@ private fun VoiceoverDownloadRow(
     tasks: Map<String, DownloadTaskState>,
     downloadedKeys: Set<String>
 ) {
+    val context = LocalContext.current
     val allDownloaded = episodeCount in 1..downloadedCount
 
     Surface(
@@ -714,6 +718,7 @@ private fun VoiceoverDownloadRow(
                         downloaded = key in downloadedKeys,
                         task = tasks[key],
                         onDownload = {
+                            context.tryRequestNotificationPermission()
                             EpisodeDownloadManager.enqueue(
                                 EpisodeDownloadManager.EpisodeDownloadRequest(
                                     itemKey = itemKey,
@@ -726,7 +731,7 @@ private fun VoiceoverDownloadRow(
                                     resolve = {
                                         AnimeStreamResolver.resolveStream(
                                             shikimoriId, animeTitle, sourceType, translationId, ep.number
-                                        )?.let { MediaDownloader.MediaSource(it.url, it.headers) }
+                                        )?.let { DownloadBridges.mediaSource(it) }
                                     }
                                 )
                             )
@@ -833,6 +838,7 @@ private fun MovieOfflineSection(
     itemKey: String,
     displayTitle: String
 ) {
+    val uiContext = LocalContext.current
     var state by remember(item.kinopoiskId) { mutableStateOf<MovieOfflineState>(MovieOfflineState.Loading) }
     val library by EpisodeDownloadManager.library.collectAsState()
     val tasks by EpisodeDownloadManager.tasks.collectAsState()
@@ -887,6 +893,7 @@ private fun MovieOfflineSection(
                             downloaded = library.any { it.itemKey == itemKey && it.translationId == trId },
                             task = tasks[key],
                             onDownload = {
+                                uiContext.tryRequestNotificationPermission()
                                 EpisodeDownloadManager.enqueueAll(
                                     DownloadBridges.qomRequests(item.kinopoiskId, displayTitle, payload.preparedStreams, titles)
                                 )
@@ -923,6 +930,7 @@ private fun MovieOfflineSection(
                                 ?.episodeLabel,
                             onDownloadAll = {
                                 if (eps.isNotEmpty()) {
+                                    uiContext.tryRequestNotificationPermission()
                                     EpisodeDownloadManager.enqueueAll(
                                         DownloadBridges.seriesRequests(
                                             item.kinopoiskId, displayTitle, context.request,

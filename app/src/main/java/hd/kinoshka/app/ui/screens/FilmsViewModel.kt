@@ -851,7 +851,24 @@ class FilmsViewModel(
             runCatching {
                 if (id >= ANIME_ID_OFFSET) {
                     val shikimoriId = id - ANIME_ID_OFFSET
-                    val animeDetails = animeRepository.details(shikimoriId)
+                    val animeDetails = try {
+                        animeRepository.details(shikimoriId)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Офлайн: открываем страницу из дискового кэша карточки — достаточно,
+                        // чтобы нажать Смотреть и сыграть скачанные серии. Шики-блоки (кадры,
+                        // персонажи, хронология) офлайн остаются пустыми.
+                        val cached = userStateStore.getDetailsCache(id)
+                        if (cached == null) throw e
+                        detailsState = DetailsUiState(
+                            item = cached,
+                            userProfile = getUserProfileForFilm(id),
+                            loading = false
+                        )
+                        return@launch
+                    }
+                    userStateStore.saveDetailsCache(id, animeDetails.toFilmDetails())
                     val baseState = DetailsUiState(
                         item = animeDetails.toFilmDetails(),
                         userProfile = getUserProfileForFilm(id),
@@ -999,7 +1016,22 @@ class FilmsViewModel(
                         detailsState = detailsState.copy(franchiseResponse = franchiseData, fullChronology = fullChronologyItems)
                     }
                 } else {
-                    val details = repository.details(id)
+                    val details = try {
+                        repository.details(id)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Офлайн-фолбэк: кэш карточки даёт кнопку Смотреть и офлайн-плей.
+                        val cached = userStateStore.getDetailsCache(id)
+                        if (cached == null) throw e
+                        detailsState = DetailsUiState(
+                            item = cached,
+                            userProfile = getUserProfileForFilm(id),
+                            loading = false
+                        )
+                        return@launch
+                    }
+                    userStateStore.saveDetailsCache(id, details)
                     // Страницы аниме открываются только через Shikimori (id >= ANIME_ID_OFFSET).
                     // Списки (поиск, подборки) уже отфильтрованы в FilmsRepository — это барьер
                     // для остальных путей до Kinopoisk-аниме: история, «похожие», лента.

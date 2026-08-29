@@ -37,6 +37,7 @@ import hd.kinoshka.app.data.download.EpisodeDownloadManager
 import hd.kinoshka.app.data.download.animeItemKey
 import hd.kinoshka.app.data.download.offlineKey
 import hd.kinoshka.app.data.download.toAnimeMediaStream
+import hd.kinoshka.app.data.download.tryRequestNotificationPermission
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import kotlinx.coroutines.Dispatchers
@@ -172,11 +173,13 @@ fun AnimePlaybackSelectionScreen(
         it.itemKey == itemKey && it.translationId == tr.translationId && it.phase != DownloadPhase.FAILED
     }
     fun downloadTranslationAll(tr: FlatTranslation) {
+        context.tryRequestNotificationPermission()
         EpisodeDownloadManager.enqueueAll(
             DownloadBridges.animeRequests(shikimoriId, kinopoiskId, animeTitle, tr)
         )
     }
     fun downloadSingleEpisode(episode: AnimeEpisode, tr: FlatTranslation) {
+        context.tryRequestNotificationPermission()
         EpisodeDownloadManager.enqueue(
             EpisodeDownloadManager.EpisodeDownloadRequest(
                 itemKey = itemKey,
@@ -188,7 +191,7 @@ fun AnimePlaybackSelectionScreen(
                 episodeLabel = episode.title?.takeIf { it.isNotBlank() } ?: "Серия ${episode.number}",
                 resolve = {
                     AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, tr.source, tr.translationId, episode.number)
-                        ?.let { hd.kinoshka.app.data.download.MediaDownloader.MediaSource(it.url, it.headers) }
+                        ?.let { DownloadBridges.mediaSource(it) }
                 }
             )
         )
@@ -694,7 +697,10 @@ fun AnimePlaybackSelectionScreen(
                                                 selectedTranslation?.let { tr ->
                                                     downloadTasks[offlineKey(itemKey, tr.source.name, tr.translationId, num)]
                                                 }
-                                            }
+                                            },
+                                            offlineNumbers = library
+                                                .filter { it.itemKey == itemKey }
+                                                .mapTo(mutableSetOf()) { it.episodeNumber }
                                         )
                                     }
                                 }
@@ -953,10 +959,13 @@ private fun SelectTranslationStep(
                             Spacer(modifier = Modifier.width(14.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    // Kodik rows carry the dub name as the title; AniLib teams carry
-                                    // their own team names too. Only AniLiberty's release titles need
-                                    // the source prefix to not read as a Kodik dub.
-                                    text = if (tr.source == AnimeSourceType.KODIK || tr.source == AnimeSourceType.ANILIB) tr.title
+                                    // Kodik rows carry the dub name as the title; AniLib teams and
+                                    // AniLiberty releases also carry their own names, and the row
+                                    // already sits under the source group header — no prefix needed.
+                                    text = if (tr.source == AnimeSourceType.KODIK ||
+                                        tr.source == AnimeSourceType.ANILIB ||
+                                        tr.source == AnimeSourceType.ANILIBERTY
+                                    ) tr.title
                                     else "${tr.source.displayName} · ${tr.title}",
                                     style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.SemiBold
@@ -1024,6 +1033,15 @@ private fun SelectTranslationStep(
                                         Spacer(modifier = Modifier.width(6.dp))
                                     }
                                     else -> {
+                                        if (downloaded > 0) {
+                                            Text(
+                                                text = "$downloaded/${tr.episodes.size}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                        }
                                         IconButton(
                                             onClick = { onDownloadTranslation(tr) },
                                             modifier = Modifier.size(30.dp)
@@ -1202,7 +1220,10 @@ private fun SelectEpisodeStep(
     // какую озвучку качать — скачивание «всё» живёт на строках озвучек).
     onDownloadEpisode: ((AnimeEpisode) -> Unit)? = null,
     isEpisodeDownloaded: (Int) -> Boolean = { false },
-    episodeTaskFor: (Int) -> DownloadTaskState? = { null }
+    episodeTaskFor: (Int) -> DownloadTaskState? = { null },
+    // Номера серий, скачанных хотя бы в одной озвучке: пассивная пометка для общего
+    // списка серий (шаг выбора серии до выбора озвучки).
+    offlineNumbers: Set<Int> = emptySet()
 ) {
     var isSortAscending by remember { mutableStateOf(true) }
 
@@ -1369,7 +1390,8 @@ private fun SelectEpisodeStep(
                                 )
                             }
                         }
-                        // Кнопка скачивания серии (когда озвучка выбрана).
+                        // Кнопка скачивания серии (когда озвучка выбрана) либо пометка «скачано»
+                        // в общем списке серий.
                         if (onDownloadEpisode != null) {
                             val task = episodeTaskFor(ep.number)
                             when {
@@ -1422,6 +1444,15 @@ private fun SelectEpisodeStep(
                                     }
                                 }
                             }
+                        } else if (ep.number in offlineNumbers) {
+                            // Общий список серий (озвучка не выбрана): серия скачана хотя бы
+                            // в одной озвучке — помечаем, local-first сыграет её офлайн.
+                            Icon(
+                                imageVector = Icons.Default.DownloadDone,
+                                contentDescription = "Скачано (доступно офлайн)",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(17.dp)
+                            )
                         }
                     }
                 }

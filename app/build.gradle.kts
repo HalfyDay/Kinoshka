@@ -51,6 +51,11 @@ android {
         val shikimoriClientSecret = (localProps.getProperty("SHIKIMORI_CLIENT_SECRET") ?: "").trim().removeSurrounding("\"").removeSurrounding("'")
         buildConfigField("String", "SHIKIMORI_CLIENT_ID", "\"$shikimoriClientId\"")
         buildConfigField("String", "SHIKIMORI_CLIENT_SECRET", "\"$shikimoriClientSecret\"")
+
+        val yandexDiskClientId = (localProps.getProperty("YANDEX_DISK_CLIENT_ID") ?: "").trim().removeSurrounding("\"").removeSurrounding("'")
+        val yandexDiskClientSecret = (localProps.getProperty("YANDEX_DISK_CLIENT_SECRET") ?: "").trim().removeSurrounding("\"").removeSurrounding("'")
+        buildConfigField("String", "YANDEX_DISK_CLIENT_ID", "\"$yandexDiskClientId\"")
+        buildConfigField("String", "YANDEX_DISK_CLIENT_SECRET", "\"$yandexDiskClientSecret\"")
     }
 
     buildTypes {
