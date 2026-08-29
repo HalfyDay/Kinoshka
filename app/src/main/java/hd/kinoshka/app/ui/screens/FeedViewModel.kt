@@ -12,10 +12,12 @@ import androidx.lifecycle.viewModelScope
 import coil.imageLoader
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import hd.kinoshka.app.data.feed.FeedCacheStore
 import hd.kinoshka.app.data.feed.FeedChip
 import hd.kinoshka.app.data.feed.FeedClipState
 import hd.kinoshka.app.data.feed.FeedDiagnostics
 import hd.kinoshka.app.data.feed.FeedItem
+import hd.kinoshka.app.data.feed.FeedItemExtras
 import hd.kinoshka.app.data.feed.TasteFeatures
 import hd.kinoshka.app.data.feed.TasteVectorStore
 import hd.kinoshka.app.data.feed.franchiseKeyOf
@@ -37,24 +39,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
-/** Дообогащённые по текущему тайтлу данные: жанры, описание, кадры, полный постер. */
-data class FeedItemExtras(
-    val genres: List<String> = emptyList(),
-    val description: String? = null,
-    val stills: List<String> = emptyList(),
-    /** Полноразмерный постер из details(): подменяет превью в фоне карточки. */
-    val fullPosterUrl: String? = null,
-    /** Теги хентая (RU, каталог hanime) — чипы 18+-карточки и измерения вкуса раздела. */
-    val hentaiTags: List<String> = emptyList(),
-    /**
-     * Кадры ещё не добраны: валидация экономит трафик и грузит только детали,
-     * кадры приходят лениво — когда карточку показывают (ensureExtras).
-     */
-    val stillsPending: Boolean = false
-)
-
 data class FeedUiState(
-    val selectedChip: FeedChip = FeedChip.ALL,
+    val selectedChip: FeedChip = FeedChip.FILMS,
     /** Чипсы, доступные к показу: без 18+/Хентай до подтверждения возраста. */
     val adultUnlocked: Boolean = false,
     val showAdultGate: Boolean = false,
@@ -86,10 +72,11 @@ data class FeedUiState(
 
 /**
  * ViewModel фида: рекомендации строятся ПО РАЗДЕЛАМ (свой вектор вкуса у фильмов,
- * сериалов, мультиков, аниме и хентая), «Всё» — общий показ партий разделов без
- * собственного рейтинга. Партия дефолтного раздела греется ещё при старте
- * приложения, к открытию фида карточки уже готовы. Показанное помнится между
- * сессиями (без повторов), карточки несут трейлерные клипы для фона.
+ * сериалов, мультиков, аниме и хентая). Последняя лента каждого раздела кэшируется
+ * на диск: повторный запуск и возврат на раздел показывают её мгновенно — как в
+ * коротких видео-лентах, без скелетона и сетевого шквала; свежие партии добираются
+ * фоном. Показанное помнится между сессиями (без повторов), карточки несут
+ * трейлерные клипы для фона.
  */
 class FeedViewModel(
     context: Context,
@@ -107,6 +94,9 @@ class FeedViewModel(
     private val repository = FeedRepository(films, anime, userState, interests) { chip ->
         tastes[chip] ?: tastes.getValue(FeedChip.FILMS)
     }
+
+    /** Снимок ленты каждого раздела на диск — мгновенный показ при повторном запуске. */
+    private val cache = FeedCacheStore(appContext)
 
     var uiState by mutableStateOf(FeedUiState(adultUnlocked = interests.isAdultConfirmed()))
         private set
@@ -145,17 +135,7 @@ class FeedViewModel(
     @Volatile private var pendingBatch: ReadyBatch? = null
     private var prefetchJob: kotlinx.coroutines.Job? = null
 
-    /** Стартовый прогрев: партия дефолтного раздела готова ДО первого открытия фида. */
-    @Volatile private var warmBatch: ReadyBatch? = null
-    private var warmJob: kotlinx.coroutines.Job? = null
-
-    /** Эпоха прогрева: визард вкусов инвалидирует партию — устаревший результат выбрасывается. */
-    @Volatile private var warmEpoch = 0
-
-    /** Id стартовой партии в локальном дедупе — выбрасывается вместе с ней при сбросе. */
-    private val warmSeenIds: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
-
-    // Дедуп кандидатов чешется из нескольких фоновых джобов (прогрев/добор/префетч):
+    // Дедуп кандидатов чешется из нескольких фоновых джобов (добор/префетч):
     // обычный HashSet под конкурентной записью терял записи и пробивал дедуп ленты.
     private val seenCandidateIds: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val inFlightClips: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -165,57 +145,10 @@ class FeedViewModel(
     private var loadJob: kotlinx.coroutines.Job? = null
     private var openedOnce = false
 
-    init {
-        warmupForFirstOpen()
-    }
-
     /**
-     * Прогрев при старте приложения (ViewModel живёт с корнем приложения): вкусы
-     * обогащаются и партия дефолтного раздела «Всё» собирается ЗАРАНЕЕ, до первого
-     * открытия экрана — к свайпам карточки уже в памяти, как в коротких видео-лентах.
-     */
-    private fun warmupForFirstOpen() {
-        if (warmJob?.isActive == true) return
-        val epoch = warmEpoch
-        // Обогащение вкусов и каталог хентая — ОТДЕЛЬНО от партии: первый экран
-        // не ждёт ни десятки деталей истории, ни загрузку каталога.
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                kotlinx.coroutines.withTimeoutOrNull(ENRICH_TIMEOUT_MS) { repository.refreshInterests() }
-            }
-            // Каталог хентая для гарда аниме-подачи: грузится в фоне, к моменту свайпов готов.
-            runCatching { HentaiStreamResolver.preloadCatalog() }
-            FeedDiagnostics.maybeAutoWrite(appContext, interests)
-        }
-        warmJob = viewModelScope.launch(Dispatchers.IO) {
-            val chip = FeedChip.ALL
-            val raw = mutableListOf<FeedItem>()
-            var attempts = 0
-            while (raw.size < VALIDATION_BATCH && attempts < MAX_PAGES_PER_LOAD) {
-                val nextPage = pageIndex + 1
-                val loaded = runCatching { repository.page(chip, nextPage, rememberSeedIds()) }.getOrNull()
-                attempts++
-                pageIndex = nextPage
-                if (loaded == null) continue
-                loaded.filter { item ->
-                    item.kinopoiskId !in seenCandidateIds &&
-                        raw.none { it.kinopoiskId == item.kinopoiskId }
-                }.forEach { raw += it }
-            }
-            val validated = runCatching { validateBatch(chip, raw) }.getOrDefault(ValidatedBatch.EMPTY)
-            // Пока прогревались, визард вкусов пересчитал партию — результат устарел.
-            if (epoch != warmEpoch) return@launch
-            seenCandidateIds.addAll(validated.items.map { it.kinopoiskId })
-            warmSeenIds.addAll(validated.items.map { it.kinopoiskId })
-            if (validated.items.isNotEmpty()) {
-                warmBatch = ReadyBatch(chip, validated.items, validated.extras)
-                FeedDiagnostics.record("прогрев при старте: ${validated.items.size} карточек «${chip.title}»")
-            }
-        }
-    }
-
-    /**
-     * Первый показ экрана: лента стартует из прогретой при запуске партии — мгновенно.
+     * Первый показ экрана: лента стартует из кэша прошлой сессии — мгновенно.
+     * Обогащение вкусов и каталог хентая гоняются фоном при первом открытии ленты
+     * за сессию, а не при старте приложения: запуск ничего по сети не трогает.
      * При самом первом входе вместо автозагрузки запускается визард вкусов:
      * по разделам Фильмы → Сериалы → Аниме спрашиваем любимые жанры.
      */
@@ -224,6 +157,14 @@ class FeedViewModel(
         openedOnce = true
         // Показанное раньше — сразу в локальный дедуп.
         seenCandidateIds.addAll(interests.seenFeedIds())
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                kotlinx.coroutines.withTimeoutOrNull(ENRICH_TIMEOUT_MS) { repository.refreshInterests() }
+            }
+            // Каталог хентая для гарда аниме-подачи: грузится в фоне, к моменту свайпов готов.
+            runCatching { HentaiStreamResolver.preloadCatalog() }
+            FeedDiagnostics.maybeAutoWrite(appContext, interests)
+        }
         val nextOnboarding = ONBOARDING_ORDER.firstOrNull { !interests.isChipOnboarded(it.name) }
         if (nextOnboarding != null) {
             // Лента подождёт ответа: выбранные жанры должны попасть в первую выдачу.
@@ -239,9 +180,6 @@ class FeedViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             likedGenres.forEach { genre -> interests.applyFeedback(listOf(genre), liked = true) }
         }
-        // Прогретая при старте партия собрана БЕЗ новых жанров — выбрасываем,
-        // первая выдача должна учитывать выбор. Вкусы и лайки не трогаем.
-        discardWarmBatch()
         advanceOnboarding()
     }
 
@@ -249,16 +187,6 @@ class FeedViewModel(
     fun skipTastes(chip: FeedChip) {
         interests.markChipOnboarded(chip.name)
         advanceOnboarding()
-    }
-
-    /** Сброс прогретой партии: id возвращаются в пул кандидатов, страницы — с начала. */
-    private fun discardWarmBatch() {
-        if (warmBatch == null && warmSeenIds.isEmpty()) return
-        warmEpoch++
-        seenCandidateIds.removeAll(warmSeenIds)
-        warmSeenIds.clear()
-        warmBatch = null
-        pageIndex = 0
     }
 
     private fun advanceOnboarding() {
@@ -327,13 +255,12 @@ class FeedViewModel(
 
         loadJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                // Стартовый прогрев ещё идёт — «Всё» ждёт его НЕДОЛГО: готовая партия
-                // прикладывается мгновенно, но висеть на скелетоне из-за одного
-                // медленного источника вкладка не должна. Остальные разделы не ждут вовсе.
-                if (chip == FeedChip.ALL) {
-                    warmJob?.takeIf { it.isActive }?.let {
-                        kotlinx.coroutines.withTimeoutOrNull(WARM_WAIT_MS) { it.join() }
-                    }
+                // Кэш прошлой сессии применяется мгновенно: карточки уже собраны,
+                // провалидированы и обогрещены, скелетона и сетевых запросов нет.
+                // Свежая партия добирается фоном поверх кэша.
+                if (restoreFromCache(chip)) {
+                    scheduleRefill(chip)
+                    return@runCatching
                 }
 
                 // Готовые партии применяются только к СВОЕМУ разделу: чужая (префетч
@@ -345,18 +272,11 @@ class FeedViewModel(
                         applyReadyBatch(pre, "партия «${chip.title}» из префетча: +")
                     ) return@runCatching
                 }
-                val warm = warmBatch
-                if (warm != null && warm.chip == chip) {
-                    warmBatch = null
-                    warmSeenIds.clear()
-                    if (applyReadyBatch(warm, "стартовая партия «${chip.title}» из прогрева: +")) {
-                        return@runCatching
-                    }
-                }
 
                 val collected = mutableListOf<FeedItem>()
                 val collectedExtras = mutableMapOf<Int, FeedItemExtras>()
                 var attempts = 0
+                var published = false
                 val rawCandidates = mutableListOf<FeedItem>()
                 while (collected.size < MIN_BATCH && attempts < MAX_PAGES_PER_LOAD) {
                     val nextPage = pageIndex + 1
@@ -373,15 +293,23 @@ class FeedViewModel(
                             uiState.items.none { it.kinopoiskId == item.kinopoiskId }
                     }.forEach { rawCandidates += it }
 
-                    // Накопили кандидатов на проверку — валидируем пачкой.
-                    if (rawCandidates.size >= VALIDATION_BATCH) break
+                    // Первый экран не ждёт всю партию: набрался кусок — валидируем и
+                    // публикуем сразу, остальное доезжает под полосой прогресса.
+                    if (rawCandidates.size >= VALIDATION_BATCH ||
+                        (!published && rawCandidates.size >= MIN_BATCH)
+                    ) {
+                        // Валидация ДО показа: рейтинг ≥ порога, живой постер, жанры по разделу.
+                        val validated = validateBatch(chip, rawCandidates)
+                        rawCandidates.clear()
+                        seenCandidateIds.addAll(validated.items.map { it.kinopoiskId })
+                        collected += validated.items
+                        collectedExtras += validated.extras
+                        if (validated.items.isNotEmpty() && coroutineContext.isActive) {
+                            published = true
+                            publishChunk(collected, collectedExtras)
+                        }
+                    }
                 }
-
-                // Валидация ДО показа: рейтинг ≥ порога, живой постер, жанры по разделу.
-                val validated = validateBatch(chip, rawCandidates)
-                seenCandidateIds.addAll(validated.items.map { it.kinopoiskId })
-                collected += validated.items
-                collectedExtras += validated.extras
 
                 // Спасательный круг: ротация источников упёрлась в виденное — добираем
                 // чистым популярным со своим счётчиком, чтобы не крутить одни и те же слоты.
@@ -428,6 +356,7 @@ class FeedViewModel(
                             errorMessage = null
                         )
                     }
+                    persistFeedCache(chip)
                     // Сразу греем следующую: к моменту добора она уже готова.
                     scheduleRefill(chip)
                     return@runCatching
@@ -462,7 +391,7 @@ class FeedViewModel(
     }
 
     /**
-     * Готовая партия (префетч добора / стартовый прогрев) прикладывается мгновенно:
+     * Готовая партия (префетч добора) прикладывается мгновенно:
      * дедуп против уже показанного, пометка «виденное», сразу греем следующую.
      */
     private suspend fun applyReadyBatch(batch: ReadyBatch, logPrefix: String): Boolean {
@@ -487,22 +416,88 @@ class FeedViewModel(
         interests.markSeenInFeed(freshIds)
         consecutiveEmptyRuns = 0
         FeedDiagnostics.record("$logPrefix${freshIds.size}")
+        persistFeedCache(batch.chip)
         // Сразу греем следующую: к моменту добора она уже готова.
         scheduleRefill(batch.chip)
         return true
+    }
+
+    /**
+     * Мгновенный показ ленты из кэша прошлой сессии: карточки уже провалидированы
+     * и обогащены при сборке. Восстановленные карточки повторно «seen» не пишутся
+     * (они уже в InterestProfileStore, откуда собран локальный дедуп), pageIndex
+     * продолжает ротацию с сохранённого места. Только для пустой ленты — текущую
+     * ленту и её pageIndex восстановление не трогает.
+     */
+    private suspend fun restoreFromCache(chip: FeedChip): Boolean {
+        if (uiState.items.isNotEmpty()) return false
+        val snapshot = runCatching { cache.load(chip) }.getOrNull() ?: return false
+        if (snapshot.items.isEmpty()) return false
+        pageIndex = snapshot.pageIndex
+        mutateState { st ->
+            if (st.items.isNotEmpty()) st else st.copy(
+                items = snapshot.items,
+                extras = snapshot.extras,
+                loading = false,
+                loadingMore = false,
+                canLoadMore = true,
+                exhausted = false,
+                errorMessage = null
+            )
+        }
+        FeedDiagnostics.record("лента «${chip.title}» поднята из кэша: ${snapshot.items.size} карточек")
+        return true
+    }
+
+    /**
+     * Снимок текущей ленты раздела — на диск: следующий запуск и возврат на раздел
+     * начнутся с него. Гарды-удалённые карточки в снимок не попадают.
+     */
+    private fun persistFeedCache(chip: FeedChip) {
+        val items = uiState.items
+            .filter { it.kinopoiskId !in uiState.pendingDropIds }
+            .takeLast(CACHE_MAX_ITEMS)
+        val ids = items.map { it.kinopoiskId }.toSet()
+        val extras = uiState.extras.filterKeys { it in ids }
+        val savedPageIndex = pageIndex
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { cache.save(chip, items, extras, savedPageIndex) }
+        }
+    }
+
+    /**
+     * Промежуточная публикация проверенного куска: карточки видны сразу, добор
+     * продолжается под полосой прогресса. loadingMore=true блокирует повторный
+     * loadMore, пока загрузка не завершится финальным обновлением.
+     */
+    private suspend fun publishChunk(
+        collected: List<FeedItem>,
+        collectedExtras: Map<Int, FeedItemExtras>
+    ) {
+        mutateState { st ->
+            st.copy(
+                items = (st.items + collected).distinctBy { it.kinopoiskId },
+                extras = st.extras + collectedExtras,
+                loading = false,
+                loadingMore = true,
+                canLoadMore = true,
+                exhausted = false,
+                errorMessage = null
+            )
+        }
     }
 
     /** Явный сброс по кнопке на конце ленты: чистим «виденное» и начинаем заново. */
     fun resetSeenAndRestart() {
         interests.clearSeenFeed()
         seenCandidateIds.clear()
-        warmSeenIds.clear()
         consecutiveEmptyRuns = 0
         pageIndex = 0
         rescuePageIndex = 0
         prefetchJob?.cancel()
         pendingBatch = null
-        warmBatch = null
+        // «Начать заново» отменяет и кэш всех разделов — ленты пересобираются с нуля.
+        cache.clearAll()
         selectChip(uiState.selectedChip)
     }
 
@@ -1111,8 +1106,8 @@ class FeedViewModel(
         /** Потолок ожидания одной пробы постера — валидация не зависает на битой ссылке. */
         private const val POSTER_PROBE_TIMEOUT_MS = 10_000L
 
-        /** Сколько «Всё» ждёт стартовый прогрев, прежде чем грузиться самому. */
-        private const val WARM_WAIT_MS = 12_000L
+        /** Сколько карточек ленты раздела держится в дисковом кэше для мгновенного показа. */
+        private const val CACHE_MAX_ITEMS = 40
 
         private const val ENRICH_TIMEOUT_MS = 25_000L
 

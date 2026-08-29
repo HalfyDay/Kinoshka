@@ -72,6 +72,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import hd.kinoshka.app.data.feed.FeedClipState
 import hd.kinoshka.app.data.feed.FeedItem
+import hd.kinoshka.app.data.feed.FeedItemExtras
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 
 /** Подсветка активного голоса на карточке. */

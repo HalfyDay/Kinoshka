@@ -22,8 +22,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -34,10 +32,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -126,7 +128,7 @@ fun RecommendationFeedScreen(
             )
         }
 
-        FeedChipsRow(
+        FeedSectionDropdown(
             state = state,
             onChipSelected = onChipSelected,
             onShowTastes = { showTastes = true },
@@ -342,70 +344,106 @@ private fun FeedEndCard(
     }
 }
 
-// ============================ чипсы ============================
+// ============================ выбор раздела ============================
+
+/** Разделы выпадающего списка ленты. «Всё» убрано — каждый раздел со своей выдачей. */
+private val SECTION_CHIPS = FeedChip.entries.filter { it != FeedChip.ALL }
 
 @Composable
-private fun FeedChipsRow(
+private fun FeedSectionDropdown(
     state: FeedUiState,
     onChipSelected: (FeedChip) -> Unit,
     onShowTastes: () -> Unit,
     onShowLiked: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // 18+ гейт остаётся только у Хентая; тап до подтверждения открывает диалог.
-    val visibleChips = FeedChip.entries
-    LazyRow(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp)
+    var expanded by remember { mutableStateOf(false) }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp)
     ) {
-        items(visibleChips, key = { it.name }) { chip ->
-            val selected = state.selectedChip == chip
-            // Стеклянная пилюля: выбранная залита акцентом, остальные — тёмное стекло без рамок.
+        Box {
+            // Стеклянная пилюля выбранного раздела: название + стрелка вниз.
             Surface(
                 shape = RoundedCornerShape(50),
-                color = if (selected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.45f),
-                shadowElevation = if (selected) 4.dp else 0.dp,
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onChipSelected(chip) }
+                color = Color.Black.copy(alpha = 0.45f),
+                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { expanded = true }
             ) {
-                Text(
-                    chip.title,
-                    color = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White.copy(alpha = 0.85f),
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
+                ) {
+                    Text(
+                        state.selectedChip.title,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Icon(
+                        Icons.Filled.ArrowDropDown,
+                        contentDescription = "Выбрать раздел",
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                shadowElevation = 6.dp
+            ) {
+                SECTION_CHIPS.forEach { chip ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                chip.title,
+                                fontWeight = if (chip == state.selectedChip) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        trailingIcon = {
+                            if (chip == state.selectedChip) {
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        },
+                        onClick = {
+                            expanded = false
+                            onChipSelected(chip)
+                        }
+                    )
+                }
             }
         }
+        Spacer(Modifier.weight(1f))
         // Кнопка «мои вкусы»: что система выучила из голосов.
-        item(key = "tastes") {
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = Color.Black.copy(alpha = 0.45f),
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onShowTastes() }
-            ) {
-                Icon(
-                    Icons.Filled.Insights,
-                    contentDescription = "Мои вкусы",
-                    tint = Color.White.copy(alpha = 0.9f),
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp).size(18.dp)
-                )
-            }
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = Color.Black.copy(alpha = 0.45f),
+            modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onShowTastes() }
+        ) {
+            Icon(
+                Icons.Filled.Insights,
+                contentDescription = "Мои вкусы",
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp).size(18.dp)
+            )
         }
+        Spacer(Modifier.width(6.dp))
         // Кнопка «мои лайки»: все лайкнутые тайтлы по жанрам.
-        item(key = "liked") {
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = Color.Black.copy(alpha = 0.45f),
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onShowLiked() }
-            ) {
-                Icon(
-                    Icons.Filled.Favorite,
-                    contentDescription = "Мои лайки",
-                    tint = Color(0xFFEF5350).copy(alpha = 0.95f),
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp).size(18.dp)
-                )
-            }
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = Color.Black.copy(alpha = 0.45f),
+            modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onShowLiked() }
+        ) {
+            Icon(
+                Icons.Filled.Favorite,
+                contentDescription = "Мои лайки",
+                tint = Color(0xFFEF5350).copy(alpha = 0.95f),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp).size(18.dp)
+            )
         }
     }
 }

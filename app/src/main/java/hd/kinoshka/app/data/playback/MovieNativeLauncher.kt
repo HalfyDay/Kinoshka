@@ -24,9 +24,13 @@ import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.DdbbStreamResolver.DdbbStream
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.MovieStreamResolver
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.awaitAll
@@ -72,28 +76,33 @@ object MovieNativeLauncher {
         request: MoviePlaybackRequest,
         profile: UserFilmProfile?,
         stateStore: UserStateStore? = null,
+        onLateVoiceovers: ((List<FlatTranslation>) -> Unit)? = null,
     ): NativeLaunchPayload =
         withContext(Dispatchers.IO) {
             if (request.kind == MovieContentKind.SERIES) {
                 resolveSeries(request, profile)
             } else {
-                resolveMovie(request, stateStore)
+                resolveMovie(request, stateStore, onLateVoiceovers)
             }
         }
 
-    private suspend fun resolveSeries(request: MoviePlaybackRequest, profile: UserFilmProfile?): NativeLaunchPayload = coroutineScope {
+    private suspend fun resolveSeries(request: MoviePlaybackRequest, profile: UserFilmProfile?): NativeLaunchPayload {
         val raceStartMs = System.currentTimeMillis()
-        val ddbbSeriesDeferred = async {
+        // Detached race scope — same reason as in [resolveMovie]: a coroutineScope here would
+        // JOIN the loser before returning (a cancelled ddbb resolve or kodik cascade runs to
+        // completion inside blocking OkHttp calls that never observe coroutine cancellation),
+        // stalling the payload behind work the winner no longer needs.
+        val raceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val ddbbSeriesDeferred = raceScope.async {
             request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
                 runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
                     .onFailure { Log.w(TAG, "ddbb series race failed", it) }
                     .getOrNull()
             }
         }
-        val catalogDeferred = async { MovieStreamResolver.loadCatalog(request) }
-        when (val outcome = awaitFirstSeriesOutcome(catalogDeferred, ddbbSeriesDeferred)) {
+        val catalogDeferred = raceScope.async { MovieStreamResolver.loadCatalog(request) }
+        val payload = when (val outcome = awaitFirstSeriesOutcome(catalogDeferred, ddbbSeriesDeferred)) {
             is SeriesOutcome.FromKodik -> {
-                ddbbSeriesDeferred.cancel()
                 Log.i(TAG, "series race winner=kodik at ${System.currentTimeMillis() - raceStartMs}ms")
                 kodikSeriesPayload(request, outcome.catalog, profile)
             }
@@ -105,7 +114,6 @@ object MovieNativeLauncher {
                 val kodikCatalog = catalogDeferred
                     .takeIf { it.isCompleted }
                     ?.let { runCatching { it.await() }.getOrNull() as? MovieCatalogResult.Available }
-                catalogDeferred.cancel()
                 val ddbbEpisodeCount = harvested.episodeTracks
                     .distinctBy { it.seasonNumber to it.episodeNumber }.size
                 val kodikEpisodeCount = kodikCatalog?.let { canonicalSeriesEpisodes(it.candidates).size } ?: 0
@@ -137,12 +145,11 @@ object MovieNativeLauncher {
                     }
                 }
             }
-            is SeriesOutcome.Failed -> {
-                catalogDeferred.cancel()
-                ddbbSeriesDeferred.cancel()
-                NativeLaunchPayload.Failed(outcome.reason)
-            }
+            is SeriesOutcome.Failed -> NativeLaunchPayload.Failed(outcome.reason)
         }
+        // The loser dies here; the winner's payload was already extracted above.
+        raceScope.cancel()
+        return payload
     }
 
     private suspend fun kodikSeriesPayload(
@@ -190,48 +197,54 @@ object MovieNativeLauncher {
         }
     }
 
-    private suspend fun resolveMovie(request: MoviePlaybackRequest, stateStore: UserStateStore?): NativeLaunchPayload = coroutineScope {
+    private suspend fun resolveMovie(
+        request: MoviePlaybackRequest,
+        stateStore: UserStateStore?,
+        onLateVoiceovers: ((List<FlatTranslation>) -> Unit)?,
+    ): NativeLaunchPayload {
         val raceStartMs = System.currentTimeMillis()
-        val ddbbDeferred = async {
+        // The race runs on a DETACHED scope on purpose: a coroutineScope here joins every child
+        // before returning, and the loser's blocking OkHttp cascade ignores coroutine
+        // cancellation. Live log kp=5437614: race finished in 1.4s, readyQualityMovie was ready
+        // — yet "PENDING_MOVIE resolve done in 19349ms": resolve() only returned when Kodik's
+        // whole cascade ended, and the player showed its premature "stream failed" card while
+        // the winner was already playable. The loser keeps running ONLY for the late merge.
+        val raceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val ddbbDeferred = raceScope.async {
             request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
                 runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
                     .onFailure { Log.w(TAG, "ddbb race failed", it) }
                     .getOrNull()
             }
         }
-        val kodikDeferred = async { MovieStreamResolver.resolveMovie(request) }
+        val kodikDeferred = raceScope.async { MovieStreamResolver.resolveMovie(request) }
         val outcome = awaitFirstMovieOutcome(kodikDeferred, ddbbDeferred)
         Log.i(TAG, "movie race winner=${when (outcome) { is MovieOutcome.FromDdbb -> "ddbb"; is MovieOutcome.FromKodik -> "kodik"; is MovieOutcome.Failed -> "none" }} at ${System.currentTimeMillis() - raceStartMs}ms")
-        when (outcome) {
+        return when (outcome) {
             is MovieOutcome.FromKodik -> {
-                // The loser is NOT cancelled by the race anymore: a short grace window lets BOTH
-                // dub catalogs feed the dropdown. Winner-dependent lists (kodik-only on one
-                // launch, merged on the next) were the "different voiceovers every run" bug.
-                // A session cache is only a fallback, never a reason to skip the other provider:
-                // doing so left a previously Kodik-only list frozen at 720p even when Turbo's
-                // 1080p ladder was available on this launch.
-                val ddbbStream = kotlinx.coroutines.withTimeoutOrNull(DDBB_GRACE_MS) {
-                    runCatching { ddbbDeferred.await() }.getOrNull()
-                }
-                ddbbDeferred.cancel()
-                val translations = stableMovieTranslations(request, ddbbStream, outcome.result.translations, stateStore)
-                readyQualityMovie(outcome.result.stream, translations, request.kinopoiskId)
+                // The loser is neither awaited nor cancelled here: playback starts on the
+                // winner right away, and the loser's dub catalog joins the dropdown late via
+                // [onLateVoiceovers]. The persisted voiceover cache keeps the dropdown from
+                // shrinking between launches in the meantime.
+                val translations = stableMovieTranslations(request, null, outcome.result.translations, stateStore)
+                val payload = readyQualityMovie(outcome.result.stream, translations, request.kinopoiskId)
+                if (onLateVoiceovers == null) raceScope.cancel()
+                else launchLateDdbbMerge(raceScope, request, outcome.result.translations, ddbbDeferred, stateStore, onLateVoiceovers)
+                payload
             }
             is MovieOutcome.FromDdbb -> {
-                val kodikTranslations = kotlinx.coroutines.withTimeoutOrNull(KODIK_GRACE_MS) {
-                    runCatching { kodikDeferred.await() }.getOrNull()
-                }?.let { result -> (result as? MovieStreamResult.Success)?.translations.orEmpty() }.orEmpty()
-                kodikDeferred.cancel()
-                val translations = stableMovieTranslations(request, outcome.stream, kodikTranslations, stateStore)
-                readyQualityMovie(
+                val translations = stableMovieTranslations(request, outcome.stream, emptyList(), stateStore)
+                val payload = readyQualityMovie(
                     AnimeMediaStream(url = outcome.stream.url, headers = outcome.stream.headers, qualities = outcome.stream.qualities),
                     translations,
                     request.kinopoiskId
                 )
+                if (onLateVoiceovers == null) raceScope.cancel()
+                else launchLateKodikMerge(raceScope, request, outcome.stream, kodikDeferred, stateStore, onLateVoiceovers)
+                payload
             }
             is MovieOutcome.Failed -> {
-                ddbbDeferred.cancel()
-                kodikDeferred.cancel()
+                raceScope.cancel()
                 NativeLaunchPayload.Failed(outcome.failure.reason)
             }
         }
@@ -288,6 +301,55 @@ object MovieNativeLauncher {
         }
         Log.i(TAG, "readyQualityMovie: rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), kp=$kinopoiskId, ladders: $ladderSummary")
         NativeLaunchPayload.QualityOnlyMovie(initial, orderedRows, streams)
+    }
+
+    /**
+     * Post-startup enrichment for the FromKodik winner: ddbb's turbo catalog joins the dropdown
+     * whenever it finishes inside [LATE_VOICEOVER_MERGE_MS]. Runs detached on [raceScope]; the
+     * scope is cancelled afterwards so a finished race holds no jobs.
+     */
+    private fun launchLateDdbbMerge(
+        raceScope: CoroutineScope,
+        request: MoviePlaybackRequest,
+        winnerKodikTranslations: List<FlatTranslation>,
+        ddbbDeferred: kotlinx.coroutines.Deferred<DdbbStream?>,
+        stateStore: UserStateStore?,
+        onLateVoiceovers: (List<FlatTranslation>) -> Unit,
+    ) {
+        raceScope.launch {
+            try {
+                val ddbb = kotlinx.coroutines.withTimeoutOrNull(LATE_VOICEOVER_MERGE_MS) {
+                    runCatching { ddbbDeferred.await() }.getOrNull()
+                } ?: return@launch
+                onLateVoiceovers(stableMovieTranslations(request, ddbb, winnerKodikTranslations, stateStore))
+            } finally {
+                raceScope.cancel()
+            }
+        }
+    }
+
+    /** Mirror of [launchLateDdbbMerge] for the FromDdbb winner: Kodik's dub rows join late. */
+    private fun launchLateKodikMerge(
+        raceScope: CoroutineScope,
+        request: MoviePlaybackRequest,
+        ddbbStream: DdbbStream,
+        kodikDeferred: kotlinx.coroutines.Deferred<MovieStreamResult>,
+        stateStore: UserStateStore?,
+        onLateVoiceovers: (List<FlatTranslation>) -> Unit,
+    ) {
+        raceScope.launch {
+            try {
+                val kodik = kotlinx.coroutines.withTimeoutOrNull(LATE_VOICEOVER_MERGE_MS) {
+                    runCatching { kodikDeferred.await() }.getOrNull()
+                }
+                val fresh = (kodik as? MovieStreamResult.Success)?.translations.orEmpty()
+                if (fresh.isNotEmpty()) {
+                    onLateVoiceovers(stableMovieTranslations(request, ddbbStream, fresh, stateStore))
+                }
+            } finally {
+                raceScope.cancel()
+            }
+        }
     }
 
     /** Merged voiceover list served verbatim within the session TTL — runs stay identical. */
@@ -451,13 +513,9 @@ object MovieNativeLauncher {
     private const val PERSISTED_VOICEOVERS_TTL_MS = 24 * 60 * 60_000L
     private const val MAX_PERSISTED_VOICEOVER_ROWS = 40
 
-    /** How long the winner waits for the loser's dub catalog before starting playback. */
-    private const val DDBB_GRACE_MS = 3_500L
-
-    /** kp=5457758: Kodik's cascade finished ~600ms AFTER the old 4s window and its dubs were
-     *  then reconstructed from yesterday's persisted cache. 6.5s lets the fresh catalog join
-     *  the dropdown directly; the player shows its loading overlay meanwhile anyway. */
-    private const val KODIK_GRACE_MS = 6_500L
+    /** Post-startup budget for the losing provider's late dub-catalog merge (playback already
+     *  started; the result only enriches the dropdown). */
+    private const val LATE_VOICEOVER_MERGE_MS = 20_000L
 
     /** ddbb's absolute-priority window: how long a ready Kodik result waits for ddbb to still win. */
     internal const val DDBB_WIN_GRACE_MS = 3_000L

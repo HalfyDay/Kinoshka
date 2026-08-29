@@ -371,7 +371,21 @@ private fun StepSourceContent(
                         }
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(src.type.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = if (src.isAvailable) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(src.type.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = if (src.isAvailable) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (src.type.needsVpn) {
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)) {
+                                        Text(
+                                            "VPN",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onErrorContainer,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
                             Text(src.type.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }

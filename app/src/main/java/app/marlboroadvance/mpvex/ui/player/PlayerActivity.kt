@@ -309,6 +309,16 @@ class PlayerActivity :
   /** Last tracked load, kept for the manual «Повторить» on the error card. */
   private var lastStreamLoadRetry: (() -> Unit)? = null
 
+  // Automatic cross-source recovery for QOM movies: when the active dub's stream keeps failing
+  // (mpv END_FILE errors) or stalling (slow-start timeouts), the fallback walks the remaining
+  // dub rows — a DIFFERENT provider first, since another row of the same dead CDN rarely
+  // behaves better. Manual picks clear the memory; a chain never revisits a row it tried.
+  private val autoFallbackTriedIds = java.util.concurrent.CopyOnWriteArraySet<String>()
+
+  // One automatic Auto-rung step-down per recovery chain: once a stepped rung also times out,
+  // a lower rung of the same dead CDN is no longer the best move — switch sources instead.
+  private var autoSlowStartStepped = false
+
   // Real-playback library commit: only ≥5 minutes of viewing turns a title into "Смотрю".
   private var playbackProgressJob: kotlinx.coroutines.Job? = null
   private var watchingCommittedFor: String? = null
@@ -1499,11 +1509,16 @@ class PlayerActivity :
     updateAutoRungHint(stream.qualities, currentPlayingUrl)
     startAutoQualityWatchdog()
     viewModel.onAnimeTranslationSelected = translationSelected@{ trId ->
-      val track = translations.firstOrNull { it.translationId == trId } ?: return@translationSelected
+      // Live list, not the launch-time capture: the late voiceover merge can grow the dropdown
+      // after playback started, and a stale capture would silently drop taps on the new rows.
+      val liveTranslations = viewModel.animeTranslations.value.ifEmpty { translations }
+      val track = liveTranslations.firstOrNull { it.translationId == trId } ?: return@translationSelected
       if (trId == viewModel.currentAnimeTranslationId.value && qomActiveStream != null) {
         Log.d(TAG, "Ignoring duplicate QOM translation selection: $trId")
         return@translationSelected
       }
+      // Manual pick: any automatic cross-source fallback chain starts over from here.
+      autoFallbackTriedIds.clear()
       recordPlaybackUsage(track.source, track.title)
       // MovieNativeLauncher resolved every picker row before this activity was opened. Use that
       // prepared stream verbatim: switching a dub must never start a new Kodik/turbo resolve.
@@ -1511,13 +1526,13 @@ class PlayerActivity :
         .takeIf { it > 0 }
         ?.let { hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(it)[trId] }
       if (prepared != null) {
-        loadPreparedQomVoiceover(track, prepared, translations)
+        loadPreparedQomVoiceover(track, prepared, liveTranslations)
         return@translationSelected
       }
       val link = track.episodes.firstOrNull()?.link.orEmpty()
       if (link.isBlank()) return@translationSelected
       resetStreamLoadRetries()
-      loadQomVoiceover(track, link, translations)
+      loadQomVoiceover(track, link, liveTranslations)
     }
     viewModel.onAnimeQualitySelected = qualitySelected@{ quality ->
       // Duplicate guard lives ONLY in the tap-facing wrapper: the END_FILE auto-retry calls
@@ -1560,8 +1575,13 @@ class PlayerActivity :
    * the new dub (so later quality switches keep the chosen voiceover), and a failed loadfile is
    * retried once with a fresh resolve before the error card shows.
    */
-  private fun loadQomVoiceover(track: FlatTranslation, rawLink: String, translations: List<FlatTranslation>) {
-    beginTrackedStreamLoad(retry = { loadQomVoiceover(track, rawLink, translations) })
+  private fun loadQomVoiceover(
+    track: FlatTranslation,
+    rawLink: String,
+    translations: List<FlatTranslation>,
+    fromAutoFallback: Boolean = false,
+  ) {
+    beginTrackedStreamLoad(retry = { loadQomVoiceover(track, rawLink, translations, fromAutoFallback) })
     lifecycleScope.launch(Dispatchers.IO) {
       val resolved = resolveVoiceoverLink(rawLink)
       withContext(Dispatchers.Main) {
@@ -1569,6 +1589,9 @@ class PlayerActivity :
         if (url.isNullOrBlank()) {
           streamLoadRetryAction = null
           finishStreamLoadIndicator()
+          // An automatic fallback hop that fails to resolve keeps walking to the next row;
+          // only a user-initiated pick ends in a toast.
+          if (fromAutoFallback && tryAlternativeQomSource()) return@withContext
           Toast.makeText(this@PlayerActivity, "Не удалось открыть выбранную озвучку", Toast.LENGTH_SHORT).show()
           return@withContext
         }
@@ -1601,6 +1624,59 @@ class PlayerActivity :
   /** Quality ladder of an already-resolved voiceover url from the session turbo catalog. */
   private fun voiceoverLadderFor(resolvedUrl: String): Map<String, String> =
     DdbbStreamResolver.cachedLadderFor(resolvedUrl).orEmpty()
+
+  /**
+   * Automatic cross-source recovery for a QOM movie: the active dub's stream keeps failing or
+   * stalling, so try the next untried dub row — a DIFFERENT provider first (another row of the
+   * same dead CDN rarely behaves better). Prepared rows play instantly; raw links lazy-resolve.
+   * Returns false when every row was already tried and the error card should take over.
+   */
+  private fun tryAlternativeQomSource(): Boolean {
+    if (effectiveNativePlaybackMode != NativePlaybackMode.QUALITY_ONLY_MOVIE) return false
+    val translations = viewModel.animeTranslations.value
+    if (translations.size < 2) return false
+    val currentId = viewModel.currentAnimeTranslationId.value
+    val failedSource = translations.firstOrNull { it.translationId == currentId }?.source
+    currentId?.let { autoFallbackTriedIds.add(it) }
+    // A mid-playback stall keeps the watch position; a failed load has none to keep.
+    MPVLib.getPropertyDouble("time-pos")?.takeIf { it > 0 }?.let { pendingSeekPosition = it }
+    for (track in translations.sortedByDescending { it.source != failedSource }) {
+      if (track.translationId == currentId || !autoFallbackTriedIds.add(track.translationId)) continue
+      val link = track.episodes.firstOrNull()?.link.orEmpty()
+      if (link.isBlank()) continue
+      Log.i(TAG, "Cross-source fallback: ${failedSource?.name ?: "current"} failed → ${track.source} «${track.title}»")
+      val kpId = intent.getIntExtra("movie_kinopoisk_id", 0)
+      val prepared = if (kpId > 0) hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(kpId)[track.translationId] else null
+      if (prepared != null) {
+        loadPreparedQomVoiceover(track, prepared, translations)
+      } else {
+        loadQomVoiceover(track, link, translations, fromAutoFallback = true)
+      }
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Late voiceover merge: the losing provider answered after playback already started. Only
+   * GROWS the dropdown (never reshuffles rows mid-playback) and keeps the current dub and
+   * quality; the QOM selection callback reads the live list, so new rows are switchable at once.
+   */
+  private fun refreshQomVoiceoverRows(merged: List<FlatTranslation>) {
+    if (effectiveNativePlaybackMode != NativePlaybackMode.QUALITY_ONLY_MOVIE) return
+    val current = viewModel.animeTranslations.value
+    val added = merged.size - current.size
+    if (added <= 0) return
+    viewModel.setAnimeData(
+      emptyList(),
+      merged,
+      null,
+      viewModel.currentAnimeTranslationId.value,
+      qomActiveStream?.qualities ?: currentAnimeStream?.qualities ?: emptyMap(),
+      viewModel.currentAnimeQualityId.value
+    )
+    Log.i(TAG, "Late voiceover merge: +$added rows joined the dropdown after playback started")
+  }
 
   /**
    * Default dub of a movie: the one from the user's playback memory (most recently used wins),
@@ -1716,18 +1792,31 @@ class PlayerActivity :
   private fun resolvePendingLaunch(launch: PendingMovieRequestStore.PendingMovieLaunch, isRetry: Boolean = false) {
     // Profile decides which S/E to resume; read once per attempt on the main thread (prefs IO).
     val profile = libraryProfileKey()?.let { key -> UserStateStore(this).getProfile(key) }
+    val resolveStartMs = System.currentTimeMillis()
     lifecycleScope.launch(Dispatchers.IO) {
       // An mpv-reported dead stream must not be re-served from the ddbb 3-minute memo: bust it
       // so the retry actually re-extracts fresh CDN urls instead of failing identically.
       if (isRetry) launch.request.kinopoiskId?.takeIf { it > 0 }?.let { DdbbStreamResolver.evictResolveCache(it) }
-      val payload = MovieNativeLauncher.resolve(launch.request, profile, UserStateStore(this@PlayerActivity))
+      val payload = MovieNativeLauncher.resolve(launch.request, profile, UserStateStore(this@PlayerActivity)) { merged ->
+        // Late voiceover merge: the losing provider answered after playback already started.
+        // The callback fires on the launcher's IO scope — hop to the main thread for state.
+        lifecycleScope.launch(Dispatchers.Main) {
+          if (isFinishing || isDestroyed) return@launch
+          refreshQomVoiceoverRows(merged)
+        }
+      }
+      Log.i(TAG, "PENDING_MOVIE resolve done in ${System.currentTimeMillis() - resolveStartMs}ms (${payload.javaClass.simpleName})")
       withContext(Dispatchers.Main) {
+        Log.i(TAG, "PENDING_MOVIE main-thread handoff at +${System.currentTimeMillis() - resolveStartMs}ms")
         if (isFinishing || isDestroyed) return@withContext
         when (payload) {
           is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
             // The QOM quality-switch closure reads the field, not the parameter.
             currentAnimeStream = payload.stream
             effectiveNativePlaybackMode = NativePlaybackMode.QUALITY_ONLY_MOVIE
+            // Fresh payload: the automatic cross-source recovery chain starts over.
+            autoFallbackTriedIds.clear()
+            autoSlowStartStepped = false
             // Same handoff the blocking launch path performs: prepared per-dub ladders let
             // voiceover switches play instantly instead of re-resolving.
             launch.request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
@@ -2133,9 +2222,13 @@ class PlayerActivity :
         pendingStreamLoadIndicator = false
         viewModel.setLoadingStream(false)
         // Файл не открылся за 15 c (лог live kp=30276: CDN отдаёт сегменты по 20 c и рвёт
-        // TLS). В Auto делаем одноразовый спуск рунга; иначе — карточка с «Повторить»,
-        // чтобы не оставлять молчаливый чёрный экран.
-        if (autoDowngradeOnSlowStart()) return@launch
+        // TLS). В Auto делаем одноразовый спуск рунга; в QOM-фильмах спуск ограничен одним
+        // шагом — второй медленный таймаут на том же мёртвом CDN отвечаем переключением
+        // на другой источник, а не прогулкой по лестнице до дна.
+        if (autoDowngradeOnSlowStart() &&
+          (effectiveNativePlaybackMode != NativePlaybackMode.QUALITY_ONLY_MOVIE || !autoSlowStartStepped)
+        ) return@launch
+        if (tryAlternativeQomSource()) return@launch
         if (lastStreamLoadRetry == null) {
           // ANIME-launch path не трекает загрузку — «Повторить» реплеит текущий url.
           lastStreamLoadRetry = {
@@ -2167,6 +2260,7 @@ class PlayerActivity :
     val idx = ladder.indexOfFirst { it.second == currentPlayingUrl }.takeIf { it >= 0 } ?: 0
     val next = ladder.getOrNull(idx + 1) ?: return false
     Log.i(TAG, "Stream load timed out in Auto — stepping down ${ladder[idx].first} -> ${next.first}")
+    autoSlowStartStepped = true
     // Файл не начал играть — продолжать нечего, позицию не восстанавливаем.
     pendingSeekPosition = null
     currentPlayingUrl = next.second
@@ -2198,6 +2292,7 @@ class PlayerActivity :
   /** Manual «Повторить» (error card / new launch): grant a full auto-retry budget again. */
   private fun resetStreamLoadRetries() {
     streamLoadRetries = 0
+    autoSlowStartStepped = false
   }
 
   /** Clears the stream-loading overlay (file loaded, or switch failed). */
@@ -2376,6 +2471,8 @@ class PlayerActivity :
         if (idx < 0) continue
         val next = ladder.getOrNull(idx + 1) ?: run {
           Log.i(TAG, "Auto watchdog: already at the lowest quality (${ladder.last().first})")
+          // Bottom rung still stalls: another dub/provider is the last automatic remedy.
+          tryAlternativeQomSource()
           return@launch
         }
         Log.i(TAG, "Auto watchdog: ${ladder[idx].first} stalls, stepping down to ${next.first}")
@@ -3046,6 +3143,9 @@ class PlayerActivity :
       }
     } else {
       streamLoadRetryAction = null
+      // Same-target retries are spent: another dub/provider is the next thing to try before
+      // giving up — a dead CDN must not end in an error card while alternatives are untried.
+      if (tryAlternativeQomSource()) return
       finishStreamLoadIndicator()
       viewModel.setPendingResolveError(
         "Не удалось открыть видеопоток. Проверьте подключение и попробуйте ещё раз."
@@ -3817,6 +3917,9 @@ class PlayerActivity :
   private suspend fun saveRecentlyPlayed() {
     runCatching {
       val uri = extractUriFromIntent(intent)
+        // PENDING_MOVIE launches open with an empty intent URI; the resolved stream url is the
+        // only identity available — without this fallback the title never reaches recents.
+        ?: currentPlayingUrl?.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
 
       if (uri == null) {
         Log.w(TAG, "Cannot save recently played: URI is null")

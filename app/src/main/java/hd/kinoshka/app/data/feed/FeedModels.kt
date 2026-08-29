@@ -90,6 +90,22 @@ data class FeedItem(
             !(rating == null && year == null && shortDescription == null)
 }
 
+/** Дообогащённые по текущему тайтлу данные: жанры, описание, кадры, полный постер. */
+data class FeedItemExtras(
+    val genres: List<String> = emptyList(),
+    val description: String? = null,
+    val stills: List<String> = emptyList(),
+    /** Полноразмерный постер из details(): подменяет превью в фоне карточки. */
+    val fullPosterUrl: String? = null,
+    /** Теги хентая (RU, каталог hanime) — чипы 18+-карточки и измерения вкуса раздела. */
+    val hentaiTags: List<String> = emptyList(),
+    /**
+     * Кадры ещё не добраны: валидация экономит трафик и грузит только детали,
+     * кадры приходят лениво — когда карточку показывают (ensureExtras).
+     */
+    val stillsPending: Boolean = false
+)
+
 /** Готовый к запуску плеера результат быстрого воспроизведения фильма из фида. */
 data class FeedPlaybackPayload(
     val kinopoiskId: Int,
