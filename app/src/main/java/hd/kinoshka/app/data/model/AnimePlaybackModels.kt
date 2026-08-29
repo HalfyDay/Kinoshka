@@ -3,11 +3,14 @@ package hd.kinoshka.app.data.model
 import kotlinx.serialization.Serializable
 
 @Serializable
-enum class AnimeSourceType(val displayName: String, val description: String) {
+enum class AnimeSourceType(val displayName: String, val description: String, val needsVpn: Boolean = false) {
     KODIK("Kodik", "Большой каталог озвучек и субтитров"),
     ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p"),
     ANILIB("AniLib", "Каталог AniLib (animelib.org), озвучки по командам"),
     ANISTAR("AniStar", "Свои озвучки AniStar, MP4/HLS 360–720p"),
+    /** Архив shikicinema (smarthard.net), ключ записей — Shikimori id. Часть ссылок ведёт на
+     *  embed-хосты, недоступные без VPN: листинг не фильтруется, резолв ленивый (SmarthardApi). */
+    SMARTHARD("Smarthard", "Архив shikicinema: озвучки и субтитры; часть ссылок требует VPN", needsVpn = true),
     /** Direct CDN links (ddbb aggregator: turbo/collaps/alloha/veoveo). Movie/QOM rows only —
      *  never offered by the anime picker (see ANIME_PICKER_SOURCES). */
     DDBB("DDBB", "Прямые ссылки Turbo/Collaps/Alloha/Veoveo"),
@@ -22,7 +25,7 @@ enum class AnimeSourceType(val displayName: String, val description: String) {
 
 /** Sources the anime selection screen races/loads; DDBB is movie-playback-only. */
 val ANIME_PICKER_SOURCES: List<AnimeSourceType> =
-    listOf(AnimeSourceType.KODIK, AnimeSourceType.ANILIBERTY, AnimeSourceType.ANILIB, AnimeSourceType.ANISTAR)
+    listOf(AnimeSourceType.KODIK, AnimeSourceType.ANILIBERTY, AnimeSourceType.ANILIB, AnimeSourceType.ANISTAR, AnimeSourceType.SMARTHARD)
 
 /**
  * Shared quality preference, best first: the default pick for any ladder (Kodik HLS, ddbb

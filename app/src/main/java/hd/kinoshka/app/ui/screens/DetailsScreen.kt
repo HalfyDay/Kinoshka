@@ -643,7 +643,11 @@ fun DetailsScreen(
                                         val stream = HentaiStreamResolver.resolveFor(
                                             provider,
                                             item.nameOriginal ?: item.nameEn,
-                                            item.nameRu
+                                            item.nameRu,
+                                            // Shikimori id тайтла: smarthard ищет записи напрямую по нему.
+                                            shikimoriId = item.kinopoiskId.takeIf {
+                                                it >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                                            }?.minus(hd.kinoshka.app.data.model.ANIME_ID_OFFSET) ?: 0
                                         )
                                         if (stream != null) HentaiSourceState.Ready(stream)
                                         else HentaiSourceState.Failed("Ничего не найдено")

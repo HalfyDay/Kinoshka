@@ -244,6 +244,7 @@ object HentaiStreamResolver {
             resolveViaAniStar(queries)?.let { return@withContext it }
             resolveViaHentaiz(queries)?.let { return@withContext it }
             resolveViaHanime1(queries)?.let { return@withContext it }
+            resolveViaSmarthard(queries, shikimoriId = 0)?.let { return@withContext it }
             resolveViaOppai(queries)?.let { return@withContext it }
             Log.i(TAG, "no hentai stream found for $queries")
             null
@@ -252,11 +253,14 @@ object HentaiStreamResolver {
     /**
      * Resolves through ONE chosen provider — the source sheet calls this so the user can see
      * which sources need a VPN and pick manually instead of relying on auto-fallback order.
+     * [shikimoriId] (когда тайтл приходит со страницы Shikimori) позволяет smarthard искать
+     * записи напрямую по id вместо нечёткого поиска по названию.
      */
     suspend fun resolveFor(
         provider: HentaiProvider,
         originalTitle: String?,
-        russianTitle: String?
+        russianTitle: String?,
+        shikimoriId: Int = 0
     ): HentaiStream? = withContext(Dispatchers.IO) {
         val queries = titleQueries(originalTitle, russianTitle)
         if (queries.isEmpty()) return@withContext null
@@ -267,6 +271,7 @@ object HentaiStreamResolver {
             HentaiProvider.ANISTAR -> resolveViaAniStar(queries)
             HentaiProvider.HENTAIZ -> resolveViaHentaiz(queries)
             HentaiProvider.HANIME1 -> resolveViaHanime1(queries)
+            HentaiProvider.SMARTHARD -> resolveViaSmarthard(queries, shikimoriId)
             HentaiProvider.OPPAI -> resolveViaOppai(queries)
         }
         if (stream != null) seriesBackup[backupKey(provider, originalTitle, russianTitle)] = stream
@@ -543,6 +548,56 @@ object HentaiStreamResolver {
             quality = qualities.keys.maxByOrNull { it.removeSuffix("p").toIntOrNull() ?: 0 } ?: "Auto",
             title = path,
             episodes = episodes.takeIf { it.size > 1 }.orEmpty()
+        )
+    }
+
+    // ---- provider: smarthard.net (архив shikicinema, ключ — Shikimori anime_id) ----
+    // API и постеры доступны из РФ без VPN, но сами видео лежат на разнородных хостах: прямые
+    // файлы играются сразу, sibnet-embed скрапится, прочие embed-страницы снифаются и часто
+    // требуют VPN. Неразрешённые записи НЕ отбрасываются — остаются в списке с пометкой « · VPN».
+    private suspend fun resolveViaSmarthard(queries: List<String>, shikimoriId: Int): HentaiStream? {
+        val animeId = if (shikimoriId > 0) {
+            shikimoriId
+        } else {
+            queries.firstNotNullOfOrNull { SmarthardApi.searchAnimeIds(it).firstOrNull() } ?: return null
+        }
+        val records = SmarthardApi.loadRecords(animeId)
+        if (records.isEmpty()) return null
+        Log.i(TAG, "smarthard: id=$animeId -> ${records.size} records")
+
+        // На эпизод — одна лучшая запись: русская озвучка > русские сабы > оригинал > прочее,
+        // среди равных — прямой файл > sibnet > embed.
+        val best = records.groupBy { it.episode }.mapValues { (_, rs) ->
+            rs.minWith(
+                compareBy<SmarthardApi.SmarthardRecord> { SmarthardApi.kindRank(it) }
+                    .thenByDescending { record -> record.url.let { if (it.contains("video.sibnet.ru")) 1 else 0 } }
+                    .thenBy { it.id }
+            )
+        }
+
+        val ordered = best.entries.sortedBy { it.key }
+        if (ordered.isEmpty()) return null
+        val resolved = SmarthardApi.resolveLinks(ordered.map { it.value.url })
+        var sibnetReferer = false
+        val episodes = ordered.mapIndexed { index, (number, record) ->
+            val link = resolved[index]
+            if (link?.headers?.containsKey("Referer") == true) sibnetReferer = true
+            val kindTag = when (record.kind) {
+                "субтитры" -> " (сабы)"
+                "оригинал" -> " (ориг)"
+                else -> ""
+            }
+            val vpnTag = if (link == null) " · VPN" else ""
+            HentaiEpisode(label = "Серия $number$kindTag$vpnTag", url = link?.url ?: record.url)
+        }
+        Log.i(TAG, "smarthard: ${episodes.count { !it.label.contains("VPN") }}/${episodes.size} episodes playable")
+
+        return HentaiStream(
+            url = episodes.first().url,
+            headers = if (sibnetReferer) mapOf("Referer" to "https://video.sibnet.ru/") else emptyMap(),
+            quality = "Auto",
+            title = "Smarthard",
+            episodes = episodes
         )
     }
 
@@ -1823,6 +1878,11 @@ enum class HentaiProvider(
         "Оригинал с японскими титрами, потоки 480–1080p",
         "JA", false
     ),
+    SMARTHARD(
+        "Smarthard",
+        "Архив shikicinema: сабы и озвучки; часть ссылок требует VPN",
+        "RU", true
+    ),
     OPPAI(
         "Oppai.Stream",
         "Английский сайт 4K-мастеров, MP4 720/1080p",
@@ -1838,6 +1898,7 @@ fun HentaiProvider.toAnimeSourceType(): hd.kinoshka.app.data.model.AnimeSourceTy
         HentaiProvider.ANISTAR -> hd.kinoshka.app.data.model.AnimeSourceType.ANISTAR
         HentaiProvider.HENTAIZ -> hd.kinoshka.app.data.model.AnimeSourceType.HENTAI_HENTAIZ
         HentaiProvider.HANIME1 -> hd.kinoshka.app.data.model.AnimeSourceType.HENTAI_HANIME1
+        HentaiProvider.SMARTHARD -> hd.kinoshka.app.data.model.AnimeSourceType.SMARTHARD
         HentaiProvider.OPPAI -> hd.kinoshka.app.data.model.AnimeSourceType.HENTAI_OPPAI
     }
 

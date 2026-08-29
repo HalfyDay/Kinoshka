@@ -6,9 +6,11 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -838,6 +840,9 @@ private fun SelectTranslationStep(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    // Источников больше пяти — ряд чипов не влезает в ширину и должен
+                    // прокручиваться по горизонтали, а не упираться в правый край.
+                    .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -891,6 +896,9 @@ private fun SelectTranslationStep(
                 filteredList.filter { it.source == source }.sortedWith(
                     compareByDescending<FlatTranslation> { dubUsageRank(playbackUsage, it.title).first }
                         .thenByDescending { dubUsageRank(playbackUsage, it.title).second }
+                        // VPN-ряды (все серии на embed-хостах) тонут в конец группы: без VPN
+                        // они всё равно не заиграют, а сверху оказываются рабочие варианты.
+                        .thenByDescending { !it.title.endsWith(hd.kinoshka.app.data.source.SmarthardApi.VPN_ROW_SUFFIX) }
                         .thenByDescending { it.episodes.size }
                         .thenBy { it.title }
                 )
@@ -904,12 +912,29 @@ private fun SelectTranslationStep(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = source.displayName,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = source.displayName,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (source.needsVpn) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                                ) {
+                                    Text(
+                                        text = "VPN",
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
                         Text(
                             text = "${translations.size} ${pluralDubs(translations.size)}",
                             style = MaterialTheme.typography.labelSmall,

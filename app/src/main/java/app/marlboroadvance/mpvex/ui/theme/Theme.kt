@@ -46,6 +46,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.drawToBitmap
 import hd.kinoshka.app.R
+import hd.kinoshka.app.data.local.AppThemeMode
+import hd.kinoshka.app.data.local.UserStateStore
 import app.marlboroadvance.mpvex.preferences.AppearancePreferences
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
 import org.koin.compose.koinInject
@@ -209,22 +211,28 @@ private fun ThemeTransitionContent(content: @Composable () -> Unit) {
 @Composable
 fun MpvexTheme(content: @Composable () -> Unit) {
     val preferences = koinInject<AppearancePreferences>()
-    val darkMode by preferences.darkMode.collectAsState()
     val amoledMode by preferences.amoledMode.collectAsState()
     val appTheme by preferences.appTheme.collectAsState()
     val darkTheme = isSystemInDarkTheme()
     val context = LocalContext.current
 
-    val useDarkTheme = when (darkMode) {
-        DarkMode.Dark -> true
-        DarkMode.Light -> false
-        DarkMode.System -> darkTheme
+    // Плеер следует теме приложения (AppThemeMode из UserStateStore): встроенный переключатель
+    // Dark/Light/System самого mpvEx из Kinoshka недостижим, и его дефолт System делал плеер
+    // светлым при тёмной теме приложения.
+    val appThemeMode = remember(context) {
+        runCatching { UserStateStore(context).getThemeMode() }.getOrDefault(AppThemeMode.CURRENT)
     }
+
+    val useDarkTheme = when (appThemeMode) {
+        AppThemeMode.CURRENT -> darkTheme
+        AppThemeMode.DARK, AppThemeMode.AMOLED -> true
+    }
+    val useAmoled = amoledMode || appThemeMode == AppThemeMode.AMOLED
 
     val colorScheme = when {
         appTheme.isDynamic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             when {
-                useDarkTheme && amoledMode -> {
+                useDarkTheme && useAmoled -> {
                     dynamicDarkColorScheme(context).copy(
                         background = backgroundPureBlack,
                         surface = surfacePureBlack,
@@ -241,7 +249,7 @@ fun MpvexTheme(content: @Composable () -> Unit) {
                 else -> dynamicLightColorScheme(context)
             }
         }
-        useDarkTheme && amoledMode -> appTheme.getAmoledColorScheme()
+        useDarkTheme && useAmoled -> appTheme.getAmoledColorScheme()
         useDarkTheme -> appTheme.getDarkColorScheme()
         else -> appTheme.getLightColorScheme()
     }

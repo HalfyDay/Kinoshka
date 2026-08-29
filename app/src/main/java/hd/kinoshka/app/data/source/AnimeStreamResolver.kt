@@ -116,7 +116,8 @@ object AnimeStreamResolver {
         listOf(
             AnimeSource(AnimeSourceType.KODIK, isAvailable = true),
             AnimeSource(AnimeSourceType.ANILIBERTY, isAvailable = true),
-            AnimeSource(AnimeSourceType.ANILIB, isAvailable = true)
+            AnimeSource(AnimeSourceType.ANILIB, isAvailable = true),
+            AnimeSource(AnimeSourceType.SMARTHARD, isAvailable = true)
         )
     }
 
@@ -233,6 +234,7 @@ object AnimeStreamResolver {
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANISTAR -> fetchAniStarFlatTranslations(animeTitle)
+            AnimeSourceType.SMARTHARD -> fetchSmarthardFlatTranslations(shikimoriId)
             // ddbb/hentai rows exist only in movie/QOM playback lists, never in the anime picker.
             AnimeSourceType.DDBB,
             AnimeSourceType.HENTAI_ALLHENTAI,
@@ -325,6 +327,88 @@ object AnimeStreamResolver {
         }
     }
 
+    // Smarthard (shikivideos-архив shikicinema): записи берутся напрямую по Shikimori id,
+    // группируются по (kind, author). Ссылки хостов разной живости — не фильтруются: ряды,
+    // у которых ВСЕ серии только на embed-хостах, получают суффикс « · VPN» (без VPN они
+    // не заиграют), серии с embed-ссылкой — «Серия N · VPN».
+    private suspend fun fetchSmarthardFlatTranslations(shikimoriId: Int): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        runCatching {
+            val groups = SmarthardApi.groupRecords(SmarthardApi.loadRecords(shikimoriId))
+            Log.i(TAG, "[Smarthard] id=$shikimoriId -> ${groups.size} groups")
+            groups.map { group ->
+                val rowVpn = group.episodeRecords.values.all { SmarthardApi.needsVpnNote(it.url) }
+                FlatTranslation(
+                    source = AnimeSourceType.SMARTHARD,
+                    translationId = group.translationId,
+                    title = group.displayTitle + if (rowVpn) SmarthardApi.VPN_ROW_SUFFIX else "",
+                    type = group.type,
+                    episodes = group.episodeRecords.map { (number, record) ->
+                        val epVpn = SmarthardApi.needsVpnNote(record.url)
+                        AnimeEpisode(
+                            number = number,
+                            title = "Серия $number" + if (epVpn) SmarthardApi.VPN_ROW_SUFFIX else "",
+                            link = record.url
+                        )
+                    }.sortedBy { it.number }
+                )
+            }
+        }.getOrElse { e ->
+            Log.e(TAG, "[Smarthard] Fetch failed: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    private suspend fun fetchSmarthardTranslations(shikimoriId: Int): List<AnimeTranslation> = withContext(Dispatchers.IO) {
+        SmarthardApi.groupRecords(SmarthardApi.loadRecords(shikimoriId)).map { group ->
+            val rowVpn = group.episodeRecords.values.all { SmarthardApi.needsVpnNote(it.url) }
+            AnimeTranslation(
+                id = group.translationId,
+                title = group.displayTitle + if (rowVpn) SmarthardApi.VPN_ROW_SUFFIX else "",
+                type = group.type,
+                episodesCount = group.episodeRecords.size
+            )
+        }
+    }
+
+    private suspend fun fetchSmarthardEpisodes(shikimoriId: Int, translationId: String): List<AnimeEpisode> = withContext(Dispatchers.IO) {
+        val group = SmarthardApi.groupById(SmarthardApi.groupRecords(SmarthardApi.loadRecords(shikimoriId)), translationId)
+            ?: return@withContext emptyList()
+        group.episodeRecords.map { (number, _) -> AnimeEpisode(number = number, title = "Серия $number") }.sortedBy { it.number }
+    }
+
+    private suspend fun resolveSmarthardStream(shikimoriId: Int, translationId: String, episodeNumber: Int): AnimeMediaStream? = withContext(Dispatchers.IO) {
+        val group = SmarthardApi.groupById(SmarthardApi.groupRecords(SmarthardApi.loadRecords(shikimoriId)), translationId)
+        if (group == null) {
+            Log.w(TAG, "[Smarthard] resolve: group $translationId not found for id=$shikimoriId")
+            return@withContext null
+        }
+        // Точная серия; у рядов со сдвинутой нумерацией (Cuba77: эпизоды 27+) — ближайшая ниже.
+        val candidates = group.episodeCandidates[episodeNumber].orEmpty().ifEmpty {
+            group.episodeCandidates.entries.filter { it.key < episodeNumber }
+                .maxByOrNull { it.key }?.value.orEmpty()
+        }
+        if (candidates.isEmpty()) {
+            Log.w(TAG, "[Smarthard] resolve: no records for ep=$episodeNumber in \"${group.displayTitle}\" (${group.episodeCandidates.keys.minOrNull()}..${group.episodeCandidates.keys.maxOrNull()})")
+            return@withContext null
+        }
+        // Лучшая запись может вести на мёртвый/гео-блокированный хост: резолвим ВСЕ
+        // кандидаты параллельно и берём первый успешный по приоритету — отказ ряда
+        // занимает время одной попытки, а не суммы по всем хостам.
+        val resolved = SmarthardApi.resolveLinks(candidates.map { it.url })
+        val hit = resolved.withIndex().firstOrNull { it.value != null }
+        if (hit != null) {
+            Log.i(TAG, "[Smarthard] resolve \"${group.displayTitle}\" ep=$episodeNumber -> ${hit.value!!.url} (record ${candidates[hit.index].id})")
+            return@withContext AnimeMediaStream(
+                url = hit.value!!.url,
+                headers = hit.value!!.headers,
+                quality = "Auto",
+                title = group.displayTitle
+            )
+        }
+        Log.w(TAG, "[Smarthard] resolve: all ${candidates.size} candidates failed for \"${group.displayTitle}\" ep=$episodeNumber")
+        null
+    }
+
     private suspend fun prefetchAllMediaInternal(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
         Log.i(TAG, "=== prefetchAllMedia === id=$shikimoriId, title=\"$animeTitle\"")
         kotlinx.coroutines.coroutineScope {
@@ -396,6 +480,7 @@ object AnimeStreamResolver {
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANISTAR -> fetchAniStarTranslations(animeTitle)
+            AnimeSourceType.SMARTHARD -> fetchSmarthardTranslations(shikimoriId)
             // ddbb/hentai rows are QOM voiceovers with direct links — nothing to fetch here.
             AnimeSourceType.DDBB,
             AnimeSourceType.HENTAI_ALLHENTAI,
@@ -417,6 +502,7 @@ object AnimeStreamResolver {
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANISTAR -> fetchAniStarEpisodes(animeTitle)
+            AnimeSourceType.SMARTHARD -> fetchSmarthardEpisodes(shikimoriId, translationId)
             // ddbb/hentai rows are QOM voiceovers with direct links — nothing to fetch here.
             AnimeSourceType.DDBB,
             AnimeSourceType.HENTAI_ALLHENTAI,
@@ -474,6 +560,7 @@ object AnimeStreamResolver {
             AnimeSourceType.HENTAI_HENTAIZ,
             AnimeSourceType.HENTAI_HANIME1,
             AnimeSourceType.HENTAI_OPPAI -> null
+            AnimeSourceType.SMARTHARD -> resolveSmarthardStream(shikimoriId, translationId, episodeNumber)
         }
     }
 
