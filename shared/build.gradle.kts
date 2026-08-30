@@ -39,7 +39,12 @@ kotlin {
                 api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
             }
         }
-        val androidMain by getting { dependsOn(jvmShared) }
+        val androidMain by getting {
+            dependsOn(jvmShared)
+            dependencies {
+                implementation("io.coil-kt:coil-compose:2.7.0")
+            }
+        }
         val desktopMain by getting {
             dependsOn(jvmShared)
             dependencies {

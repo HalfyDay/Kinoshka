@@ -80,8 +80,9 @@ fun DetailsScreen(
                         .height(300.dp)
                         .clip(RoundedCornerShape(12.dp)),
                 ) {
-                    PosterImage(
-                        url = details?.posterUrl ?: film.posterUrlPreview,
+                    hd.kinoshka.app.ui.common.KinoRemoteImage(
+                        model = details?.posterUrl ?: film.posterUrlPreview,
+                        contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
