@@ -152,7 +152,11 @@ private fun FilmCard(film: FilmItem, onClick: () -> Unit) {
                 .aspectRatio(0.7f)
                 .clip(RoundedCornerShape(10.dp)),
         ) {
-            PosterImage(url = film.posterUrlPreview, modifier = Modifier.fillMaxSize())
+            hd.kinoshka.app.ui.common.KinoRemoteImage(
+                model = film.posterUrlPreview,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+            )
             film.ratingKinopoisk?.let { rating ->
                 hd.kinoshka.app.ui.common.KinoRatingBadge(
                     rating = rating,
