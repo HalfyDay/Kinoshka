@@ -1,7 +1,6 @@
 package hd.kinoshka.app.data.source
 
-import android.util.Base64
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.FilmImageItem
 import kotlinx.coroutines.Dispatchers
@@ -246,7 +245,7 @@ object HentaiStreamResolver {
             resolveViaHanime1(queries)?.let { return@withContext it }
             resolveViaSmarthard(queries, shikimoriId = 0)?.let { return@withContext it }
             resolveViaOppai(queries)?.let { return@withContext it }
-            Log.i(TAG, "no hentai stream found for $queries")
+            KLog.i(TAG, "no hentai stream found for $queries")
             null
         }
 
@@ -264,7 +263,7 @@ object HentaiStreamResolver {
     ): HentaiStream? = withContext(Dispatchers.IO) {
         val queries = titleQueries(originalTitle, russianTitle)
         if (queries.isEmpty()) return@withContext null
-        Log.i(TAG, "resolveFor ${provider.name}: $queries")
+        KLog.i(TAG, "resolveFor ${provider.name}: $queries")
         val stream = when (provider) {
             HentaiProvider.ALLHENTAI -> resolveViaAllHentai(queries)
             HentaiProvider.HENTAIDREAM -> resolveViaHentaiDream(queries)
@@ -307,13 +306,13 @@ object HentaiStreamResolver {
     private suspend fun resolveViaAllHentai(queries: List<String>): HentaiStream? {
         for (query in queries) {
             val articles = runCatching { searchAllHentai(query) }
-                .onFailure { Log.w(TAG, "ah search failed for \"$query\": ${it.javaClass.simpleName}") }
+                .onFailure { KLog.w(TAG, "ah search failed for \"$query\": ${it.javaClass.simpleName}") }
                 .getOrDefault(emptyList())
-            Log.i(TAG, "allhentai \"$query\" -> ${articles.size} articles")
+            KLog.i(TAG, "allhentai \"$query\" -> ${articles.size} articles")
             pickBest(articles.map { CandidateView(it.path, "${it.label} ${slugWords(it.path)}") }, query)
                 ?.let { picked ->
                     val matched = articles.first { it.path == picked }
-                    Log.i(TAG, "allhentai matched \"${matched.label}\" (${matched.path}) for \"$query\"")
+                    KLog.i(TAG, "allhentai matched \"${matched.label}\" (${matched.path}) for \"$query\"")
                     fetchPlaylistStream(AH_BASE, matched.path)?.let { return it }
                 }
         }
@@ -324,13 +323,13 @@ object HentaiStreamResolver {
             val entry = catalog.firstOrNull { titleMatches(it.name, it.altTitles, query) } ?: continue
             for (alias in aliasQueries(entry)) {
                 val articles = runCatching { searchAllHentai(alias) }.getOrDefault(emptyList())
-                Log.i(TAG, "allhentai(alias=\"$alias\") -> ${articles.size} articles")
+                KLog.i(TAG, "allhentai(alias=\"$alias\") -> ${articles.size} articles")
                 pickBest(
                     articles.map { CandidateView(it.path, "${it.label} ${slugWords(it.path)}") },
                     alias
                 )?.let { picked ->
                     val matched = articles.first { it.path == picked }
-                    Log.i(TAG, "allhentai(alias=\"$alias\") matched \"${matched.label}\"")
+                    KLog.i(TAG, "allhentai(alias=\"$alias\") matched \"${matched.label}\"")
                     fetchPlaylistStream(AH_BASE, matched.path)?.let { return it }
                 }
             }
@@ -347,10 +346,10 @@ object HentaiStreamResolver {
         val catalog: List<CatalogEntry> = runCatching { loadCatalog() }.getOrDefault(emptyList())
         for (query in queries) {
             val entry = catalog.firstOrNull { titleMatches(it.name, it.altTitles, query) } ?: continue
-            Log.i(TAG, "catalog matched \"${entry.name}\" for \"$query\"")
+            KLog.i(TAG, "catalog matched \"${entry.name}\" for \"$query\"")
             for (alias in aliasQueries(entry).filter { alias -> alias.any { it.code >= 0x2E80 } }) {
                 val items: List<H1Item> = runCatching { searchH1(alias) }.getOrDefault(emptyList())
-                Log.i(TAG, "h1(alias=\"$alias\") -> ${items.size} hits")
+                KLog.i(TAG, "h1(alias=\"$alias\") -> ${items.size} hits")
                 if (items.isEmpty()) continue
                 // CJK aliases are pre-verified by the catalog dump, but short/fragment aliases
                 // still bring back unrelated hits — accept a hit only when its title actually
@@ -359,10 +358,10 @@ object HentaiStreamResolver {
                 val hit = items.firstOrNull { item ->
                     foldKana(normalizeTitle(item.title)).startsWith(wanted)
                 } ?: run {
-                    Log.i(TAG, "h1 CJK alias \"$alias\": no hit title carries the alias, skipping")
+                    KLog.i(TAG, "h1 CJK alias \"$alias\": no hit title carries the alias, skipping")
                     continue
                 }
-                Log.i(TAG, "h1 CJK alias \"$alias\" accepted \"${hit.title}\"")
+                KLog.i(TAG, "h1 CJK alias \"$alias\" accepted \"${hit.title}\"")
                 resolveH1WithSeries(items, hit.id)?.let { return it }
             }
             break // one catalog lookup is enough to gather aliases
@@ -374,13 +373,13 @@ object HentaiStreamResolver {
     private suspend fun resolveViaHentaiDream(queries: List<String>): HentaiStream? {
         for (query in queries) {
             val articles = runCatching { searchAllHentaiOn(HD_BASE, query) }
-                .onFailure { Log.w(TAG, "hd search failed for \"$query\": ${it.javaClass.simpleName}") }
+                .onFailure { KLog.w(TAG, "hd search failed for \"$query\": ${it.javaClass.simpleName}") }
                 .getOrDefault(emptyList())
-            Log.i(TAG, "hentaidream \"$query\" -> ${articles.size} articles")
+            KLog.i(TAG, "hentaidream \"$query\" -> ${articles.size} articles")
             pickBest(articles.map { CandidateView(it.path, "${it.label} ${slugWords(it.path)}") }, query)
                 ?.let { picked ->
                     val matched = articles.first { it.path == picked }
-                    Log.i(TAG, "hentaidream matched \"${matched.label}\" (${matched.path}) for \"$query\"")
+                    KLog.i(TAG, "hentaidream matched \"${matched.label}\" (${matched.path}) for \"$query\"")
                     fetchPlaylistStream(HD_BASE, matched.path)?.let { return it }
                 }
         }
@@ -391,7 +390,7 @@ object HentaiStreamResolver {
     private suspend fun resolveViaAniStar(queries: List<String>): HentaiStream? {
         val attempts = (queries + queries.mapNotNull(::translitRu)).distinct()
         val episodes = AniStarResolver.findEpisodes(attempts) ?: return null
-        Log.i(TAG, "anistar: ${episodes.size} episode(s) for \"$queries\"")
+        KLog.i(TAG, "anistar: ${episodes.size} episode(s) for \"$queries\"")
         return anistarEpisodesToStream(queries.firstOrNull() ?: "AniStar", episodes)
     }
 
@@ -418,7 +417,7 @@ object HentaiStreamResolver {
     private suspend fun resolveViaHentaiz(queries: List<String>): HentaiStream? {
         for (query in queries) {
             val found = findHentaizEntry(query) ?: continue
-            Log.i(TAG, "hentaiz matched ${found.first} for \"$query\" (track=${found.second?.key})")
+            KLog.i(TAG, "hentaiz matched ${found.first} for \"$query\" (track=${found.second?.key})")
             hentaizEntryToStream(found)?.let { return it }
         }
         return null
@@ -529,7 +528,7 @@ object HentaiStreamResolver {
     private fun hentaizEntryToStream(entry: Pair<String, HentaizTrack?>): HentaiStream? {
         val (path, track) = entry
         if (track == null) {
-            Log.i(TAG, "hentaiz $path: no allData player")
+            KLog.i(TAG, "hentaiz $path: no allData player")
             return null
         }
         // Серии с разным качеством: каждая играет своим лучшим качеством; лестница первой
@@ -563,7 +562,7 @@ object HentaiStreamResolver {
         }
         val records = SmarthardApi.loadRecords(animeId)
         if (records.isEmpty()) return null
-        Log.i(TAG, "smarthard: id=$animeId -> ${records.size} records")
+        KLog.i(TAG, "smarthard: id=$animeId -> ${records.size} records")
 
         // На эпизод — одна лучшая запись: русская озвучка > русские сабы > оригинал > прочее,
         // среди равных — прямой файл > sibnet > embed.
@@ -590,7 +589,7 @@ object HentaiStreamResolver {
             val vpnTag = if (link == null) " · VPN" else ""
             HentaiEpisode(label = "Серия $number$kindTag$vpnTag", url = link?.url ?: record.url)
         }
-        Log.i(TAG, "smarthard: ${episodes.count { !it.label.contains("VPN") }}/${episodes.size} episodes playable")
+        KLog.i(TAG, "smarthard: ${episodes.count { !it.label.contains("VPN") }}/${episodes.size} episodes playable")
 
         return HentaiStream(
             url = episodes.first().url,
@@ -615,17 +614,17 @@ object HentaiStreamResolver {
             )) {
                 // Try ep 1 first — if it works, probe for more episodes.
                 val ep1Slug = "$slugVariant-1"
-                Log.i(TAG, "oppai direct try: $ep1Slug")
+                KLog.i(TAG, "oppai direct try: $ep1Slug")
                 val ep1 = fetchOppaiStream(ep1Slug) ?: continue
 
                 // Found ep1 — probe for siblings up to 20.
-                Log.i(TAG, "oppai DIRECT hit: \"$ep1Slug\" — probing for more episodes")
+                KLog.i(TAG, "oppai DIRECT hit: \"$ep1Slug\" — probing for more episodes")
                 val eps = mutableListOf(HentaiEpisode("Серия 1", ep1.url, ep1.quality))
                 for (n in 2..20) {
                     val sib = fetchOppaiStream("$slugVariant-$n") ?: break
                     eps.add(HentaiEpisode("Серия $n", sib.url, sib.quality))
                 }
-                Log.i(TAG, "oppai series: ${eps.size} episode(s)")
+                KLog.i(TAG, "oppai series: ${eps.size} episode(s)")
                 return HentaiStream(
                     url = ep1.url,
                     qualities = ep1.qualities,
@@ -642,7 +641,7 @@ object HentaiStreamResolver {
         for (offset in listOf(0, 30, 60, 90, 120, 150, 180, 210, 240, 270)) {
             val url = "$OPPAI_BASE/actions/results.php?sc=search&am=30&of=$offset&sts=1&ibt=1"
             val body = httpGet(url, client = oppaiClient, extraHeaders = oppaiHeaders("$OPPAI_BASE/"))
-                ?: run { Log.w(TAG, "oppai page of=$offset: null response"); break }
+                ?: run { KLog.w(TAG, "oppai page of=$offset: null response"); break }
             Regex("name='([^']{2,140})'[\\s\\S]{0,700}?href='https://oppai\\.stream/watch\\?e=([^'&]+)")
                 .findAll(body)
                 .forEach { m ->
@@ -651,23 +650,23 @@ object HentaiStreamResolver {
                         entries[slug] = OppaiEntry(slug, unescapeHtml(m.groupValues[1].trim()))
                     }
                 }
-            Log.i(TAG, "oppai page of=$offset: body=${body.length} chars, total=${entries.size}")
+            KLog.i(TAG, "oppai page of=$offset: body=${body.length} chars, total=${entries.size}")
 
             // Early exit: check if any loaded entry matches before fetching more pages.
             for (query in queries) {
                 pickBest(entries.values.map { CandidateView(it.slug, "${it.name} ${slugWords("/${it.slug}")}") }, query)
                     ?.let { picked ->
                         val matched = entries[picked]!!
-                        Log.i(TAG, "oppai matched \"${matched.name}\" (${matched.slug}) for \"$query\" at of=$offset")
+                        KLog.i(TAG, "oppai matched \"${matched.name}\" (${matched.slug}) for \"$query\" at of=$offset")
                         fetchOppaiStream(matched.slug)?.let { return it }
                     }
             }
             if (body.length < 500) {
-                Log.i(TAG, "oppai pagination exhausted at of=$offset")
+                KLog.i(TAG, "oppai pagination exhausted at of=$offset")
                 break
             }
         }
-        Log.i(TAG, "oppai: no match in ${entries.size} entries")
+        KLog.i(TAG, "oppai: no match in ${entries.size} entries")
         return null
     }
 
@@ -687,7 +686,7 @@ object HentaiStreamResolver {
             ?: Regex("https://[a-z0-9.-]+/[^\"'\\s]+\\.mp4[^\"'\\s]*", RegexOption.IGNORE_CASE)
                 .find(body)?.value?.trim()
             ?: run {
-                Log.i(TAG, "oppai watch page has no mp4 source")
+                KLog.i(TAG, "oppai watch page has no mp4 source")
                 return null
             }
         // CDN paths contain literal spaces ("Shoujo Ramune/E01.mp4") — illegal in URLs.
@@ -703,7 +702,7 @@ object HentaiStreamResolver {
             .distinct()
             .toList()
         if (dashQualities.isNotEmpty()) {
-            Log.i(TAG, "oppai has DASH-only ${dashQualities.joinToString("/")} (not exposed: libmpv lacks dashdec)")
+            KLog.i(TAG, "oppai has DASH-only ${dashQualities.joinToString("/")} (not exposed: libmpv lacks dashdec)")
         }
         return HentaiStream(
             url = src,
@@ -822,7 +821,7 @@ object HentaiStreamResolver {
     private fun fetchPlaylistStream(base: String, path: String): HentaiStream? {
         val body = httpGet(base + path, referer = "$base/") ?: return null
         val playlistPath = Regex("file:\"(/pl/[^\"]+playlist\\.txt)").find(body)?.groupValues?.get(1)
-            ?: run { Log.i(TAG, "article has no playerjs playlist"); return null }
+            ?: run { KLog.i(TAG, "article has no playerjs playlist"); return null }
         val playlistBody = httpGet(base + playlistPath, referer = "$base/") ?: return null
         val episodes = runCatching {
             val arr = JSONArray(playlistBody)
@@ -841,8 +840,8 @@ object HentaiStreamResolver {
                 }
             }
         }.getOrDefault(emptyList())
-        if (episodes.isEmpty()) { Log.i(TAG, "playlist empty"); return null }
-        Log.i(TAG, "playlist: ${episodes.size} episode(s)")
+        if (episodes.isEmpty()) { KLog.i(TAG, "playlist empty"); return null }
+        KLog.i(TAG, "playlist: ${episodes.size} episode(s)")
         // Плейлисты DLE не публикуют ренду — серии без метки пробиваются по голове файла
         // (faststart-MP4 отдают moov первыми 128 КБ).
         val withQuality = episodes.map { ep ->
@@ -919,7 +918,7 @@ object HentaiStreamResolver {
             }
         }
         if (qualities.isEmpty()) {
-            Log.i(TAG, "h1 watch page has no mp4 sources")
+            KLog.i(TAG, "h1 watch page has no mp4 sources")
             return null
         }
         val bestKey = QUALITY_LADDER.firstOrNull { qualities.containsKey(it) }
@@ -977,7 +976,7 @@ object HentaiStreamResolver {
             if (split.first != base) return@mapNotNull null
             Sibling(split.second, item.id)
         }.distinctBy { it.num }.sortedBy { it.num }.take(9)
-        Log.i(TAG, "h1 series \"${matched.title}\": base=\"$base\" cur=$currentNum, ${siblings.size} sibling(s) on page")
+        KLog.i(TAG, "h1 series \"${matched.title}\": base=\"$base\" cur=$currentNum, ${siblings.size} sibling(s) on page")
         val seen = mutableSetOf(currentNum)
         val entries = mutableListOf(currentNum to HentaiEpisode("Серия $currentNum", main.url, main.quality))
         for (sibling in siblings) {
@@ -1001,7 +1000,7 @@ object HentaiStreamResolver {
                 misses = 0
                 val stream = runCatching { fetchH1Stream(hit.id) }.getOrNull() ?: continue
                 seen += n
-                Log.i(TAG, "h1 series probe: +\"${hit.title}\"")
+                KLog.i(TAG, "h1 series probe: +\"${hit.title}\"")
                 entries += n to HentaiEpisode("Серия $n", stream.url, stream.quality)
             }
         }
@@ -1251,7 +1250,7 @@ object HentaiStreamResolver {
                 ?: Regex("https://[a-z0-9.-]+/[^\"'\\s]+\\.mp4[^\"'\\s]*", RegexOption.IGNORE_CASE)
                     .find(body)?.value?.trim()?.replace(" ", "%20")
             if (previewUrl.isNullOrEmpty()) {
-                Log.i(TAG, "hentaiTrailer ${entry.slug}: no mp4 source on watch page")
+                KLog.i(TAG, "hentaiTrailer ${entry.slug}: no mp4 source on watch page")
                 return@withContext null
             }
 
@@ -1260,7 +1259,7 @@ object HentaiStreamResolver {
                 posterUrl = entry.coverUrl.takeIf { it.startsWith("http") }
                     ?: entry.posterUrl.takeIf { it.startsWith("http") }
             )
-            Log.i(TAG, "hentaiTrailer \"${entry.name}\" -> ${trailer.previewUrl.takeLast(48)}")
+            KLog.i(TAG, "hentaiTrailer \"${entry.name}\" -> ${trailer.previewUrl.takeLast(48)}")
             trailerCache[cacheKey] = System.currentTimeMillis() to trailer
             trailer
         }
@@ -1308,7 +1307,7 @@ object HentaiStreamResolver {
                     .orEmpty()
                 if (cached.isNotEmpty()) {
                     val instant = cached.map(::fileFrame)
-                    Log.i(TAG, "hentaiFrames [${queries.firstOrNull()}] disk-cache ${instant.size} imgs -> instant")
+                    KLog.i(TAG, "hentaiFrames [${queries.firstOrNull()}] disk-cache ${instant.size} imgs -> instant")
                     framesCache[cacheKey] = instant
                     return@withContext instant
                 }
@@ -1322,19 +1321,19 @@ object HentaiStreamResolver {
             //    DLE ищет по тексту статьи (русскому), а не по слагам.
             val hentaizScreens = runCatching {
                 findHentaizScreens(queries)
-            }.onFailure { Log.w(TAG, "hentaiz screens step failed: ${it.javaClass.simpleName}") }
+            }.onFailure { KLog.w(TAG, "hentaiz screens step failed: ${it.javaClass.simpleName}") }
                 .getOrDefault(emptyList())
             if (hentaizScreens.isNotEmpty()) {
                 hentaizScreens.forEach(::addFrame)
                 val result = frames.take(FRAMES_LIMIT)
-                Log.i(TAG, "hentaiFrames [${queries.firstOrNull()}] hz=${result.size} -> fast path")
+                KLog.i(TAG, "hentaiFrames [${queries.firstOrNull()}] hz=${result.size} -> fast path")
                 framesCache[cacheKey] = result
                 return@withContext result
             }
 
             // Каталог нужен фолбэк-шагам: videoId hanime1 и арт.
             val catalog: List<CatalogEntry> = runCatching { loadCatalog() }.getOrDefault(emptyList())
-            if (catalog.isEmpty()) Log.w(TAG, "hentaiFrames: hanime catalog unavailable")
+            if (catalog.isEmpty()) KLog.w(TAG, "hentaiFrames: hanime catalog unavailable")
             val entry = queries.firstNotNullOfOrNull { q ->
                 catalog.firstOrNull { titleMatches(it.name, it.altTitles, q) }
             }
@@ -1346,7 +1345,7 @@ object HentaiStreamResolver {
                 kotlinx.coroutines.withTimeoutOrNull(VIDEO_FRAMES_TIMEOUT_MS) {
                     extractVideoFrames(cacheKey, queries)
                 }
-            }.onFailure { Log.w(TAG, "video frames step failed: ${it.javaClass.simpleName}") }
+            }.onFailure { KLog.w(TAG, "video frames step failed: ${it.javaClass.simpleName}") }
                 .getOrNull()
                 .orEmpty()
             videoFrames.forEach { frame ->
@@ -1354,7 +1353,7 @@ object HentaiStreamResolver {
             }
             if (frames.isNotEmpty()) {
                 val result = frames.take(FRAMES_LIMIT)
-                Log.i(TAG, "hentaiFrames [${queries.firstOrNull()}] vf=${result.size} -> video frames")
+                KLog.i(TAG, "hentaiFrames [${queries.firstOrNull()}] vf=${result.size} -> video frames")
                 framesCache[cacheKey] = result
                 return@withContext result
             }
@@ -1390,7 +1389,7 @@ object HentaiStreamResolver {
             entry?.posterUrl?.takeIf { it.startsWith("http") }?.let(::addFrame)
 
             val result = frames.take(FRAMES_LIMIT)
-            Log.i(
+            KLog.i(
                 TAG,
                 "hentaiFrames [${queries.firstOrNull()}] h1=$h1Count art=${frames.size - beforeArt} " +
                     "-> ${result.size} imgs" + (entry?.let { " (catalog: \"${it.name}\")" } ?: "")
@@ -1421,7 +1420,7 @@ object HentaiStreamResolver {
         // части РФ-сетей блокирован — его поисковые таймауты (2×30с на запрос) подвешивали
         // шаг кадров на минуты после обычного промаха матчинга. Для ПОТОКА фолбэк остаётся.
         val stream = resolveViaHentaiDream(queries) ?: run {
-            Log.i(TAG, "video frames: no hentaidream stream for $queries")
+            KLog.i(TAG, "video frames: no hentaidream stream for $queries")
             return@withContext emptyList()
         }
 
@@ -1440,7 +1439,7 @@ object HentaiStreamResolver {
             }.awaitAll()
         }.flatten().filterNotNull()
 
-        Log.i(TAG, "video frames [${stream.url.takeLast(48)}] -> ${written.size} imgs")
+        KLog.i(TAG, "video frames [${stream.url.takeLast(48)}] -> ${written.size} imgs")
         written.map(::fileFrame)
     }
 
@@ -1454,7 +1453,7 @@ object HentaiStreamResolver {
         val retriever = android.media.MediaMetadataRetriever()
         try {
             runCatching { retriever.setDataSource(stream.url, stream.headers) }.getOrElse {
-                Log.w(TAG, "video frames: setDataSource failed: ${it.javaClass.simpleName}")
+                KLog.w(TAG, "video frames: setDataSource failed: ${it.javaClass.simpleName}")
                 return List(chunk.size) { null }
             }
             val durationMs = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
@@ -1558,11 +1557,11 @@ object HentaiStreamResolver {
                     .distinct()
                     .toList()
                 if (urls.isNotEmpty()) {
-                    Log.i(TAG, "hentaiz screens (query=\"$query\") -> ${urls.size} imgs")
+                    KLog.i(TAG, "hentaiz screens (query=\"$query\") -> ${urls.size} imgs")
                     return@coroutineScope urls
                 }
             }
-            Log.w(TAG, "hentaiz screens: no article with СКРИНШОТЫ matched, attempts=$queries")
+            KLog.w(TAG, "hentaiz screens: no article with СКРИНШОТЫ matched, attempts=$queries")
             emptyList()
         }
 
@@ -1594,7 +1593,7 @@ object HentaiStreamResolver {
                         rebuildCatalogIndex(parsed)
                     }
                 }.isNotEmpty()) {
-                Log.i(TAG, "catalog: fresh disk copy loaded (${catalogCache?.size ?: 0} entries)")
+                KLog.i(TAG, "catalog: fresh disk copy loaded (${catalogCache?.size ?: 0} entries)")
                 return catalogCache.orEmpty()
             }
 
@@ -1608,7 +1607,7 @@ object HentaiStreamResolver {
                         .build()
                 ).execute().use { response ->
                     if (!response.isSuccessful) {
-                        Log.i(TAG, "catalog http ${response.code}")
+                        KLog.i(TAG, "catalog http ${response.code}")
                         return@runCatching emptyList<CatalogEntry>()
                     }
                     val body = response.body?.string()
@@ -1616,7 +1615,7 @@ object HentaiStreamResolver {
                     if (diskFile != null) writeCatalogDisk(diskFile, body)
                     parseCatalogBody(body)
                 }
-            }.onFailure { Log.w(TAG, "catalog fetch failed: ${it.javaClass.simpleName}") }
+            }.onFailure { KLog.w(TAG, "catalog fetch failed: ${it.javaClass.simpleName}") }
                 .getOrDefault(emptyList())
             if (parsed.isNotEmpty()) {
                 catalogCache = parsed
@@ -1629,7 +1628,7 @@ object HentaiStreamResolver {
                 readCatalogDisk(diskFile).takeIf { it.isNotEmpty() }?.let { stale ->
                     catalogCache = stale
                     rebuildCatalogIndex(stale)
-                    Log.w(TAG, "catalog: network failed, using stale disk copy (${stale.size} entries)")
+                    KLog.w(TAG, "catalog: network failed, using stale disk copy (${stale.size} entries)")
                     return stale
                 }
             }
@@ -1640,7 +1639,7 @@ object HentaiStreamResolver {
     /** Сохраняет/читает сырой JSON каталога; запись отдельной функцией (см. writeCatalogDisk). */
     private fun readCatalogDisk(file: java.io.File): List<CatalogEntry> = runCatching {
         parseCatalogBody(file.readText())
-    }.onFailure { Log.w(TAG, "catalog disk read failed: ${it.javaClass.simpleName}") }
+    }.onFailure { KLog.w(TAG, "catalog disk read failed: ${it.javaClass.simpleName}") }
         .getOrDefault(emptyList())
 
     private fun parseCatalogBody(body: String): List<CatalogEntry> {
@@ -1676,7 +1675,7 @@ object HentaiStreamResolver {
                 file.writeText(body)
                 tmp.delete()
             }
-        }.onFailure { Log.w(TAG, "catalog disk write failed: ${it.javaClass.simpleName}") }
+        }.onFailure { KLog.w(TAG, "catalog disk write failed: ${it.javaClass.simpleName}") }
     }
 
     /**
@@ -1799,12 +1798,12 @@ object HentaiStreamResolver {
                     if (response.isSuccessful || (acceptRedirectBody && response.isRedirect)) {
                         return response.body?.string()
                     }
-                    Log.w(TAG, "GET $url -> ${response.code} (attempt ${attempt + 1})")
+                    KLog.w(TAG, "GET $url -> ${response.code} (attempt ${attempt + 1})")
                     if (response.code >= 500 && attempt == 0) return@repeat // retry 5xx
                     return null
                 }
             } catch (e: java.io.IOException) {
-                Log.w(TAG, "GET $url attempt ${attempt + 1} failed: ${e.javaClass.simpleName}")
+                KLog.w(TAG, "GET $url attempt ${attempt + 1} failed: ${e.javaClass.simpleName}")
                 if (attempt == 1) return null
                 Thread.sleep(2000) // brief pause before retry
             }

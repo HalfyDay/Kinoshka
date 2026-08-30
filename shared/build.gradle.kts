@@ -28,6 +28,7 @@ kotlin {
                 api("com.squareup.retrofit2:retrofit:3.0.0")
                 api("com.squareup.retrofit2:converter-gson:3.0.0")
                 api("com.squareup.okhttp3:logging-interceptor:5.4.0")
+                api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
             }
         }
         val androidMain by getting { dependsOn(jvmShared) }
@@ -35,6 +36,8 @@ kotlin {
             dependsOn(jvmShared)
             dependencies {
                 implementation("net.java.dev.jna:jna:5.17.0")
+                // На Android org.json входит в платформу; на desktop нужен артефакт.
+                implementation("org.json:json:20240303")
             }
         }
     }

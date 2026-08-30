@@ -1,6 +1,6 @@
 package hd.kinoshka.app.data.source
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -50,7 +50,7 @@ object KinopoiskTrailerResolver {
         val hlsUrl = extractValue(html, marker = "streamUrl", startToken = "https://", httpsPrefix = false)
             ?.takeIf { it.contains(".m3u8") }
         if (hlsUrl == null) {
-            Log.w(TAG, "no streamUrl on widget page $id")
+            KLog.w(TAG, "no streamUrl on widget page $id")
             return@withContext null
         }
         // bigPreviewUrl: x2 (двойная плотность) предпочтительнее x1 для карточки ~220dp.
@@ -94,7 +94,7 @@ object KinopoiskTrailerResolver {
                 .build()
         ).execute().use { response ->
             if (!response.isSuccessful) {
-                Log.w(TAG, "GET $url -> ${response.code}")
+                KLog.w(TAG, "GET $url -> ${response.code}")
                 return@use null
             }
             response.body?.string()

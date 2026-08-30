@@ -31,14 +31,8 @@ enum class FilmTileSize {
     VERTICAL
 }
 
-enum class UserFilmStatus {
-    WATCHING,
-    PLANNED,
-    COMPLETED,
-    REWATCHING,
-    ON_HOLD,
-    DROPPED
-}
+// UserFilmStatus и UserFilmProfile переехали в shared (jvmShared):
+// hd.kinoshka.app.data.local.UserStateModels — пакет тот же, импорты не нужны.
 
 enum class PlayerMode(val displayName: String) {
     DDBB("Веб-плеер"),
@@ -72,25 +66,6 @@ data class SearchHistoryRecord(
     val query: String,
     val contentType: String,
     val searchedAt: Long
-)
-
-data class UserFilmProfile(
-    val kinopoiskId: Int,
-    val title: String,
-    val subtitle: String?,
-    val posterUrl: String?,
-    val ratingText: String?,
-    val type: String?,
-    val isRussian: Boolean? = null,
-    val status: UserFilmStatus?,
-    val userRating: Int?,
-    val note: String?,
-    val watchedSeasons: Int?,
-    val watchedEpisodes: Int?,
-    val totalEpisodesInSeason: Int?,
-    val totalSeasons: Int?,
-    val totalEpisodes: Int?,
-    val updatedAt: Long
 )
 
 /** Usage counters for one playback source (Kodik/AniLiberty/AniLib). */

@@ -1,6 +1,6 @@
 package hd.kinoshka.app.data.source
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -95,15 +95,15 @@ object AniStarResolver {
     private fun findEpisodesInternal(attempts: List<String>, base: String): List<AniStarEpisode>? {
         for (query in attempts) {
             val articles = runCatching { searchArticles(base, query) }
-                .onFailure { Log.w(TAG, "search failed for \"$query\": ${it.javaClass.simpleName}") }
+                .onFailure { KLog.w(TAG, "search failed for \"$query\": ${it.javaClass.simpleName}") }
                 .getOrDefault(emptyList())
-            Log.i(TAG, "anistar \"$query\" -> ${articles.size} articles")
-            val picked = HentaiStreamResolver.pickBest(
-                articles.map { HentaiStreamResolver.CandidateView(it.path, "${it.label} ${HentaiStreamResolver.slugWords(it.path)}") },
+            KLog.i(TAG, "anistar \"$query\" -> ${articles.size} articles")
+            val picked = TitleMatching.pickBest(
+                articles.map { TitleMatching.CandidateView(it.path, "${it.label} ${TitleMatching.slugWords(it.path)}") },
                 query
             ) ?: continue
             val matched = articles.first { it.path == picked }
-            Log.i(TAG, "anistar matched \"${matched.label}\" (${matched.path}) for \"$query\"")
+            KLog.i(TAG, "anistar matched \"${matched.label}\" (${matched.path}) for \"$query\"")
             // Статья лишь встраивает плеер iframe-ом — сам playlst живёт на его странице.
             // Предпочтение p2p-плееру (прогрессивные MP4), легаси videoas.php — фолбэк.
             val articleBody = httpGet(base + matched.path, referer = "$base/") ?: continue
@@ -112,7 +112,7 @@ object AniStarResolver {
                 .map { it.value.replace("&amp;", "&") }
                 .distinct()
                 .let { paths -> paths.firstOrNull { it.contains("_p2p_new") } ?: paths.firstOrNull() }
-                ?: run { Log.i(TAG, "article ${matched.path} has no player iframe"); continue }
+                ?: run { KLog.i(TAG, "article ${matched.path} has no player iframe"); continue }
             val playerBody = httpGet(base + playerPath, referer = base + matched.path) ?: continue
             val episodes = parsePlaylistPage(playerBody, base) ?: continue
             if (episodes.isNotEmpty()) return episodes
@@ -131,15 +131,15 @@ object AniStarResolver {
         if (now - addressCheckedAtMs < ADDRESS_CHECK_TTL_MS) return false
         addressCheckedAtMs = now
         val body = httpGet(ADDRESS_PAGE) ?: run {
-            Log.w(TAG, "address page unreachable")
+            KLog.w(TAG, "address page unreachable")
             return false
         }
         val host = Regex("""(?:https?://)?([a-z0-9.-]*astar[a-z0-9.-]*)(?:/|\s|"|<)""", RegexOption.IGNORE_CASE)
             .find(body)?.groupValues?.get(1)?.lowercase()
-            ?: run { Log.w(TAG, "no astar address on the address page"); return false }
+            ?: run { KLog.w(TAG, "no astar address on the address page"); return false }
         val base = "https://$host"
         if (base == currentBaseKey()) return false
-        Log.i(TAG, "anistar moved: ${currentBaseKey()} -> $base")
+        KLog.i(TAG, "anistar moved: ${currentBaseKey()} -> $base")
         cachedBase = base
         episodesCache.clear()
         return true
@@ -253,8 +253,8 @@ object AniStarResolver {
     private fun fetchTorrentsInternal(attempts: List<String>, base: String): List<AniStarTorrent> {
         for (query in attempts) {
             val articles = runCatching { searchArticles(base, query) }.getOrDefault(emptyList())
-            val picked = HentaiStreamResolver.pickBest(
-                articles.map { HentaiStreamResolver.CandidateView(it.path, "${it.label} ${HentaiStreamResolver.slugWords(it.path)}") },
+            val picked = TitleMatching.pickBest(
+                articles.map { TitleMatching.CandidateView(it.path, "${it.label} ${TitleMatching.slugWords(it.path)}") },
                 query
             ) ?: continue
             val matched = articles.first { it.path == picked }
@@ -322,12 +322,12 @@ object AniStarResolver {
         referer?.let { builder.header("Referer", it) }
         httpClient.newCall(builder.build()).execute().use { response ->
             if (!response.isSuccessful) {
-                Log.w(TAG, "GET $url -> ${response.code}")
+                KLog.w(TAG, "GET $url -> ${response.code}")
                 null
             } else {
                 response.body?.string()
             }
         }
-    }.onFailure { Log.w(TAG, "GET $url failed: ${it.javaClass.simpleName}") }
+    }.onFailure { KLog.w(TAG, "GET $url failed: ${it.javaClass.simpleName}") }
         .getOrNull()
 }

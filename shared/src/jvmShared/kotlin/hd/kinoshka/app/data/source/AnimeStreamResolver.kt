@@ -1,6 +1,6 @@
 package hd.kinoshka.app.data.source
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.AnimeSource
@@ -249,9 +249,9 @@ object AnimeStreamResolver {
 
     private suspend fun fetchKodikFlatTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
         runCatching {
-            Log.i(TAG, "[Kodik] Starting search...")
+            KLog.i(TAG, "[Kodik] Starting search...")
             val results = kodikSearch(shikimoriId, animeTitle, null)
-            Log.i(TAG, "[Kodik] Search returned ${results.size} results")
+            KLog.i(TAG, "[Kodik] Search returned ${results.size} results")
             val translations = results.mapNotNull { result ->
                 val translation = result.optJSONObject("translation")
                 if (translation != null) {
@@ -277,22 +277,22 @@ object AnimeStreamResolver {
                     )
                 } else null
             }
-            Log.i(TAG, "[Kodik] Parsed ${translations.size} translations: ${translations.joinToString { "${it.title} (${it.episodes.size} ep)" }}")
+            KLog.i(TAG, "[Kodik] Parsed ${translations.size} translations: ${translations.joinToString { "${it.title} (${it.episodes.size} ep)" }}")
             mergeTranslations(translations)
         }.getOrElse { e ->
-            Log.e(TAG, "[Kodik] Search failed: ${e.message}", e)
+            KLog.e(TAG, "[Kodik] Search failed: ${e.message}", e)
             emptyList()
         }
     }
 
     private suspend fun fetchAniLibertyFlatTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
         runCatching {
-            Log.i(TAG, "[Aniliberty] Starting search...")
+            KLog.i(TAG, "[Aniliberty] Starting search...")
             val release = findAniLibertyRelease(shikimoriId, animeTitle)
             if (release != null) {
                 val episodes = parseAniLibertyEpisodes(release)
                 val title = getAniLibertyTitle(release)
-                Log.i(TAG, "[Aniliberty] Found: \"$title\" (${episodes.size} episodes), alias=${release.optString("alias")}, type=${release.optString("type")}")
+                KLog.i(TAG, "[Aniliberty] Found: \"$title\" (${episodes.size} episodes), alias=${release.optString("alias")}, type=${release.optString("type")}")
                 listOf(
                     FlatTranslation(
                         source = AnimeSourceType.ANILIBERTY,
@@ -309,11 +309,11 @@ object AnimeStreamResolver {
                     )
                 )
             } else {
-                Log.w(TAG, "[Aniliberty] No release found for \"$animeTitle\"")
+                KLog.w(TAG, "[Aniliberty] No release found for \"$animeTitle\"")
                 emptyList()
             }
         }.getOrElse { e ->
-            Log.e(TAG, "[Aniliberty] Search failed: ${e.message}", e)
+            KLog.e(TAG, "[Aniliberty] Search failed: ${e.message}", e)
             emptyList()
         }
     }
@@ -322,7 +322,7 @@ object AnimeStreamResolver {
         runCatching {
             buildAniLibTeamTranslations(shikimoriId, animeTitle)
         }.getOrElse { e ->
-            Log.e(TAG, "[AniLib] Search failed: ${e.message}", e)
+            KLog.e(TAG, "[AniLib] Search failed: ${e.message}", e)
             emptyList()
         }
     }
@@ -334,7 +334,7 @@ object AnimeStreamResolver {
     private suspend fun fetchSmarthardFlatTranslations(shikimoriId: Int): List<FlatTranslation> = withContext(Dispatchers.IO) {
         runCatching {
             val groups = SmarthardApi.groupRecords(SmarthardApi.loadRecords(shikimoriId))
-            Log.i(TAG, "[Smarthard] id=$shikimoriId -> ${groups.size} groups")
+            KLog.i(TAG, "[Smarthard] id=$shikimoriId -> ${groups.size} groups")
             groups.map { group ->
                 val rowVpn = group.episodeRecords.values.all { SmarthardApi.needsVpnNote(it.url) }
                 FlatTranslation(
@@ -353,7 +353,7 @@ object AnimeStreamResolver {
                 )
             }
         }.getOrElse { e ->
-            Log.e(TAG, "[Smarthard] Fetch failed: ${e.message}", e)
+            KLog.e(TAG, "[Smarthard] Fetch failed: ${e.message}", e)
             emptyList()
         }
     }
@@ -379,7 +379,7 @@ object AnimeStreamResolver {
     private suspend fun resolveSmarthardStream(shikimoriId: Int, translationId: String, episodeNumber: Int): AnimeMediaStream? = withContext(Dispatchers.IO) {
         val group = SmarthardApi.groupById(SmarthardApi.groupRecords(SmarthardApi.loadRecords(shikimoriId)), translationId)
         if (group == null) {
-            Log.w(TAG, "[Smarthard] resolve: group $translationId not found for id=$shikimoriId")
+            KLog.w(TAG, "[Smarthard] resolve: group $translationId not found for id=$shikimoriId")
             return@withContext null
         }
         // Точная серия; у рядов со сдвинутой нумерацией (Cuba77: эпизоды 27+) — ближайшая ниже.
@@ -388,7 +388,7 @@ object AnimeStreamResolver {
                 .maxByOrNull { it.key }?.value.orEmpty()
         }
         if (candidates.isEmpty()) {
-            Log.w(TAG, "[Smarthard] resolve: no records for ep=$episodeNumber in \"${group.displayTitle}\" (${group.episodeCandidates.keys.minOrNull()}..${group.episodeCandidates.keys.maxOrNull()})")
+            KLog.w(TAG, "[Smarthard] resolve: no records for ep=$episodeNumber in \"${group.displayTitle}\" (${group.episodeCandidates.keys.minOrNull()}..${group.episodeCandidates.keys.maxOrNull()})")
             return@withContext null
         }
         // Лучшая запись может вести на мёртвый/гео-блокированный хост: резолвим ВСЕ
@@ -397,7 +397,7 @@ object AnimeStreamResolver {
         val resolved = SmarthardApi.resolveLinks(candidates.map { it.url })
         val hit = resolved.withIndex().firstOrNull { it.value != null }
         if (hit != null) {
-            Log.i(TAG, "[Smarthard] resolve \"${group.displayTitle}\" ep=$episodeNumber -> ${hit.value!!.url} (record ${candidates[hit.index].id})")
+            KLog.i(TAG, "[Smarthard] resolve \"${group.displayTitle}\" ep=$episodeNumber -> ${hit.value!!.url} (record ${candidates[hit.index].id})")
             return@withContext AnimeMediaStream(
                 url = hit.value!!.url,
                 headers = hit.value!!.headers,
@@ -405,12 +405,12 @@ object AnimeStreamResolver {
                 title = group.displayTitle
             )
         }
-        Log.w(TAG, "[Smarthard] resolve: all ${candidates.size} candidates failed for \"${group.displayTitle}\" ep=$episodeNumber")
+        KLog.w(TAG, "[Smarthard] resolve: all ${candidates.size} candidates failed for \"${group.displayTitle}\" ep=$episodeNumber")
         null
     }
 
     private suspend fun prefetchAllMediaInternal(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
-        Log.i(TAG, "=== prefetchAllMedia === id=$shikimoriId, title=\"$animeTitle\"")
+        KLog.i(TAG, "=== prefetchAllMedia === id=$shikimoriId, title=\"$animeTitle\"")
         kotlinx.coroutines.coroutineScope {
             // Each branch goes through the per-source cache, so a progressive page that already
             // fetched some providers never repeats their network roundtrips here.
@@ -420,7 +420,7 @@ object AnimeStreamResolver {
             val kodik = kodikResult.await()
             val aniliberty = anilibertyResult.await()
             val anilib = anilibResult.await()
-            Log.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodik.size}, Aniliberty: ${aniliberty.size}, AniLib: ${anilib.size}")
+            KLog.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodik.size}, Aniliberty: ${aniliberty.size}, AniLib: ${anilib.size}")
             mergeTranslations(kodik + aniliberty + anilib)
         }
     }
@@ -465,7 +465,7 @@ object AnimeStreamResolver {
             }
         }
         if (merged.size != translations.size) {
-            Log.i(TAG, "Merged ${translations.size} translations into ${merged.size} unique dubs")
+            KLog.i(TAG, "Merged ${translations.size} translations into ${merged.size} unique dubs")
         }
         return merged.values.toList()
     }
@@ -608,7 +608,7 @@ object AnimeStreamResolver {
         translationId: String,
         episodeNumber: Int
     ): AnimeMediaStream? = withContext(Dispatchers.IO) {
-        Log.i(TAG, "[Kodik] resolveStream: id=$shikimoriId, ep=$episodeNumber, tr=$translationId")
+        KLog.i(TAG, "[Kodik] resolveStream: id=$shikimoriId, ep=$episodeNumber, tr=$translationId")
         // Fast path: prefetchAllMedia already downloaded every translation's episode links —
         // reuse them instead of re-running the whole kodikSearch cascade on every episode click.
         val episodeLink = cachedPrefetchedTranslations(shikimoriId, animeTitle)
@@ -619,30 +619,30 @@ object AnimeStreamResolver {
             ?.firstOrNull { it.number == episodeNumber }
             ?.link?.takeIf { it.isNotBlank() }
             ?: run {
-                Log.d(TAG, "[Kodik] prefetch cache miss, falling back to search")
+                KLog.d(TAG, "[Kodik] prefetch cache miss, falling back to search")
                 val episode = fetchKodikEpisodes(shikimoriId, animeTitle, translationId)
                     .firstOrNull { it.number == episodeNumber }
                 if (episode == null) {
-                    Log.w(TAG, "[Kodik] Episode $episodeNumber not found")
+                    KLog.w(TAG, "[Kodik] Episode $episodeNumber not found")
                     return@withContext null
                 }
                 episode.link?.takeIf { it.isNotBlank() } ?: run {
-                    Log.w(TAG, "[Kodik] Episode $episodeNumber has no link")
+                    KLog.w(TAG, "[Kodik] Episode $episodeNumber has no link")
                     return@withContext null
                 }
             }
 
         val absoluteLink = absoluteKodikUrl(episodeLink)
-        Log.d(TAG, "[Kodik] Episode link: $absoluteLink")
+        KLog.d(TAG, "[Kodik] Episode link: $absoluteLink")
         val qualities = getCachedKodikHls(absoluteLink) ?: resolveKodikHls(absoluteLink).also {
             if (it.isNotEmpty()) kodikHlsCache[absoluteLink] = CacheEntry(it, System.currentTimeMillis())
         }
-        Log.i(TAG, "[Kodik] HLS qualities: ${qualities.keys}")
+        KLog.i(TAG, "[Kodik] HLS qualities: ${qualities.keys}")
         val url = qualities["720p"] ?: qualities["480p"] ?: qualities["360p"] ?: qualities.values.firstOrNull()
         if (url != null) {
-            Log.i(TAG, "[Kodik] Stream URL selected: ${url.take(100)}...")
+            KLog.i(TAG, "[Kodik] Stream URL selected: ${url.take(100)}...")
         } else {
-            Log.e(TAG, "[Kodik] No stream URL found in qualities: $qualities")
+            KLog.e(TAG, "[Kodik] No stream URL found in qualities: $qualities")
         }
         url?.let {
             AnimeMediaStream(
@@ -665,10 +665,10 @@ object AnimeStreamResolver {
         runCatching {
             val episodes = AniStarResolver.findEpisodes(buildAnimeSearchQueries(animeTitle))
             if (episodes == null || episodes.isEmpty()) {
-                Log.w(TAG, "[AniStar] no episodes found for \"$animeTitle\"")
+                KLog.w(TAG, "[AniStar] no episodes found for \"$animeTitle\"")
                 return@runCatching emptyList<FlatTranslation>()
             }
-            Log.i(TAG, "[AniStar] found \"${episodes.first().label}\"… ${episodes.size} episodes for \"$animeTitle\"")
+            KLog.i(TAG, "[AniStar] found \"${episodes.first().label}\"… ${episodes.size} episodes for \"$animeTitle\"")
             listOf(
                 FlatTranslation(
                     source = AnimeSourceType.ANISTAR,
@@ -685,7 +685,7 @@ object AnimeStreamResolver {
                 )
             )
         }.getOrElse { e ->
-            Log.e(TAG, "[AniStar] search failed: ${e.message}")
+            KLog.e(TAG, "[AniStar] search failed: ${e.message}")
             emptyList()
         }
     }
@@ -711,13 +711,13 @@ object AnimeStreamResolver {
     }
 
     private suspend fun resolveAniStarStream(animeTitle: String, episodeNumber: Int): AnimeMediaStream? = withContext(Dispatchers.IO) {
-        Log.i(TAG, "[AniStar] resolveStream: \"$animeTitle\", ep=$episodeNumber")
+        KLog.i(TAG, "[AniStar] resolveStream: \"$animeTitle\", ep=$episodeNumber")
         val episodes = runCatching { AniStarResolver.findEpisodes(buildAnimeSearchQueries(animeTitle)) }.getOrNull()
             ?: return@withContext null
         val episode = episodes.firstOrNull { it.number == episodeNumber }
             ?: episodes.getOrNull(episodeNumber - 1)
             ?: run {
-                Log.w(TAG, "[AniStar] episode $episodeNumber not found (${episodes.size} available)")
+                KLog.w(TAG, "[AniStar] episode $episodeNumber not found (${episodes.size} available)")
                 return@withContext null
             }
         val quality = episode.bestQuality
@@ -749,26 +749,26 @@ object AnimeStreamResolver {
     }
 
     private suspend fun resolveAniLibertyStream(shikimoriId: Int, animeTitle: String, episodeNumber: Int, translationId: String = "default"): AnimeMediaStream? = withContext(Dispatchers.IO) {
-        Log.i(TAG, "[Aniliberty] resolveStream: id=$shikimoriId, ep=$episodeNumber, title=\"$animeTitle\"")
+        KLog.i(TAG, "[Aniliberty] resolveStream: id=$shikimoriId, ep=$episodeNumber, title=\"$animeTitle\"")
         val release = findAniLibertyRelease(shikimoriId, animeTitle, translationId)
         if (release == null) {
-            Log.w(TAG, "[Aniliberty] resolveStream: release not found")
+            KLog.w(TAG, "[Aniliberty] resolveStream: release not found")
             return@withContext null
         }
-        Log.d(TAG, "[Aniliberty] resolveStream: release title=${getAniLibertyTitle(release)}, alias=${release.optString("alias")}")
+        KLog.d(TAG, "[Aniliberty] resolveStream: release title=${getAniLibertyTitle(release)}, alias=${release.optString("alias")}")
         val episodes = release.optJSONArray("episodes")
         if (episodes == null) {
-            Log.w(TAG, "[Aniliberty] resolveStream: no episodes array in release")
+            KLog.w(TAG, "[Aniliberty] resolveStream: no episodes array in release")
             return@withContext null
         }
         val episode = episodes.asSequenceObjects().firstOrNull { ep ->
             ep.optInt("ordinal") == episodeNumber || ep.optInt("sort_order") == episodeNumber
         }
         if (episode == null) {
-            Log.w(TAG, "[Aniliberty] resolveStream: episode $episodeNumber not found (episodes count=${episodes.length()})")
+            KLog.w(TAG, "[Aniliberty] resolveStream: episode $episodeNumber not found (episodes count=${episodes.length()})")
             return@withContext null
         }
-        Log.d(TAG, "[Aniliberty] resolveStream: found episode, ordinal=${episode.optInt("ordinal")}, sort_order=${episode.optInt("sort_order")}")
+        KLog.d(TAG, "[Aniliberty] resolveStream: found episode, ordinal=${episode.optInt("ordinal")}, sort_order=${episode.optInt("sort_order")}")
 
         val qualities = linkedMapOf<String, String>()
         episode.optString("hls_1080").takeIf { it.isNotBlank() }?.let { qualities["1080p"] = it }
@@ -776,18 +776,18 @@ object AnimeStreamResolver {
         episode.optString("hls_480").takeIf { it.isNotBlank() }?.let { qualities["480p"] = it }
 
         if (qualities.isEmpty()) {
-            Log.d(TAG, "[Aniliberty] resolveStream: no direct HLS, checking external_player...")
+            KLog.d(TAG, "[Aniliberty] resolveStream: no direct HLS, checking external_player...")
             val fallbackUrl = episode.optString("external_player")
                 .ifBlank { episode.optString("player_url") }
                 .ifBlank { release.optString("external_player") }
                 .ifBlank { release.optString("player_url") }
                 .ifBlank { release.optString("playerUrl") }
             if (fallbackUrl.isNotBlank()) {
-                Log.d(TAG, "[Aniliberty] resolveStream: external_player=$fallbackUrl")
+                KLog.d(TAG, "[Aniliberty] resolveStream: external_player=$fallbackUrl")
                 return@withContext resolveAniLibertyExternalPlayer(fallbackUrl)
             }
         } else {
-            Log.i(TAG, "[Aniliberty] resolveStream: direct HLS qualities: ${qualities.keys}")
+            KLog.i(TAG, "[Aniliberty] resolveStream: direct HLS qualities: ${qualities.keys}")
         }
 
         val url = qualities["720p"] ?: qualities["1080p"] ?: qualities["480p"] ?: return@withContext null
@@ -861,7 +861,7 @@ object AnimeStreamResolver {
     private suspend fun kodikSearch(shikimoriId: Int, animeTitle: String, translationId: String?): List<JSONObject> {
         val limit = if (translationId == null) 100 else 10
         val tokens = loadKodikTokens()
-        Log.i(TAG, "[Kodik] tokens loaded: ${tokens.size}, translationId=$translationId, limit=$limit")
+        KLog.i(TAG, "[Kodik] tokens loaded: ${tokens.size}, translationId=$translationId, limit=$limit")
         val orderedTokens = lastWorkingKodikToken?.let { working ->
             listOf(working) + tokens.filter { it != working }
         } ?: tokens
@@ -870,26 +870,26 @@ object AnimeStreamResolver {
             for (base in KODIK_API_BASES) {
                 if (shikimoriId > 0) {
                     val shikimoriUrl = kodikSearchUrl(base, token, "shikimori_id", shikimoriId.toString(), translationId, limit)
-                    Log.d(TAG, "[Kodik] Trying shikimori_id=$shikimoriId on $base (token=${token.take(8)}...)")
+                    KLog.d(TAG, "[Kodik] Trying shikimori_id=$shikimoriId on $base (token=${token.take(8)}...)")
                     val body = get(shikimoriUrl, referer = "https://kodik.info/")
                     if (body != null) {
                         val results = runCatching { JSONObject(body).optJSONArray("results") }.getOrNull()
                         if (results != null && results.length() > 0) {
-                            Log.i(TAG, "[Kodik] FOUND by shikimori_id: ${results.length()} results on $base")
+                            KLog.i(TAG, "[Kodik] FOUND by shikimori_id: ${results.length()} results on $base")
                             lastWorkingKodikToken = token
                             return (0 until results.length()).mapNotNull { results.optJSONObject(it) }
                         } else {
-                            Log.d(TAG, "[Kodik] shikimori_id=$shikimoriId: no results on $base")
+                            KLog.d(TAG, "[Kodik] shikimori_id=$shikimoriId: no results on $base")
                         }
                     } else {
-                        Log.d(TAG, "[Kodik] shikimori_id=$shikimoriId: request failed on $base")
+                        KLog.d(TAG, "[Kodik] shikimori_id=$shikimoriId: request failed on $base")
                     }
                 }
 
                 val titleQueries = buildAnimeSearchQueries(animeTitle)
                 for (query in titleQueries) {
                     val titleUrl = kodikSearchUrl(base, token, "title", query, translationId, limit)
-                    Log.d(TAG, "[Kodik] Trying title=\"$query\" on $base")
+                    KLog.d(TAG, "[Kodik] Trying title=\"$query\" on $base")
                     val tBody = get(titleUrl, referer = "https://kodik.info/") ?: continue
                     val results = runCatching { JSONObject(tBody).optJSONArray("results") }.getOrNull() ?: continue
                     if (results.length() > 0) {
@@ -901,10 +901,10 @@ object AnimeStreamResolver {
                         val raw = (0 until results.length()).mapNotNull { results.optJSONObject(it) }
                         val relevant = filterKodikResultsForTitle(raw, shikimoriId, animeTitle)
                         if (relevant.isEmpty()) {
-                            Log.d(TAG, "[Kodik] title \"$query\": ${raw.size} results, none matched id=$shikimoriId/\"$animeTitle\"")
+                            KLog.d(TAG, "[Kodik] title \"$query\": ${raw.size} results, none matched id=$shikimoriId/\"$animeTitle\"")
                             continue
                         }
-                        Log.i(TAG, "[Kodik] FOUND by title \"$query\": ${relevant.size}/${raw.size} relevant results on $base")
+                        KLog.i(TAG, "[Kodik] FOUND by title \"$query\": ${relevant.size}/${raw.size} relevant results on $base")
                         lastWorkingKodikToken = token
                         return relevant
                     }
@@ -912,14 +912,14 @@ object AnimeStreamResolver {
             }
         }
         if (shikimoriId > 0) {
-            Log.d(TAG, "[Kodik] Trying findPlayer fallback for shikimoriId=$shikimoriId")
+            KLog.d(TAG, "[Kodik] Trying findPlayer fallback for shikimoriId=$shikimoriId")
             fetchKodikFromFindPlayer("shikimori_id", shikimoriId)?.let {
-                Log.i(TAG, "[Kodik] findPlayer fallback SUCCESS")
+                KLog.i(TAG, "[Kodik] findPlayer fallback SUCCESS")
                 return listOf(it)
             }
-            Log.w(TAG, "[Kodik] findPlayer fallback also failed")
+            KLog.w(TAG, "[Kodik] findPlayer fallback also failed")
         }
-        Log.w(TAG, "[Kodik] All search methods exhausted for id=$shikimoriId, title=\"$animeTitle\"")
+        KLog.w(TAG, "[Kodik] All search methods exhausted for id=$shikimoriId, title=\"$animeTitle\"")
         return emptyList()
     }
 
@@ -1043,47 +1043,47 @@ object AnimeStreamResolver {
         return null
     }
 
-    internal suspend fun resolveKodikHls(episodeUrl: String): Map<String, String> {
-        Log.d(TAG, "[Kodik] resolveHls: $episodeUrl")
+    suspend fun resolveKodikHls(episodeUrl: String): Map<String, String> {
+        KLog.d(TAG, "[Kodik] resolveHls: $episodeUrl")
         val outerResult = fetchHtmlWithDomainFallbacks(episodeUrl, referer = "https://shikimori.one/")
             ?: run {
-                Log.e(TAG, "[Kodik] resolveHls: HTML fetch failed for all domains")
+                KLog.e(TAG, "[Kodik] resolveHls: HTML fetch failed for all domains")
                 return emptyMap()
             }
         var html = outerResult.first
         var workingUrl = outerResult.second
-        Log.d(TAG, "[Kodik] resolveHls: working domain=$workingUrl, html length=${html.length}")
+        KLog.d(TAG, "[Kodik] resolveHls: working domain=$workingUrl, html length=${html.length}")
 
         val iframeSrc = Regex("""<iframe[^>]+src=["']((?:https?:)?//[^"']+)["']""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)
         if (!iframeSrc.isNullOrBlank()) {
             val absIframe = absoluteUrl(workingUrl, iframeSrc)
-            Log.d(TAG, "[Kodik] resolveHls: found iframe, loading $absIframe")
+            KLog.d(TAG, "[Kodik] resolveHls: found iframe, loading $absIframe")
             val iframeResult = fetchHtmlWithDomainFallbacks(absIframe, referer = workingUrl)
             if (iframeResult != null) {
                 html = iframeResult.first
                 workingUrl = iframeResult.second
-                Log.d(TAG, "[Kodik] resolveHls: iframe loaded from $workingUrl, html length=${html.length}")
+                KLog.d(TAG, "[Kodik] resolveHls: iframe loaded from $workingUrl, html length=${html.length}")
             } else {
-                Log.w(TAG, "[Kodik] resolveHls: iframe fetch failed")
+                KLog.w(TAG, "[Kodik] resolveHls: iframe fetch failed")
             }
         } else {
-            Log.d(TAG, "[Kodik] resolveHls: no iframe found, checking direct m3u8")
+            KLog.d(TAG, "[Kodik] resolveHls: no iframe found, checking direct m3u8")
         }
 
         val direct = extractM3u8Links(html)
         if (direct.isNotEmpty()) {
-            Log.i(TAG, "[Kodik] resolveHls: found ${direct.size} direct m3u8 links: ${direct.keys}")
+            KLog.i(TAG, "[Kodik] resolveHls: found ${direct.size} direct m3u8 links: ${direct.keys}")
             return direct
         }
 
-        Log.d(TAG, "[Kodik] resolveHls: no direct m3u8, extracting payload...")
+        KLog.d(TAG, "[Kodik] resolveHls: no direct m3u8, extracting payload...")
         val payload = extractKodikPayload(html)
         if (payload == null) {
-            Log.e(TAG, "[Kodik] resolveHls: payload extraction failed")
+            KLog.e(TAG, "[Kodik] resolveHls: payload extraction failed")
             return emptyMap()
         }
-        Log.d(TAG, "[Kodik] resolveHls: payload keys=${payload.keys}, id=${payload["id"]}, type=${payload["type"]}")
+        KLog.d(TAG, "[Kodik] resolveHls: payload keys=${payload.keys}, id=${payload["id"]}, type=${payload["type"]}")
 
         val scriptUrl = Regex("""<script[^>]+src=["']([^"']*assets/js[^"']*)["']""")
             .find(html)?.groupValues?.getOrNull(1)
@@ -1091,11 +1091,11 @@ object AnimeStreamResolver {
 
         var dynamicApiPath: String? = null
         if (scriptUrl != null) {
-            Log.d(TAG, "[Kodik] resolveHls: fetching JS from $scriptUrl")
+            KLog.d(TAG, "[Kodik] resolveHls: fetching JS from $scriptUrl")
             val js = get(scriptUrl, referer = workingUrl)
             if (js != null) {
                 dynamicApiPath = extractKodikApiEndpoint(js)
-                Log.d(TAG, "[Kodik] resolveHls: dynamic API path = $dynamicApiPath")
+                KLog.d(TAG, "[Kodik] resolveHls: dynamic API path = $dynamicApiPath")
             }
         }
 
@@ -1110,22 +1110,22 @@ object AnimeStreamResolver {
             add(absoluteUrl(workingUrl, "/ftor/video-links"))
             add(absoluteUrl(workingUrl, "/video-links"))
         }.distinct()
-        Log.d(TAG, "[Kodik] resolveHls: trying ${candidateEndpoints.size} endpoints")
+        KLog.d(TAG, "[Kodik] resolveHls: trying ${candidateEndpoints.size} endpoints")
 
         for (endpoint in candidateEndpoints) {
-            Log.d(TAG, "[Kodik] resolveHls: POST $endpoint")
+            KLog.d(TAG, "[Kodik] resolveHls: POST $endpoint")
             val body = post(endpoint, payload, referer = workingUrl) ?: run {
-                Log.d(TAG, "[Kodik] resolveHls: POST returned null for $endpoint")
+                KLog.d(TAG, "[Kodik] resolveHls: POST returned null for $endpoint")
                 continue
             }
-            Log.d(TAG, "[Kodik] resolveHls: POST response length=${body.length}, first 200 chars=${body.take(200)}")
+            KLog.d(TAG, "[Kodik] resolveHls: POST response length=${body.length}, first 200 chars=${body.take(200)}")
             val links = parseKodikLinks(body)
             if (links.isNotEmpty()) {
-                Log.i(TAG, "[Kodik] resolveHls: GOT ${links.size} links from $endpoint: ${links.keys}")
+                KLog.i(TAG, "[Kodik] resolveHls: GOT ${links.size} links from $endpoint: ${links.keys}")
                 return links
             }
         }
-        Log.e(TAG, "[Kodik] resolveHls: all endpoints failed")
+        KLog.e(TAG, "[Kodik] resolveHls: all endpoints failed")
         return emptyMap()
     }
 
@@ -1188,18 +1188,18 @@ object AnimeStreamResolver {
     }
 
     private suspend fun findAniLibertyRelease(shikimoriId: Int, animeTitle: String, knownIdOrAlias: String? = null): JSONObject? {
-        Log.i(TAG, "[Aniliberty] findRelease: id=$shikimoriId, title=\"$animeTitle\", knownId=$knownIdOrAlias")
+        KLog.i(TAG, "[Aniliberty] findRelease: id=$shikimoriId, title=\"$animeTitle\", knownId=$knownIdOrAlias")
         val cacheKey = if (!knownIdOrAlias.isNullOrBlank() && knownIdOrAlias != "default") knownIdOrAlias else "$shikimoriId:$animeTitle"
         aniLibertyReleaseCache[cacheKey]?.let {
-            Log.d(TAG, "[Aniliberty] findRelease: cache hit for $cacheKey")
+            KLog.d(TAG, "[Aniliberty] findRelease: cache hit for $cacheKey")
             return it
         }
 
         if (!knownIdOrAlias.isNullOrBlank() && knownIdOrAlias != "default") {
             for (base in ANILIBERTY_API) {
-                Log.d(TAG, "[Aniliberty] findRelease: trying knownId=$knownIdOrAlias on $base")
+                KLog.d(TAG, "[Aniliberty] findRelease: trying knownId=$knownIdOrAlias on $base")
                 fetchAniLibertyReleaseDetail(base, knownIdOrAlias)?.let {
-                    Log.i(TAG, "[Aniliberty] findRelease: found by knownId on $base")
+                    KLog.i(TAG, "[Aniliberty] findRelease: found by knownId on $base")
                     aniLibertyReleaseCache[cacheKey] = it
                     return it
                 }
@@ -1214,19 +1214,19 @@ object AnimeStreamResolver {
                 )
             }
             .distinct()
-        Log.d(TAG, "[Aniliberty] findRelease: ${candidateAliases.size} candidate aliases: ${candidateAliases.take(5)}")
+        KLog.d(TAG, "[Aniliberty] findRelease: ${candidateAliases.size} candidate aliases: ${candidateAliases.take(5)}")
         for (base in ANILIBERTY_API) {
             // Probe every alias candidate concurrently instead of one-by-one: a miss costs a full
             // round-trip, and 8 sequential misses dominated the episode-sheet load time.
             val byAlias = kotlinx.coroutines.coroutineScope {
                 candidateAliases.map { alias ->
                     async {
-                        Log.d(TAG, "[Aniliberty] findRelease: trying alias=\"$alias\" on $base")
+                        KLog.d(TAG, "[Aniliberty] findRelease: trying alias=\"$alias\" on $base")
                         val summary = get("$base/api/v1/anime/releases/list?aliases=${enc(alias)}", referer = "https://anilibria.top/")
                             ?.let { parseAniLibertyRelease(it, alias, animeTitle) } ?: return@async null
                         fetchAniLibertyReleaseDetail(base, summary.optString("alias").ifBlank { summary.optInt("id").toString() })
                             ?.also {
-                                Log.i(TAG, "[Aniliberty] findRelease: FOUND by alias=\"$alias\" on $base, title=${getAniLibertyTitle(it)}")
+                                KLog.i(TAG, "[Aniliberty] findRelease: FOUND by alias=\"$alias\" on $base, title=${getAniLibertyTitle(it)}")
                                 aniLibertyReleaseCache[cacheKey] = it
                             }
                     }
@@ -1235,21 +1235,21 @@ object AnimeStreamResolver {
             if (byAlias != null) return byAlias
 
             if (animeTitle.isNotBlank()) {
-                Log.d(TAG, "[Aniliberty] findRelease: free-text search \"$animeTitle\" on $base")
+                KLog.d(TAG, "[Aniliberty] findRelease: free-text search \"$animeTitle\" on $base")
                 val summary = get("$base/api/v1/app/search/releases?query=${enc(animeTitle)}", referer = "https://anilibria.top/")
                     ?.let { parseAniLibertyRelease(it, slugifyAnimeTitle(animeTitle), animeTitle) } ?: run {
-                    Log.d(TAG, "[Aniliberty] findRelease: free-text search returned nothing on $base")
+                    KLog.d(TAG, "[Aniliberty] findRelease: free-text search returned nothing on $base")
                     continue
                 }
                 val detail = fetchAniLibertyReleaseDetail(base, summary.optString("alias").ifBlank { summary.optInt("id").toString() })
                 if (detail != null) {
-                    Log.i(TAG, "[Aniliberty] findRelease: FOUND by free-text on $base, title=${getAniLibertyTitle(detail)}")
+                    KLog.i(TAG, "[Aniliberty] findRelease: FOUND by free-text on $base, title=${getAniLibertyTitle(detail)}")
                     aniLibertyReleaseCache[cacheKey] = detail
                     return detail
                 }
             }
         }
-        Log.w(TAG, "[Aniliberty] findRelease: no release found for id=$shikimoriId, title=\"$animeTitle\"")
+        KLog.w(TAG, "[Aniliberty] findRelease: no release found for id=$shikimoriId, title=\"$animeTitle\"")
         return null
     }
 
@@ -1281,7 +1281,7 @@ object AnimeStreamResolver {
         }.getOrNull()
     }
 
-    internal fun buildAnimeSearchQueries(animeTitle: String): List<String> {
+    fun buildAnimeSearchQueries(animeTitle: String): List<String> {
         val raw = animeTitle.trim()
         if (raw.isBlank()) return emptyList()
 
@@ -1394,12 +1394,12 @@ object AnimeStreamResolver {
         if (referer != null) builder.addHeader("Origin", originFrom(referer))
         client.newCall(builder.build()).execute().use { response ->
             if (!response.isSuccessful) {
-                if (logTag != null) Log.w(TAG, "$logTag HTTP ${response.code} for $url")
+                if (logTag != null) KLog.w(TAG, "$logTag HTTP ${response.code} for $url")
                 null
             } else response.body?.string()
         }
     }.onFailure { e ->
-        if (logTag != null) Log.w(TAG, "$logTag ${e.javaClass.simpleName}: ${e.message} for $url")
+        if (logTag != null) KLog.w(TAG, "$logTag ${e.javaClass.simpleName}: ${e.message} for $url")
     }.getOrNull()
 
     /**
@@ -1486,28 +1486,28 @@ object AnimeStreamResolver {
     private fun decodeKodikUrl(value: String): String {
         val clean = value.replace("\\/", "/")
         if (clean.endsWith(".m3u8")) {
-            Log.d(TAG, "[Kodik] decodeUrl: already m3u8, returning as-is")
+            KLog.d(TAG, "[Kodik] decodeUrl: already m3u8, returning as-is")
             return if (clean.startsWith("http")) clean else if (clean.startsWith("//")) "https:$clean" else clean
         }
-        Log.d(TAG, "[Kodik] decodeUrl: input (${clean.length} chars) = ${clean.take(80)}...")
+        KLog.d(TAG, "[Kodik] decodeUrl: input (${clean.length} chars) = ${clean.take(80)}...")
         val cachedStep = lastWorkingRotStep
         if (cachedStep != null) {
             val result = tryRotDecode(clean, cachedStep)
             if (result != null) {
-                Log.d(TAG, "[Kodik] decodeUrl: decoded with cached ROT=$cachedStep -> ${result.take(80)}...")
+                KLog.d(TAG, "[Kodik] decodeUrl: decoded with cached ROT=$cachedStep -> ${result.take(80)}...")
                 return result
             }
-            Log.d(TAG, "[Kodik] decodeUrl: cached ROT=$cachedStep failed, trying all...")
+            KLog.d(TAG, "[Kodik] decodeUrl: cached ROT=$cachedStep failed, trying all...")
         }
         for (rot in 0 until 26) {
             val result = tryRotDecode(clean, rot)
             if (result != null) {
                 lastWorkingRotStep = rot
-                Log.i(TAG, "[Kodik] decodeUrl: decoded with ROT=$rot -> ${result.take(80)}...")
+                KLog.i(TAG, "[Kodik] decodeUrl: decoded with ROT=$rot -> ${result.take(80)}...")
                 return result
             }
         }
-        Log.w(TAG, "[Kodik] decodeUrl: ALL ROT values failed, returning raw input")
+        KLog.w(TAG, "[Kodik] decodeUrl: ALL ROT values failed, returning raw input")
         return clean
     }
 
@@ -1532,7 +1532,7 @@ object AnimeStreamResolver {
         }.getOrNull()
     }
 
-    internal fun absoluteKodikUrl(value: String): String = when {
+    fun absoluteKodikUrl(value: String): String = when {
         value.startsWith("http") -> value
         value.startsWith("//") -> "https:$value"
         value.startsWith("/") -> "https://w.kdkonl.com$value"
@@ -1602,17 +1602,17 @@ object AnimeStreamResolver {
 
     private fun firstReleaseMatchingAlias(data: JSONArray, preferredAlias: String?, expectedTitle: String? = null): JSONObject? {
         if (data.length() == 0) {
-            Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: empty data")
+            KLog.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: empty data")
             return null
         }
         val items = data.asSequenceObjects().toList()
-        Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: ${items.size} items, alias=$preferredAlias, expectedTitle=$expectedTitle")
+        KLog.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: ${items.size} items, alias=$preferredAlias, expectedTitle=$expectedTitle")
         items.forEachIndexed { i, item ->
             val t = getAniLibertyTitle(item, false)
             val te = getAniLibertyTitle(item, true)
             val al = item.optString("alias")
             val tp = item.optString("type")
-            Log.d(TAG, "  [$i] alias=$al, type=$tp, title=\"$t\", english=\"$te\"")
+            KLog.d(TAG, "  [$i] alias=$al, type=$tp, title=\"$t\", english=\"$te\"")
         }
 
         preferredAlias?.takeIf { it.isNotBlank() }?.let { alias ->
@@ -1623,7 +1623,7 @@ object AnimeStreamResolver {
                     slugifyAnimeTitle(getAniLibertyTitle(item, false)).equals(alias, ignoreCase = true) ||
                     slugifyAnimeTitle(getAniLibertyTitle(item, true)).equals(alias, ignoreCase = true)
             }?.let {
-                Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: matched by alias=$alias -> ${getAniLibertyTitle(it)}")
+                KLog.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: matched by alias=$alias -> ${getAniLibertyTitle(it)}")
                 return it
             }
         }
@@ -1636,7 +1636,7 @@ object AnimeStreamResolver {
                 )
             }
             if (byType != null) {
-                Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: matched by title+type -> ${getAniLibertyTitle(byType)}")
+                KLog.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: matched by title+type -> ${getAniLibertyTitle(byType)}")
                 return byType
             }
 
@@ -1645,17 +1645,17 @@ object AnimeStreamResolver {
                 titlesMatch(expectedTitle, getAniLibertyTitle(item, true))
             }
             if (byTitle != null) {
-                Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: matched by title only -> ${getAniLibertyTitle(byTitle)}")
+                KLog.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: matched by title only -> ${getAniLibertyTitle(byTitle)}")
                 return byTitle
             }
         }
 
         if (!expectedTitle.isNullOrBlank()) {
-            Log.w(TAG, "[Aniliberty] firstReleaseMatchingAlias: no title match for expectedTitle=\"$expectedTitle\", refusing fallback")
+            KLog.w(TAG, "[Aniliberty] firstReleaseMatchingAlias: no title match for expectedTitle=\"$expectedTitle\", refusing fallback")
             return null
         }
 
-        Log.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: falling back to first item -> ${getAniLibertyTitle(items.first())}")
+        KLog.d(TAG, "[Aniliberty] firstReleaseMatchingAlias: falling back to first item -> ${getAniLibertyTitle(items.first())}")
         return items.first()
     }
 
@@ -1833,7 +1833,7 @@ object AnimeStreamResolver {
         }
         val result = rows.values.filter { it.episodes.isNotEmpty() }
         if (result.isNotEmpty()) {
-            Log.i(TAG, "[AniLib.Legacy] built ${result.size} rows (${result.sumOf { it.episodes.size }} episode entries)")
+            KLog.i(TAG, "[AniLib.Legacy] built ${result.size} rows (${result.sumOf { it.episodes.size }} episode entries)")
         }
         result
     }
@@ -1934,7 +1934,7 @@ object AnimeStreamResolver {
             ?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
 
     private suspend fun findAniLibRelease(shikimoriId: Int, animeTitle: String): JSONObject? {
-        Log.i(TAG, "[AniLib] findRelease: id=$shikimoriId, title=\"$animeTitle\"")
+        KLog.i(TAG, "[AniLib] findRelease: id=$shikimoriId, title=\"$animeTitle\"")
         val cacheKey = "$shikimoriId:$animeTitle"
         anilibReleaseCache[cacheKey]?.let { return it }
 
@@ -1961,11 +1961,11 @@ object AnimeStreamResolver {
                     put("base", base)
                 }
                 anilibReleaseCache[cacheKey] = release
-                Log.i(TAG, "[AniLib] found title id=${release.optInt("id")} \"${getAniLibTitle(release)}\" on $base")
+                KLog.i(TAG, "[AniLib] found title id=${release.optInt("id")} \"${getAniLibTitle(release)}\" on $base")
                 return release
             }
         }
-        Log.w(TAG, "[AniLib] no release found for id=$shikimoriId, title=\"$animeTitle\"")
+        KLog.w(TAG, "[AniLib] no release found for id=$shikimoriId, title=\"$animeTitle\"")
         return null
     }
 
@@ -1990,7 +1990,7 @@ object AnimeStreamResolver {
                 titlesMatch(expectedTitle, t.optString("eng_name")) ||
                 titlesMatch(expectedTitle, t.optString("name"))
         } ?: titles.firstOrNull().also {
-            Log.d(TAG, "[AniLib] pickAniLibTitle: no shiki/title match, taking first result id=${it?.optInt("id")}")
+            KLog.d(TAG, "[AniLib] pickAniLibTitle: no shiki/title match, taking first result id=${it?.optInt("id")}")
         }
     }
 
@@ -2068,23 +2068,23 @@ object AnimeStreamResolver {
      * index second. If no details expose players, fall back to a single row with all episodes.
      */
     private suspend fun buildAniLibTeamTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
-        Log.i(TAG, "[AniLib] buildTeamTranslations: id=$shikimoriId, title=\"$animeTitle\"")
+        KLog.i(TAG, "[AniLib] buildTeamTranslations: id=$shikimoriId, title=\"$animeTitle\"")
         // Легаси anilib.me первым: прямые HLS команд до 4K. Недоступен (нет VPN/блок) — тихий
         // откат на новый api.animelib.org с Kodik-эмбедами (максимум 720p).
         val legacy = runCatching {
             withTimeoutOrNull(15_000L) { buildAniLibLegacyTeamTranslations(shikimoriId, animeTitle) }
         }.getOrNull().orEmpty()
         if (legacy.isNotEmpty()) return@withContext legacy
-        Log.i(TAG, "[AniLib] legacy unavailable, falling back to api.animelib.org")
+        KLog.i(TAG, "[AniLib] legacy unavailable, falling back to api.animelib.org")
 
         val release = findAniLibRelease(shikimoriId, animeTitle)
         if (release == null) {
-            Log.w(TAG, "[AniLib] No release found for \"$animeTitle\"")
+            KLog.w(TAG, "[AniLib] No release found for \"$animeTitle\"")
             return@withContext emptyList()
         }
         val base = release.optString("base").ifBlank { ANILIB_API.first() }
         val episodes = fetchAniLibEpisodeList(base, release.optInt("id"))
-        Log.i(TAG, "[AniLib] Found: \"${getAniLibTitle(release)}\" (${episodes.size} episodes)")
+        KLog.i(TAG, "[AniLib] Found: \"${getAniLibTitle(release)}\" (${episodes.size} episodes)")
         if (episodes.isEmpty()) return@withContext emptyList()
 
         val detailByIds = kotlinx.coroutines.coroutineScope {
@@ -2117,7 +2117,7 @@ object AnimeStreamResolver {
         }
 
         if (rows.isEmpty()) {
-            Log.i(TAG, "[AniLib] no team players resolved, falling back to single row")
+            KLog.i(TAG, "[AniLib] no team players resolved, falling back to single row")
             return@withContext listOf(
                 FlatTranslation(
                     source = AnimeSourceType.ANILIB,
@@ -2138,7 +2138,7 @@ object AnimeStreamResolver {
                 episodes = row.eps.distinctBy { it.number }.sortedBy { it.number }
             )
         }
-        Log.i(TAG, "[AniLib] teams: ${translations.joinToString { "${it.title}[${it.translationId}](${it.episodes.size})" }}")
+        KLog.i(TAG, "[AniLib] teams: ${translations.joinToString { "${it.title}[${it.translationId}](${it.episodes.size})" }}")
         translations
     }
 
@@ -2154,12 +2154,12 @@ object AnimeStreamResolver {
     }
 
     private suspend fun resolveAniLibStream(shikimoriId: Int, animeTitle: String, episodeNumber: Int, translationId: String): AnimeMediaStream? {
-        Log.i(TAG, "[AniLib] resolveStream: id=$shikimoriId, ep=$episodeNumber, tr=$translationId")
+        KLog.i(TAG, "[AniLib] resolveStream: id=$shikimoriId, ep=$episodeNumber, tr=$translationId")
         val release = findAniLibRelease(shikimoriId, animeTitle) ?: return null
         val base = release.optString("base").ifBlank { ANILIB_API.first() }
         val episodes = fetchAniLibEpisodeList(base, release.optInt("id"))
         val ep = episodes.firstOrNull { it.number == episodeNumber } ?: run {
-            Log.w(TAG, "[AniLib] Episode $episodeNumber not found (${episodes.size} known)")
+            KLog.w(TAG, "[AniLib] Episode $episodeNumber not found (${episodes.size} known)")
             return null
         }
         val episodeId = ep.id ?: return null
@@ -2168,7 +2168,7 @@ object AnimeStreamResolver {
         val detail = fetchAniLibEpisodeDetail(base, episodeId) ?: return null
         val players = aniLibPlayers(detail)
         if (players.isEmpty()) {
-            Log.w(TAG, "[AniLib] episode $episodeId has no players")
+            KLog.w(TAG, "[AniLib] episode $episodeId has no players")
             return null
         }
 
@@ -2182,19 +2182,19 @@ object AnimeStreamResolver {
         // Players carry a Kodik embed link ("//kodikplayer.com/seria/…/720p"); reuse the
         // existing Kodik HLS extraction instead of a bespoke scraper.
         val src = aniLibPlayerSrc(selected) ?: run {
-            Log.w(TAG, "[AniLib] player \"${aniLibPlayerLabel(selected)}\" has no src link")
+            KLog.w(TAG, "[AniLib] player \"${aniLibPlayerLabel(selected)}\" has no src link")
             return null
         }
-        Log.d(TAG, "[AniLib] resolving kodik hls for \"${aniLibPlayerLabel(selected)}\": $src")
+        KLog.d(TAG, "[AniLib] resolving kodik hls for \"${aniLibPlayerLabel(selected)}\": $src")
         val qualities = getCachedKodikHls(src) ?: resolveKodikHls(src).also {
             if (it.isNotEmpty()) kodikHlsCache[src] = CacheEntry(it, System.currentTimeMillis())
         }
         if (qualities.isEmpty()) {
-            Log.w(TAG, "[AniLib] kodik hls extraction failed for $src")
+            KLog.w(TAG, "[AniLib] kodik hls extraction failed for $src")
             return null
         }
         val url = qualities["720p"] ?: qualities["1080p"] ?: qualities["480p"] ?: qualities["360p"] ?: qualities.values.first()
-        Log.i(TAG, "[AniLib] resolved \"${aniLibPlayerLabel(selected)}\" qualities: ${qualities.keys}")
+        KLog.i(TAG, "[AniLib] resolved \"${aniLibPlayerLabel(selected)}\" qualities: ${qualities.keys}")
         return AnimeMediaStream(
             url = url,
             qualities = qualities,
@@ -2306,7 +2306,7 @@ object AnimeStreamResolver {
         )
     }
 
-    internal fun kodikPlaybackHeaders(): Map<String, String> = mapOf(
+    fun kodikPlaybackHeaders(): Map<String, String> = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "https://kodik.info/"
     )

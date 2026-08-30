@@ -1,6 +1,6 @@
 package hd.kinoshka.app.data.source
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -120,7 +120,7 @@ object SmarthardApi {
             all += batch
             if (batch.size < PAGE_SIZE) break
         }
-        Log.i(TAG, "loadRecords($animeId): ${all.size} records")
+        KLog.i(TAG, "loadRecords($animeId): ${all.size} records")
         recordsCache[animeId] = CacheEntry(all.toList(), System.currentTimeMillis())
         all
     }
@@ -265,13 +265,13 @@ object SmarthardApi {
     private suspend fun scrapeSibnet(shellUrl: String): ResolvedLink? {
         val html = fetchHtml(shellUrl, SIBNET_REFERER, client)
         if (html == null) {
-            Log.w(TAG, "sibnet scrape: page fetch failed for $shellUrl")
+            KLog.w(TAG, "sibnet scrape: page fetch failed for $shellUrl")
             return null
         }
         val path = Regex("""player\.src\(\[\{src:\s*"([^"]+)"""").find(html)?.groupValues?.get(1)
             ?: Regex(""""(https?:[^"]*sibnet[^"]*\.(?:mp4|m3u8)[^"]*)"""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
         if (path == null) {
-            Log.w(TAG, "sibnet scrape: no player.src found on $shellUrl")
+            KLog.w(TAG, "sibnet scrape: no player.src found on $shellUrl")
             return null
         }
         val absolute = when {
@@ -280,10 +280,10 @@ object SmarthardApi {
             else -> null
         }
         if (absolute == null) {
-            Log.w(TAG, "sibnet scrape: unrecognizable src=$path")
+            KLog.w(TAG, "sibnet scrape: unrecognizable src=$path")
             return null
         }
-        Log.i(TAG, "sibnet scrape: $shellUrl -> $absolute")
+        KLog.i(TAG, "sibnet scrape: $shellUrl -> $absolute")
         return ResolvedLink(absolute, mapOf("Referer" to SIBNET_REFERER))
     }
 
@@ -291,7 +291,7 @@ object SmarthardApi {
     private suspend fun sniffEmbed(url: String): ResolvedLink? {
         val html = fetchHtml(url, null, sniffClient)
         if (html == null) {
-            Log.i(TAG, "sniff: page unreachable (VPN?) $url")
+            KLog.i(TAG, "sniff: page unreachable (VPN?) $url")
             return null
         }
         val absolute = Regex(""""([^"]*\.(?:m3u8|mp4|webm)[^"]*)"""", RegexOption.IGNORE_CASE).findAll(html)
@@ -303,7 +303,7 @@ object SmarthardApi {
             }
             ?: Regex("""file["']?\s*:\s*["']([^"']+)["']""").find(html)?.groupValues?.get(1)
         if (absolute == null) {
-            Log.i(TAG, "sniff: no direct media link on $url")
+            KLog.i(TAG, "sniff: no direct media link on $url")
             return null
         }
         val full = when {
@@ -312,7 +312,7 @@ object SmarthardApi {
             absolute.startsWith("/") -> "https://${java.net.URI(url).host}$absolute"
             else -> return null
         }
-        Log.i(TAG, "sniff: $url -> $full")
+        KLog.i(TAG, "sniff: $url -> $full")
         return ResolvedLink(full, mapOf("Referer" to refererOf(url)))
     }
 
@@ -331,7 +331,7 @@ object SmarthardApi {
         client.newCall(request).execute().use { response ->
             val body = response.body
             if (!response.isSuccessful || body == null) {
-                Log.w(TAG, "fetchHtml $url -> HTTP ${response.code}")
+                KLog.w(TAG, "fetchHtml $url -> HTTP ${response.code}")
                 return@use null
             }
             // Sibnet отвечает в windows-1251; для снифа важны только ASCII-ссылки, поэтому
@@ -349,7 +349,7 @@ object SmarthardApi {
         client.newCall(request).execute().use { response ->
             val body = response.body
             if (!response.isSuccessful || body == null) {
-                Log.w(TAG, "GET $url -> HTTP ${response.code}")
+                KLog.w(TAG, "GET $url -> HTTP ${response.code}")
                 return@use null
             }
             body.string()

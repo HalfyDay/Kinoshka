@@ -111,6 +111,12 @@ class MpvPlayer private constructor(
 
     fun setVolume(percent: Int) = setProperty("volume", percent.coerceIn(0, 130).toString())
 
+    /** HTTP-заголовки для сетевых запросов mpv (Referer/User-Agent для Kodik и т.п.). */
+    fun setHeaders(headers: Map<String, String>) {
+        if (headers.isEmpty()) return
+        setProperty("http-header-fields", headers.entries.joinToString(",") { "${it.key}=${it.value}" })
+    }
+
     fun stop() = command("stop")
 
     fun close() {

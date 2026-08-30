@@ -49,16 +49,28 @@ fun main(args: Array<String>) = application {
     }
 }
 
-/**
- * Быстрая проверка экранов: KINO_SCREEN=details|player (env) или первый аргумент.
- * Без флага — главная. Env удобнее: JavaExec-задача run наследует окружение Gradle.
- */
 private fun initialScreen(args: Array<String>, repository: FilmsRepository): Screen {
-    val flag = args.firstOrNull() ?: System.getenv("KINO_SCREEN")
-    if (flag == "player") {
-        return Screen.Player(FilmItem(0, "Демо", null, null, null, null))
+    if (flag(args) == "player") {
+        // Для проверки реального потока нужен ВЫШЕДШИЙ фильм: у анонсов (год >= текущего)
+        // Kodik ещё ничего не индексировал — резолвер честно вернёт NO_MATCHING_RESULTS.
+        // KINO_KP_ID=<id> задаёт конкретный фильм.
+        val popular = runCatching {
+            kotlinx.coroutines.runBlocking { repository.popular(page = 1) }
+        }.getOrNull().orEmpty()
+        val picked = System.getenv("KINO_KP_ID")?.trim()?.toIntOrNull()?.let { kpId ->
+            popular.firstOrNull { it.kinopoiskId == kpId } ?: runCatching {
+                kotlinx.coroutines.runBlocking {
+                    val d = repository.details(kpId)
+                    FilmItem(d.kinopoiskId, d.nameRu, d.nameOriginal, d.posterUrlPreview, d.ratingKinopoisk, d.year)
+                }
+            }.getOrNull()
+        } ?: popular.firstOrNull { (it.year ?: 0) in 1950..2025 }
+        println("Kino: выбранный фильм = ${picked?.nameRu} (kp=${picked?.kinopoiskId}, ${picked?.year})")
+        return Screen.Player(
+            picked ?: FilmItem(0, "Демо", null, null, null, null)
+        )
     }
-    if (flag == "details") {
+    if (flag(args) == "details") {
         val first = runCatching {
             kotlinx.coroutines.runBlocking { repository.popular(page = 1) }
         }.getOrNull()?.firstOrNull()
@@ -66,6 +78,9 @@ private fun initialScreen(args: Array<String>, repository: FilmsRepository): Scr
     }
     return Screen.Home
 }
+
+private fun flag(args: Array<String>): String =
+    args.firstOrNull() ?: System.getenv("KINO_SCREEN") ?: ""
 
 private fun buildRepository(): FilmsRepository {
     // Рабочая директория у run-задачи — папка модуля desktopApp, поэтому ищем
