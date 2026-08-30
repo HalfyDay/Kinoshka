@@ -2,6 +2,8 @@ plugins {
     kotlin("multiplatform")
     id("com.android.kotlin.multiplatform.library")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jetbrains.compose")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 kotlin {
@@ -17,6 +19,12 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+                // Общий UI-слой (M2+): композаблы shared собираются CMP-артефактами;
+                // на Android CMP делегирует в androidx-артефакты, версиями рулит BOM приложения.
+                api(compose.runtime)
+                api(compose.foundation)
+                api(compose.material3)
+                api("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
             }
         }
         // JVM-код, общий для Android- и desktop-таргетов (gson, java.util.concurrent
