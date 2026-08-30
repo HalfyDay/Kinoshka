@@ -706,6 +706,8 @@ class FeedRepository(
 
     private fun FilmItem.toFeedItem(adult: Boolean): FeedItem {
         val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        // Локальная копия: year объявлен в другом модуле (shared), smart cast невозможен.
+        val filmYear = year
         return FeedItem(
             kinopoiskId = kinopoiskId,
             title = nameRu ?: nameOriginal ?: "Фильм",
@@ -722,7 +724,7 @@ class FeedRepository(
             // Страны в нижнем регистре — для авто-фильтра «не смотрю эту страну».
             countries = countries.mapNotNull { it.country?.trim()?.lowercase() },
             // Анонс: год в будущем или совсем свежий год без оценки и без данных.
-            upcoming = (year != null && year > currentYear) || (year == currentYear && ratingKinopoisk == null && posterUrlPreview.isNullOrBlank())
+            upcoming = (filmYear != null && filmYear > currentYear) || (filmYear == currentYear && ratingKinopoisk == null && posterUrlPreview.isNullOrBlank())
         )
     }
 

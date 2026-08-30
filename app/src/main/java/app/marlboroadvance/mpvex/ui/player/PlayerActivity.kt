@@ -319,6 +319,13 @@ class PlayerActivity :
   // a lower rung of the same dead CDN is no longer the best move — switch sources instead.
   private var autoSlowStartStepped = false
 
+  // Segment-skip guard: when the HLS demuxer gives up on dead segments (vpn tunnel flapping,
+  // live log kp=5437614 segments 379-387), mpv jumps playback FORWARD past the skipped content.
+  // The guard remembers the last played position and pulls playback back once the stream moves
+  // again, so the movie resumes where it froze instead of half a minute ahead.
+  private var segmentSkipGuardJob: kotlinx.coroutines.Job? = null
+  private var lastUserSeekAtMs = 0L
+
   // Real-playback library commit: only ≥5 minutes of viewing turns a title into "Смотрю".
   private var playbackProgressJob: kotlinx.coroutines.Job? = null
   private var watchingCommittedFor: String? = null
@@ -1296,6 +1303,7 @@ class PlayerActivity :
     if (extras == null) return
 
     extras.getInt("position", POSITION_NOT_SET).takeIf { it != POSITION_NOT_SET }?.let {
+      noteUserSeek()
       MPVLib.setPropertyInt("time-pos", it / MILLISECONDS_TO_SECONDS)
     }
 
@@ -1779,7 +1787,15 @@ class PlayerActivity :
     }
     PendingMovieRequestStore.remove(kpId)
     viewModel.setPendingWebFallbackUrl(launch.webFallbackUrl)
-    viewModel.onPendingRetry = { retryPendingResolve(launch) }
+    // Manual retry is an explicit "give me fresh tokens" (vpn toggled, CDN hiccup): it must
+    // grant a FULL auto-retry budget again. Without the reset the budget stayed exhausted from
+    // the pre-retry failures, so the next END_FILE error skipped straight to source-hopping on
+    // stale prepared urls instead of re-resolving (live log kp=5437614: «Повторить» → вечная
+    // загрузка).
+    viewModel.onPendingRetry = {
+      resetStreamLoadRetries()
+      retryPendingResolve(launch, isRetry = true)
+    }
     beginStreamLoadIndicator()
     resolvePendingLaunch(launch)
   }
@@ -2224,10 +2240,19 @@ class PlayerActivity :
         // Файл не открылся за 15 c (лог live kp=30276: CDN отдаёт сегменты по 20 c и рвёт
         // TLS). В Auto делаем одноразовый спуск рунга; в QOM-фильмах спуск ограничен одним
         // шагом — второй медленный таймаут на том же мёртвом CDN отвечаем переключением
-        // на другой источник, а не прогулкой по лестнице до дна.
+        // на другой источник, а не прогулкой по лестнице до дна. Флаг читается ДО спуска:
+        // autoDowngradeOnSlowStart сам его ставит, и чтение после вызова делало первый же
+        // таймаут одновременными «спуск + смена источника» (лог live warp kp=5437614).
+        val steppedBefore = autoSlowStartStepped
         if (autoDowngradeOnSlowStart() &&
-          (effectiveNativePlaybackMode != NativePlaybackMode.QUALITY_ONLY_MOVIE || !autoSlowStartStepped)
+          (effectiveNativePlaybackMode != NativePlaybackMode.QUALITY_ONLY_MOVIE || !steppedBefore)
         ) return@launch
+        // Текущая попытка не открылась за окно: 3-минутный ddbb-кэш мог держать токены,
+        // добытые в другой сети (включённый/выключенный VPN) — следующий resolve должен
+        // извлечь свежие, а не переигрывать мёртвые.
+        intent.getIntExtra("movie_kinopoisk_id", 0)
+          .takeIf { it > 0 }
+          ?.let { DdbbStreamResolver.evictResolveCache(it) }
         if (tryAlternativeQomSource()) return@launch
         if (lastStreamLoadRetry == null) {
           // ANIME-launch path не трекает загрузку — «Повторить» реплеит текущий url.
@@ -2238,9 +2263,7 @@ class PlayerActivity :
               ?.let { MPVLib.command("loadfile", it, "replace") }
           }
         }
-        viewModel.setPendingResolveError(
-          "Поток не удаётся загрузить: сеть или CDN слишком медленные. Попробуйте другую озвучку или качество."
-        )
+        viewModel.setPendingResolveError(streamLoadErrorMessage(slowStart = true))
       }
     }
   }
@@ -2270,7 +2293,7 @@ class PlayerActivity :
       MPVLib.command("loadfile", next.second, "replace")
     })
     MPVLib.command("loadfile", next.second, "replace")
-    Toast.makeText(this, "Auto: качество снижено до ${next.first}", Toast.LENGTH_SHORT).show()
+    Toast.makeText(this, "Auto: сеть медленная — временно снижено до ${next.first}", Toast.LENGTH_SHORT).show()
     return true
   }
 
@@ -2479,7 +2502,37 @@ class PlayerActivity :
         pendingSeekPosition = MPVLib.getPropertyDouble("time-pos")
         currentPlayingUrl = next.second
         MPVLib.command("loadfile", next.second, "replace")
-        Toast.makeText(this@PlayerActivity, "Auto: качество снижено до ${next.first}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@PlayerActivity, "Auto: сеть медленная — временно снижено до ${next.first}", Toast.LENGTH_SHORT).show()
+      }
+    }
+  }
+
+  /** Marks an app-issued position change so the segment-skip guard ignores the jump it causes. */
+  private fun noteUserSeek() {
+    lastUserSeekAtMs = android.os.SystemClock.elapsedRealtime()
+  }
+
+  /**
+   * Watches played position while a file is loaded: a forward jump far beyond real-time speed
+   * means mpv skipped dead HLS segments — seek back to the last good position once the network
+   * (or vpn route) recovered. Corrections are rate-limited through [noteUserSeek]; paused
+   * playback never jumps, so it needs no explicit handling.
+   */
+  private fun startSegmentSkipGuard() {
+    segmentSkipGuardJob?.cancel()
+    segmentSkipGuardJob = lifecycleScope.launch {
+      var lastPos = -1.0
+      while (isActive) {
+        kotlinx.coroutines.delay(1500)
+        val pos = MPVLib.getPropertyDouble("time-pos") ?: continue
+        val prev = lastPos
+        lastPos = pos
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (prev >= 0 && pos > prev + 12.0 && now - lastUserSeekAtMs > 10_000) {
+          Log.i(TAG, "Playback jumped forward ${(pos - prev).toInt()}s (skipped segments) — seeking back to ${prev.toInt()}s")
+          noteUserSeek()
+          MPVLib.command("seek", prev.toString(), "absolute")
+        }
       }
     }
   }
@@ -2923,6 +2976,7 @@ class PlayerActivity :
     if (isEof) {
       // Check if we should repeat the current file
       if (viewModel.shouldRepeatCurrentFile()) {
+        noteUserSeek()
         MPVLib.command("seek", "0", "absolute")
         viewModel.unpause()
         return
@@ -3103,9 +3157,15 @@ class PlayerActivity :
         streamLoadRetryAction = null
         streamLoadRetries = 0
         finishStreamLoadIndicator()
+        viewModel.setPropertyPollingEnabled(true)
+        startSegmentSkipGuard()
         handleFileLoaded()
         isReady = true
       }
+
+      // Playback returned to idle (failed load, playlist end): time-pos/duration polling
+      // would only flood logcat with "was unavailable" lines from the prebuilt mpv JNI.
+      MPVLib.MpvEvent.MPV_EVENT_IDLE -> viewModel.setPropertyPollingEnabled(false)
 
       MPVLib.MpvEvent.MPV_EVENT_END_FILE -> eventEndFile(data)
 
@@ -3131,6 +3191,11 @@ class PlayerActivity :
     val reason = runCatching { data?.asMap()?.get("reason")?.asString() }.getOrNull()
     Log.w(TAG, "MPV_EVENT_END_FILE while loading (reason=$reason)")
     if (!reason.equals("error", ignoreCase = true)) return
+    // mpv признал url мёртвым: 3-минутная ddbb-памка не должна отдавать те же токены
+    // следующей попытке или запуску — токен, добытый под VPN, мёртв и после его выключения.
+    intent.getIntExtra("movie_kinopoisk_id", 0)
+      .takeIf { it > 0 }
+      ?.let { DdbbStreamResolver.evictResolveCache(it) }
 
     val retry = streamLoadRetryAction
     if (retry != null && streamLoadRetries < MAX_STREAM_LOAD_RETRIES) {
@@ -3147,10 +3212,22 @@ class PlayerActivity :
       // giving up — a dead CDN must not end in an error card while alternatives are untried.
       if (tryAlternativeQomSource()) return
       finishStreamLoadIndicator()
-      viewModel.setPendingResolveError(
-        "Не удалось открыть видеопоток. Проверьте подключение и попробуйте ещё раз."
-      )
+      viewModel.setPendingResolveError(streamLoadErrorMessage(slowStart = false))
     }
+  }
+
+  /**
+   * Error card text. When every dub row comes from ONE provider, no dub switch can help — the
+   * CDN itself is unreachable (Warp/AmneziaWG egress IPs are commonly rejected by it), so the
+   * card points at the VPN explicitly instead of offering switches that will fail the same way.
+   */
+  private fun streamLoadErrorMessage(slowStart: Boolean): String {
+    val base = if (slowStart) "Поток не удаётся загрузить: сеть или CDN слишком медленные."
+      else "Не удалось открыть видеопоток."
+    val singleSource = viewModel.animeTranslations.value.map { it.source }.distinct().size <= 1
+    return if (singleSource) base +
+      " Если включён VPN (Warp/AmneziaWG) — выключите его и нажмите «Повторить»: туннель может блокировать CDN."
+    else base + " Попробуйте другую озвучку или качество."
   }
 
   /**
@@ -3268,6 +3345,7 @@ class PlayerActivity :
         lifecycleScope.launch {
           kotlinx.coroutines.delay(400)
           if (mpvInitialized && !player.isExiting && !isFinishing) {
+            noteUserSeek()
             MPVLib.command("seek", pos.toString(), "absolute+exact")
           }
         }
@@ -3645,7 +3723,7 @@ class PlayerActivity :
           val authState = authStore.getAuthState()
           if (authState.isLoggedIn && authState.accessToken != null) {
             lifecycleScope.launch(Dispatchers.IO) {
-              val api = ApiClient.shikimoriApi(this@PlayerActivity)
+              val api = ApiClient.shikimoriApi(this@PlayerActivity.cacheDir)
               val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
               val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
               val newStatus = if (totalEps in 1..currentEp) "completed" else "watching"
@@ -3891,6 +3969,7 @@ class PlayerActivity :
     viewModel.setVideoZoom(state.videoZoom)
 
     if (playerPreferences.savePositionOnQuit.get() && state.lastPosition != 0) {
+      noteUserSeek()
       MPVLib.setPropertyInt("time-pos", state.lastPosition)
     }
   }

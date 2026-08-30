@@ -358,12 +358,10 @@ data class ShikimoriUserRate(
 ) {
     fun getUpdatedEpochMillis(): Long {
         val dateStr = updatedAt ?: createdAt ?: return 0L
+        // java.time доступен на всех платформах проекта (minSdk 26), поэтому
+        // прежняя ветка с SimpleDateFormat под API < 26 удалена при переносе в shared.
         return runCatching {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                java.time.OffsetDateTime.parse(dateStr).toInstant().toEpochMilli()
-            } else {
-                java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).parse(dateStr)?.time ?: 0L
-            }
+            java.time.OffsetDateTime.parse(dateStr).toInstant().toEpochMilli()
         }.getOrDefault(0L)
     }
 }

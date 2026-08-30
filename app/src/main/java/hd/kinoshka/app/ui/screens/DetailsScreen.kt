@@ -2795,10 +2795,13 @@ private fun AnimeDetailsLayout(
         else -> anime?.status.orEmpty()
     }
     val seasonStr = formatAnimeSeason(anime?.season, anime?.airedOn ?: item.year?.toString())
-    val epStr = if (anime?.status == "ongoing" && anime.episodesAired != null && anime.episodesAired > 0) {
-        "${anime.episodesAired} из ${if (anime.episodes != null && anime.episodes > 0) anime.episodes else "?"} эп."
-    } else if (anime?.episodes != null && anime.episodes > 0) {
-        "${anime.episodes} эп."
+    // Локальные копии: свойства объявлены в другом модуле (shared), smart cast невозможен.
+    val animeEpisodesAired = anime?.episodesAired
+    val animeEpisodes = anime?.episodes
+    val epStr = if (anime?.status == "ongoing" && animeEpisodesAired != null && animeEpisodesAired > 0) {
+        "$animeEpisodesAired из ${if (animeEpisodes != null && animeEpisodes > 0) animeEpisodes else "?"} эп."
+    } else if (animeEpisodes != null && animeEpisodes > 0) {
+        "$animeEpisodes эп."
     } else "—"
     val ageRatingStr = anime?.rating?.uppercase()?.replace("R_17", "R-17")?.replace("PG_13", "PG-13")?.replace("R_PLUS", "R+") ?: "—"
 
@@ -2944,11 +2947,13 @@ private fun AnimeDetailsLayout(
         }
 
         // Standalone Expandable Description with padding
-        if (!item.description.isNullOrBlank()) {
+        // Локальная копия: description объявлен в другом модуле (shared), smart cast невозможен.
+        val itemDescription = item.description
+        if (!itemDescription.isNullOrBlank()) {
             item {
                 Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                     AnimeExpandableDescription(
-                        description = item.description,
+                        description = itemDescription,
                         onOpenCharacter = onOpenCharacter,
                         onOpenFilm = onOpenFilm,
                         onOpenUrl = onOpenUrl
@@ -3258,9 +3263,10 @@ private fun AnimeCharactersSheet(
                                 text = char.russian?.takeIf { it.isNotBlank() } ?: char.name ?: "",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                             )
-                            if (!char.name.isNullOrBlank() && char.russian != null) {
+                            val charName = char.name
+                            if (!charName.isNullOrBlank() && char.russian != null) {
                                 Text(
-                                    text = char.name,
+                                    text = charName,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -3981,7 +3987,7 @@ private fun CharacterDetailsSheet(
     var isLoading by remember(characterId) { mutableStateOf(true) }
 
     LaunchedEffect(characterId) {
-        val api = hd.kinoshka.app.data.api.ApiClient.shikimoriApi(context)
+        val api = hd.kinoshka.app.data.api.ApiClient.shikimoriApi(context.cacheDir)
         val repo = hd.kinoshka.app.data.repo.AnimeRepository(api)
         characterDetails = repo.character(characterId)
         isLoading = false
@@ -4088,15 +4094,16 @@ private fun CharacterDetailsSheet(
                         }
                     }
 
-                    if (!char.animes.isNullOrEmpty()) {
+                    val charAnimes = char.animes
+                    if (!charAnimes.isNullOrEmpty()) {
                         item {
                             Text(
-                                text = "Участвует в аниме (${char.animes.size})",
+                                text = "Участвует в аниме (${charAnimes.size})",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
-                        items(char.animes) { animeItem ->
+                        items(charAnimes) { animeItem ->
                             val filmId = animeItem.id + hd.kinoshka.app.data.model.ANIME_ID_OFFSET
                             Row(
                                 modifier = Modifier
