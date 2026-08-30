@@ -10,6 +10,7 @@ import hd.kinoshka.app.data.model.KodikMovieCandidate
 import hd.kinoshka.app.data.model.MovieStreamResult
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import hd.kinoshka.app.data.source.AnimeStreamResolver
+import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.HentaiProvider
 import hd.kinoshka.app.data.source.HentaiStream
 import hd.kinoshka.app.data.source.HentaiStreamResolver
@@ -112,31 +113,36 @@ object DownloadBridges {
     // Фильмы и сериалы (Kodik-каталог; QOM-фильмы — готовые потоки из гонки резолверов)
     // ------------------------------------------------------------------
 
-    /** QOM-фильм: prepared-потоки из MovieNativeLauncher.resolve, по запросу на озвучку. */
-    fun qomRequests(
+    /**
+     * QOM-фильм: prepared-поток из MovieNativeLauncher.resolve, по запросу НА ОДНУ озвучку.
+     * Раньше фабрика отдавала запросы на весь [AnimeMediaStream]-каталог разом, и скачивание
+     * любой озвучки ставило в очередь все (фильм путался с сериальной моделью «озвучка×серия»).
+     */
+    fun qomRequest(
         kinopoiskId: Int,
         title: String,
-        preparedStreams: Map<String, AnimeMediaStream>,
-        voiceoverTitles: Map<String, String>
-    ): List<EpisodeDownloadManager.EpisodeDownloadRequest> {
+        translationId: String,
+        stream: AnimeMediaStream,
+        voiceoverTitle: String
+    ): EpisodeDownloadManager.EpisodeDownloadRequest {
         val itemKey = animeItemKey(0, kinopoiskId)
-        return preparedStreams.map { (trId, stream) ->
-            EpisodeDownloadManager.EpisodeDownloadRequest(
-                itemKey = itemKey,
-                title = title,
-                source = AnimeSourceType.KODIK.name,
-                translationId = trId,
-                translationTitle = voiceoverTitles[trId] ?: trId,
-                episodeNumber = 1,
-                episodeLabel = "Фильм",
-                resolve = { fromStream(stream) }
-            )
-        }
+        return EpisodeDownloadManager.EpisodeDownloadRequest(
+            itemKey = itemKey,
+            title = title,
+            source = AnimeSourceType.KODIK.name,
+            translationId = translationId,
+            translationTitle = voiceoverTitle,
+            episodeNumber = 1,
+            episodeLabel = "Фильм",
+            resolve = { fromStream(stream) }
+        )
     }
 
     /**
-     * Сериал (Kodik-каталог): по запросу на (озвучка × серия). Резолв идёт тем же путём,
-     * что и переключение серий в плеере (MovieStreamResolver.resolveEpisode).
+     * Сериал: по запросу на (озвучка × серия). Для Kodik-каталога резолв идёт тем же путём,
+     * что и переключение серий в плеере (MovieStreamResolver.resolveEpisode); для прямого
+     * ddbb-каталога ([isDirectSource]) ссылки серий — готовые CDN-url, и гнать их через
+     * Kodik-скрапер нельзя (live kp=460586: «payload extraction failed» на каждой серии).
      */
     fun seriesRequests(
         kinopoiskId: Int,
@@ -145,9 +151,12 @@ object DownloadBridges {
         candidates: List<KodikMovieCandidate>,
         translationId: String,
         translationTitle: String,
-        episodes: List<MovieEpisodeRef>
+        episodes: List<MovieEpisodeRef>,
+        isDirectSource: Boolean = false,
+        directHeaders: Map<String, String> = emptyMap()
     ): List<EpisodeDownloadManager.EpisodeDownloadRequest> {
         val itemKey = animeItemKey(0, kinopoiskId)
+        val headers = directHeaders.ifEmpty { DdbbStreamResolver.directHeaders(kinopoiskId) }
         return episodes.sortedWith(compareBy({ it.seasonNumber }, { it.episodeNumber }))
             .map { ep ->
                 EpisodeDownloadManager.EpisodeDownloadRequest(
@@ -156,12 +165,20 @@ object DownloadBridges {
                     source = AnimeSourceType.KODIK.name,
                     translationId = translationId,
                     translationTitle = translationTitle,
-                    episodeNumber = ep.episodeNumber,
+                    episodeNumber = offlineEpisodeNumber(ep),
                     episodeLabel = seriesEpisodeLabel(ep),
                     resolve = {
-                        when (val result = MovieStreamResolver.resolveEpisode(request, ep, candidates, translationId)) {
-                            is MovieStreamResult.Success -> fromStream(result.stream)
-                            is MovieStreamResult.Unavailable -> null
+                        if (isDirectSource) {
+                            candidates.firstOrNull { it.translationId == translationId }
+                                ?.episodes?.firstOrNull {
+                                    it.seasonNumber == ep.seasonNumber && it.episodeNumber == ep.episodeNumber
+                                }?.playerUrl?.takeIf { it.isNotBlank() }
+                                ?.let { MediaDownloader.MediaSource(it, headers) }
+                        } else {
+                            when (val result = MovieStreamResolver.resolveEpisode(request, ep, candidates, translationId)) {
+                                is MovieStreamResult.Success -> fromStream(result.stream)
+                                is MovieStreamResult.Unavailable -> null
+                            }
                         }
                     }
                 )
@@ -171,4 +188,12 @@ object DownloadBridges {
     private fun seriesEpisodeLabel(ep: MovieEpisodeRef): String =
         if (ep.seasonNumber > 0) "S%02dE%02d".format(ep.seasonNumber, ep.episodeNumber)
         else "Серия ${ep.episodeNumber}"
+
+    /**
+     * Офлайн-ключ серии не знает про сезоны, а «скачать все серии» качает все сезоны сразу:
+     * S1E1 и S2E1 склеились бы в один ключ очереди и молча терялись. Пакуем сезон в номер
+     * эпизода тем же способом, каким шит загрузки сортирует список серий.
+     */
+    private fun offlineEpisodeNumber(ep: MovieEpisodeRef): Int =
+        if (ep.seasonNumber > 0) ep.seasonNumber * 1000 + ep.episodeNumber else ep.episodeNumber
 }

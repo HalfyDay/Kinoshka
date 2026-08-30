@@ -84,10 +84,16 @@ object MediaDownloader {
         return client.newCall(builder.build()).execute()
     }
 
-    private fun fetchText(url: String, headers: Map<String, String>): String =
+    /**
+     * Текст плейлиста и ФИНАЛЬНЫЙ url ответа. Прямые ссылки ddbb/turbo отвечают 302 на
+     * токенизированный плейлист другого CDN-хоста: относительные сегменты внутри плейлиста
+     * обязаны резолвиться против финального url, а не против исходного (иначе все сегменты
+     * уходят на чужой хост и дают 404 — live kp=5437614, «Сегмент 0: HTTP 404»).
+     */
+    private fun fetchPlaylist(url: String, headers: Map<String, String>): Pair<String, String> =
         httpGet(url, headers).use { resp ->
             if (!resp.isSuccessful) throw DownloadException("HTTP ${resp.code}")
-            resp.body?.string().orEmpty()
+            resp.body?.string().orEmpty() to resp.request.url.toString()
         }
 
     /**
@@ -104,17 +110,17 @@ object MediaDownloader {
         dir.listFiles()?.forEach { it.delete() }
         val looksHls = source.url.substringBefore('?').substringAfterLast('/').contains(".m3u8")
         if (looksHls) {
-            val body = fetchText(source.url, source.headers)
+            val (body, playlistUrl) = fetchPlaylist(source.url, source.headers)
             if (!body.contains("#EXTM3U")) throw DownloadException("Ожидался HLS-плейлист, получен другой ответ")
-            downloadHls(body, source, dir, onProgress)
+            downloadHls(body, playlistUrl, source, dir, onProgress)
         } else {
             when (val direct = downloadDirect(source, dir, baseName, onProgress)) {
                 is DirectOutcome.File -> direct.mediaFile
                 is DirectOutcome.IsHls -> {
-                    val body = fetchText(source.url, source.headers)
+                    val (body, playlistUrl) = fetchPlaylist(source.url, source.headers)
                     if (!body.contains("#EXTM3U")) throw DownloadException("Ожидался HLS-плейлист, получен другой ответ")
                     dir.listFiles()?.forEach { it.delete() }
-                    downloadHls(body, source, dir, onProgress)
+                    downloadHls(body, playlistUrl, source, dir, onProgress)
                 }
             }
         }
@@ -197,18 +203,21 @@ object MediaDownloader {
 
     private fun downloadHls(
         playlistBody: String,
+        playlistUrl: String,
         source: MediaSource,
         dir: File,
         onProgress: (MediaProgress) -> Unit
     ): MediaFile {
-        val body = if (playlistBody.contains("#EXT-X-STREAM-INF")) {
-            val variantUrl = pickVariant(playlistBody, source.url)
+        // Мастер-плейлист → вариант; сегменты резолвим против url ИМЕННО варианта: он может
+        // сам уйти в редирект, и его финальный url — единственная верная база.
+        val (body, segmentBase) = if (playlistBody.contains("#EXT-X-STREAM-INF")) {
+            val variantUrl = pickVariant(playlistBody, playlistUrl)
             Log.i(TAG, "HLS master → variant $variantUrl")
-            fetchText(variantUrl, source.headers)
+            fetchPlaylist(variantUrl, source.headers)
         } else {
-            playlistBody
+            playlistBody to playlistUrl
         }
-        val segments = parseSegments(body, source.url)
+        val segments = parseSegments(body, segmentBase)
         if (segments.isEmpty()) throw DownloadException("Плейлист не содержит сегментов")
 
         // Ключ шифрования скачивается один раз на весь плейлист (в наших источниках ключ единый).

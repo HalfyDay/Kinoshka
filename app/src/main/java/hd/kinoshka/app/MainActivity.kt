@@ -17,6 +17,8 @@ import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import hd.kinoshka.app.data.download.DownloadNotifications
+import hd.kinoshka.app.ui.DownloadsNav
 import hd.kinoshka.app.ui.KinoApp
 import hd.kinoshka.app.ui.screens.PlayerPipState
 
@@ -36,6 +38,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        maybeOpenDownloads(intent)
 
         // Register PiP action receiver
         val filter = IntentFilter(ACTION_PIP_PLAY_PAUSE)
@@ -95,6 +98,19 @@ class MainActivity : ComponentActivity() {
         if (isInPictureInPictureMode) return
         if (!PlayerPipState.isPlayerScreenVisible) return
         runCatching { enterPictureInPictureMode(buildPipParams()) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // singleTask: тап по уведомлению скачивания при живом процессе приходит сюда.
+        maybeOpenDownloads(intent)
+    }
+
+    /** Тап по уведомлению скачивания → открыть страницу «Загрузки» (см. [DownloadsNav]). */
+    private fun maybeOpenDownloads(intent: Intent?) {
+        if (intent?.getBooleanExtra(DownloadNotifications.EXTRA_OPEN_DOWNLOADS, false) == true) {
+            DownloadsNav.openRequest++
+        }
     }
 
     override fun onPictureInPictureModeChanged(

@@ -105,6 +105,16 @@ fun KinoApp() {
         LocalViewModelStoreOwner provides viewModelStoreOwner
     ) {
         val navController = rememberNavController()
+
+        // Тап по уведомлению скачивания → страница «Загрузки» (счётчик-событие из MainActivity).
+        LaunchedEffect(DownloadsNav.openRequest) {
+            if (DownloadsNav.openRequest > 0 &&
+                navController.currentDestination?.route != "downloads"
+            ) {
+                navController.navigate("downloads") { launchSingleTop = true }
+            }
+        }
+
         val appContext = LocalContext.current.applicationContext
         val updateManager = remember(appContext) { AppUpdateManager(appContext) }
         val updatePrefs = remember(appContext) {
@@ -698,4 +708,13 @@ private fun Context.findActivity(): ComponentActivity? = when (this) {
     is ComponentActivity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+/**
+ * Событие «открыть страницу Загрузки»: ставится из MainActivity при тапе по уведомлению
+ * скачивания (cold start через extra, живой процесс — через onNewIntent). KinoApp читает
+ * счётчик и навигирует; [androidx.compose.runtime.mutableStateOf] делает изменение наблюдаемым.
+ */
+object DownloadsNav {
+    var openRequest by androidx.compose.runtime.mutableStateOf(0)
 }

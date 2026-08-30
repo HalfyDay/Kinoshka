@@ -51,7 +51,9 @@ import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.download.DownloadPhase
 import hd.kinoshka.app.data.download.EpisodeDownloadManager
 import hd.kinoshka.app.data.download.OfflineEpisode
+import hd.kinoshka.app.data.download.downloadProgressText
 import hd.kinoshka.app.data.download.formatBytes
+import hd.kinoshka.app.data.download.progressPercent
 import java.io.File
 
 /**
@@ -144,19 +146,12 @@ fun DownloadsScreen(onBack: () -> Unit) {
                         subtitle = "${task.translationTitle} · " + when (task.phase) {
                             DownloadPhase.QUEUED -> "в очереди"
                             DownloadPhase.RESOLVING -> "поиск ссылки…"
-                            DownloadPhase.DOWNLOADING ->
-                                if (task.segmentsTotal > 0) "сегменты ${task.segmentsDone}/${task.segmentsTotal} · ${formatBytes(task.bytesDone)}"
-                                else "${formatBytes(task.bytesDone)}" + if (task.bytesTotal > 0) " / ${formatBytes(task.bytesTotal)}" else ""
+                            DownloadPhase.DOWNLOADING -> downloadProgressText(task)
                             DownloadPhase.DONE -> "готово"
                             DownloadPhase.FAILED -> task.error ?: "ошибка"
                         },
-                        progress = when {
-                            task.phase == DownloadPhase.DOWNLOADING && task.segmentsTotal > 0 ->
-                                task.segmentsDone.toFloat() / task.segmentsTotal
-                            task.phase == DownloadPhase.DOWNLOADING && task.bytesTotal > 0 ->
-                                task.bytesDone.toFloat() / task.bytesTotal
-                            else -> null
-                        },
+                        progress = task.progressPercent?.let { it / 100f }
+                            .takeIf { task.phase == DownloadPhase.DOWNLOADING },
                         failed = task.phase == DownloadPhase.FAILED,
                         onCancel = { EpisodeDownloadManager.cancel(task.key) },
                         onRetry = { EpisodeDownloadManager.retry(task.key) }

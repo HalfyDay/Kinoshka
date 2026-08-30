@@ -92,6 +92,14 @@ object DownloadNotifications {
     const val CHANNEL_ID = "video_downloads"
     const val NOTIFICATION_ID = 4201
 
+    /** Extra интента контента: тап по уведомлению открывает страницу «Загрузки». */
+    const val EXTRA_OPEN_DOWNLOADS = "open_downloads"
+
+    /** Минимальный интервал между post(): колбэки прогресса приходят чаще, чем стоит будить шину уведомлений. */
+    private const val MIN_POST_INTERVAL_MS = 500L
+
+    @Volatile private var lastPostMs = 0L
+
     fun ensureChannel(context: Context) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
@@ -109,6 +117,10 @@ object DownloadNotifications {
     fun post(context: Context, activeTasks: List<DownloadTaskState>) {
         runCatching {
             ensureChannel(context)
+            // Пропускаем апдейты чаще 2 Гц — следующий колбэк всё равно принесёт свежее состояние.
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastPostMs < MIN_POST_INTERVAL_MS) return
+            lastPostMs = now
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.notify(NOTIFICATION_ID, build(context, activeTasks))
         }
@@ -123,13 +135,20 @@ object DownloadNotifications {
         val phaseText = when (current.phase) {
             DownloadPhase.QUEUED -> "в очереди"
             DownloadPhase.RESOLVING -> "поиск ссылки…"
-            DownloadPhase.DOWNLOADING -> when {
-                current.segmentsTotal > 0 -> "сегменты ${current.segmentsDone}/${current.segmentsTotal}"
-                current.bytesTotal > 0 -> "${formatBytes(current.bytesDone)} / ${formatBytes(current.bytesTotal)}"
-                else -> formatBytes(current.bytesDone)
-            }
+            DownloadPhase.DOWNLOADING -> downloadProgressText(current)
             else -> ""
         }
+
+        // Тап по уведомлению открывает страницу «Загрузки»; SINGLE_TOP доставляет интент
+        // в живую MainActivity через onNewIntent вместо стека копий активити.
+        val contentIntent = PendingIntent.getActivity(
+            context,
+            0,
+            Intent(context, MainActivity::class.java)
+                .putExtra(EXTRA_OPEN_DOWNLOADS, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         val builder = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
@@ -137,21 +156,17 @@ object DownloadNotifications {
             .setOnlyAlertOnce(true)
             .setContentTitle("Скачивание «${current.title}»")
             .setContentText("${current.episodeLabel} · ${current.translationTitle} · $phaseText")
-            .setContentIntent(
-                PendingIntent.getActivity(
-                    context,
-                    0,
-                    Intent(context, MainActivity::class.java),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
+            .setContentIntent(contentIntent)
+            .setStyle(
+                Notification.BigTextStyle()
+                    .bigText("${current.episodeLabel} · ${current.translationTitle} · $phaseText")
             )
         if (queued > 0) builder.setSubText("В очереди: $queued")
 
+        val percent = current.progressPercent
         when {
-            current.phase == DownloadPhase.DOWNLOADING && current.segmentsTotal > 0 ->
-                builder.setProgress(current.segmentsTotal, current.segmentsDone, false)
-            current.phase == DownloadPhase.DOWNLOADING && current.bytesTotal > 0 ->
-                builder.setProgress(100, ((current.bytesDone * 100) / current.bytesTotal).toInt().coerceIn(0, 100), false)
+            current.phase == DownloadPhase.DOWNLOADING && percent != null ->
+                builder.setProgress(100, percent, false)
             current.phase == DownloadPhase.DOWNLOADING ->
                 builder.setProgress(0, 0, true)
             else -> Unit
