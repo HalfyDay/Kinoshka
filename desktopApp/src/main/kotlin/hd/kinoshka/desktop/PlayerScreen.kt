@@ -10,9 +10,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -29,9 +32,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import hd.kinoshka.app.data.model.FilmItem
+import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.MovieContentKind
 import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.MovieStreamResult
+import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
+import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.MovieStreamResolver
 import hd.kinoshka.app.player.desktop.MpvNative
 import hd.kinoshka.app.player.desktop.MpvPlayer
@@ -58,8 +64,36 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
     var position by remember { mutableStateOf(0.0) }
     var duration by remember { mutableStateOf(0.0) }
     var url by remember { mutableStateOf(DEMO_URL) }
+    // Озвучки: приходят из resolveMovie; выбор = ленивое извлечение потока + перемотка на текущую позицию.
+    var translations by remember { mutableStateOf<List<FlatTranslation>>(emptyList()) }
+    var currentTranslationId by remember { mutableStateOf<String?>(null) }
+    var resumeAt by remember { mutableStateOf(0.0) }
     val scope = rememberCoroutineScope()
     val attachGuard = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+
+    fun switchTranslation(translation: FlatTranslation) {
+        val link = translation.episodes.firstOrNull()?.link ?: return
+        scope.launch {
+            val resolved = withContext(Dispatchers.IO) {
+                runCatching {
+                    val qualities = AnimeStreamResolver.resolveKodikHls(
+                        AnimeStreamResolver.absoluteKodikUrl(link)
+                    )
+                    val best = QUALITY_PREFERENCE_DESC.firstOrNull { qualities.containsKey(it) }
+                        ?: qualities.keys.firstOrNull()
+                    best?.let { qualities.getValue(it) }
+                }.getOrNull()
+            }
+            if (resolved == null) {
+                resolveError = "Не удалось извлечь поток озвучки «${translation.title}»"
+                return@launch
+            }
+            resumeAt = if (duration > 1.0) position else 0.0
+            currentTranslationId = translation.translationId
+            url = resolved
+            pending = LoadCommand(resolved, AnimeStreamResolver.kodikPlaybackHeaders())
+        }
+    }
 
     // Для реального фильма разрешаем поток через Kodik (общий код shared);
     // для демо (kinopoiskId == 0) сразу играем тестовый клип.
@@ -79,6 +113,7 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
             when (val result = MovieStreamResolver.resolveMovie(request)) {
                 is MovieStreamResult.Success -> {
                     println("MPV: поток найден (${result.stream.quality}): ${result.stream.url.take(90)}")
+                    translations = result.translations
                     url = result.stream.url
                     pending = LoadCommand(result.stream.url, result.stream.headers)
                 }
@@ -114,6 +149,7 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
     }
 
     // Загрузка: когда есть и плеер, и что грузить (реальный поток или демо).
+    // Переключение озвучки resume-ится на позицию, где стояли.
     LaunchedEffect(player, pending) {
         val current = player ?: return@LaunchedEffect
         val command = pending ?: return@LaunchedEffect
@@ -123,6 +159,18 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
             current.setHeaders(command.headers)
             val rc = current.load(command.url)
             println("MPV: loadfile rc=$rc")
+            val resume = resumeAt
+            resumeAt = 0.0
+            if (resume > 1.0) {
+                // Ждём, пока mpv распознает файл (появится duration), затем перематываем.
+                var waited = 0
+                while (waited < 40 && (current.durationSeconds() ?: 0.0) <= 0.0) {
+                    delay(250)
+                    waited++
+                }
+                current.seekTo(resume)
+                println("MPV: resume на $resume c после переключения озвучки")
+            }
         }
     }
 
@@ -166,6 +214,43 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
+            if (translations.size > 1) {
+                var menuOpen by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { menuOpen = true }) {
+                        Text(
+                            text = "Озвучка: " + (
+                                translations.firstOrNull { it.translationId == currentTranslationId }?.title
+                                    ?: translations.firstOrNull()?.title
+                                    ?: "по умолчанию"
+                                ),
+                            color = Color(0xFFB9B9C0),
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                        )
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        translations.forEach { translation ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        translation.title,
+                                        color = if (translation.translationId == currentTranslationId) {
+                                            Color(0xFF8AB4F8)
+                                        } else {
+                                            Color.White
+                                        },
+                                    )
+                                },
+                                onClick = {
+                                    menuOpen = false
+                                    switchTranslation(translation)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         Box(Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
