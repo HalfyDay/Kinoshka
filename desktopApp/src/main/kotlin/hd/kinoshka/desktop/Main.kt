@@ -57,14 +57,18 @@ private fun initialScreen(args: Array<String>, repository: FilmsRepository): Scr
         val popular = runCatching {
             kotlinx.coroutines.runBlocking { repository.popular(page = 1) }
         }.getOrNull().orEmpty()
-        val picked = System.getenv("KINO_KP_ID")?.trim()?.toIntOrNull()?.let { kpId ->
-            popular.firstOrNull { it.kinopoiskId == kpId } ?: runCatching {
-                kotlinx.coroutines.runBlocking {
-                    val d = repository.details(kpId)
-                    FilmItem(d.kinopoiskId, d.nameRu, d.nameOriginal, d.posterUrlPreview, d.ratingKinopoisk, d.year)
-                }
-            }.getOrNull()
-        } ?: popular.firstOrNull { (it.year ?: 0) in 1950..2025 }
+        val picked = if (System.getenv("KINO_DEMO") == "1") {
+            FilmItem(0, "Демо", null, null, null, null)
+        } else {
+            System.getenv("KINO_KP_ID")?.trim()?.toIntOrNull()?.let { kpId ->
+                popular.firstOrNull { it.kinopoiskId == kpId } ?: runCatching {
+                    kotlinx.coroutines.runBlocking {
+                        val d = repository.details(kpId)
+                        FilmItem(d.kinopoiskId, d.nameRu, d.nameOriginal, d.posterUrlPreview, d.ratingKinopoisk, d.year)
+                    }
+                }.getOrNull()
+            } ?: popular.firstOrNull { (it.year ?: 0) in 1950..2025 }
+        }
         println("Kino: выбранный фильм = ${picked?.nameRu} (kp=${picked?.kinopoiskId}, ${picked?.year})")
         return Screen.Player(
             picked ?: FilmItem(0, "Демо", null, null, null, null)
