@@ -35,10 +35,8 @@ import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 
-enum class ContentType {
-    FILMS,
-    ANIME
-}
+// ContentType переехал в shared (jvmShared): hd.kinoshka.app.ui.screens.ContentType —
+// пакет тот же, все использования продолжают резолвиться.
 
 enum class HomeTab {
     CATALOG,
@@ -986,7 +984,8 @@ class FilmsViewModel(
                     launch {
                         val rolesList = runCatching { animeRepository.roles(shikimoriId) }.getOrDefault(emptyList())
                         val validCharacters = rolesList
-                            .filter { it.character != null && !it.character.name.isNullOrBlank() }
+                            // Локальная копия: character объявлен в другом модуле (shared), smart cast невозможен.
+                            .filter { it.character?.name?.isNotBlank() == true }
                             .distinctBy { it.character?.id }
                         detailsState = detailsState.copy(animeCharacters = validCharacters)
                     }

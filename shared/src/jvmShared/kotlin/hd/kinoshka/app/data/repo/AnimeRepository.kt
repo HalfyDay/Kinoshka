@@ -1,7 +1,7 @@
 package hd.kinoshka.app.data.repo
 
-import android.util.Log
-import hd.kinoshka.app.BuildConfig
+import hd.kinoshka.app.util.log.KLog
+
 import hd.kinoshka.app.data.api.ShikimoriApi
 import hd.kinoshka.app.data.model.ShikimoriAnimeDetails
 import hd.kinoshka.app.data.model.ShikimoriAnimeItem
@@ -12,7 +12,13 @@ import hd.kinoshka.app.data.model.UserRateRequest
 import hd.kinoshka.app.data.model.UserRateUpdateData
 import hd.kinoshka.app.data.model.UserRateUpdateRequest
 
-class AnimeRepository(private val api: ShikimoriApi) {
+class AnimeRepository(
+    private val api: ShikimoriApi,
+    // OAuth-креды Shikimori: на Android приходят из BuildConfig приложения,
+    // на desktop — из local.properties/env (Main.kt).
+    private val shikimoriClientId: String = "",
+    private val shikimoriClientSecret: String = "",
+) {
     private val searchCache = BoundedCache<String, List<ShikimoriAnimeItem>>()
     private val detailsCache = BoundedCache<Int, ShikimoriAnimeDetails>()
     private val screenshotsCache = BoundedCache<Int, List<ShikimoriScreenshot>>()
@@ -22,10 +28,10 @@ class AnimeRepository(private val api: ShikimoriApi) {
     private val rolesCache = BoundedCache<Int, List<hd.kinoshka.app.data.model.ShikimoriRole>>()
 
     suspend fun refreshToken(refreshToken: String): ShikimoriTokenResponse? {
-        val clientId = BuildConfig.SHIKIMORI_CLIENT_ID
-        val clientSecret = BuildConfig.SHIKIMORI_CLIENT_SECRET
+        val clientId = shikimoriClientId
+        val clientSecret = shikimoriClientSecret
         if (clientId.isBlank() || clientSecret.isBlank()) {
-            Log.e("ShikimoriSync", "OAuth credentials not configured")
+            KLog.e("ShikimoriSync", "OAuth credentials not configured")
             return null
         }
         return runCatching {
@@ -34,35 +40,35 @@ class AnimeRepository(private val api: ShikimoriApi) {
                 clientSecret = clientSecret,
                 refreshToken = refreshToken
             )
-            Log.d("ShikimoriSync", "Token refreshed successfully")
+            KLog.d("ShikimoriSync", "Token refreshed successfully")
             result
         }.onFailure { e ->
-            Log.e("ShikimoriSync", "Failed to refresh token: ${e.message}", e)
+            KLog.e("ShikimoriSync", "Failed to refresh token: ${e.message}", e)
         }.getOrNull()
     }
 
     suspend fun exchangeCodeForToken(code: String): ShikimoriTokenResponse? {
-        val clientId = BuildConfig.SHIKIMORI_CLIENT_ID
-        val clientSecret = BuildConfig.SHIKIMORI_CLIENT_SECRET
-        Log.d("ShikimoriSync", "exchangeCodeForToken: clientId='$clientId', clientSecret='${clientSecret.take(5)}...'")
+        val clientId = shikimoriClientId
+        val clientSecret = shikimoriClientSecret
+        KLog.d("ShikimoriSync", "exchangeCodeForToken: clientId='$clientId', clientSecret='${clientSecret.take(5)}...'")
         if (clientId.isBlank() || clientSecret.isBlank()) {
-            Log.e("ShikimoriSync", "OAuth credentials not configured! Check local.properties")
+            KLog.e("ShikimoriSync", "OAuth credentials not configured! Check local.properties")
             return null
         }
         return runCatching {
-            Log.d("ShikimoriSync", "Calling API to exchange code...")
+            KLog.d("ShikimoriSync", "Calling API to exchange code...")
             val result = api.exchangeCodeForToken(
                 clientId = clientId,
                 clientSecret = clientSecret,
                 code = code
             )
-            Log.d("ShikimoriSync", "API call successful! Token received.")
+            KLog.d("ShikimoriSync", "API call successful! Token received.")
             result
         }.onFailure { e ->
-            Log.e("ShikimoriSync", "API call FAILED: ${e.message}", e)
+            KLog.e("ShikimoriSync", "API call FAILED: ${e.message}", e)
             if (e is retrofit2.HttpException) {
-                Log.e("ShikimoriSync", "HTTP error code: ${e.code()}")
-                Log.e("ShikimoriSync", "HTTP error body: ${e.response()?.errorBody()?.string()}")
+                KLog.e("ShikimoriSync", "HTTP error code: ${e.code()}")
+                KLog.e("ShikimoriSync", "HTTP error body: ${e.response()?.errorBody()?.string()}")
             }
         }.getOrNull()
     }
@@ -185,13 +191,13 @@ class AnimeRepository(private val api: ShikimoriApi) {
                 score = score
             )
         )
-        Log.d("ShikimoriSync", "Creating user rate: targetId=$targetId, status=$status, episodes=$episodes, score=$score")
+        KLog.d("ShikimoriSync", "Creating user rate: targetId=$targetId, status=$status, episodes=$episodes, score=$score")
         return runCatching {
             val result = api.createUserRate(authHeader, request)
-            Log.d("ShikimoriSync", "Created user rate successfully: id=${result.id}")
+            KLog.d("ShikimoriSync", "Created user rate successfully: id=${result.id}")
             result
         }.onFailure { e ->
-            Log.e("ShikimoriSync", "Failed to create user rate: ${e.message}", e)
+            KLog.e("ShikimoriSync", "Failed to create user rate: ${e.message}", e)
         }.getOrNull()
     }
 
@@ -204,13 +210,13 @@ class AnimeRepository(private val api: ShikimoriApi) {
                 score = score
             )
         )
-        Log.d("ShikimoriSync", "Updating user rate: rateId=$rateId, status=$status, episodes=$episodes, score=$score")
+        KLog.d("ShikimoriSync", "Updating user rate: rateId=$rateId, status=$status, episodes=$episodes, score=$score")
         return runCatching {
             val result = api.updateUserRate(authHeader, rateId, request)
-            Log.d("ShikimoriSync", "Updated user rate successfully: id=${result.id}")
+            KLog.d("ShikimoriSync", "Updated user rate successfully: id=${result.id}")
             result
         }.onFailure { e ->
-            Log.e("ShikimoriSync", "Failed to update user rate: ${e.message}", e)
+            KLog.e("ShikimoriSync", "Failed to update user rate: ${e.message}", e)
         }.getOrNull()
     }
 
