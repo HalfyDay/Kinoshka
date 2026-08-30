@@ -120,6 +120,7 @@ import androidx.core.view.WindowCompat
 import coil.compose.AsyncImage
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.BuildConfig
+import hd.kinoshka.app.data.diagnostics.AppDiagnostics
 import hd.kinoshka.app.R
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
@@ -881,6 +882,7 @@ fun AboutScreen(
 ) {
     val isUpdateAvailable = updateStatusText.contains("Доступна", ignoreCase = true)
     val statusColor = if (isUpdateAvailable) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+    val reportActivity = LocalContext.current.findActivity()
 
     LazyColumn(
         modifier = Modifier
@@ -992,6 +994,12 @@ fun AboutScreen(
                         title = "Shikimori",
                         subtitle = "Энциклопедия аниме и манги",
                         onClick = onOpenShikimori
+                    )
+                    AboutLinkRow(
+                        badge = "!",
+                        title = "Собрать отчёт о проблеме",
+                        subtitle = "Устройство, события плеера и логи — отправить в любое приложение",
+                        onClick = { reportActivity?.let { AppDiagnostics.shareReport(it) } }
                     )
                 }
             }

@@ -595,7 +595,8 @@ object HentaiStreamResolver {
             url = episodes.first().url,
             headers = if (sibnetReferer) mapOf("Referer" to "https://video.sibnet.ru/") else emptyMap(),
             quality = "Auto",
-            title = "Smarthard",
+            // Название тайтла, а не «Smarthard»: источник и так подписан на каждой строке.
+            title = queries.firstOrNull().orEmpty(),
             episodes = episodes
         )
     }

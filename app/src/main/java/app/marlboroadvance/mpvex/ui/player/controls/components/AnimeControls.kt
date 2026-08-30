@@ -348,36 +348,38 @@ fun AnimeTranslationDropdown(
                             modifier = Modifier.padding(bottom = 12.dp)
                         )
 
-                        // Source filter row
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Источник:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                            
-                            val availableSources = translations.map { it.source }.distinct()
+                        // Source chips — тот же паттерн, что чипы сезонов в «Выберите серию»:
+                        // горизонтальная прокрутка, тап фильтрует; при одном источнике ряд скрыт.
+                        val availableSources = translations.map { it.source }.distinct()
+                        if (availableSources.size > 1) {
                             // "Все" first, then sources ranked by the user's own usage.
                             val filters = listOf(null) + availableSources.sortedWith(
                                 compareByDescending<AnimeSourceType> { src ->
                                     playbackUsage.sources[src.name]?.lastUsedAt ?: 0L
                                 }.thenByDescending { playbackUsage.sources[it.name]?.count ?: 0 }
                             )
-                            
-                            filters.forEach { src ->
-                                val label = src?.displayName ?: "Все"
-                                val isSelected = selectedSourceFilter == src
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                                    contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.clickable { selectedSourceFilter = src }
-                                ) {
-                                    Text(
-                                        text = label,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
+
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.padding(bottom = 12.dp)
+                            ) {
+                                items(filters) { src ->
+                                    val isSelected = selectedSourceFilter == src
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                        contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer
+                                        else MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.clickable { selectedSourceFilter = src }
+                                    ) {
+                                        Text(
+                                            text = src?.displayName ?: "Все",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                        )
+                                    }
                                 }
                             }
                         }

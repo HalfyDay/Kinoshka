@@ -9,7 +9,8 @@ enum class AnimeSourceType(val displayName: String, val description: String, val
     ANILIB("AniLib", "Каталог AniLib (animelib.org), озвучки по командам"),
     ANISTAR("AniStar", "Свои озвучки AniStar, MP4/HLS 360–720p"),
     /** Архив shikicinema (smarthard.net), ключ записей — Shikimori id. Часть ссылок ведёт на
-     *  embed-хосты, недоступные без VPN: листинг не фильтруется, резолв ленивый (SmarthardApi). */
+     *  embed-хосты, недоступные без VPN: листинг не фильтруется, резолв ленивый (SmarthardApi).
+     *  В аниме-пикере не участвует — источник остался только в хентай-флоу. */
     SMARTHARD("Smarthard", "Архив shikicinema: озвучки и субтитры; часть ссылок требует VPN", needsVpn = true),
     /** Direct CDN links (ddbb aggregator: turbo/collaps/alloha/veoveo). Movie/QOM rows only —
      *  never offered by the anime picker (see ANIME_PICKER_SOURCES). */
@@ -25,7 +26,7 @@ enum class AnimeSourceType(val displayName: String, val description: String, val
 
 /** Sources the anime selection screen races/loads; DDBB is movie-playback-only. */
 val ANIME_PICKER_SOURCES: List<AnimeSourceType> =
-    listOf(AnimeSourceType.KODIK, AnimeSourceType.ANILIBERTY, AnimeSourceType.ANILIB, AnimeSourceType.ANISTAR, AnimeSourceType.SMARTHARD)
+    listOf(AnimeSourceType.KODIK, AnimeSourceType.ANILIBERTY, AnimeSourceType.ANILIB, AnimeSourceType.ANISTAR)
 
 /**
  * Shared quality preference, best first: the default pick for any ladder (Kodik HLS, ddbb
