@@ -212,14 +212,40 @@ object EpisodeDownloadManager {
                 val dir = MediaDownloader.episodeDir(
                     appContext, request.itemKey, request.source, request.translationId, request.episodeNumber
                 )
+                // Скорость — EMA по дельтам bytesDone (direct обновляет по 64КБ-чанкам, HLS — по
+                // завершённым сегментам). Сброс дельт (перезапуск попытки) обнуляет замер.
+                var speedEma = 0.0
+                var sampleMs = 0L
+                var sampleBytes = 0L
                 val file = MediaDownloader.download(media, dir, "episode") { progress ->
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (sampleMs > 0 && now > sampleMs) {
+                        val delta = progress.bytesDone - sampleBytes
+                        if (delta >= 0) {
+                            val inst = delta * 1000.0 / (now - sampleMs)
+                            speedEma = if (speedEma == 0.0) inst else 0.35 * inst + 0.65 * speedEma
+                        } else {
+                            speedEma = 0.0
+                        }
+                    }
+                    sampleMs = now
+                    sampleBytes = progress.bytesDone
+                    // Для HLS сервер не отдаёт общий размер: оцениваем по среднему сегменту.
+                    val (total, estimated) = when {
+                        progress.bytesTotal > 0 -> progress.bytesTotal to false
+                        progress.segmentsDone > 0 && progress.segmentsTotal > 0 ->
+                            (progress.bytesDone * progress.segmentsTotal / progress.segmentsDone) to true
+                        else -> -1L to false
+                    }
                     update {
                         it.copy(
                             phase = DownloadPhase.DOWNLOADING,
                             bytesDone = progress.bytesDone,
-                            bytesTotal = progress.bytesTotal,
+                            bytesTotal = total,
+                            sizeEstimated = estimated,
                             segmentsDone = progress.segmentsDone,
-                            segmentsTotal = progress.segmentsTotal
+                            segmentsTotal = progress.segmentsTotal,
+                            speedBytesPerSec = speedEma.toLong()
                         )
                     }
                 }

@@ -55,8 +55,49 @@ data class DownloadTaskState(
     val bytesTotal: Long = -1,
     val segmentsDone: Int = 0,
     val segmentsTotal: Int = 0,
+    /** EMA-скорость скачивания; 0 — пока нет замера. */
+    val speedBytesPerSec: Long = 0,
+    /** true, когда bytesTotal для HLS оценён по среднему размеру сегмента, а не отдан сервером. */
+    val sizeEstimated: Boolean = false,
     val error: String? = null
 )
+
+/** Процент выполнения 0..100: по сегментам (точнее на старте), иначе по байтам; null — total неизвестен. */
+val DownloadTaskState.progressPercent: Int?
+    get() = when {
+        segmentsTotal > 0 -> (segmentsDone * 100 / segmentsTotal).coerceIn(0, 100)
+        bytesTotal > 0 -> (bytesDone * 100 / bytesTotal).toInt().coerceIn(0, 100)
+        else -> null
+    }
+
+/** Строка «текущий размер / общий»: с «~» перед оценённым общим размером HLS. */
+fun DownloadTaskState.sizeProgressText(): String? = when {
+    bytesTotal > 0 -> "${formatBytes(bytesDone)} / ${if (sizeEstimated) "~" else ""}${formatBytes(bytesTotal)}"
+    bytesDone > 0 -> formatBytes(bytesDone)
+    else -> null
+}
+
+/** «5,3 МБ/с» — десятично-двоичный вывод в стиле [formatBytes]. */
+fun formatSpeed(bytesPerSec: Long): String {
+    if (bytesPerSec <= 0) return ""
+    val kb = bytesPerSec / 1024.0
+    val mb = kb / 1024.0
+    return when {
+        mb >= 1.0 -> String.format(java.util.Locale.getDefault(), "%.1f МБ/с", mb)
+        kb >= 1.0 -> String.format(java.util.Locale.getDefault(), "%.0f КБ/с", kb)
+        else -> "$bytesPerSec Б/с"
+    }
+}
+
+/**
+ * Единый текст прогресса для UI и уведомления: «45% · 1,2 ГБ / ~2,7 ГБ · 5,3 МБ/с».
+ * Проценты — по сегментам, размер — из задачи, скорость — EMA-замер менеджера.
+ */
+fun downloadProgressText(task: DownloadTaskState): String = buildList {
+    task.progressPercent?.let { add("$it%") }
+    task.sizeProgressText()?.let { add(it) }
+    formatSpeed(task.speedBytesPerSec).takeIf { it.isNotEmpty() }?.let { add(it) }
+}.joinToString(" · ").ifEmpty { formatBytes(task.bytesDone) }
 
 // formatBytes переехала в shared (jvmShared): hd.kinoshka.app.data.download.FormatBytes.kt —
 // пакет тот же, все использования продолжают резолвиться.

@@ -64,8 +64,10 @@ import hd.kinoshka.app.data.download.DownloadTaskState
 import hd.kinoshka.app.data.download.EpisodeDownloadManager
 import hd.kinoshka.app.data.download.MediaDownloader
 import hd.kinoshka.app.data.download.animeItemKey
+import hd.kinoshka.app.data.download.downloadProgressText
 import hd.kinoshka.app.data.download.formatBytes
 import hd.kinoshka.app.data.download.offlineKey
+import hd.kinoshka.app.data.download.progressPercent
 import hd.kinoshka.app.data.download.tryRequestNotificationPermission
 import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
 import hd.kinoshka.app.data.model.AnimeEpisode
@@ -428,24 +430,14 @@ private fun DownloadTaskRow(task: DownloadTaskState) {
             }
             when (task.phase) {
                 DownloadPhase.DOWNLOADING -> {
-                    val fraction = when {
-                        task.segmentsTotal > 0 -> task.segmentsDone.toFloat() / task.segmentsTotal
-                        task.bytesTotal > 0 -> task.bytesDone.toFloat() / task.bytesTotal
-                        else -> null
-                    }
+                    val fraction = task.progressPercent?.let { it / 100f }
                     LinearProgressIndicator(
                         progress = { fraction ?: 0f },
                         modifier = Modifier.fillMaxWidth().height(4.dp)
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = when {
-                            task.segmentsTotal > 0 ->
-                                "Сегменты ${task.segmentsDone}/${task.segmentsTotal} · ${formatBytes(task.bytesDone)}"
-                            task.bytesTotal > 0 ->
-                                "${formatBytes(task.bytesDone)} / ${formatBytes(task.bytesTotal)}"
-                            else -> formatBytes(task.bytesDone)
-                        },
+                        text = downloadProgressText(task),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -894,8 +886,13 @@ private fun MovieOfflineSection(
                             task = tasks[key],
                             onDownload = {
                                 uiContext.tryRequestNotificationPermission()
-                                EpisodeDownloadManager.enqueueAll(
-                                    DownloadBridges.qomRequests(item.kinopoiskId, displayTitle, payload.preparedStreams, titles)
+                                // Строго выбранная озвучка: каждый ряд качает свой поток, а не
+                                // весь каталог (фильм — не «озвучка×серия»).
+                                EpisodeDownloadManager.enqueue(
+                                    DownloadBridges.qomRequest(
+                                        item.kinopoiskId, displayTitle, trId,
+                                        payload.preparedStreams.getValue(trId), titles[trId] ?: trId
+                                    )
                                 )
                             },
                             onCancel = { EpisodeDownloadManager.cancel(key) },
@@ -935,7 +932,9 @@ private fun MovieOfflineSection(
                                         DownloadBridges.seriesRequests(
                                             item.kinopoiskId, displayTitle, context.request,
                                             context.candidates, trId,
-                                            candidate.translationTitle ?: "Озвучка", eps
+                                            candidate.translationTitle ?: "Озвучка", eps,
+                                            isDirectSource = context.isDirectSource,
+                                            directHeaders = context.directHeaders
                                         )
                                     )
                                 }
