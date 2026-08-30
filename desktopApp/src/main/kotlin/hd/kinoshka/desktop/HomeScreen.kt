@@ -154,16 +154,9 @@ private fun FilmCard(film: FilmItem, onClick: () -> Unit) {
         ) {
             PosterImage(url = film.posterUrlPreview, modifier = Modifier.fillMaxSize())
             film.ratingKinopoisk?.let { rating ->
-                Text(
-                    text = String.format("%.1f", rating),
-                    color = Color(0xFFFFD54F),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(6.dp)
-                        .background(Color(0xCC000000), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                hd.kinoshka.app.ui.common.KinoRatingBadge(
+                    rating = rating,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
                 )
             }
         }
