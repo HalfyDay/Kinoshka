@@ -1,0 +1,41 @@
+plugins {
+    kotlin("multiplatform")
+    id("com.android.kotlin.multiplatform.library")
+    id("org.jetbrains.kotlin.plugin.serialization")
+}
+
+kotlin {
+    androidLibrary {
+        namespace = "hd.kinoshka.app.shared"
+        compileSdk = 37
+        minSdk = 26
+    }
+
+    jvm("desktop")
+
+    sourceSets {
+        val commonMain by getting {
+            dependencies {
+                api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+            }
+        }
+        // JVM-код, общий для Android- и desktop-таргетов (gson, java.util.concurrent
+        // и прочее, чего нет в commonMain), но недоступный платформенно-нейтральному коду.
+        val jvmShared by creating {
+            dependsOn(commonMain)
+            dependencies {
+                api("com.google.code.gson:gson:2.11.0")
+                api("com.squareup.retrofit2:retrofit:3.0.0")
+                api("com.squareup.retrofit2:converter-gson:3.0.0")
+                api("com.squareup.okhttp3:logging-interceptor:5.4.0")
+            }
+        }
+        val androidMain by getting { dependsOn(jvmShared) }
+        val desktopMain by getting {
+            dependsOn(jvmShared)
+            dependencies {
+                implementation("net.java.dev.jna:jna:5.17.0")
+            }
+        }
+    }
+}

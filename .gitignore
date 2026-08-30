@@ -11,6 +11,10 @@
 /app/build/
 /app/release/
 /build/
+/shared/build/
+/desktopApp/build/
+# Нативная libmpv для desktop-плеера (скачивается вручную, ~120МБ)
+/mpv/
 /captures/
 /out/
 /tmp/

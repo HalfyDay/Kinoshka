@@ -90,6 +90,7 @@ android {
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.03.00")
 
+    implementation(project(":shared"))
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")

@@ -282,8 +282,8 @@ fun KinoApp() {
 
         val vm: FilmsViewModel = viewModel(
             factory = FilmsViewModelFactory(
-                FilmsRepository(ApiClient.kinopoiskApi(appContext)),
-                AnimeRepository(ApiClient.shikimoriApi(appContext)),
+                FilmsRepository(ApiClient.kinopoiskApi(appContext.cacheDir, hd.kinoshka.app.BuildConfig.KP_API_KEY)),
+                AnimeRepository(ApiClient.shikimoriApi(appContext.cacheDir)),
                 UserStateStore(appContext),
                 ShikimoriAuthStore(appContext)
             )
@@ -293,8 +293,8 @@ fun KinoApp() {
         val feedVm: FeedViewModel = viewModel(
             factory = FeedViewModelFactory(
                 appContext,
-                FilmsRepository(ApiClient.kinopoiskApi(appContext)),
-                AnimeRepository(ApiClient.shikimoriApi(appContext)),
+                FilmsRepository(ApiClient.kinopoiskApi(appContext.cacheDir, hd.kinoshka.app.BuildConfig.KP_API_KEY)),
+                AnimeRepository(ApiClient.shikimoriApi(appContext.cacheDir)),
                 UserStateStore(appContext)
             )
         )

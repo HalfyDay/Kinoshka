@@ -29,3 +29,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "Kino"
 include(":app")
+include(":shared")
+include(":desktopApp")

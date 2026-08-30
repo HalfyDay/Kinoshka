@@ -1,7 +1,5 @@
 package hd.kinoshka.app.data.api
 
-import android.content.Context
-import hd.kinoshka.app.BuildConfig
 import okhttp3.Cache
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -9,6 +7,7 @@ import okhttp3.Request
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 object ApiClient {
@@ -18,9 +17,9 @@ object ApiClient {
     private var shikimoriApiInstance: ShikimoriApi? = null
     private const val API_CACHE_MAX_AGE_SECONDS = 3L * 24L * 60L * 60L
 
-    private val authInterceptor = Interceptor { chain ->
+    private fun authInterceptor(apiKey: String) = Interceptor { chain ->
         val request = chain.request().newBuilder()
-            .addHeader("X-API-KEY", BuildConfig.KP_API_KEY)
+            .addHeader("X-API-KEY", apiKey)
             .build()
         chain.proceed(request)
     }
@@ -83,27 +82,27 @@ object ApiClient {
         response
     }
 
-    fun kinopoiskApi(context: Context): KinopoiskApi {
+    fun kinopoiskApi(cacheDir: File, apiKey: String): KinopoiskApi {
         kinopoiskApiInstance?.let { return it }
         return synchronized(this) {
-            kinopoiskApiInstance ?: buildApi(context.applicationContext).also {
+            kinopoiskApiInstance ?: buildApi(cacheDir, apiKey).also {
                 kinopoiskApiInstance = it
             }
         }
     }
 
-    fun shikimoriApi(context: Context): ShikimoriApi {
+    fun shikimoriApi(cacheDir: File): ShikimoriApi {
         shikimoriApiInstance?.let { return it }
         return synchronized(this) {
-            shikimoriApiInstance ?: buildShikimoriApi(context.applicationContext).also {
+            shikimoriApiInstance ?: buildShikimoriApi(cacheDir).also {
                 shikimoriApiInstance = it
             }
         }
     }
 
-    private fun buildApi(context: Context): KinopoiskApi {
+    private fun buildApi(cacheDir: File, apiKey: String): KinopoiskApi {
         val cacheSizeBytes = 50L * 1024L * 1024L
-        val cache = Cache(context.cacheDir.resolve("http_api_cache"), cacheSizeBytes)
+        val cache = Cache(cacheDir.resolve("http_api_cache"), cacheSizeBytes)
 
         val requestCacheInterceptor = Interceptor { chain ->
             val request = chain.request()
@@ -132,7 +131,7 @@ object ApiClient {
         val client: OkHttpClient = OkHttpClient.Builder()
             .cache(cache)
             .addInterceptor(requestCacheInterceptor)
-            .addInterceptor(authInterceptor)
+            .addInterceptor(authInterceptor(apiKey))
             .addInterceptor(rateLimitRetryInterceptor)
             .addNetworkInterceptor(responseCacheInterceptor)
             .addInterceptor(HttpLoggingInterceptor().apply {
@@ -150,9 +149,9 @@ object ApiClient {
             .create(KinopoiskApi::class.java)
     }
 
-    private fun buildShikimoriApi(context: Context): ShikimoriApi {
+    private fun buildShikimoriApi(cacheDir: File): ShikimoriApi {
         val cacheSizeBytes = 50L * 1024L * 1024L
-        val cache = Cache(context.cacheDir.resolve("http_shikimori_cache"), cacheSizeBytes)
+        val cache = Cache(cacheDir.resolve("http_shikimori_cache"), cacheSizeBytes)
 
         val client: OkHttpClient = OkHttpClient.Builder()
             .cache(cache)
