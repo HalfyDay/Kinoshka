@@ -16,11 +16,11 @@ import org.json.JSONObject
 import java.net.URI
 import kotlin.math.abs
 
-internal object KodikMovieParser {
+object KodikMovieParser {
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Which provider query produced a batch of results. ID-based queries are authoritative. */
-    internal enum class MatchOrigin { KINOPOISK_ID, IMDB_ID, TITLE }
+    enum class MatchOrigin { KINOPOISK_ID, IMDB_ID, TITLE }
 
     fun parseCandidates(items: List<JSONObject>): List<KodikMovieCandidate> =
         items.mapIndexedNotNull { index, item -> parseCandidate(index, json.parseToJsonElement(item.toString()).jsonObject) }

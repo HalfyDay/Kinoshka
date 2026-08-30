@@ -1,6 +1,6 @@
 package hd.kinoshka.app.data.source
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.KodikMovieCandidate
 import hd.kinoshka.app.data.model.MovieCatalogResult
@@ -60,7 +60,7 @@ object MovieStreamResolver {
             return@withContext MovieCatalogResult.Unavailable(failure)
         }
         if (searchResults.accepted.isEmpty()) {
-            Log.w(TAG, "Catalog rejected: ${searchResults.raw.size} provider results, no identity match (kp=${request.kinopoiskId}, imdb=${request.imdbId}, titles=$request.titles)")
+            KLog.w(TAG, "Catalog rejected: ${searchResults.raw.size} provider results, no identity match (kp=${request.kinopoiskId}, imdb=${request.imdbId}, titles=$request.titles)")
             return@withContext MovieCatalogResult.Unavailable(MoviePlaybackFailure.NO_MATCHING_RESULTS)
         }
         // Kodik's `type` is unreliable, so the requested kind is a preference, not a filter:
@@ -71,7 +71,7 @@ object MovieStreamResolver {
         if (playable.isEmpty()) {
             return@withContext MovieCatalogResult.Unavailable(MoviePlaybackFailure.NO_PLAYABLE_REFERENCES)
         }
-        Log.i(TAG, "Catalog: ${searchResults.raw.size} results, ${playable.size} accepted playable candidates")
+        KLog.i(TAG, "Catalog: ${searchResults.raw.size} results, ${playable.size} accepted playable candidates")
         MovieCatalogResult.Available(playable)
     }
 
@@ -138,7 +138,7 @@ object MovieStreamResolver {
         // series that would otherwise fall straight back to the web player.
         val wholeTitleLinks = available.mapNotNull { it.topLevelPlayerUrl }
         if (wholeTitleLinks.isNotEmpty()) {
-            Log.w(TAG, "No episode refs for S${episode.seasonNumber}E${episode.episodeNumber}, resolving whole-title links")
+            KLog.w(TAG, "No episode refs for S${episode.seasonNumber}E${episode.episodeNumber}, resolving whole-title links")
             return@withContext resolveReferences(available.map { it to it.topLevelPlayerUrl!! }, episode)
         }
         resolveReferences(emptyList(), episode)
@@ -199,7 +199,7 @@ object MovieStreamResolver {
         if (allAccepted.isEmpty()) {
             request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
                 val found = AnimeStreamResolver.kodikFindPlayerByExternalId("kinopoisk_id", kpId)
-                Log.d(TAG, "find-player fallback for kp=$kpId: ${found?.optString("link")?.take(80) ?: "null"}")
+                KLog.d(TAG, "find-player fallback for kp=$kpId: ${found?.optString("link")?.take(80) ?: "null"}")
                 evaluate(
                     AnimeStreamResolver.KodikMovieSearchResult(
                         items = listOfNotNull(found),
@@ -234,14 +234,14 @@ object MovieStreamResolver {
             val qualities = runCatching {
                 AnimeStreamResolver.resolveKodikHls(AnimeStreamResolver.absoluteKodikUrl(playerUrl))
             }.onFailure {
-                Log.w(TAG, "Candidate ${index + 1} extraction failed: ${it.javaClass.simpleName}")
+                KLog.w(TAG, "Candidate ${index + 1} extraction failed: ${it.javaClass.simpleName}")
             }.getOrDefault(emptyMap())
             if (qualities.isNotEmpty()) {
                 // Max quality first (shared ladder constant), then a deterministic walk so
                 // unknown variants still resolve instead of depending on map insertion order.
                 val bestKey = QUALITY_PREFERENCE_DESC.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
                 val url = qualities.getValue(bestKey)
-                Log.i(TAG, "Resolved candidate ${index + 1}/${references.size} at $bestKey")
+                KLog.i(TAG, "Resolved candidate ${index + 1}/${references.size} at $bestKey")
                 return MovieStreamResult.Success(
                     AnimeMediaStream(
                         url = url,

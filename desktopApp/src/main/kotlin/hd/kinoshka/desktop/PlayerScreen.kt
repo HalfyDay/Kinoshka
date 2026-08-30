@@ -29,6 +29,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import hd.kinoshka.app.data.model.FilmItem
+import hd.kinoshka.app.data.model.MovieContentKind
+import hd.kinoshka.app.data.model.MoviePlaybackRequest
+import hd.kinoshka.app.data.model.MovieStreamResult
+import hd.kinoshka.app.data.source.MovieStreamResolver
 import hd.kinoshka.app.player.desktop.MpvNative
 import hd.kinoshka.app.player.desktop.MpvPlayer
 import kotlinx.coroutines.Dispatchers
@@ -41,16 +45,50 @@ import java.awt.Color as AwtColor
 private const val DEMO_URL =
     "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4"
 
+private data class LoadCommand(val url: String, val headers: Map<String, String> = emptyMap())
+
 @Composable
 fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
     var player by remember { mutableStateOf<MpvPlayer?>(null) }
-    var attachFailed by remember { mutableStateOf<String?>(null) }
+    var pending by remember { mutableStateOf<LoadCommand?>(null) }
+    var loadedKey by remember { mutableStateOf<String?>(null) }
+    var attachError by remember { mutableStateOf<String?>(null) }
+    var resolveError by remember { mutableStateOf<String?>(null) }
     var paused by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0.0) }
     var duration by remember { mutableStateOf(0.0) }
     var url by remember { mutableStateOf(DEMO_URL) }
     val scope = rememberCoroutineScope()
     val attachGuard = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+
+    // Для реального фильма разрешаем поток через Kodik (общий код shared);
+    // для демо (kinopoiskId == 0) сразу играем тестовый клип.
+    LaunchedEffect(film.kinopoiskId) {
+        if (film.kinopoiskId <= 0) {
+            pending = LoadCommand(DEMO_URL)
+            return@LaunchedEffect
+        }
+        withContext(Dispatchers.IO) {
+            val request = MoviePlaybackRequest(
+                kinopoiskId = film.kinopoiskId,
+                imdbId = null,
+                titles = listOfNotNull(film.nameRu, film.nameOriginal),
+                year = film.year,
+                kind = MovieContentKind.MOVIE,
+            )
+            when (val result = MovieStreamResolver.resolveMovie(request)) {
+                is MovieStreamResult.Success -> {
+                    println("MPV: поток найден (${result.stream.quality}): ${result.stream.url.take(90)}")
+                    url = result.stream.url
+                    pending = LoadCommand(result.stream.url, result.stream.headers)
+                }
+                is MovieStreamResult.Unavailable -> {
+                    println("MPV: поток не найден: ${result.reason}")
+                    resolveError = "Поток недоступен: ${result.reason}"
+                }
+            }
+        }
+    }
 
     // Привязка mpv: опрашиваем HWND канваса до его появления — тяжеловесный AWT-канвас
     // создаётся асинхронно после первого кадра Compose, поэтому ждём именно HWND.
@@ -67,13 +105,24 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
                 val handle = hwnd ?: error("HWND канваса не найден")
                 println("MPV: hwnd=$handle")
                 val created = MpvPlayer.create(handle)
-                val rc = created.load(url)
-                println("MPV: loadfile rc=$rc")
                 player = created
             } catch (t: Throwable) {
                 attachGuard.set(false)
-                attachFailed = t.message ?: "не удалось запустить mpv"
+                attachError = t.message ?: "не удалось запустить mpv"
             }
+        }
+    }
+
+    // Загрузка: когда есть и плеер, и что грузить (реальный поток или демо).
+    LaunchedEffect(player, pending) {
+        val current = player ?: return@LaunchedEffect
+        val command = pending ?: return@LaunchedEffect
+        if (loadedKey == command.url) return@LaunchedEffect
+        loadedKey = command.url
+        withContext(Dispatchers.IO) {
+            current.setHeaders(command.headers)
+            val rc = current.load(command.url)
+            println("MPV: loadfile rc=$rc")
         }
     }
 
@@ -127,9 +176,9 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
                     Canvas().apply { background = AwtColor.BLACK }
                 },
             )
-            attachFailed?.let { message ->
+            (attachError ?: resolveError)?.let { message ->
                 Text(
-                    "mpv: $message",
+                    message,
                     color = Color(0xFFFF7B72),
                     fontSize = 13.sp,
                     modifier = Modifier.align(Alignment.Center).padding(16.dp),

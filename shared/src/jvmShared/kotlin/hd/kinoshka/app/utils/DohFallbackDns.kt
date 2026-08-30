@@ -1,5 +1,6 @@
 package hd.kinoshka.app.utils
 
+import hd.kinoshka.app.util.log.KLog
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -112,7 +113,7 @@ object DohFallbackDns : Dns {
                     if (addresses.isNotEmpty()) return addresses
                 }
             }.onFailure {
-                android.util.Log.w("DohDns", "doh lookup failed for $hostname: ${it.javaClass.simpleName}")
+                KLog.w("DohDns", "doh lookup failed for $hostname: ${it.javaClass.simpleName}")
             }
         }
         return emptyList()
