@@ -308,10 +308,35 @@ class PlayerViewModel(
     metadataCache.put(key, value)
   }
 
-  // MPV properties with efficient collection
+  // MPV properties with efficient collection. time-pos/duration are UNAVAILABLE until a file
+  // loads, and the prebuilt mpv JNI logs every failed poll — polling them from the start
+  // flooded logcat at ~44ms during loading/retries. They are polled only while a file is
+  // loaded ([setPropertyPollingEnabled]); pause/volume-max are options and are safe to poll
+  // always.
   val paused by MPVLib.propBoolean["pause"].collectAsState(viewModelScope)
-  val pos by MPVLib.propInt["time-pos"].collectAsState(viewModelScope)
-  val duration by MPVLib.propInt["duration"].collectAsState(viewModelScope)
+  private val _pos = MutableStateFlow<Int?>(null)
+  val posFlow: StateFlow<Int?> = _pos.asStateFlow()
+  val pos: Int? get() = _pos.value
+  private val _duration = MutableStateFlow<Int?>(null)
+  val durationFlow: StateFlow<Int?> = _duration.asStateFlow()
+  val duration: Int? get() = _duration.value
+
+  private var propertyPollJob: kotlinx.coroutines.Job? = null
+
+  fun setPropertyPollingEnabled(enabled: Boolean) {
+    if (enabled && propertyPollJob != null) return
+    propertyPollJob?.cancel()
+    propertyPollJob = null
+    if (!enabled) {
+      _pos.value = null
+      _duration.value = null
+      return
+    }
+    propertyPollJob = viewModelScope.launch {
+      launch { MPVLib.propInt["time-pos"].collect { _pos.value = it } }
+      launch { MPVLib.propInt["duration"].collect { _duration.value = it } }
+    }
+  }
 
   // High-precision position and duration for smooth seekbar
   private val _precisePosition = MutableStateFlow(0f)

@@ -229,6 +229,10 @@ object DdbbStreamResolver {
                 .use { response -> response.code < 400 }
         }.getOrDefault(false)
 
+    /** Public health probe for the player: is this direct CDN url (its token) still answering? */
+    suspend fun isDirectUrlAlive(url: String, headers: Map<String, String>): Boolean =
+        withContext(Dispatchers.IO) { validateDirectUrl(url, headers) }
+
     /** Cheap local ranking mirroring [directLadderPreference] without re-encoding entries. */
     private val probeQualityOrder = QUALITY_PREFERENCE_DESC.filter { it != "1440p" }
 

@@ -75,6 +75,7 @@ import hd.kinoshka.app.data.model.NativePlaybackMode
 import hd.kinoshka.app.data.model.PendingMovieRequestStore
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import hd.kinoshka.app.data.playback.MovieNativeLauncher
+import hd.kinoshka.app.data.diagnostics.AppDiagnostics
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.MovieStreamResolver
@@ -269,7 +270,17 @@ class PlayerActivity :
   private var isManualBackgroundPlayback = false // Track manual background playback trigger
   private var noisyReceiverRegistered = false
   private var mpvInitialized = false // Track MPV initialization state
+
+  // mpv core quit itself ("event: shutdown") while this activity is still showing. After that
+  // the handle accepts property writes but silently eats every loadfile — retries, fallbacks
+  // and «Повторить» all spin forever. Lazy recovery: the next loadfile rebuilds the core first.
+  @Volatile private var mpvCoreDead = false
+  private val mpvReinitLock = Any()
   private var savePlaybackStateJob: kotlinx.coroutines.Job? = null // Track ongoing save job
+  // Saves must not live on lifecycleScope: androidx dispatches ON_DESTROY from
+  // onActivityPreDestroyed, so lifecycleScope is already cancelled when onDestroy's join
+  // runs and the final save dies with JobCancellationException, losing the resume position.
+  private val playbackStateSaveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private var wasPlayingBeforePause = false // Track if video was playing before pause
   private var pendingSeekPosition: Double? = null // Track position to seek back to after quality change
   private var currentAnimeSourceType: AnimeSourceType = AnimeSourceType.KODIK
@@ -807,6 +818,7 @@ class PlayerActivity :
         }
         Log.d(TAG, "Save playback state job completed")
       }
+      playbackStateSaveScope.cancel()
 
       cleanupMPV()
       cleanupAudio()
@@ -1096,6 +1108,60 @@ class PlayerActivity :
 
     // Add observer after initialization
     MPVLib.addObserver(playerObserver)
+  }
+
+  /**
+   * mpv core died while the activity is alive (live log kp=5437614, warp: a loadfile that 404s
+   * with an empty playlist terminated the whole core — "event: shutdown" — and every later
+   * loadfile/auto-retry/cross-source fallback silently no-op'd for the rest of the session;
+   * only reopening the player helped). The prebuilt libplayer.so cannot be patched, so
+   * recovery is lazy: [mpvLoadFile] rebuilds the core right before the next real load.
+   */
+  private fun onMpvCoreShutdown() {
+    if (isFinishing || isDestroyed || isManualBackgroundPlayback) return
+    viewModel.setPropertyPollingEnabled(false)
+    if (mpvCoreDead) return
+    mpvCoreDead = true
+    Log.w(TAG, "MPV core shutdown while activity is alive — next loadfile will re-init the player")
+    AppDiagnostics.event("MPV core shutdown while activity alive")
+  }
+
+  /** Destroys the dead handle and re-runs the full [setupMPV] sequence on the same activity. */
+  private fun reinitMpvCore() {
+    synchronized(mpvReinitLock) {
+      if (!mpvCoreDead || isFinishing || isDestroyed) return
+      mpvCoreDead = false
+      Log.w(TAG, "Re-initializing MPV core after shutdown")
+      runCatching {
+        MPVLib.removeObserver(playerObserver)
+        MPVLib.destroy()
+      }.onFailure { e -> Log.e(TAG, "MPV destroy during re-init failed", e) }
+      mpvInitialized = false
+      runCatching {
+        setupMPV()
+        // The SurfaceView's surfaceCreated fired long ago — the fresh core knows no surface
+        // until the current one is handed over explicitly (the same attach surfaceCreated does).
+        player.holder?.surface?.takeIf { it.isValid }?.let { MPVLib.attachSurface(it) }
+        applyAnimeTransportOptions(disableHttpReuse = false)
+        (qomActiveStream ?: currentAnimeStream)?.let { applyHttpHeaders(it.headers) }
+        Log.i(TAG, "MPV core re-initialized after shutdown")
+        AppDiagnostics.event("MPV core re-initialized")
+      }.onFailure { e ->
+        mpvCoreDead = true
+        Log.e(TAG, "MPV re-init failed", e)
+      }
+    }
+  }
+
+  /**
+   * Single loadfile entry point: a dead mpv core (post-shutdown zombie) accepts the command
+   * and does nothing with it, so every load goes through here — the core is rebuilt first
+   * when it died while the activity is still alive.
+   */
+  private fun mpvLoadFile(vararg args: String) {
+    if (mpvCoreDead) reinitMpvCore()
+    AppDiagnostics.event("loadfile: ${args.firstOrNull()?.take(160) ?: "?"}")
+    MPVLib.command("loadfile", *args)
   }
 
   /**
@@ -1573,7 +1639,7 @@ class PlayerActivity :
       // Re-issue the same switch bypassing the duplicate guard (see wrapper above).
       performQomQualitySwitch(quality)
     })
-    MPVLib.command("loadfile", url, "replace")
+    mpvLoadFile(url, "replace")
   }
 
   /**
@@ -1624,7 +1690,7 @@ class PlayerActivity :
           viewModel.currentAnimeQualityId.value.takeIf { ladder.isNotEmpty() && it != "Auto" && ladder.containsKey(it) } ?: "Auto",
         )
         startAutoQualityWatchdog()
-        MPVLib.command("loadfile", url, "replace")
+        mpvLoadFile(url, "replace")
       }
     }
   }
@@ -1634,10 +1700,50 @@ class PlayerActivity :
     DdbbStreamResolver.cachedLadderFor(resolvedUrl).orEmpty()
 
   /**
+   * One parallel health-probe round over the prepared voiceover rows (2-byte Range GET per
+   * stream url; the whole round costs a single probe timeout, not per-row attempts). Returns
+   * the ids of rows whose token still answers. Rows without a prepared direct url cannot be
+   * probed and are absent — callers keep the plain try-in-mpv behavior for those.
+   *
+   * Мотивация (live warp kp=5437614): перебор дорожек по одной стоил полный loadfile + 15 с
+   * таймаута на каждую мёртвую; теперь все дорожки просматриваются разом, играет первая
+   * живая, а тотальный «все мертвы» сразу показывает карточку ошибки с подсказкой про VPN.
+   */
+  private suspend fun probePreparedRowIds(translations: List<FlatTranslation>): Set<String> {
+    val kpId = intent.getIntExtra("movie_kinopoisk_id", 0)
+    if (kpId <= 0) return emptySet()
+    val store = hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(kpId)
+    val probeable = translations.mapNotNull { track ->
+      val url = store[track.translationId]?.url ?: return@mapNotNull null
+      val direct = url.contains(".mp4", true) || url.contains(".m3u8", true) ||
+        url.contains(".webm", true) || url.contains("/stream/UTN", true)
+      if (direct) track.translationId else null
+    }
+    if (probeable.isEmpty()) return emptySet()
+    val alive = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    probeable.map { id ->
+      lifecycleScope.async(Dispatchers.IO) {
+        val stream = store[id] ?: return@async
+        if (DdbbStreamResolver.isDirectUrlAlive(stream.url, stream.headers)) alive.add(id)
+      }
+    }.awaitAll()
+    Log.i(TAG, "Row probe: ${alive.size}/${probeable.size} prepared rows alive" + alive.joinToString(prefix = ": "))
+    AppDiagnostics.event("row probe: ${alive.size}/${probeable.size} prepared rows alive")
+    return alive
+  }
+
+  private fun isPreparedQomRow(track: FlatTranslation): Boolean {
+    val kpId = intent.getIntExtra("movie_kinopoisk_id", 0)
+    if (kpId <= 0) return false
+    return hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(kpId)[track.translationId] != null
+  }
+
+  /**
    * Automatic cross-source recovery for a QOM movie: the active dub's stream keeps failing or
-   * stalling, so try the next untried dub row — a DIFFERENT provider first (another row of the
-   * same dead CDN rarely behaves better). Prepared rows play instantly; raw links lazy-resolve.
-   * Returns false when every row was already tried and the error card should take over.
+   * stalling, so try another dub row — a DIFFERENT provider first (another row of the same
+   * dead CDN rarely behaves better). All candidate rows are probe-checked in ONE parallel
+   * round and the first alive one loads; only when nothing answers does the error card take
+   * over. Returns true when a fallback attempt is underway (synchronously or in-flight).
    */
   private fun tryAlternativeQomSource(): Boolean {
     if (effectiveNativePlaybackMode != NativePlaybackMode.QUALITY_ONLY_MOVIE) return false
@@ -1648,21 +1754,38 @@ class PlayerActivity :
     currentId?.let { autoFallbackTriedIds.add(it) }
     // A mid-playback stall keeps the watch position; a failed load has none to keep.
     MPVLib.getPropertyDouble("time-pos")?.takeIf { it > 0 }?.let { pendingSeekPosition = it }
-    for (track in translations.sortedByDescending { it.source != failedSource }) {
-      if (track.translationId == currentId || !autoFallbackTriedIds.add(track.translationId)) continue
-      val link = track.episodes.firstOrNull()?.link.orEmpty()
-      if (link.isBlank()) continue
+    val candidates = translations
+      .filter { track ->
+        track.translationId != currentId &&
+          !track.episodes.firstOrNull()?.link.isNullOrBlank() &&
+          autoFallbackTriedIds.add(track.translationId)
+      }
+      .sortedByDescending { it.source != failedSource }
+    if (candidates.isEmpty()) return false
+    lifecycleScope.launch {
+      val aliveIds = probePreparedRowIds(candidates)
+      if (isFinishing || isDestroyed) return@launch
+      val track = candidates.firstOrNull { it.translationId in aliveIds }
+        // No prepared row answered: an unprobed (lazy) row is still worth one mpv attempt.
+        ?: candidates.firstOrNull { !isPreparedQomRow(it) }
+      if (track == null) {
+        Log.w(TAG, "Cross-source fallback: all ${candidates.size} alternatives probe-dead")
+        AppDiagnostics.event("cross-source fallback: all ${candidates.size} alternatives probe-dead")
+        finishStreamLoadIndicator()
+        showStreamLoadError(streamLoadErrorMessage(slowStart = false))
+        return@launch
+      }
       Log.i(TAG, "Cross-source fallback: ${failedSource?.name ?: "current"} failed → ${track.source} «${track.title}»")
+      AppDiagnostics.event("cross-source fallback → ${track.source} «${track.title}»")
       val kpId = intent.getIntExtra("movie_kinopoisk_id", 0)
       val prepared = if (kpId > 0) hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(kpId)[track.translationId] else null
       if (prepared != null) {
         loadPreparedQomVoiceover(track, prepared, translations)
       } else {
-        loadQomVoiceover(track, link, translations, fromAutoFallback = true)
+        loadQomVoiceover(track, track.episodes.firstOrNull()?.link.orEmpty(), translations, fromAutoFallback = true)
       }
-      return true
     }
-    return false
+    return true
   }
 
   /**
@@ -1822,6 +1945,7 @@ class PlayerActivity :
         }
       }
       Log.i(TAG, "PENDING_MOVIE resolve done in ${System.currentTimeMillis() - resolveStartMs}ms (${payload.javaClass.simpleName})")
+      AppDiagnostics.event("resolve done in ${System.currentTimeMillis() - resolveStartMs}ms → ${payload.javaClass.simpleName}")
       withContext(Dispatchers.Main) {
         Log.i(TAG, "PENDING_MOVIE main-thread handoff at +${System.currentTimeMillis() - resolveStartMs}ms")
         if (isFinishing || isDestroyed) return@withContext
@@ -1851,12 +1975,47 @@ class PlayerActivity :
             mediaIdentifier = stableKinoshkaIdentifier()
               ?: getMediaIdentifierFromUri(Uri.parse(resolvedUrl), fileName)
             MPVLib.setPropertyString("media-title", fileName)
+            // Retry = the previous attempt proved some tokens dead. Before loading anything,
+            // probe EVERY prepared row at once and start on the first alive one: a dead
+            // preferred row must not burn another loadfile (a failed load can even terminate
+            // the whole mpv core) while an alive row exists; nothing alive at all → error card
+            // immediately instead of a 15s-per-row walk.
+            if (isRetry) {
+              val desiredId = rememberedDubId(payload.translations)
+                ?: payload.translations.firstOrNull()?.translationId
+              if (desiredId != null) {
+                val desiredStream = launch.request.kinopoiskId?.takeIf { kp -> kp > 0 }
+                  ?.let { kp -> hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(kp)[desiredId] }
+                if (desiredStream != null) {
+                  val aliveIds = probePreparedRowIds(payload.translations)
+                  if (desiredId !in aliveIds) {
+                    val fallbackTrack = payload.translations.firstOrNull { it.translationId in aliveIds }
+                    val prepared = fallbackTrack?.let {
+                      launch.request.kinopoiskId?.takeIf { kp -> kp > 0 }
+                        ?.let { kp -> hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(kp)[it.translationId] }
+                    }
+                    if (fallbackTrack != null && prepared != null) {
+                      Log.i(TAG, "Retry probe: preferred row $desiredId is dead → starting on «${fallbackTrack.title}»")
+                      loadPreparedQomVoiceover(fallbackTrack, prepared, payload.translations)
+                      return@withContext
+                    }
+                    if (aliveIds.isEmpty()) {
+                      // Всё проверяемое мертво: кормить mpv ещё одним мёртвым url нельзя —
+                      // провал loadfile способен завершить всё ядро. Карточка ошибки сразу.
+                      finishStreamLoadIndicator()
+                      showStreamLoadError(streamLoadErrorMessage(slowStart = false))
+                      return@withContext
+                    }
+                  }
+                }
+              }
+            }
             // Favorite-dub start: play the remembered dub right away (its own tracked load);
             // only fall through to the winner's default url when nothing is remembered.
             if (startQomOnRememberedDub(payload)) return@withContext
             // Tracked: a dead CDN url auto re-resolves instead of ending in a black screen.
             beginTrackedStreamLoad(retry = { retryPendingResolve(launch, isRetry = true) })
-            MPVLib.command("loadfile", resolvedUrl, "replace")
+            mpvLoadFile(resolvedUrl, "replace")
           }
           is MovieNativeLauncher.NativeLaunchPayload.MovieSeries -> {
             effectiveNativePlaybackMode = NativePlaybackMode.MOVIE_SERIES
@@ -1896,6 +2055,7 @@ class PlayerActivity :
           is MovieNativeLauncher.NativeLaunchPayload.Failed -> {
             finishStreamLoadIndicator()
             Log.w(TAG, "PENDING_MOVIE resolve failed: ${payload.reason}")
+            AppDiagnostics.event("resolve failed: ${payload.reason}")
             viewModel.setPendingResolveError(payload.reason.userMessage())
           }
         }
@@ -1919,7 +2079,7 @@ class PlayerActivity :
     startAutoQualityWatchdog()
     resetStreamLoadRetries()
     beginTrackedStreamLoad(retry = { retryQomVoiceoverLoad(track, translations) })
-    MPVLib.command("loadfile", currentPlayingUrl!!, "replace")
+    mpvLoadFile(currentPlayingUrl!!, "replace")
   }
 
   /**
@@ -2244,6 +2404,7 @@ class PlayerActivity :
         // autoDowngradeOnSlowStart сам его ставит, и чтение после вызова делало первый же
         // таймаут одновременными «спуск + смена источника» (лог live warp kp=5437614).
         val steppedBefore = autoSlowStartStepped
+        AppDiagnostics.event("slow-start timeout (15s), steppedBefore=$steppedBefore")
         if (autoDowngradeOnSlowStart() &&
           (effectiveNativePlaybackMode != NativePlaybackMode.QUALITY_ONLY_MOVIE || !steppedBefore)
         ) return@launch
@@ -2260,10 +2421,10 @@ class PlayerActivity :
             viewModel.setPendingResolveError(null)
             beginStreamLoadIndicator()
             (currentPlayingUrl ?: currentAnimeStream?.url)
-              ?.let { MPVLib.command("loadfile", it, "replace") }
+              ?.let { mpvLoadFile(it, "replace") }
           }
         }
-        viewModel.setPendingResolveError(streamLoadErrorMessage(slowStart = true))
+        showStreamLoadError(streamLoadErrorMessage(slowStart = true))
       }
     }
   }
@@ -2290,9 +2451,9 @@ class PlayerActivity :
     viewModel.setAutoQualityRungHint(next.first)
     beginTrackedStreamLoad(retry = {
       applyHttpHeaders(stream.headers)
-      MPVLib.command("loadfile", next.second, "replace")
+      mpvLoadFile(next.second, "replace")
     })
-    MPVLib.command("loadfile", next.second, "replace")
+    mpvLoadFile(next.second, "replace")
     Toast.makeText(this, "Auto: сеть медленная — временно снижено до ${next.first}", Toast.LENGTH_SHORT).show()
     return true
   }
@@ -2408,7 +2569,7 @@ class PlayerActivity :
     )
     currentPlayingUrl = url
     updateAutoRungHint(stream.qualities, url)
-    MPVLib.command("loadfile", url, "replace")
+    mpvLoadFile(url, "replace")
   }
 
   private fun applyAnimeStream(
@@ -2440,7 +2601,7 @@ class PlayerActivity :
       stream.qualities,
       effectiveQuality,
     )
-    MPVLib.command("loadfile", url, "replace")
+    mpvLoadFile(url, "replace")
   }
 
   private fun applyAnimeTransportOptions(disableHttpReuse: Boolean) {
@@ -2501,7 +2662,7 @@ class PlayerActivity :
         Log.i(TAG, "Auto watchdog: ${ladder[idx].first} stalls, stepping down to ${next.first}")
         pendingSeekPosition = MPVLib.getPropertyDouble("time-pos")
         currentPlayingUrl = next.second
-        MPVLib.command("loadfile", next.second, "replace")
+        mpvLoadFile(next.second, "replace")
         Toast.makeText(this@PlayerActivity, "Auto: сеть медленная — временно снижено до ${next.first}", Toast.LENGTH_SHORT).show()
       }
     }
@@ -3154,6 +3315,7 @@ class PlayerActivity :
     when (eventId) {
       MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> {
         // A pending episode/dub switch finished buffering — drop the loading overlay now.
+        AppDiagnostics.event("FILE_LOADED")
         streamLoadRetryAction = null
         streamLoadRetries = 0
         finishStreamLoadIndicator()
@@ -3168,6 +3330,10 @@ class PlayerActivity :
       MPVLib.MpvEvent.MPV_EVENT_IDLE -> viewModel.setPropertyPollingEnabled(false)
 
       MPVLib.MpvEvent.MPV_EVENT_END_FILE -> eventEndFile(data)
+
+      // The core terminated itself — without this the session keeps issuing loadfiles into a
+      // zombie handle (see [onMpvCoreShutdown] for the live failure this recovers from).
+      MPVLib.MpvEvent.MPV_EVENT_SHUTDOWN -> onMpvCoreShutdown()
 
       MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
         player.isExiting = false
@@ -3190,6 +3356,7 @@ class PlayerActivity :
     if (!pendingStreamLoadIndicator) return
     val reason = runCatching { data?.asMap()?.get("reason")?.asString() }.getOrNull()
     Log.w(TAG, "MPV_EVENT_END_FILE while loading (reason=$reason)")
+    AppDiagnostics.event("END_FILE while loading, reason=$reason")
     if (!reason.equals("error", ignoreCase = true)) return
     // mpv признал url мёртвым: 3-минутная ddbb-памка не должна отдавать те же токены
     // следующей попытке или запуску — токен, добытый под VPN, мёртв и после его выключения.
@@ -3204,6 +3371,7 @@ class PlayerActivity :
         kotlinx.coroutines.delay(800)
         if (isFinishing || isDestroyed) return@launch
         Log.i(TAG, "Stream load failed in mpv — auto-retry $streamLoadRetries/$MAX_STREAM_LOAD_RETRIES")
+        AppDiagnostics.event("stream auto-retry $streamLoadRetries/$MAX_STREAM_LOAD_RETRIES")
         retry()
       }
     } else {
@@ -3212,7 +3380,7 @@ class PlayerActivity :
       // giving up — a dead CDN must not end in an error card while alternatives are untried.
       if (tryAlternativeQomSource()) return
       finishStreamLoadIndicator()
-      viewModel.setPendingResolveError(streamLoadErrorMessage(slowStart = false))
+      showStreamLoadError(streamLoadErrorMessage(slowStart = false))
     }
   }
 
@@ -3221,6 +3389,12 @@ class PlayerActivity :
    * CDN itself is unreachable (Warp/AmneziaWG egress IPs are commonly rejected by it), so the
    * card points at the VPN explicitly instead of offering switches that will fail the same way.
    */
+  /** Error card + diagnostic event: the exact text the user saw must land in the report. */
+  private fun showStreamLoadError(message: String) {
+    AppDiagnostics.event("error card: ${message.take(140)}")
+    viewModel.setPendingResolveError(message)
+  }
+
   private fun streamLoadErrorMessage(slowStart: Boolean): String {
     val base = if (slowStart) "Поток не удаётся загрузить: сеть или CDN слишком медленные."
       else "Не удалось открыть видеопоток."
@@ -3602,7 +3776,7 @@ class PlayerActivity :
     val oldIdentifier = mediaIdentifier
 
     // Launch new save job and track it
-    savePlaybackStateJob = lifecycleScope.launch(Dispatchers.IO) {
+    savePlaybackStateJob = playbackStateSaveScope.launch {
       runCatching {
         val oldState = playbackStateRepository.getVideoDataByTitle(oldIdentifier)
         Log.d(TAG, "Saving playback state for: $mediaTitle (identifier: $oldIdentifier)")
@@ -4188,7 +4362,7 @@ class PlayerActivity :
     getPlayableUri(intent)?.let { uri ->
       // Avoid blocking UI thread while mpv opens network streams (e.g., HLS).
       lifecycleScope.launch(Dispatchers.Default) {
-        MPVLib.command("loadfile", uri)
+        mpvLoadFile(uri)
       }
     }
   }
@@ -4894,7 +5068,7 @@ class PlayerActivity :
     // Load the new video
     // Avoid blocking UI thread while mpv opens network streams (e.g., HLS).
     lifecycleScope.launch(Dispatchers.Default) {
-      MPVLib.command("loadfile", playableUri)
+      mpvLoadFile(playableUri)
     }
 
     // Update media title (this will trigger UI update)

@@ -219,7 +219,9 @@ object MovieNativeLauncher {
         }
         val kodikDeferred = raceScope.async { MovieStreamResolver.resolveMovie(request) }
         val outcome = awaitFirstMovieOutcome(kodikDeferred, ddbbDeferred)
-        Log.i(TAG, "movie race winner=${when (outcome) { is MovieOutcome.FromDdbb -> "ddbb"; is MovieOutcome.FromKodik -> "kodik"; is MovieOutcome.Failed -> "none" }} at ${System.currentTimeMillis() - raceStartMs}ms")
+        val winnerName = when (outcome) { is MovieOutcome.FromDdbb -> "ddbb"; is MovieOutcome.FromKodik -> "kodik"; is MovieOutcome.Failed -> "none" }
+        Log.i(TAG, "movie race winner=$winnerName at ${System.currentTimeMillis() - raceStartMs}ms")
+        hd.kinoshka.app.data.diagnostics.AppDiagnostics.event("movie race winner=$winnerName at ${System.currentTimeMillis() - raceStartMs}ms")
         return when (outcome) {
             is MovieOutcome.FromKodik -> {
                 // The loser is neither awaited nor cancelled here: playback starts on the
@@ -268,7 +270,12 @@ object MovieNativeLauncher {
                 // Turbo CDN paths are often extensionless; the resolver's per-dub ladder is
                 // the authoritative marker that this is already a direct stream.
                 val turboLadder = DdbbStreamResolver.cachedLadderFor(rawUrl)
-                val direct = turboLadder != null || rawUrl.contains(".mp4", true) || rawUrl.contains(".m3u8", true) || rawUrl.contains(".webm", true)
+                // UTN masters are ddbb turbo HLS playlists — feeding them to the Kodik HLS
+                // extractor is a guaranteed failure that stalls the payload (live warp log
+                // kp=5437614: two rows went "lazy" through resolveHls, resolve lost ~4s).
+                val direct = turboLadder != null || rawUrl.contains(".mp4", true) ||
+                    rawUrl.contains(".m3u8", true) || rawUrl.contains(".webm", true) ||
+                    rawUrl.contains("/stream/UTN", ignoreCase = true)
                 if (direct) {
                     val ladder = turboLadder.orEmpty().ifEmpty { mapOf("Auto" to rawUrl) }
                     translation to AnimeMediaStream(rawUrl, ladder, launchStream.headers)
@@ -300,6 +307,7 @@ object MovieNativeLauncher {
             "${row.source.name}:${row.title.take(24)}=${streams[row.translationId]?.qualities?.keys?.joinToString("/") ?: "lazy"}"
         }
         Log.i(TAG, "readyQualityMovie: rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), kp=$kinopoiskId, ladders: $ladderSummary")
+        hd.kinoshka.app.data.diagnostics.AppDiagnostics.event("prepared rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), ladders: $ladderSummary".take(380))
         NativeLaunchPayload.QualityOnlyMovie(initial, orderedRows, streams)
     }
 

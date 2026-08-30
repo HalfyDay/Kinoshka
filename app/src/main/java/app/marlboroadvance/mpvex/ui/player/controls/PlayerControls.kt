@@ -174,8 +174,9 @@ fun PlayerControls(
   val seekBarShown by viewModel.seekBarShown.collectAsState()
   val pausedForCache by MPVLib.propBoolean["paused-for-cache"].collectAsState()
   val paused by MPVLib.propBoolean["pause"].collectAsState()
-  val duration by MPVLib.propInt["duration"].collectAsState()
-  val position by MPVLib.propInt["time-pos"].collectAsState()
+  // Gated VM flows: time-pos/duration poll only while a file is loaded (logcat spam fix)
+  val duration by viewModel.durationFlow.collectAsState()
+  val position by viewModel.posFlow.collectAsState()
   val precisePosition by viewModel.precisePosition.collectAsState()
   val preciseDuration by viewModel.preciseDuration.collectAsState()
   val playbackSpeed by MPVLib.propFloat["speed"].collectAsState()
@@ -480,6 +481,11 @@ fun PlayerControls(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                   androidx.compose.material3.Button(onClick = { viewModel.retryPendingResolve() }) {
                     Text("Повторить")
+                  }
+                  androidx.compose.material3.OutlinedButton(onClick = {
+                    activity?.let { hd.kinoshka.app.data.diagnostics.AppDiagnostics.shareReport(it) }
+                  }) {
+                    Text("Отчёт", color = Color.White)
                   }
                   if (pendingWebFallbackUrl != null && activity != null) {
                     androidx.compose.material3.OutlinedButton(onClick = {

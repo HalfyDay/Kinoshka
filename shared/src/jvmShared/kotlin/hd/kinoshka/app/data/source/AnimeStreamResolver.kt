@@ -116,8 +116,7 @@ object AnimeStreamResolver {
         listOf(
             AnimeSource(AnimeSourceType.KODIK, isAvailable = true),
             AnimeSource(AnimeSourceType.ANILIBERTY, isAvailable = true),
-            AnimeSource(AnimeSourceType.ANILIB, isAvailable = true),
-            AnimeSource(AnimeSourceType.SMARTHARD, isAvailable = true)
+            AnimeSource(AnimeSourceType.ANILIB, isAvailable = true)
         )
     }
 

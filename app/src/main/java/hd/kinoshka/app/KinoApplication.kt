@@ -15,6 +15,10 @@ class KinoApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
 
+        // Диагностика (краш-хендлер + буфер событий + mpv-логи) — как можно раньше,
+        // чтобы ловить даже сбои ранней инициализации.
+        hd.kinoshka.app.data.diagnostics.AppDiagnostics.init(this)
+
         // Initialize Koin for mpvEx
         startKoin {
             androidContext(this@KinoApplication)

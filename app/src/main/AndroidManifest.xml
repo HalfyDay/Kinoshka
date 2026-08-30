@@ -58,6 +58,12 @@
             android:supportsPictureInPicture="true"
             android:theme="@style/Theme.mpvex" />
 
+        <activity
+            android:name="app.marlboroadvance.mpvex.presentation.crash.CrashActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@style/Theme.mpvex" />
+
         <service
             android:name="app.marlboroadvance.mpvex.ui.player.MediaPlaybackService"
             android:enabled="true"
@@ -94,7 +100,7 @@
         </receiver>
 
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name="hd.kinoshka.app.data.update.UpdateFileProvider"
             android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
