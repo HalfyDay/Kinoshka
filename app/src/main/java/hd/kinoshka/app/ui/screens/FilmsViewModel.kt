@@ -670,6 +670,35 @@ class FilmsViewModel(
         // persisting a statusless husk that would still surface in the История tab.
         if (status == null) {
             userStateStore.removeFromLibrary(details.kinopoiskId)
+            // Shikimori rates are a library source in buildLibraryItems: an anime with a
+            // server rate would resurrect on the rebuild right below. Drop the cached rate
+            // now and delete the server one (token-refresh retry mirrors the update path).
+            if (details.kinopoiskId >= ANIME_ID_OFFSET) {
+                val shikimoriId = details.kinopoiskId - ANIME_ID_OFFSET
+                val rateId = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }?.id
+                cachedShikimoriRates = cachedShikimoriRates.filterNot { it.targetId == shikimoriId }
+                val authState = uiState.shikimoriAuthState
+                if (rateId != null && authState.isLoggedIn && authState.accessToken != null) {
+                    viewModelScope.launch {
+                        var token = authState.accessToken!!
+                        var success = animeRepository.deleteUserRate(token, rateId)
+                        if (!success && authState.refreshToken != null) {
+                            animeRepository.refreshToken(authState.refreshToken)?.let { fresh ->
+                                shikimoriAuthStore?.saveSession(
+                                    token = fresh.accessToken,
+                                    refresh = fresh.refreshToken,
+                                    userId = authState.userId,
+                                    nickname = authState.nickname,
+                                    avatarUrl = authState.avatarUrl
+                                )
+                                token = fresh.accessToken
+                                success = animeRepository.deleteUserRate(token, rateId)
+                            }
+                        }
+                        Log.d("ShikimoriSync", "Deleted rate id=$rateId for shikimoriId=$shikimoriId: success=$success")
+                    }
+                }
+            }
             detailsState = detailsState.copy(userProfile = null, savingProfile = false)
             refreshLibraryAndAvatar()
             return
