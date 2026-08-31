@@ -188,12 +188,16 @@ class FilmsViewModel(
     private val shikimoriAuthStore: hd.kinoshka.app.data.local.ShikimoriAuthStore? = null
 ) : ViewModel() {
 
+    // Пересборка библиотеки уходит на Dispatchers.Default (см. refreshAfterPlayerClosed),
+    // поэтому поля, которые она читает, должны быть volatile для видимости между потоками.
+    @Volatile
     private var cachedShikimoriRates: List<hd.kinoshka.app.data.model.ShikimoriUserRate> = emptyList()
 
     // Snapshot of the Shikimori calendar fetched by loadCalendar(). buildLibraryItems reads this
     // instead of uiState.calendarItems because the calendar arrives asynchronously and uiState is
     // still being constructed the first time buildLibraryItems runs (reading uiState then is a
     // NPE on the not-yet-initialized State delegate).
+    @Volatile
     private var cachedShikimoriCalendar: List<hd.kinoshka.app.data.model.ShikimoriCalendarItem> = emptyList()
 
     // Несортированная база библиотеки (последний результат buildLibraryItems). Пересборка
@@ -1495,10 +1499,14 @@ class FilmsViewModel(
     }
 
     private fun refreshLibraryAndAvatar() {
-        uiState = uiState.copy(
-            library = buildLibraryItems(),
-            profileAvatar = userStateStore.getProfileAvatar()
-        )
+        // Тот же тяжёлый buildLibraryItems, что и в refreshAfterPlayerClosed — тоже вне main.
+        viewModelScope.launch {
+            val library = withContext(Dispatchers.Default) { buildLibraryItems() }
+            uiState = uiState.copy(
+                library = library,
+                profileAvatar = userStateStore.getProfileAvatar()
+            )
+        }
     }
 
     /**
@@ -1512,13 +1520,21 @@ class FilmsViewModel(
         if (now - lastResumeRefreshMs < RESUME_REFRESH_THROTTLE_MS) return
         lastResumeRefreshMs = now
 
-        refreshLibraryAndAvatar()
+        viewModelScope.launch {
+            // Полная пересборка библиотеки парсит большие JSON-блобы (десятки МБ мусора, live-лог:
+            // Davey 2.5s при ON_RESUME). На main-потоке она замораживала возврат из плеера и давала
+            // чёрный экран при включении дисплея. Строим список вне main, применяем готовый.
+            val library = withContext(Dispatchers.Default) { buildLibraryItems() }
+            val avatar = withContext(Dispatchers.Default) { userStateStore.getProfileAvatar() }
+            uiState = uiState.copy(library = library, profileAvatar = avatar)
 
-        val item = detailsState.item
-        if (!detailsState.loading && item != null) {
-            detailsState = detailsState.copy(userProfile = getUserProfileForFilm(item.kinopoiskId))
+            val item = detailsState.item
+            if (!detailsState.loading && item != null) {
+                val profile = withContext(Dispatchers.Default) { getUserProfileForFilm(item.kinopoiskId) }
+                detailsState = detailsState.copy(userProfile = profile)
+            }
+            ensureLibraryAdultVerdicts()
         }
-        ensureLibraryAdultVerdicts()
     }
 
     private fun refreshFromStore() {
