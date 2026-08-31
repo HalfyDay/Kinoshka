@@ -45,6 +45,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.PagerState
@@ -136,6 +137,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -358,6 +360,20 @@ fun HomeScreen(
     var libraryTab by rememberSaveable { mutableStateOf(LibraryTab.WATCHING) }
     var libraryFilter by rememberSaveable { mutableStateOf(LibraryFilterType.ALL) }
     var librarySort by rememberSaveable { mutableStateOf(hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED) }
+    // topSignal прокручивает страницы библиотеки к началу (клик по вкладке, смена сортировки);
+    // resetCount пересоздаёт пейджер на «Смотрю» (повторный тап «Библиотека», возврат из ленты).
+    var libraryTopSignal by rememberSaveable { mutableStateOf(0) }
+    var libraryResetCount by rememberSaveable { mutableStateOf(0) }
+    var resetLibraryAfterFeed by rememberSaveable { mutableStateOf(false) }
+    // Лента рекомендаций — отдельный маршрут: возврат в неё восстанавливает сохранённые
+    // вкладку и позицию библиотеки. Сбрасываем на «Смотрю», как при переключении разделов.
+    LaunchedEffect(Unit) {
+        if (resetLibraryAfterFeed) {
+            resetLibraryAfterFeed = false
+            libraryTab = LibraryTab.WATCHING
+            libraryResetCount++
+        }
+    }
     val searchRowHeight = SearchChromeHeight
     val searchRowAlpha = 1f
     val normalizedQuery = state.query.trim()
@@ -396,6 +412,9 @@ fun HomeScreen(
         when (target) {
             MainSection.LIBRARY -> {
                 libraryTab = LibraryTab.WATCHING
+                // Пересоздаём пейджер: сбрасывает вкладку и прокрутку даже при повторном
+                // тапе по «Библиотеке», когда handleNav вызывается уже из библиотеки.
+                libraryResetCount++
                 onQueryChange(libraryQuery)
                 onTabSelected(HomeTab.HISTORY)
             }
@@ -437,7 +456,10 @@ fun HomeScreen(
                         outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_feed_outlined,
                         contentDescription = "Лента",
                         selected = false
-                    ) { onOpenRecommendationsFeed() },
+                    ) {
+                        resetLibraryAfterFeed = true
+                        onOpenRecommendationsFeed()
+                    },
                     NavPillItem(
                         filledRes = hd.kinoshka.app.R.drawable.ic_nav_more_filled,
                         outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_more_outlined,
@@ -492,10 +514,14 @@ fun HomeScreen(
                             librarySort = librarySort,
                             onLibrarySortSelected = { sortType ->
                                 librarySort = sortType
+                                libraryTopSignal++
                                 onLibrarySortSelected(sortType)
                             },
                             librarySortReversed = librarySortReversed,
-                            onLibrarySortReversedChanged = onLibrarySortReversedChanged,
+                            onLibrarySortReversedChanged = { reversed ->
+                                libraryTopSignal++
+                                onLibrarySortReversedChanged(reversed)
+                            },
                             showHentaiInLibrary = state.showHentaiInLibrary,
                             onHentaiVisibilityChanged = onHentaiVisibilityChanged,
                             isFilterActive = state.filterState.isActive,
@@ -530,7 +556,7 @@ fun HomeScreen(
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     when (section) {
-                        MainSection.LIBRARY -> {
+                        MainSection.LIBRARY -> key(libraryResetCount) {
                             val pagerState = rememberPagerState(
                                 initialPage = libraryTab.ordinal,
                                 pageCount = { LibraryTab.entries.size }
@@ -543,7 +569,10 @@ fun HomeScreen(
                             Column(modifier = Modifier.fillMaxSize()) {
                                 LibraryTabs(
                                     pagerState = pagerState,
-                                    onSelect = { target -> libraryTab = target }
+                                    onSelect = { target ->
+                                        libraryTab = target
+                                        libraryTopSignal++
+                                    }
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
 
@@ -562,7 +591,8 @@ fun HomeScreen(
                                         onOpenHistoryFilm = onOpenHistoryFilm,
                                         onOpenFilmEditor = onOpenFilmEditor,
                                         onRemoveFromHistory = onRemoveFromHistory,
-                                        metrics = libraryMetrics
+                                        metrics = libraryMetrics,
+                                        scrollToTopSignal = libraryTopSignal
                                     )
                                 }
                             }
@@ -1121,9 +1151,17 @@ private fun LibraryPageGrid(
     onOpenHistoryFilm: (Int) -> Unit,
     onOpenFilmEditor: (ProgressEditorSeed) -> Unit = {},
     onRemoveFromHistory: (Int) -> Unit,
-    metrics: GridMetrics
+    metrics: GridMetrics,
+    scrollToTopSignal: Int = 0
 ) {
     var pendingDeleteId by remember { mutableIntStateOf(0) }
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
+    // Клик по вкладке или смена сортировки: список всегда показываем с начала. Lazy-контейнер
+    // с ключами иначе «якорится» за первым видимым элементом и остаётся на старой позиции.
+    LaunchedEffect(scrollToTopSignal) {
+        if (metrics.columns == 1) listState.scrollToItem(0) else gridState.scrollToItem(0)
+    }
 
     if (items.isEmpty()) {
         EmptyCard(
@@ -1135,6 +1173,7 @@ private fun LibraryPageGrid(
 
     if (metrics.columns == 1) {
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
             verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -1156,6 +1195,7 @@ private fun LibraryPageGrid(
         }
     } else {
     LazyVerticalGrid(
+        state = gridState,
         columns = GridCells.Fixed(metrics.columns),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
