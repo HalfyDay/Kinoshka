@@ -129,6 +129,8 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -150,8 +152,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
+
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -2004,7 +2007,7 @@ private fun UserStatusBadge(
     status: UserFilmStatus,
     modifier: Modifier = Modifier
 ) {
-    val (iconRes, description) = status.toBadgeIconAndDescription()
+    val (icon, description) = status.toBadgeIconAndDescription()
     Surface(
         modifier = modifier.size(36.dp),
         shape = RoundedCornerShape(
@@ -2017,21 +2020,12 @@ private fun UserStatusBadge(
         shadowElevation = 0.dp
     ) {
         Box(contentAlignment = Alignment.Center) {
-            if (iconRes != null) {
-                Icon(
-                    painter = painterResource(id = iconRes),
-                    contentDescription = description,
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.Check,
-                    contentDescription = description,
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            }
+            Icon(
+                imageVector = icon,
+                contentDescription = description,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
         }
     }
 }
@@ -2069,14 +2063,18 @@ private fun NewEpisodeBadge(
     }
 }
 
-private fun UserFilmStatus.toBadgeIconAndDescription(): Pair<Int?, String> {
+// Бейдж статуса в библиотеке: только материальные иконки. painterResource(android.R.drawable.*)
+// запрещён — на ряде прошивок системный drawable оказывается XML-формата, который Compose
+// загрузить не может, и плитка библиотеки падает с IllegalArgumentException прямо в сетке.
+// Иконки намеренно совпадают с пикером статуса на DetailsScreen.
+private fun UserFilmStatus.toBadgeIconAndDescription(): Pair<ImageVector, String> {
     return when (this) {
-        UserFilmStatus.WATCHING -> android.R.drawable.ic_menu_view to "Смотрю"
-        UserFilmStatus.PLANNED -> android.R.drawable.ic_menu_my_calendar to "В планах"
-        UserFilmStatus.COMPLETED -> null to "Просмотрено"
-        UserFilmStatus.REWATCHING -> android.R.drawable.ic_popup_sync to "Пересматриваю"
-        UserFilmStatus.ON_HOLD -> android.R.drawable.ic_media_pause to "Отложено"
-        UserFilmStatus.DROPPED -> android.R.drawable.ic_menu_close_clear_cancel to "Брошено"
+        UserFilmStatus.WATCHING -> Icons.Rounded.Visibility to "Смотрю"
+        UserFilmStatus.PLANNED -> Icons.Rounded.Star to "В планах"
+        UserFilmStatus.COMPLETED -> Icons.Filled.Check to "Просмотрено"
+        UserFilmStatus.REWATCHING -> Icons.Filled.Refresh to "Пересматриваю"
+        UserFilmStatus.ON_HOLD -> Icons.Filled.KeyboardArrowDown to "Отложено"
+        UserFilmStatus.DROPPED -> Icons.Filled.Close to "Брошено"
     }
 }
 

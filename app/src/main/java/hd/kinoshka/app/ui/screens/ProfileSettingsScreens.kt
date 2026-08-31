@@ -63,6 +63,7 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -945,8 +946,11 @@ fun AboutScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
+                        // presence_online — framework-drawable: painterResource(android.R.*)
+                        // не грузит системные XML и падает (тот же класс краша, что бейджи
+                        // библиотеки). Материальный кружок с тем же тинтом — эквивалент точки.
                         Icon(
-                            painter = painterResource(id = android.R.drawable.presence_online),
+                            imageVector = Icons.Filled.Circle,
                             contentDescription = null,
                             tint = statusColor,
                             modifier = Modifier.size(18.dp)
