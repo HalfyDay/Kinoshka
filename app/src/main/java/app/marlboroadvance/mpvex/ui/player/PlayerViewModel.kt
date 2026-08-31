@@ -98,6 +98,20 @@ class PlayerViewModel(
   private val _playlistItems = kotlinx.coroutines.flow.MutableStateFlow<List<app.marlboroadvance.mpvex.ui.player.controls.components.sheets.PlaylistItem>>(emptyList())
   val playlistItems: kotlinx.coroutines.flow.StateFlow<List<app.marlboroadvance.mpvex.ui.player.controls.components.sheets.PlaylistItem>> = _playlistItems.asStateFlow()
 
+  /**
+   * Stamp of the latest seek issued by this ViewModel (slider, gestures, double-tap). The
+   * PlayerActivity segment-skip guard reads it: without the mark the position jump a user
+   * seek produces looked exactly like mpv skipping dead HLS segments, and the guard yanked
+   * playback back to the pre-seek position, cancelling the seek (had to seek twice).
+   */
+  @Volatile
+  var lastUserSeekAtMs: Long = 0L
+    private set
+
+  fun noteUserSeek() {
+    lastUserSeekAtMs = android.os.SystemClock.elapsedRealtime()
+  }
+
   // Wyzie Search Results
   private val _wyzieSearchResults = MutableStateFlow<List<WyzieSubtitle>>(emptyList())
   val wyzieSearchResults: StateFlow<List<WyzieSubtitle>> = _wyzieSearchResults.asStateFlow()
@@ -1152,6 +1166,7 @@ class PlayerViewModel(
       // Use precise seeking for videos shorter than 2 minutes (120 seconds) or if preference is enabled
       val shouldUsePreciseSeeking = playerPreferences.usePreciseSeeking.get() || maxDuration < 120
       val seekMode = if (shouldUsePreciseSeeking) "absolute+exact" else "absolute+keyframes"
+      noteUserSeek()
       MPVLib.command("seek", clampedPosition.toString(), seekMode)
     }
   }
@@ -1166,6 +1181,7 @@ class PlayerViewModel(
         pendingSeekOffset = 0
         
         if (toApply != 0) {
+          noteUserSeek()
           val duration = MPVLib.getPropertyInt("duration") ?: 0
           val currentPos = MPVLib.getPropertyInt("time-pos") ?: 0
           

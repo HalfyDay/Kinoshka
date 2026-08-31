@@ -335,7 +335,6 @@ class PlayerActivity :
   // The guard remembers the last played position and pulls playback back once the stream moves
   // again, so the movie resumes where it froze instead of half a minute ahead.
   private var segmentSkipGuardJob: kotlinx.coroutines.Job? = null
-  private var lastUserSeekAtMs = 0L
 
   // Real-playback library commit: only ≥5 minutes of viewing turns a title into "Смотрю".
   private var playbackProgressJob: kotlinx.coroutines.Job? = null
@@ -2682,7 +2681,7 @@ class PlayerActivity :
 
   /** Marks an app-issued position change so the segment-skip guard ignores the jump it causes. */
   private fun noteUserSeek() {
-    lastUserSeekAtMs = android.os.SystemClock.elapsedRealtime()
+    viewModel.noteUserSeek()
   }
 
   /**
@@ -2701,7 +2700,7 @@ class PlayerActivity :
         val prev = lastPos
         lastPos = pos
         val now = android.os.SystemClock.elapsedRealtime()
-        if (prev >= 0 && pos > prev + 12.0 && now - lastUserSeekAtMs > 10_000) {
+        if (prev >= 0 && pos > prev + 12.0 && now - viewModel.lastUserSeekAtMs > 10_000) {
           Log.i(TAG, "Playback jumped forward ${(pos - prev).toInt()}s (skipped segments) — seeking back to ${prev.toInt()}s")
           noteUserSeek()
           MPVLib.command("seek", prev.toString(), "absolute")
