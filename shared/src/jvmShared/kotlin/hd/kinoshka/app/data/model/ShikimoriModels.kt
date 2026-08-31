@@ -17,12 +17,14 @@ data class ShikimoriImage(
     @SerializedName("preview") val preview: String? = null,
     // Note: Shikimori API returns x96 and x48 only (no x100 field exists)
     @SerializedName("x96") val x96: String? = null,
-    @SerializedName("x48") val x48: String? = null
+    @SerializedName("x48") val x48: String? = null,
+    // User avatars (whoami) come in different sizes up to x160; posters never have this field
+    @SerializedName("x160") val x160: String? = null
 ) {
     /** Returns true if all image paths are Shikimori's generic "missing" placeholders */
     val isMissingPlaceholder: Boolean
         get() {
-            val paths = listOfNotNull(original, preview, x96, x48)
+            val paths = listOfNotNull(original, preview, x96, x48, x160)
             return paths.isEmpty() || paths.all { it.contains("missing") }
         }
 
