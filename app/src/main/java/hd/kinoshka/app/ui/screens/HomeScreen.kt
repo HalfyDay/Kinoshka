@@ -74,7 +74,12 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -112,7 +117,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.filled.Autorenew
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.RemoveCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ripple
@@ -148,6 +159,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -597,6 +609,8 @@ fun HomeScreen(
                                     // changing Kino/Anime in search must not hide library items.
                                     LibraryPageGrid(
                                         items = items,
+                                        tab = pageTab,
+                                        queryActive = normalizedQuery.isNotEmpty(),
                                         historyMode = pageTab == LibraryTab.HISTORY,
                                         onOpenHistoryFilm = onOpenHistoryFilm,
                                         onOpenFilmEditor = onOpenFilmEditor,
@@ -1157,6 +1171,8 @@ private fun LibraryTabs(
 @Composable
 private fun LibraryPageGrid(
     items: List<LibraryUiItem>,
+    tab: LibraryTab,
+    queryActive: Boolean,
     historyMode: Boolean,
     onOpenHistoryFilm: (Int) -> Unit,
     onOpenFilmEditor: (ProgressEditorSeed) -> Unit = {},
@@ -1174,10 +1190,7 @@ private fun LibraryPageGrid(
     }
 
     if (items.isEmpty()) {
-        EmptyCard(
-            title = "Пусто",
-            message = "Для этого раздела пока нет фильмов или сериалов."
-        )
+        LibraryEmptyState(tab = tab, queryActive = queryActive)
         return
     }
 
@@ -2222,6 +2235,116 @@ private fun EmptyCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+/** Icon + copy shown by [LibraryEmptyState] for a library tab with nothing in it. */
+private data class LibraryEmptyVisual(
+    val icon: ImageVector,
+    val title: String,
+    val message: String
+)
+
+private fun libraryEmptyVisual(tab: LibraryTab, queryActive: Boolean): LibraryEmptyVisual =
+    if (queryActive) {
+        LibraryEmptyVisual(
+            Icons.Filled.Search, "Ничего не найдено", "Попробуй другой запрос или фильтр."
+        )
+    } else when (tab) {
+        LibraryTab.HISTORY -> LibraryEmptyVisual(
+            Icons.Filled.History, "История пуста", "Посмотри что-нибудь — оно появится здесь."
+        )
+        LibraryTab.WATCHING -> LibraryEmptyVisual(
+            Icons.Filled.PlayCircle, "В «Смотрю» пусто", "Начни смотреть — тайтл добавится сюда автоматически."
+        )
+        LibraryTab.PLANNED -> LibraryEmptyVisual(
+            Icons.Filled.Bookmark, "В «В планах» пусто", "Добавляй тайтлы в план, чтобы ничего не забыть."
+        )
+        LibraryTab.WATCHED -> LibraryEmptyVisual(
+            Icons.Filled.CheckCircle, "Нет просмотренного", "Завершённые тайтлы будут собираться здесь."
+        )
+        LibraryTab.REWATCHING -> LibraryEmptyVisual(
+            Icons.Filled.Autorenew, "Нет пересмотров", "Решишь пересмотреть — тайтл окажется здесь."
+        )
+        LibraryTab.ON_HOLD -> LibraryEmptyVisual(
+            Icons.Filled.PauseCircle, "Нет отложенных", "Отложенные тайтлы будут ждать тебя здесь."
+        )
+        LibraryTab.DROPPED -> LibraryEmptyVisual(
+            Icons.Filled.RemoveCircle, "Нет брошенных", "Брошенное на полпути соберётся здесь."
+        )
+    }
+
+/**
+ * Centered empty state of a library tab: the tab's icon in a soft circle with a slow "breath"
+ * and a fading radar-ping ring behind it, plus a per-tab title and hint. Replaces the old
+ * top-left «Пусто» card, which read as a loading artifact rather than an empty section.
+ */
+@Composable
+private fun LibraryEmptyState(tab: LibraryTab, queryActive: Boolean) {
+    val visual = libraryEmptyVisual(tab, queryActive)
+    val transition = rememberInfiniteTransition(label = "libraryEmpty")
+    val pingScale by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.35f,
+        animationSpec = infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Restart),
+        label = "pingScale"
+    )
+    val pingAlpha by transition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Restart),
+        label = "pingAlpha"
+    )
+    val breathe by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.06f,
+        animationSpec = infiniteRepeatable(tween(1600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "breathe"
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(bottom = FloatingBottomContentPadding),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier
+                    .size(140.dp)
+                    .scale(pingScale)
+                    .alpha(pingAlpha)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape)
+            )
+            Box(
+                modifier = Modifier
+                    .size(112.dp)
+                    .scale(breathe)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = visual.icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(52.dp)
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+        Text(
+            text = visual.title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = visual.message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
