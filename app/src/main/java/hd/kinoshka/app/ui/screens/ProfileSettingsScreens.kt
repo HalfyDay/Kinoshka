@@ -15,6 +15,7 @@ import android.os.Build
 import android.provider.MediaStore
 import android.widget.Toast
 import hd.kinoshka.app.data.local.UserFilmStatus
+import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +23,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +38,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -58,16 +62,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.VideoLibrary
-import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
@@ -94,7 +96,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
@@ -317,50 +321,37 @@ fun ProfileScreen(
             }
         }
 
-        // Quick Stats Grid
+        // Статистика библиотеки + активность одной карточкой под шапкой профиля
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Общая статистика",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(start = 4.dp)
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .animateContentSize(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    StatCard(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.VideoLibrary,
-                        label = "Всего",
-                        value = "${library.size}"
+                    LibraryStatusStrip(
+                        title = "Список аниме",
+                        icon = Icons.Filled.SmartToy,
+                        items = library.filter { it.kinopoiskId >= ANIME_ID_OFFSET }
                     )
-                    StatCard(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.Visibility,
-                        label = "Смотрю",
-                        value = "${library.count { it.status == UserFilmStatus.WATCHING }}",
-                        valueColor = MaterialTheme.colorScheme.primary
+                    LibraryStatusStrip(
+                        title = "Список фильмов",
+                        icon = Icons.Filled.Movie,
+                        items = library.filter { it.kinopoiskId < ANIME_ID_OFFSET }
                     )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    StatCard(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.CheckCircle,
-                        label = "Завершено",
-                        value = "${library.count { it.status == UserFilmStatus.COMPLETED }}",
-                        valueColor = Color(0xFF4CAF50)
-                    )
-                    StatCard(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.AutoMirrored.Filled.Notes,
-                        label = "С заметками",
-                        value = "${library.count { !it.note.isNullOrBlank() }}"
-                    )
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Активность за 14 дней",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        ActivityBars(activity)
+                    }
                 }
             }
         }
@@ -492,32 +483,6 @@ fun ProfileScreen(
             }
         }
 
-        // Activity Chart Section
-        item {
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .padding(16.dp)
-                        .animateContentSize(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "Активность за 14 дней",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Нажмите на столбец, чтобы увидеть количество просмотров",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    ActivityBars(activity)
-                }
-            }
-        }
     }
 
     cropSourceBitmap?.let { source ->
@@ -1149,42 +1114,88 @@ private fun HeaderCard(
     }
 }
 
+// Один сегмент стековой полосы статусов библиотеки (как списки Shikimori)
+private data class LibraryStatusSegment(val count: Int, val color: Color, val label: String)
+
 @Composable
-private fun StatCard(
-    modifier: Modifier = Modifier,
+private fun LibraryStatusStrip(
+    title: String,
     icon: ImageVector,
-    label: String,
-    value: String,
-    valueColor: Color? = null
+    items: List<LibraryUiItem>
 ) {
-    ElevatedCard(modifier = modifier, shape = RoundedCornerShape(20.dp)) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp)
-                )
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
             Text(
-                value,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = valueColor ?: Color.Unspecified
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
             )
         }
+        val total = items.size
+        if (total == 0) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(26.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            )
+            Text(
+                text = "Пока ничего нет",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@Column
+        }
+        val segments = listOf(
+            LibraryStatusSegment(items.count { it.status == UserFilmStatus.PLANNED }, Color(0xFF8E7CE0), "Запланировано"),
+            LibraryStatusSegment(items.count { it.status == UserFilmStatus.WATCHING }, Color(0xFFE0485C), "Смотрю"),
+            LibraryStatusSegment(items.count { it.status == UserFilmStatus.REWATCHING }, Color(0xFFEF8E3C), "Пересматриваю"),
+            LibraryStatusSegment(items.count { it.status == UserFilmStatus.COMPLETED }, Color(0xFF4CAF50), "Просмотрено"),
+            LibraryStatusSegment(items.count { it.status == UserFilmStatus.ON_HOLD }, Color(0xFF4A90E2), "Отложено"),
+            LibraryStatusSegment(items.count { it.status == UserFilmStatus.DROPPED }, Color(0xFF8E8E93), "Брошено")
+        ).filter { it.count > 0 }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(26.dp)
+                .clip(RoundedCornerShape(8.dp))
+        ) {
+            segments.forEach { segment ->
+                val fraction = segment.count.toFloat() / total
+                Box(
+                    modifier = Modifier
+                        .weight(fraction)
+                        .fillMaxHeight()
+                        .background(segment.color),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Число рисуем только если сегмент достаточно широкий для текста
+                    if (fraction >= 0.12f) {
+                        Text(
+                            text = "${segment.count}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+        Text(
+            text = segments.joinToString(", ") { "${it.label} ${it.count}" },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -1394,56 +1405,97 @@ private fun ActivityBars(values: List<Pair<String, Int>>) {
 
     var selectedIndex by remember(values) { mutableIntStateOf(values.lastIndex) }
     val max = values.maxOfOrNull { it.second }?.coerceAtLeast(1) ?: 1
+    val density = LocalDensity.current
+    var chartWidthPx by remember { mutableIntStateOf(0) }
 
-    Row(
-        modifier = Modifier.fillMaxWidth().height(120.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.Bottom
-    ) {
-        values.forEachIndexed { index, (_, value) ->
-            val ratio = value.toFloat() / max.toFloat()
-            val selected = index == selectedIndex
+    val pickIndex: (Float, Int) -> Unit = { x, width ->
+        selectedIndex = (x / width.coerceAtLeast(1) * values.size).toInt().coerceIn(0, values.size - 1)
+    }
+
+    // Дата и число просмотров над графиком, прижаты к выбранному столбцу
+    val slotWidthPx = chartWidthPx.toFloat() / values.size
+    val headerOffset = with(density) { (slotWidthPx * selectedIndex + slotWidthPx / 2f).toDp() }
+    val selectedValue = values[selectedIndex].second
+    val barColor = MaterialTheme.colorScheme.primary
+    val trackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    val haloColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onSizeChanged { chartWidthPx = it.width }
+        ) {
             Column(
-                modifier = Modifier.weight(1f).clickable { selectedIndex = index },
-                verticalArrangement = Arrangement.Bottom,
+                modifier = Modifier.offset(x = headerOffset, y = 0.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .fillMaxHeight(ratio.coerceIn(0.06f, 1f))
-                        .background(
-                            when {
-                                selected -> MaterialTheme.colorScheme.secondary
-                                value == 0 -> MaterialTheme.colorScheme.surfaceContainerHigh
-                                else -> MaterialTheme.colorScheme.primary
-                            },
-                            RoundedCornerShape(8.dp)
-                        )
+                Text(
+                    text = values[selectedIndex].first,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = when {
+                        selectedValue == 0 -> "нет просмотров"
+                        selectedValue == 1 -> "1 просмотр"
+                        selectedValue in 2..4 -> "$selectedValue просмотра"
+                        else -> "$selectedValue просмотров"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(110.dp)
+                .pointerInput(values) {
+                    detectTapGestures { offset -> pickIndex(offset.x, size.width) }
+                }
+                .pointerInput(values) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { offset -> pickIndex(offset.x, size.width) },
+                        onHorizontalDrag = { change, _ ->
+                            change.consume()
+                            pickIndex(change.position.x, size.width)
+                        }
+                    )
+                }
+        ) {
+            val slotWidth = size.width / values.size
+            val barWidth = (slotWidth * 0.6f).coerceAtMost(24.dp.toPx())
+            val corner = CornerRadius(4.dp.toPx())
+            values.forEachIndexed { index, (_, value) ->
+                // Halo под выбранным столбцом: выделение видно и на пустом дне
+                if (index == selectedIndex) {
+                    drawRoundRect(
+                        color = haloColor,
+                        topLeft = Offset(index * slotWidth + 1.dp.toPx(), 0f),
+                        size = Size(slotWidth - 2.dp.toPx(), size.height),
+                        cornerRadius = CornerRadius(6.dp.toPx())
+                    )
+                }
+                val barHeight = when {
+                    value > 0 -> (size.height * (value.toFloat() / max.toFloat())).coerceAtLeast(6.dp.toPx())
+                    else -> 3.dp.toPx()
+                }
+                val left = index * slotWidth + (slotWidth - barWidth) / 2f
+                drawRoundRect(
+                    color = when {
+                        value == 0 && index == selectedIndex -> barColor.copy(alpha = 0.45f)
+                        value == 0 -> trackColor
+                        else -> barColor
+                    },
+                    topLeft = Offset(left, size.height - barHeight),
+                    size = Size(barWidth, barHeight),
+                    cornerRadius = corner
                 )
             }
         }
     }
-
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        values.take(1).forEach { (day, _) ->
-            Text(day, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        values.drop(6).take(1).forEach { (day, _) ->
-            Text(day, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        values.takeLast(1).forEach { (day, _) ->
-            Text(day, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-
-    val selected = values[selectedIndex]
-    Text(
-        text = "${selected.first}: ${selected.second} просмотров",
-        style = MaterialTheme.typography.bodyMedium,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.primary
-    )
 }
 private fun buildActivityBars(library: List<LibraryUiItem>): List<Pair<String, Int>> {
     val calendar = Calendar.getInstance()
