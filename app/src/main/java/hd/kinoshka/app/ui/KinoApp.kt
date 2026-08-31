@@ -386,7 +386,17 @@ fun KinoApp() {
         KinoTheme(themeMode = vm.uiState.themeMode) {
             Surface(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    NavHost(navController = navController, startDestination = "home") {
+                    // Without host-level defaults navigation-compose falls back to its built-in
+                    // 700 ms fades for every direction a route doesn't spell out (e.g. home's
+                    // exit) — that lingering cross-fade is what made opening pages feel slow.
+                    NavHost(
+                        navController = navController,
+                        startDestination = "home",
+                        enterTransition = { fadeIn(animationSpec = tween(140)) },
+                        exitTransition = { fadeOut(animationSpec = tween(120)) },
+                        popEnterTransition = { fadeIn(animationSpec = tween(140)) },
+                        popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                    ) {
                         composable(
                             route = "home",
                             popEnterTransition = {
@@ -470,10 +480,20 @@ fun KinoApp() {
                         }
                         composable(
                             route = "downloads",
-                            enterTransition = { fadeIn(animationSpec = tween(140)) },
-                            exitTransition = { fadeOut(animationSpec = tween(120)) },
-                            popEnterTransition = { fadeIn(animationSpec = tween(140)) },
-                            popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                            // Same easing fade the details page uses — the app's standard for
+                            // secondary pages, unlike the flat 140 ms fade elsewhere.
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
                         ) {
                             DownloadsScreen(onBack = { navController.popBackStack() })
                         }
@@ -589,10 +609,18 @@ fun KinoApp() {
                         }
                         composable(
                             route = "profile",
-                            enterTransition = { fadeIn(animationSpec = tween(140)) },
-                            exitTransition = { fadeOut(animationSpec = tween(120)) },
-                            popEnterTransition = { fadeIn(animationSpec = tween(140)) },
-                            popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
                         ) {
                             ProfileScreen(
                                 avatar = vm.uiState.profileAvatar,
@@ -610,10 +638,18 @@ fun KinoApp() {
                         }
                         composable(
                             route = "settings",
-                            enterTransition = { fadeIn(animationSpec = tween(140)) },
-                            exitTransition = { fadeOut(animationSpec = tween(120)) },
-                            popEnterTransition = { fadeIn(animationSpec = tween(140)) },
-                            popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
                         ) {
                             SettingsScreen(
                                 onBack = { navController.popBackStack() },
@@ -635,10 +671,18 @@ fun KinoApp() {
                         }
                         composable(
                             route = "about",
-                            enterTransition = { fadeIn(animationSpec = tween(140)) },
-                            exitTransition = { fadeOut(animationSpec = tween(120)) },
-                            popEnterTransition = { fadeIn(animationSpec = tween(140)) },
-                            popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
                         ) {
                             AboutScreen(
                                 onBack = { navController.popBackStack() },
