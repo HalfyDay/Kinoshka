@@ -119,7 +119,9 @@ private val KinoTypography = Typography(
         lineHeight = 20.sp
     ),
     labelLarge = TextStyle(
-        fontFamily = FontFamily.Monospace,
+        // SansSerif like the rest of the UI: the old Monospace made tab chips (История/Смотрю/…)
+        // and buttons read as terminal text next to every other label.
+        fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Medium,
         fontSize = 13.sp,
         lineHeight = 16.sp,
