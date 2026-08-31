@@ -220,8 +220,8 @@ class AnimeRepository(
         }.getOrNull()
     }
 
-    suspend fun deleteUserRate(token: String, rateId: Int) {
+    suspend fun deleteUserRate(token: String, rateId: Int): Boolean {
         val authHeader = if (token.startsWith("Bearer ")) token else "Bearer $token"
-        runCatching { api.deleteUserRate(authHeader, rateId) }
+        return runCatching { api.deleteUserRate(authHeader, rateId) }.isSuccess
     }
 }
