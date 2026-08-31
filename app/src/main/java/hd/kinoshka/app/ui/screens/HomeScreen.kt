@@ -1650,12 +1650,6 @@ private fun LibraryGridCard(
                     modifier = Modifier.align(Alignment.TopStart)
                 )
             }
-            item.status?.let {
-                UserStatusBadge(
-                    status = it,
-                    modifier = Modifier.align(Alignment.BottomEnd)
-                )
-            }
             watchProgress?.let { progress ->
                 PosterBottomProgressBar(
                     progress = progress.progress,
@@ -1740,9 +1734,6 @@ private fun LibraryVerticalRow(
                     newCount = (item.episodesAired ?: 0) - (item.watchedEpisodes ?: 0),
                     modifier = Modifier.align(Alignment.TopStart)
                 )
-            }
-            item.status?.let {
-                UserStatusBadge(status = it, modifier = Modifier.align(Alignment.BottomEnd))
             }
         }
         Column(
