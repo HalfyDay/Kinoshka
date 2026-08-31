@@ -1551,6 +1551,10 @@ class PlayerActivity :
       .joinToString { (src, rows) -> "${src.name}=${rows.size}" }
     Log.i(TAG, "QOM extras: mode=${extras.getString("playback_mode")}, translations=${translations.size} ($bySource), qualities=${stream.qualities.keys}")
     applyQualityOnlyMovieSetup(stream, translations, selectedTranslationId, currentQuality)
+    // Любимая/последняя озвучка: intent-стрим — дефолтная (первая) строка списка, а PENDING-путь
+    // тут же стартует на запомненном дубе. Без этого возврат к фильму каждый раз игнорировал
+    // память воспроизведения, и её затирала launch-запись дефолтной строки выше.
+    startQomOnRememberedDub(translations)
   }
 
   /**
@@ -1846,23 +1850,27 @@ class PlayerActivity :
    * its own loadfile — the caller must skip its default loadfile then.
    */
   private fun startQomOnRememberedDub(
-    payload: MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie,
+    translations: List<FlatTranslation>,
   ): Boolean {
-    val rememberedId = rememberedDubId(payload.translations) ?: return false
+    val rememberedId = rememberedDubId(translations) ?: return false
     // readyQualityMovie orders the winner's own row first — that row is already playing.
-    if (rememberedId == payload.translations.firstOrNull()?.translationId) return false
-    val track = payload.translations.firstOrNull { it.translationId == rememberedId } ?: return false
+    if (rememberedId == translations.firstOrNull()?.translationId) return false
+    val track = translations.firstOrNull { it.translationId == rememberedId } ?: return false
     val kpId = intent.getIntExtra("movie_kinopoisk_id", 0)
     val prepared = if (kpId > 0) {
       hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(kpId)[rememberedId]
     } else null
+    // The remembered dub is what actually plays from now on: record it, otherwise the
+    // launch-time record of the default row (applyQualityOnlyMovieSetup) stays the newest
+    // memory entry and the next resume falls back to the default again.
+    recordPlaybackUsage(track.source, track.title)
     if (prepared != null) {
-      loadPreparedQomVoiceover(track, prepared, payload.translations)
+      loadPreparedQomVoiceover(track, prepared, translations)
       return true
     }
     val link = track.episodes.firstOrNull()?.link
     if (!link.isNullOrBlank()) {
-      loadQomVoiceover(track, link, payload.translations)
+      loadQomVoiceover(track, link, translations)
       return true
     }
     return false
@@ -2012,7 +2020,7 @@ class PlayerActivity :
             }
             // Favorite-dub start: play the remembered dub right away (its own tracked load);
             // only fall through to the winner's default url when nothing is remembered.
-            if (startQomOnRememberedDub(payload)) return@withContext
+            if (startQomOnRememberedDub(payload.translations)) return@withContext
             // Tracked: a dead CDN url auto re-resolves instead of ending in a black screen.
             beginTrackedStreamLoad(retry = { retryPendingResolve(launch, isRetry = true) })
             mpvLoadFile(resolvedUrl, "replace")
@@ -2568,6 +2576,10 @@ class PlayerActivity :
       episode.seasonNumber,
     )
     currentPlayingUrl = url
+    // Качество-меню и watchdog читают currentAnimeStream — без обновления первое нажатие
+    // качества после запуска сериала молча игнорировалось (поле было null до первого
+    // переключения озвучки/серии), а авто-спуск рунга вообще не работал.
+    currentAnimeStream = stream
     updateAutoRungHint(stream.qualities, url)
     mpvLoadFile(url, "replace")
   }

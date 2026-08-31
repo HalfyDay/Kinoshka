@@ -80,13 +80,17 @@ object MovieNativeLauncher {
     ): NativeLaunchPayload =
         withContext(Dispatchers.IO) {
             if (request.kind == MovieContentKind.SERIES) {
-                resolveSeries(request, profile)
+                resolveSeries(request, profile, stateStore)
             } else {
                 resolveMovie(request, stateStore, onLateVoiceovers)
             }
         }
 
-    private suspend fun resolveSeries(request: MoviePlaybackRequest, profile: UserFilmProfile?): NativeLaunchPayload {
+    private suspend fun resolveSeries(
+        request: MoviePlaybackRequest,
+        profile: UserFilmProfile?,
+        stateStore: UserStateStore? = null,
+    ): NativeLaunchPayload {
         val raceStartMs = System.currentTimeMillis()
         // Detached race scope — same reason as in [resolveMovie]: a coroutineScope here would
         // JOIN the loser before returning (a cancelled ddbb resolve or kodik cascade runs to
@@ -104,7 +108,7 @@ object MovieNativeLauncher {
         val payload = when (val outcome = awaitFirstSeriesOutcome(catalogDeferred, ddbbSeriesDeferred)) {
             is SeriesOutcome.FromKodik -> {
                 Log.i(TAG, "series race winner=kodik at ${System.currentTimeMillis() - raceStartMs}ms")
-                kodikSeriesPayload(request, outcome.catalog, profile)
+                kodikSeriesPayload(request, outcome.catalog, profile, stateStore)
             }
             is SeriesOutcome.FromDdbb -> {
                 val harvested = outcome.stream
@@ -156,6 +160,7 @@ object MovieNativeLauncher {
         request: MoviePlaybackRequest,
         catalog: MovieCatalogResult.Available,
         profile: UserFilmProfile?,
+        stateStore: UserStateStore? = null,
     ): NativeLaunchPayload = coroutineScope {
         val episodes = canonicalSeriesEpisodes(catalog.candidates)
         // find-player-discovered rows expose only a whole-title player link; present them
@@ -164,12 +169,31 @@ object MovieNativeLauncher {
             listOf(MovieEpisodeRef(1, 1, "Серия 1", catalog.candidates.firstOrNull()?.topLevelPlayerUrl.orEmpty()))
         }
         val initialEpisode = selectInitialSeriesEpisode(effectiveEpisodes, profile)
+        // Dub memory: the remembered (most recently used) voiceover leads the candidate list, so
+        // canonicalSeriesEpisodes' first-wins url merge re-points every episode to THAT dub and
+        // resolveEpisode resolves it directly. Without it a kodik-won resume always started on
+        // the catalog's first dub regardless of what the user watched before.
+        val rememberedId = stateStore?.let { store ->
+            val dubs = store.getPlaybackUsage().dubs
+            catalog.candidates
+                .filter { !it.translationId.isNullOrBlank() }
+                .filter { (dubs[it.translationTitle?.trim()?.lowercase()]?.lastUsedAt ?: 0L) > 0L }
+                .maxByOrNull { dubs[it.translationTitle?.trim()?.lowercase()]?.lastUsedAt ?: 0L }
+                ?.translationId
+        }
+        val orderedCandidates = rememberedId
+            ?.let { rid -> catalog.candidates.sortedBy { it.translationId != rid } }
+            ?: catalog.candidates
         val result = initialEpisode?.let {
-            MovieStreamResolver.resolveEpisode(request, it, catalog.candidates)
+            val narrowed = MovieStreamResolver.resolveEpisode(request, it, orderedCandidates, rememberedId)
+            // The remembered dub's link can be dead: fall back to the unrestricted resolve
+            // instead of failing the whole launch.
+            if (narrowed is MovieStreamResult.Success) narrowed
+            else MovieStreamResolver.resolveEpisode(request, it, orderedCandidates)
         }
         if (result is MovieStreamResult.Success && initialEpisode != null) {
             // One voiceover entry per Kodik dub found in the catalog.
-            val voiceovers = catalog.candidates
+            val voiceovers = orderedCandidates
                 .filter { !it.translationId.isNullOrBlank() }
                 .distinctBy { it.translationId }
                 .map { candidate ->
@@ -182,7 +206,7 @@ object MovieNativeLauncher {
                 }
             val seriesContext = MovieSeriesPlaybackContext(
                 request = request,
-                candidates = catalog.candidates,
+                candidates = orderedCandidates,
                 episodes = effectiveEpisodes,
                 currentEpisode = initialEpisode,
                 kinopoiskId = request.kinopoiskId ?: 0,
