@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -42,6 +43,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import hd.kinoshka.app.BuildConfig
+import java.io.File
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import hd.kinoshka.app.data.api.ApiClient
 import hd.kinoshka.app.data.local.AppThemeMode
@@ -126,6 +128,7 @@ fun KinoApp() {
         var showUpdateSheet by remember { mutableStateOf(false) }
         var availableRelease by remember { mutableStateOf<AppRelease?>(null) }
         var isDownloading by remember { mutableStateOf(false) }
+        var updateDownloadProgress by remember { mutableIntStateOf(-1) } // -1 = не качаем
         var updateStatusText by remember(updatePrefs) {
             mutableStateOf(
                 updatePrefs.getString(KEY_LAST_UPDATE_STATUS, "Проверка версии...")
@@ -150,6 +153,97 @@ fun KinoApp() {
         val setUpdateStatus: (String) -> Unit = { text ->
             updateStatusText = text
             updatePrefs.edit().putString(KEY_LAST_UPDATE_STATUS, text).apply()
+        }
+
+        // Единый путь установки (кнопка «Проверить обновления» и лист обновления): кэшированный
+        // APK не перекачивается, процент скачивания виден в статусе, а при отсутствии разрешения
+        // «неизвестные источники» поток останавливается и сам продолжается после возврата из
+        // настроек (ON_RESUME-обработчик ниже) — раньше установка просто отменялась.
+        val performInstall: suspend (AppRelease) -> Unit = { release ->
+            if (!isDownloading) {
+                isDownloading = true
+                try {
+                    if (updateManager.findCachedApk(release) != null) {
+                        setUpdateStatus("APK уже скачан. Запускаю установку…")
+                    } else {
+                        updateDownloadProgress = 0
+                        updateStatusText = "Скачивание APK… 0%"
+                    }
+                    val download = updateManager.downloadApk(release) { percent ->
+                        updateDownloadProgress = percent
+                        updateStatusText = "Скачивание APK… $percent%"
+                    }
+                    if (download.isSuccess) {
+                        updateDownloadProgress = -1
+                        val apkFile = download.getOrThrow()
+                        if (!updateManager.canInstallPackages()) {
+                            updatePrefs.edit()
+                                .putString(KEY_PENDING_APK_PATH, apkFile.absolutePath)
+                                .putString(KEY_PENDING_APK_TAG, release.tagName)
+                                .apply()
+                            setUpdateStatus("Разрешите установку — обновление продолжится автоматически.")
+                            Toast.makeText(
+                                appContext,
+                                "Разрешите установку из этого источника — обновление продолжится после возврата.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            updateManager.openUnknownSourcesSettings()
+                        } else {
+                            updatePrefs.edit()
+                                .remove(KEY_PENDING_APK_PATH)
+                                .remove(KEY_PENDING_APK_TAG)
+                                .apply()
+                            if (updateManager.launchApkInstaller(apkFile).isFailure) {
+                                setUpdateStatus("Не удалось запустить установку APK.")
+                                Toast.makeText(
+                                    appContext,
+                                    "Не удалось запустить установку APK.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                openInBrowser(release.htmlUrl)
+                            } else {
+                                setUpdateStatus("Установка версии ${release.tagName} запущена.")
+                            }
+                        }
+                    } else {
+                        updateDownloadProgress = -1
+                        setUpdateStatus("Не удалось скачать APK.")
+                        Toast.makeText(
+                            appContext,
+                            download.exceptionOrNull()?.message ?: "Не удалось скачать APK.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        openInBrowser(release.htmlUrl)
+                    }
+                } finally {
+                    isDownloading = false
+                }
+            }
+        }
+
+        // Возврат из настроек/установщика: если разрешение уже выдано — сразу запускаем
+        // установку скачанного APK, если файл пропал (система вычистила кэш) — забываем его.
+        val resumePendingInstallIfReady: () -> Unit = {
+            updatePrefs.getString(KEY_PENDING_APK_PATH, null)?.let { path ->
+                val apkFile = File(path)
+                when {
+                    !apkFile.exists() ->
+                        updatePrefs.edit().remove(KEY_PENDING_APK_PATH).remove(KEY_PENDING_APK_TAG).apply()
+                    !updateManager.canInstallPackages() -> Unit
+                    else -> {
+                        val tag = updatePrefs.getString(KEY_PENDING_APK_TAG, null).orEmpty()
+                        updatePrefs.edit().remove(KEY_PENDING_APK_PATH).remove(KEY_PENDING_APK_TAG).apply()
+                        if (updateManager.launchApkInstaller(apkFile).isSuccess) {
+                            setUpdateStatus(
+                                if (tag.isBlank()) "Установка обновления запущена."
+                                else "Установка версии $tag запущена."
+                            )
+                        } else {
+                            setUpdateStatus("Не удалось запустить установку APK.")
+                        }
+                    }
+                }
+            }
         }
 
         val runUpdateCheck: (Boolean, Boolean) -> Unit = { fromUserAction, installIfAvailable ->
@@ -226,52 +320,9 @@ fun KinoApp() {
                                 if (!installIfAvailable) {
                                     availableRelease = checkResult.release
                                     showUpdateSheet = true
-                                    return@launch
+                                } else {
+                                    performInstall(checkResult.release)
                                 }
-
-                                Toast.makeText(
-                                    appContext,
-                                    "Найдена версия ${checkResult.release.tagName}. Скачиваю APK...",
-                                    Toast.LENGTH_LONG
-                                ).show()
-
-                                val downloadResult = updateManager.downloadApk(checkResult.release)
-                                downloadResult.fold(
-                                    onSuccess = { apkFile ->
-                                        if (!updateManager.canInstallPackages()) {
-                                            setUpdateStatus("APK скачан. Разрешите установку из этого источника.")
-                                            Toast.makeText(
-                                                appContext,
-                                                "Разрешите установку из этого источника и повторите обновление.",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                            updateManager.openUnknownSourcesSettings()
-                                            return@fold
-                                        }
-
-                                        val installResult = updateManager.launchApkInstaller(apkFile)
-                                        if (installResult.isFailure) {
-                                            setUpdateStatus("Не удалось запустить установку APK.")
-                                            Toast.makeText(
-                                                appContext,
-                                                "Не удалось запустить установку APK.",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                            openInBrowser(checkResult.release.htmlUrl)
-                                        } else {
-                                            setUpdateStatus("Установка версии ${checkResult.release.tagName} запущена.")
-                                        }
-                                    },
-                                    onFailure = { error ->
-                                        setUpdateStatus("Не удалось скачать APK.")
-                                        Toast.makeText(
-                                            appContext,
-                                            error.message ?: "Не удалось скачать APK.",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                        openInBrowser(checkResult.release.htmlUrl)
-                                    }
-                                )
                             }
                         }
                     } finally {
@@ -325,6 +376,7 @@ fun KinoApp() {
             val resumeObserver = LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     vm.refreshAfterPlayerClosed()
+                    resumePendingInstallIfReady()
                 }
             }
             activityLifecycleOwner.lifecycle.addObserver(resumeObserver)
@@ -595,7 +647,7 @@ fun KinoApp() {
                                 onCheckUpdates = { runUpdateCheck(true, true) },
                                 onOpenGithub = { openInBrowser("https://github.com/HalfyDay/Kinoshka") },
                                 onOpenTelegram = { openInBrowser("https://t.me/Kinoshka_HalfDay") },
-                                onOpenShikimori = { openInBrowser("https://shikimori.me") }
+                                onOpenShikimori = { openInBrowser("https://shikimori.io") }
                             )
                         }
                         composable(
@@ -647,48 +699,14 @@ fun KinoApp() {
                         UpdateAvailableSheet(
                             release = release,
                             isDownloading = isDownloading,
+                            downloadProgress = updateDownloadProgress,
                             currentVersion = BuildConfig.VERSION_NAME,
                             onDismiss = {
                                 showUpdateSheet = false
                                 availableRelease = null
-                                isDownloading = false
                             },
                             onUpdate = {
-                                scope.launch {
-                                    isDownloading = true
-                                    val downloadResult = updateManager.downloadApk(release)
-                                    downloadResult.fold(
-                                        onSuccess = { apkFile ->
-                                            isDownloading = false
-                                            showUpdateSheet = false
-                                            availableRelease = null
-                                            if (!updateManager.canInstallPackages()) {
-                                                setUpdateStatus("APK скачан. Разрешите установку из этого источника.")
-                                                updateManager.openUnknownSourcesSettings()
-                                                return@launch
-                                            }
-                                            val installResult = updateManager.launchApkInstaller(apkFile)
-                                            if (installResult.isFailure) {
-                                                setUpdateStatus("Не удалось запустить установку APK.")
-                                                openInBrowser(release.htmlUrl)
-                                            } else {
-                                                setUpdateStatus("Установка версии ${release.tagName} запущена.")
-                                            }
-                                        },
-                                        onFailure = { error ->
-                                            isDownloading = false
-                                            showUpdateSheet = false
-                                            availableRelease = null
-                                            setUpdateStatus("Не удалось скачать APK.")
-                                            Toast.makeText(
-                                                appContext,
-                                                error.message ?: "Не удалось скачать APK.",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                            openInBrowser(release.htmlUrl)
-                                        }
-                                    )
-                                }
+                                scope.launch { performInstall(release) }
                             }
                         )
                     }
@@ -702,6 +720,8 @@ private const val GITHUB_RELEASES_URL_DEFAULT = "https://github.com/HalfyDay/Kin
 private const val UPDATE_PREFS_NAME = "update_preferences"
 private const val KEY_LAST_AUTO_CHECK_AT = "last_auto_check_at"
 private const val KEY_LAST_UPDATE_STATUS = "last_update_status"
+private const val KEY_PENDING_APK_PATH = "pending_apk_path"
+private const val KEY_PENDING_APK_TAG = "pending_apk_tag"
 private const val AUTO_UPDATE_INTERVAL_MS = 24L * 60L * 60L * 1000L
 
 private fun detailsRoute(id: Int): String = "details/$id"

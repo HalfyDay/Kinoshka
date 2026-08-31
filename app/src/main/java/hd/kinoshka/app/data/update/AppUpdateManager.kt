@@ -96,12 +96,28 @@ class AppUpdateManager(private val appContext: Context) {
         }
     }
 
-    suspend fun downloadApk(release: AppRelease): Result<File> = withContext(Dispatchers.IO) {
+    /**
+     * Downloads the release APK into the cache dir. If the same asset is already fully
+     * downloaded (a previous install attempt was cancelled by the unknown-sources dialog),
+     * the cached file is returned as-is instead of re-downloading. [onProgress] reports
+     * 0..100 as known byte fractions; it is not called when the total size is unknown.
+     */
+    suspend fun downloadApk(
+        release: AppRelease,
+        onProgress: (Int) -> Unit = {}
+    ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val updatesDir = File(appContext.cacheDir, "updates").apply { mkdirs() }
             val safeFileName = sanitizeApkFileName(release.apkName)
             val tempFile = File(updatesDir, "$safeFileName.part")
             val targetFile = File(updatesDir, safeFileName)
+
+            // Cache hit: the installer flow may come here right after the user granted the
+            // install permission — downloading the whole APK again would be wasteful.
+            if (targetFile.exists() && targetFile.length() > 0L) {
+                onProgress(100)
+                return@runCatching targetFile
+            }
 
             val request = Request.Builder()
                 .url(release.apkDownloadUrl)
@@ -114,9 +130,25 @@ class AppUpdateManager(private val appContext: Context) {
                     throw IllegalStateException("Unable to download APK (HTTP ${response.code}).")
                 }
                 val body = response.body ?: throw IllegalStateException("APK download response is empty.")
+                val totalBytes = body.contentLength()
+                var reportedProgress = -1
                 body.byteStream().use { input ->
                     FileOutputStream(tempFile).use { output ->
-                        input.copyTo(output)
+                        val buffer = ByteArray(64 * 1024)
+                        var readBytes = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            readBytes += read
+                            if (totalBytes > 0) {
+                                val percent = ((readBytes * 100) / totalBytes).toInt().coerceIn(0, 99)
+                                if (percent != reportedProgress) {
+                                    reportedProgress = percent
+                                    onProgress(percent)
+                                }
+                            }
+                        }
                         output.flush()
                     }
                 }
@@ -136,8 +168,15 @@ class AppUpdateManager(private val appContext: Context) {
                 ?.forEach { staleFile ->
                     runCatching { staleFile.delete() }
                 }
+            onProgress(100)
             targetFile
         }
+    }
+
+    /** Fully downloaded APK of [release] from a previous attempt, if it is still on disk. */
+    fun findCachedApk(release: AppRelease): File? {
+        val target = File(File(appContext.cacheDir, "updates"), sanitizeApkFileName(release.apkName))
+        return target.takeIf { it.exists() && it.length() > 0L }
     }
 
     fun canInstallPackages(): Boolean {

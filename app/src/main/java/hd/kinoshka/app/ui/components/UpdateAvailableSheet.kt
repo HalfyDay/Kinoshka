@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -30,6 +31,7 @@ import hd.kinoshka.app.data.update.AppRelease
 fun UpdateAvailableSheet(
     release: AppRelease,
     isDownloading: Boolean,
+    downloadProgress: Int = -1, // -1 = размер неизвестен, показываем только спиннер
     currentVersion: String,
     onDismiss: () -> Unit,
     onUpdate: () -> Unit
@@ -110,9 +112,17 @@ fun UpdateAvailableSheet(
                     )
                     Spacer(modifier = Modifier.size(8.dp))
                     Text(
-                        text = "Скачивание...",
+                        text = if (downloadProgress >= 0) "Скачивание… $downloadProgress%"
+                        else "Скачивание...",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (downloadProgress >= 0) {
+                    LinearProgressIndicator(
+                        progress = { downloadProgress / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }
