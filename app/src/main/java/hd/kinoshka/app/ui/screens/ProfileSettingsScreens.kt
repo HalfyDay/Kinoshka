@@ -920,7 +920,7 @@ fun AboutScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                        text = BuildConfig.VERSION_NAME,
                         style = MaterialTheme.typography.titleSmall
                     )
                     Text(
