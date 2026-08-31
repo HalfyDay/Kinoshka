@@ -371,6 +371,8 @@ fun KinoApp() {
                                 onOpenFeed = { navController.navigate("anime_feed") },
                                 onOpenRecommendationsFeed = { navController.navigate("recommendations_feed") },
                                 onLibrarySortSelected = vm::setLibrarySortType,
+                                librarySortReversed = vm.uiState.librarySortReversed,
+                                onLibrarySortReversedChanged = vm::setLibrarySortReversed,
                                 onHentaiVisibilityChanged = vm::setHentaiVisibleInLibrary,
                                 onRemoveSearchHistory = vm::removeSearchQueryFromHistory,
                                 onClearSearchHistory = vm::clearSearchHistory

@@ -141,6 +141,7 @@ data class HomeUiState(
     val themeMode: AppThemeMode = AppThemeMode.CURRENT,
     val hideRussianContent: Boolean = false,
     val showHentaiInLibrary: Boolean = true,
+    val librarySortReversed: Boolean = false,
     val discoverTileSize: FilmTileSize = FilmTileSize.MEDIUM,
     val libraryTileSize: FilmTileSize = FilmTileSize.MEDIUM,
     val showFpsCounter: Boolean = false,
@@ -194,6 +195,11 @@ class FilmsViewModel(
     // still being constructed the first time buildLibraryItems runs (reading uiState then is a
     // NPE on the not-yet-initialized State delegate).
     private var cachedShikimoriCalendar: List<hd.kinoshka.app.data.model.ShikimoriCalendarItem> = emptyList()
+
+    // Несортированная база библиотеки (последний результат buildLibraryItems). Пересборка
+    // парсит большие JSON-блобы истории/профилей и вешает main-поток, поэтому смена
+    // сортировки пересортирует кэш вместо полной пересборки.
+    @Volatile private var libraryBaseCache: List<LibraryUiItem>? = null
 
     // In-flight search job. Cancelled + replaced on every new query so fast typing (instant
     // search) can't let an older, slower request clobber the newer results.
@@ -811,8 +817,16 @@ class FilmsViewModel(
 
     fun setLibrarySortType(sortType: hd.kinoshka.app.data.local.LibrarySortType) {
         userStateStore.setLibrarySortType(sortType)
-        uiState = uiState.copy(library = buildLibraryItems())
+        uiState = uiState.copy(library = resortLibrary())
     }
+
+    fun setLibrarySortReversed(reversed: Boolean) {
+        userStateStore.setLibrarySortReversed(reversed)
+        uiState = uiState.copy(librarySortReversed = reversed, library = resortLibrary())
+    }
+
+    private fun resortLibrary(): List<LibraryUiItem> =
+        libraryBaseCache?.let(::applyLibrarySort) ?: buildLibraryItems()
 
     fun setHentaiVisibleInLibrary(visible: Boolean) {
         userStateStore.setHentaiVisibleInLibrary(visible)
@@ -1470,6 +1484,7 @@ class FilmsViewModel(
             libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
             showFpsCounter = preferences.showFpsCounter,
             showHentaiInLibrary = userStateStore.isHentaiVisibleInLibrary(),
+            librarySortReversed = userStateStore.isLibrarySortReversed(),
             contentType = preferences.contentType,
             playbackSequence = preferences.playbackSequence,
             playerMode = preferences.playerMode
@@ -1630,22 +1645,29 @@ class FilmsViewModel(
             }
         }
 
-        // Sort based on user preference
-        val sortType = userStateStore.getLibrarySortType()
-        return when (sortType) {
+        // Sort based on user preference. The unsorted base goes to the cache so switching
+        // the sort type / direction doesn't re-parse the history and profile blobs.
+        libraryBaseCache = result
+        return applyLibrarySort(result)
+    }
+
+    /** Сортирует готовую базу библиотеки сохранённым типом и направлением. */
+    private fun applyLibrarySort(base: List<LibraryUiItem>): List<LibraryUiItem> {
+        val sorted = when (userStateStore.getLibrarySortType()) {
             hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED ->
-                result.sortedByDescending { it.viewedAtMillis ?: it.updatedAt }
+                base.sortedByDescending { it.viewedAtMillis ?: it.updatedAt }
             hd.kinoshka.app.data.local.LibrarySortType.DATE_ADDED ->
-                result.sortedByDescending { it.updatedAt }
+                base.sortedByDescending { it.updatedAt }
             hd.kinoshka.app.data.local.LibrarySortType.ALPHABETICAL ->
-                result.sortedBy { it.title.lowercase(Locale("ru")) }
+                base.sortedBy { it.title.lowercase(Locale("ru")) }
             hd.kinoshka.app.data.local.LibrarySortType.RATING ->
-                result.sortedByDescending {
+                base.sortedByDescending {
                     it.ratingText?.replace(Regex("[^0-9.]"), "")?.toDoubleOrNull() ?: 0.0
                 }
             hd.kinoshka.app.data.local.LibrarySortType.RELEASE_DATE ->
-                result.sortedByDescending { it.updatedAt } // Fallback, actual release date would need extra data
+                base.sortedByDescending { it.updatedAt } // Fallback, actual release date would need extra data
         }
+        return if (userStateStore.isLibrarySortReversed()) sorted.asReversed() else sorted
     }
 
     private fun getUserProfileForFilm(id: Int): UserFilmProfile? {
