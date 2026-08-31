@@ -284,6 +284,8 @@ fun HomeScreen(
     // Тестовый TikTok-фид рекомендаций: кнопка «Лента» в нижней пилюле после «Обзора»
     onOpenRecommendationsFeed: () -> Unit = {},
     onLibrarySortSelected: (hd.kinoshka.app.data.local.LibrarySortType) -> Unit = {},
+    librarySortReversed: Boolean = false,
+    onLibrarySortReversedChanged: (Boolean) -> Unit = {},
     onHentaiVisibilityChanged: (Boolean) -> Unit = {},
     onInstantSearch: (String) -> Unit = {},
     onRemoveSearchHistory: (String) -> Unit = {},
@@ -492,6 +494,8 @@ fun HomeScreen(
                                 librarySort = sortType
                                 onLibrarySortSelected(sortType)
                             },
+                            librarySortReversed = librarySortReversed,
+                            onLibrarySortReversedChanged = onLibrarySortReversedChanged,
                             showHentaiInLibrary = state.showHentaiInLibrary,
                             onHentaiVisibilityChanged = onHentaiVisibilityChanged,
                             isFilterActive = state.filterState.isActive,
@@ -671,6 +675,8 @@ private fun SearchRow(
     onLibraryFilterSelected: ((LibraryFilterType) -> Unit)? = null,
     librarySort: hd.kinoshka.app.data.local.LibrarySortType = hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED,
     onLibrarySortSelected: ((hd.kinoshka.app.data.local.LibrarySortType) -> Unit)? = null,
+    librarySortReversed: Boolean = false,
+    onLibrarySortReversedChanged: ((Boolean) -> Unit)? = null,
     showHentaiInLibrary: Boolean = true,
     onHentaiVisibilityChanged: ((Boolean) -> Unit)? = null,
     isFilterActive: Boolean = false,
@@ -848,6 +854,23 @@ private fun SearchRow(
                             }
                         )
                     }
+                    HorizontalDivider()
+                    // Обратный порядок поверх выбранной сортировки; меню не закрываем — можно донастроить.
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "Обратный порядок",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        },
+                        trailingIcon = {
+                            Switch(
+                                checked = librarySortReversed,
+                                onCheckedChange = null
+                            )
+                        },
+                        onClick = { onLibrarySortReversedChanged?.invoke(!librarySortReversed) }
+                    )
                     HorizontalDivider()
                     // Показ 18+-тайтлов в библиотеке: меню не закрываем — можно донастроить сортировку.
                     DropdownMenuItem(

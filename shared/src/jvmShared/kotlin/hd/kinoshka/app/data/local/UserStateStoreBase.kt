@@ -181,6 +181,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     private val preferredQualityKey = "preferred_quality"
     private val shikimoriAnimeCacheKey = "shikimori_anime_cache"
     private val librarySortKey = "library_sort_type"
+    private val librarySortReversedKey = "library_sort_reversed"
     private val showHentaiInLibraryKey = "show_hentai_in_library"
     private val searchHistoryKey = "search_history_json"
     private val playbackUsageKey = "playback_usage_json"
@@ -232,6 +233,13 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
     fun setLibrarySortType(sortType: LibrarySortType) {
         prefs.putString(librarySortKey, sortType.name).apply()
+    }
+
+    /** «Обратный порядок» переворачивает естественное направление выбранной сортировки. */
+    fun isLibrarySortReversed(): Boolean = prefs.getBoolean(librarySortReversedKey, false)
+
+    fun setLibrarySortReversed(reversed: Boolean) {
+        prefs.putBoolean(librarySortReversedKey, reversed).apply()
     }
 
     /** Переключатель «Показывать хентай» в библиотеке: по умолчанию включён (как раньше). */
