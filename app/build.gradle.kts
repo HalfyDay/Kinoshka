@@ -23,6 +23,11 @@ android {
             useSupportLibrary = true
         }
 
+        // mpv-AAR тащит нативные библиотеки для 4 ABI; x86/x86_64 нужны только эмулятору.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+
         val localProps = Properties().apply {
             val localFile = rootProject.file("local.properties")
             if (localFile.exists()) {
@@ -83,6 +88,14 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            // mediainfo используется только браузерным UI mpvEx, который недостижим
+            // из Kinoshka; нативные библиотеки (8.7 МБ на ABI) в APK не нужны.
+            excludes += listOf(
+                "lib/**/libmediainfo.so",
+                "lib/**/libzen.so"
+            )
         }
     }
 }

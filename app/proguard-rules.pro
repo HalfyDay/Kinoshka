@@ -72,20 +72,12 @@
 -keep class androidx.media3.** { *; }
 -dontwarn androidx.media3.**
 
-# NanoHTTPD
--keep class org.nanohttpd.** { *; }
--dontwarn org.nanohttpd.**
-
-# SMBJ
--keep class com.hierynomus.smbj.** { *; }
+# SMBJ / Sardine / Commons Net: без keep — R8 оставляет только
+# реально достижимые классы сетевых клиентов браузера mpvEx.
+# (org.nanohttpd-правило было no-op: реальный пакет nanohttpd — fi.iki.elonen,
+# и он целиком вырезан как недостижимый.)
 -dontwarn com.hierynomus.smbj.**
-
-# Sardine
--keep class com.github.sardine.** { *; }
 -dontwarn com.github.sardine.**
-
-# Commons Net
--keep class org.apache.commons.net.** { *; }
 -dontwarn org.apache.commons.net.**
 
 # Keep BuildConfig
