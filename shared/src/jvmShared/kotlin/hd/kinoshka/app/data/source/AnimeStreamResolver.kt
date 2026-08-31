@@ -302,7 +302,10 @@ object AnimeStreamResolver {
                         translationId = release.optString("alias")
                             .ifBlank { release.optInt("id").takeIf { it > 0 }?.toString().orEmpty() }
                             .ifBlank { "default" },
-                        title = title,
+                        // AniLiberty hosts a single studio dub, so the release title here read as
+                        // the anime name — the same title the page was opened from. Label the
+                        // voiceover by the source itself instead.
+                        title = AnimeSourceType.ANILIBERTY.displayName,
                         type = "voice",
                         episodes = episodes
                     )
@@ -735,7 +738,7 @@ object AnimeStreamResolver {
         listOf(
             AnimeTranslation(
                 id = alias,
-                title = getAniLibertyTitle(release),
+                title = AnimeSourceType.ANILIBERTY.displayName,
                 type = "voice",
                 episodesCount = release.optJSONArray("episodes")?.length() ?: release.optInt("episodes_total", 0)
             )

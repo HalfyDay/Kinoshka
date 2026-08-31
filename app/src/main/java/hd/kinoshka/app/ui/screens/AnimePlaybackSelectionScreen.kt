@@ -483,7 +483,16 @@ fun AnimePlaybackSelectionScreen(
                         val subtitleText = when (currentStep) {
                             SelectionStep.SOURCE -> "Выбор озвучки и источника"
                             SelectionStep.TRANSLATION -> "Выбор озвучки ${selectedSourceType?.let { "• ${it.displayName}" } ?: ""}"
-                            SelectionStep.EPISODE -> if (selectedTranslation != null) "${selectedTranslation?.title} • ${selectedSourceType?.displayName}" else "Выбор серии"
+                            // AniLiberty's dub is labeled by the source itself — avoid "AniLiberty • AniLiberty"
+                            SelectionStep.EPISODE -> {
+                                val tr = selectedTranslation
+                                val srcName = selectedSourceType?.displayName
+                                when {
+                                    tr == null -> "Выбор серии"
+                                    tr.title == srcName || srcName == null -> tr.title
+                                    else -> "${tr.title} • $srcName"
+                                }
+                            }
                         }
                         Text(
                             text = subtitleText,
@@ -1212,7 +1221,9 @@ private fun ResumeWatchingCard(
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Text(
-                    text = "${translation.source.displayName} · ${translation.title}",
+                    // Same-name dub ("AniLiberty") would double the source name here
+                    text = if (translation.title == translation.source.displayName) translation.source.displayName
+                    else "${translation.source.displayName} · ${translation.title}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                     maxLines = 1,
