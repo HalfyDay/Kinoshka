@@ -482,7 +482,8 @@ class FilmsViewModel(
                 val whoami = animeRepository.whoami(tokenResponse.accessToken)
                 if (whoami != null) {
                     Log.d("ShikimoriSync", "User info fetched: id=${whoami.id}, nickname=${whoami.nickname}")
-                    val rawAvatar = whoami.avatar ?: whoami.image?.original
+                    // whoami.avatar is always the tiny x48 version; image.x160 is the largest one
+                    val rawAvatar = whoami.image?.x160 ?: whoami.avatar ?: whoami.image?.original
                     val fullAvatar = if (rawAvatar?.startsWith("/") == true) "https://shikimori.io$rawAvatar" else rawAvatar
                     shikimoriAuthStore?.saveSession(
                         token = tokenResponse.accessToken,
