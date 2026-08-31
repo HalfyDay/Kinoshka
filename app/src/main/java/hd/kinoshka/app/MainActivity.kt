@@ -9,7 +9,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Rect
 import android.graphics.drawable.Icon
-import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
@@ -49,15 +48,10 @@ class MainActivity : ComponentActivity() {
             registerReceiver(pipReceiver, filter)
         }
 
-        // Tell Android AudioManager that this activity handles media keys,
-        // so Bluetooth headphone button events get routed to our Activity first
-        val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
-        @Suppress("DEPRECATION")
-        audioManager?.requestAudioFocus(
-            null,
-            AudioManager.STREAM_MUSIC,
-            AudioManager.AUDIOFOCUS_GAIN,
-        )
+        // NOTE: no audio focus here. Grabbing AUDIOFOCUS_GAIN at cold start pauses whatever
+        // music is playing in the background; media keys are routed either to the foreground
+        // activity (onKeyDown below, focus-independent) or to MediaPlaybackService's
+        // MediaSession while playback is running.
 
         setContent {
             KinoApp()

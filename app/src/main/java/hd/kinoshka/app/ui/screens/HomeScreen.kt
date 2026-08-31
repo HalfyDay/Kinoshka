@@ -348,9 +348,15 @@ fun HomeScreen(
             Toast.makeText(context, "Повторите жест «Назад», чтобы закрыть приложение", Toast.LENGTH_SHORT).show()
         }
     }
-    // System Back on an active Discover search closes the search and results (reload the
-    // discover feed) instead of exiting.
+    // System Back on an active Discover search: while the keyboard is still up the first Back
+    // must only hide it (drop field focus); the second Back closes the search and results
+    // (reload the discover feed) instead of exiting.
     BackHandler(enabled = isDiscoverSearchActive) {
+        if (isSearchFocused) {
+            isSearchFocused = false
+            focusManager.clearFocus()
+            return@BackHandler
+        }
         isSearchFocused = false
         focusManager.clearFocus()
         discoverQuery = ""
@@ -578,6 +584,10 @@ fun HomeScreen(
 
                                 HorizontalPager(
                                     state = pagerState,
+                                    // Without a gap the last column of one tab and the first
+                                    // column of the next visually merge at the page seam
+                                    // mid-swipe; 10.dp mirrors the grid's own column spacing.
+                                    pageSpacing = 10.dp,
                                     modifier = Modifier.fillMaxSize()
                                 ) { page ->
                                     val pageTab = LibraryTab.entries[page]
