@@ -41,7 +41,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.calculatePan
-import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -111,6 +111,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -189,6 +190,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -2521,16 +2523,46 @@ private fun ImagesViewerDialog(
             }
         }
 
-        // Main image pager: pinch zoom + pan clamped to the frame, double-tap zoom, swipe-down
-        // dismiss at 1x. A single tap NEVER closes (only resets the zoom) — close via ✕ or drag.
-        // Zoom state lives at the dialog level: the pager must know it to lock page swipes
-        // while zoomed, and every page switch starts from 1x anyway (swipe is 1x-only).
+        // Main image pager: pinch zoom + pan clamped to the frame, double-tap zoom with
+        // animation, swipe-down dismiss at 1x. A single tap NEVER closes (only resets the
+        // zoom) — close via ✕ or drag.
+        //
+        // Gestures sit on the FULL-SCREEN page box, not on the image: graphicsLayer scales
+        // only the rendering, so a hit-test area on the image box would stay at its 1x bounds
+        // and touches on the magnified picture would be dead.
+        //
+        // Zoom is center-anchored: the picture stays centered at any zoom; while zoomed a
+        // single-finger drag pans within the clamp (the frame is never dragged out of view),
+        // page swipes are locked (userScrollEnabled), and every page switch resets to 1x.
+        val scope = rememberCoroutineScope()
         var zoomScale by remember { mutableFloatStateOf(1f) }
         var zoomOffset by remember { mutableStateOf(Offset.Zero) }
+        var zoomAnimJob by remember { mutableStateOf<Job?>(null) }
+        var imageBoxSizePx by remember { mutableStateOf(IntSize.Zero) }
+
+        // Двойной тап: плавная анимация зума к цели. Картинка всегда центрируется —
+        // смещение уходит в ноль вместе с анимацией масштаба.
+        fun animateZoomTo(target: Float) {
+            zoomAnimJob?.cancel()
+            val fromScale = zoomScale
+            val fromOffset = zoomOffset
+            zoomAnimJob = scope.launch {
+                animate(
+                    initialValue = 0f,
+                    targetValue = 1f,
+                    animationSpec = tween(280, easing = FastOutSlowInEasing)
+                ) { v, _ ->
+                    zoomScale = fromScale + (target - fromScale) * v
+                    zoomOffset = fromOffset * (1f - v)
+                }
+            }
+        }
+
         LaunchedEffect(pagerState) {
             snapshotFlow { pagerState.currentPage }
                 .drop(1)
                 .collect {
+                    zoomAnimJob?.cancel()
                     zoomScale = 1f
                     zoomOffset = Offset.Zero
                 }
@@ -2543,111 +2575,93 @@ private fun ImagesViewerDialog(
         ) { page ->
             var imageAspectRatio by remember(page) { mutableStateOf<Float?>(null) }
 
-            val zoomGestureModifier = Modifier.pointerInput(page) {
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    var multiTouch = false
-                    do {
-                        val event = awaitPointerEvent()
-                        if (event.changes.size > 1) multiTouch = true
-                        val zoom = event.calculateZoom()
-                        val pan = event.calculatePan()
-                        when {
-                            zoom != 1f -> {
-                                // Pinch: anchor the centroid, clamp scale to 1..6 and offset to
-                                // the frame so the picture can never be dragged out of view.
-                                val centroid = event.calculateCentroid()
-                                val newScale = (zoomScale * zoom).coerceIn(1f, 6f)
-                                val k = newScale / zoomScale
-                                val center = Offset(size.width / 2f, size.height / 2f)
-                                val raw = (centroid - center) * (1f - k) + zoomOffset * k + pan
-                                zoomScale = newScale
-                                zoomOffset = if (newScale <= 1.01f) {
-                                    Offset.Zero
-                                } else {
-                                    val maxX = size.width * (newScale - 1f) / 2f
-                                    val maxY = size.height * (newScale - 1f) / 2f
-                                    Offset(
-                                        raw.x.coerceIn(-maxX, maxX),
-                                        raw.y.coerceIn(-maxY, maxY)
-                                    )
+            val zoomGestureModifier = Modifier
+                .pointerInput(page) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        zoomAnimJob?.cancel()
+                        do {
+                            val event = awaitPointerEvent()
+                            val zoom = event.calculateZoom()
+                            val pan = event.calculatePan()
+                            // Clamps are relative to the IMAGE box (its laid-out size), so the
+                            // picture always keeps covering its frame while panned.
+                            val boxW = imageBoxSizePx.width.toFloat().coerceAtLeast(1f)
+                            val boxH = imageBoxSizePx.height.toFloat().coerceAtLeast(1f)
+                            when {
+                                zoom != 1f -> {
+                                    val newScale = (zoomScale * zoom).coerceIn(1f, 6f)
+                                    val maxX = boxW * (newScale - 1f) / 2f
+                                    val maxY = boxH * (newScale - 1f) / 2f
+                                    zoomScale = newScale
+                                    zoomOffset = if (newScale <= 1.01f) {
+                                        Offset.Zero
+                                    } else {
+                                        Offset(
+                                            zoomOffset.x.coerceIn(-maxX, maxX),
+                                            zoomOffset.y.coerceIn(-maxY, maxY)
+                                        )
+                                    }
+                                    event.changes.forEach { it.consume() }
                                 }
-                                event.changes.forEach { it.consume() }
+                                zoomScale > 1.01f -> {
+                                    val maxX = boxW * (zoomScale - 1f) / 2f
+                                    val maxY = boxH * (zoomScale - 1f) / 2f
+                                    zoomOffset = Offset(
+                                        (zoomOffset.x + pan.x).coerceIn(-maxX, maxX),
+                                        (zoomOffset.y + pan.y).coerceIn(-maxY, maxY)
+                                    )
+                                    event.changes.forEach { it.consume() }
+                                }
+                                kotlin.math.abs(pan.y) > kotlin.math.abs(pan.x) && kotlin.math.abs(pan.y) > 4f -> {
+                                    // At 1x a vertical one-finger drag pulls the image down to
+                                    // dismiss. Left unconsumed so the pager still owns horizontal
+                                    // swipes between frames.
+                                    dismissOffsetY += pan.y
+                                }
                             }
-                            zoomScale > 1.01f -> {
-                                // Pan while zoomed (one or two fingers), still clamped.
-                                val maxX = size.width * (zoomScale - 1f) / 2f
-                                val maxY = size.height * (zoomScale - 1f) / 2f
-                                zoomOffset = Offset(
-                                    (zoomOffset.x + pan.x).coerceIn(-maxX, maxX),
-                                    (zoomOffset.y + pan.y).coerceIn(-maxY, maxY)
-                                )
-                                event.changes.forEach { it.consume() }
-                            }
-                            !multiTouch && kotlin.math.abs(pan.y) > kotlin.math.abs(pan.x) && kotlin.math.abs(pan.y) > 4f -> {
-                                // At 1x a vertical one-finger drag pulls the image down to
-                                // dismiss. Left unconsumed so the pager still owns horizontal
-                                // swipes between frames.
-                                dismissOffsetY += pan.y
-                            }
-                        }
-                    } while (event.changes.any { it.pressed })
+                        } while (event.changes.any { it.pressed })
 
-                    if (kotlin.math.abs(dismissOffsetY) > 130f) {
-                        onDismiss()
-                    } else {
-                        dismissOffsetY = 0f
+                        if (kotlin.math.abs(dismissOffsetY) > 130f) {
+                            onDismiss()
+                        } else {
+                            dismissOffsetY = 0f
+                        }
                     }
                 }
-            }.pointerInput(page) {
-                detectTapGestures(
-                    onDoubleTap = { tap ->
-                        if (zoomScale > 1.05f) {
-                            zoomScale = 1f
-                            zoomOffset = Offset.Zero
-                        } else {
-                            // Zoom in anchored at the tap point, clamped to the frame
-                            val target = 2.5f
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            val raw = (tap - center) * (1f - target)
-                            val maxX = size.width * (target - 1f) / 2f
-                            val maxY = size.height * (target - 1f) / 2f
-                            zoomOffset = Offset(
-                                raw.x.coerceIn(-maxX, maxX),
-                                raw.y.coerceIn(-maxY, maxY)
-                            )
-                            zoomScale = target
+                .pointerInput(page) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            // Center-anchored zoom in/out with a smooth animation
+                            animateZoomTo(if (zoomScale > 1.05f) 1f else 2.5f)
+                        },
+                        // One tap only resets the zoom — it must not close the viewer
+                        onTap = {
+                            if (zoomScale > 1.05f) animateZoomTo(1f)
                         }
-                    },
-                    // One tap only resets the zoom — it must not close the viewer
-                    onTap = {
-                        if (zoomScale > 1.05f) {
-                            zoomScale = 1f
-                            zoomOffset = Offset.Zero
-                        }
-                    }
-                )
-            }
+                    )
+                }
 
             Box(
                 modifier = Modifier
-                    .fillMaxSize(),
+                    .fillMaxSize()
+                    .then(zoomGestureModifier),
                 contentAlignment = Alignment.Center
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(0.94f)
                         .padding(vertical = 48.dp)
-                        .then(zoomGestureModifier)
+                        // 16:9 — дефолт кадра до загрузки: без пропорции бокс растягивался
+                        // почти на весь экран и заливался серым шиммером
+                        .aspectRatio(imageAspectRatio ?: (16f / 9f))
+                        .onSizeChanged { imageBoxSizePx = it }
                         .graphicsLayer(
                             scaleX = zoomScale,
                             scaleY = zoomScale,
                             translationX = zoomOffset.x,
                             translationY = zoomOffset.y + (if (zoomScale <= 1.05f) animatedDismissOffsetY else 0f)
                         )
-                        // 16:9 — дефолт кадра до загрузки: без пропорции бокс растягивался
-                        // почти на весь экран и заливался серым шиммером
-                        .aspectRatio(imageAspectRatio ?: (16f / 9f))
                         .clip(RoundedCornerShape(18.dp)),
                     contentAlignment = Alignment.Center
                 ) {
