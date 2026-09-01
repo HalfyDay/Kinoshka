@@ -2478,6 +2478,21 @@ private fun ImagesViewerDialog(
         pageCount = { fullUrls.size }
     )
 
+    // Активность залочена в портрет манифестом — иначе поворот не работает нигде.
+    // Пока просмотрщик открыт, отпускаем лок на датчики (там кадр идёт на весь экран),
+    // при закрытии возвращаем прежнее состояние.
+    val activityContext = LocalContext.current
+    DisposableEffect(Unit) {
+        val activity = activityContext.findActivity()
+        val previousOrientation = activity?.requestedOrientation
+            ?: android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        activity?.requestedOrientation =
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        onDispose {
+            activity?.requestedOrientation = previousOrientation
+        }
+    }
+
     var dismissOffsetY by remember { mutableFloatStateOf(0f) }
     val animatedDismissOffsetY by animateFloatAsState(
         targetValue = dismissOffsetY,
