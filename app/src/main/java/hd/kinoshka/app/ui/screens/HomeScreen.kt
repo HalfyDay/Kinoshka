@@ -175,6 +175,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import coil.compose.AsyncImage
@@ -1693,19 +1694,11 @@ private fun LibraryGridCard(
         item.toWatchProgressUi()
     }
     val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME"
-    val detailsText = remember(item.type, item.totalEpisodes, item.ratingText, item.subtitle, isAnime) {
-        if (isAnime) {
-            val typeStr = if (item.totalEpisodes != null && item.totalEpisodes > 1) "TV" else "Фильм"
-            val epStr = item.totalEpisodes?.let { "$it эп." }
-            val rateStr = item.ratingText?.takeIf { it.isNotBlank() }?.let { "★ " + it.replace("KP ", "").replace("★", "").trim() }
-            listOfNotNull(typeStr, epStr, rateStr).joinToString(" • ")
-        } else {
-            listOfNotNull(
-                item.subtitle,
-                item.ratingText?.replace("KP ", "★ ")
-            ).joinToString(" • ")
-        }
+    // Мета — в стиле плиток Обзора: текст строки + рейтинг отдельным чипом со звездой
+    val metaText = remember(item.type, item.totalEpisodes, item.subtitle, isAnime) {
+        item.libraryMetaParts().joinToString(" • ")
     }
+    val ratingValue = remember(item.ratingText) { item.libraryRating() }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1733,6 +1726,7 @@ private fun LibraryGridCard(
             if (item.hasNewEpisode()) {
                 NewEpisodeBadge(
                     newCount = (item.episodesAired ?: 0) - (item.watchedEpisodes ?: 0),
+                    posterCorner = 14.dp,
                     modifier = Modifier.align(Alignment.TopStart)
                 )
             }
@@ -1756,13 +1750,21 @@ private fun LibraryGridCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(
-                text = detailsText,
-                style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (metaText.isNotBlank()) {
+                    Text(
+                        text = metaText,
+                        style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                RatingChip(rating = ratingValue, isAnime = isAnime)
+            }
         }
     }
 }
@@ -1784,13 +1786,12 @@ private fun LibraryVerticalRow(
     ) {
         item.toWatchProgressUi()
     }
-    val metaText = remember(item.subtitle, item.type, item.ratingText) {
-        listOfNotNull(
-            item.subtitle,
-            item.type?.let { if (it == "TV_SERIES") "TV" else "Movie" },
-            item.ratingText?.replace("KP ", "")
-        ).joinToString(" · ")
+    val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME"
+    // Та же мета, что у сеточной плитки и Обзора: текст · текст + чип рейтинга
+    val metaText = remember(item.type, item.totalEpisodes, item.subtitle, isAnime) {
+        item.libraryMetaParts().joinToString(" · ")
     }
+    val ratingValue = remember(item.ratingText) { item.libraryRating() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1818,6 +1819,7 @@ private fun LibraryVerticalRow(
             if (item.hasNewEpisode()) {
                 NewEpisodeBadge(
                     newCount = (item.episodesAired ?: 0) - (item.watchedEpisodes ?: 0),
+                    posterCorner = 16.dp,
                     modifier = Modifier.align(Alignment.TopStart)
                 )
             }
@@ -1832,13 +1834,21 @@ private fun LibraryVerticalRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(
-                text = metaText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (metaText.isNotBlank()) {
+                    Text(
+                        text = metaText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                RatingChip(rating = ratingValue, isAnime = isAnime)
+            }
 
             if (watchProgress != null) {
                 LinearProgressIndicator(
@@ -1914,7 +1924,7 @@ private fun DiscoverVerticalRow(
                 modifier = Modifier.fillMaxSize()
             )
             status?.let {
-                UserStatusBadge(status = it, modifier = Modifier.align(Alignment.BottomEnd))
+                UserStatusBadge(status = it, posterCorner = 16.dp, modifier = Modifier.align(Alignment.BottomEnd))
             }
         }
         Column(
@@ -1985,6 +1995,21 @@ private data class WatchProgressUi(
     val progress: Float,
     val progressLabel: String
 )
+
+/** Мета-строка плитки библиотеки в стиле Обзора: аниме — «ТВ • N эп.», фильмы — год. */
+private fun LibraryUiItem.libraryMetaParts(): List<String> {
+    val isAnime = kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || type == "ANIME"
+    return if (isAnime) {
+        val typeStr = if (totalEpisodes != null && totalEpisodes > 1) "ТВ" else "Фильм"
+        listOfNotNull(typeStr, totalEpisodes?.takeIf { it > 1 }?.let { "$it эп." })
+    } else {
+        listOfNotNull(subtitle?.takeIf { it.isNotBlank() })
+    }
+}
+
+/** «KP 8.1» / «★ 8.1» / «8.1» → 8.1 — для RatingChip, как у плиток Обзора. */
+private fun LibraryUiItem.libraryRating(): Double? =
+    ratingText?.replace("KP", "")?.replace("★", "")?.trim()?.toDoubleOrNull()
 
 private fun LibraryUiItem.toWatchProgressUi(): WatchProgressUi? {
     if (type != "TV_SERIES" && type != "ANIME") return null
@@ -2082,16 +2107,18 @@ private fun PosterBottomProgressBar(
 @Composable
 private fun UserStatusBadge(
     status: UserFilmStatus,
+    posterCorner: Dp = 14.dp,
     modifier: Modifier = Modifier
 ) {
     val (icon, description) = status.toBadgeIconAndDescription()
     Surface(
         modifier = modifier.size(36.dp),
+        // Углы повторяют скругление постера: иначе клип постера подрезал иконку по диагонали
         shape = RoundedCornerShape(
-            topStart = 14.dp,
+            topStart = posterCorner,
             topEnd = 0.dp,
             bottomStart = 0.dp,
-            bottomEnd = 14.dp
+            bottomEnd = posterCorner
         ),
         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.94f),
         shadowElevation = 0.dp
@@ -2122,11 +2149,14 @@ private fun LibraryUiItem.hasNewEpisode(): Boolean {
 @Composable
 private fun NewEpisodeBadge(
     newCount: Int,
+    posterCorner: Dp,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier.padding(6.dp),
-        shape = RoundedCornerShape(8.dp),
+        // Плашка прижата к верхнему углу постера и повторяет его скругление:
+        // раньше висела с отступом, и клип постера подрезал текст на скруглении
+        modifier = modifier,
+        shape = RoundedCornerShape(topStart = posterCorner, bottomEnd = 10.dp),
         color = MaterialTheme.colorScheme.primary,
         shadowElevation = 2.dp
     ) {
