@@ -2648,13 +2648,22 @@ private fun ImagesViewerDialog(
                     .then(zoomGestureModifier),
                 contentAlignment = Alignment.Center
             ) {
+                // Горизонтальный режим: кадр занимает весь экран целиком — без 94% ширины,
+                // вертикальных отступов и скруглений. Пропорцию задаёт ContentScale.Fit.
+                val isLandscape = LocalConfiguration.current.orientation ==
+                    android.content.res.Configuration.ORIENTATION_LANDSCAPE
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(0.94f)
-                        .padding(vertical = 48.dp)
+                        .then(
+                            if (isLandscape) Modifier.fillMaxSize()
+                            else Modifier.fillMaxWidth(0.94f).padding(vertical = 48.dp)
+                        )
                         // 16:9 — дефолт кадра до загрузки: без пропорции бокс растягивался
                         // почти на весь экран и заливался серым шиммером
-                        .aspectRatio(imageAspectRatio ?: (16f / 9f))
+                        .then(
+                            if (isLandscape) Modifier
+                            else Modifier.aspectRatio(imageAspectRatio ?: (16f / 9f))
+                        )
                         .onSizeChanged { imageBoxSizePx = it }
                         .graphicsLayer(
                             scaleX = zoomScale,
@@ -2662,7 +2671,7 @@ private fun ImagesViewerDialog(
                             translationX = zoomOffset.x,
                             translationY = zoomOffset.y + (if (zoomScale <= 1.05f) animatedDismissOffsetY else 0f)
                         )
-                        .clip(RoundedCornerShape(18.dp)),
+                        .then(if (isLandscape) Modifier else Modifier.clip(RoundedCornerShape(18.dp))),
                     contentAlignment = Alignment.Center
                 ) {
                     // Blank entries are no longer filtered out (that shifted indices), so a page
