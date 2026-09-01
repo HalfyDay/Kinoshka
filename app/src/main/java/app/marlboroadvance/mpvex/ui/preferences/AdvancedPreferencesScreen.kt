@@ -39,7 +39,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.util.fastJoinToString
 import androidx.core.net.toUri
@@ -628,7 +627,7 @@ object AdvancedPreferencesScreen : Screen {
           item {
             PreferenceCard {
               val activity = LocalActivity.current!!
-              val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+              val clipboard = androidx.compose.ui.platform.LocalClipboard.current
               val verboseLogging by preferences.verboseLogging.collectAsState()
               
               SwitchPreference(
@@ -658,7 +657,7 @@ object AdvancedPreferencesScreen : Screen {
                     val deviceInfo = CrashActivity.collectDeviceInfo()
                     val logcat = CrashActivity.collectLogcat()
     
-                    clipboard.setText(AnnotatedString(CrashActivity.concatLogs(deviceInfo, null, logcat)))
+                    clipboard.setClipEntry(androidx.compose.ui.platform.ClipEntry(android.content.ClipData.newPlainText("value", CrashActivity.concatLogs(deviceInfo, null, logcat))))
                     CrashActivity.shareLogs(deviceInfo, null, logcat, activity)
                   }
                 },

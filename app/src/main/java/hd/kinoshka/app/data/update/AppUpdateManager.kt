@@ -49,7 +49,7 @@ class AppUpdateManager(private val appContext: Context) {
                         message = "GitHub API error: HTTP ${response.code}."
                     )
                 }
-                val body = response.body?.string().orEmpty()
+                val body = response.body.string().orEmpty()
                 if (body.isBlank()) {
                     return@use UpdateCheckResult.Error(
                         message = "GitHub API returned an empty response."
@@ -129,7 +129,7 @@ class AppUpdateManager(private val appContext: Context) {
                 if (!response.isSuccessful) {
                     throw IllegalStateException("Unable to download APK (HTTP ${response.code}).")
                 }
-                val body = response.body ?: throw IllegalStateException("APK download response is empty.")
+                val body = response.body
                 val totalBytes = body.contentLength()
                 var reportedProgress = -1
                 body.byteStream().use { input ->

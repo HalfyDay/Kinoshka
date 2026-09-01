@@ -26,7 +26,9 @@ import app.marlboroadvance.mpvex.domain.network.NetworkConnection
     PlaylistItemEntity::class,
   ],
   version = 8,
-  exportSchema = true,
+  // Schema export requires room.schemaLocation via the Room Gradle plugin; the project
+  // doesn't keep schema history, so silence the KSP warning instead.
+  exportSchema = false,
 )
 @TypeConverters(NetworkProtocolConverter::class)
 abstract class MpvExDatabase : RoomDatabase() {

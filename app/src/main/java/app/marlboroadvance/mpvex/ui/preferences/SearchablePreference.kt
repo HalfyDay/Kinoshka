@@ -9,9 +9,9 @@ import app.marlboroadvance.mpvex.presentation.Screen
  * Used to index all preferences for the settings search feature.
  */
 data class SearchablePreference(
-    @StringRes val titleRes: Int? = null,
+    @param:StringRes val titleRes: Int? = null,
     val title: String? = null,
-    @StringRes val summaryRes: Int? = null,
+    @param:StringRes val summaryRes: Int? = null,
     val summary: String? = null,
     val keywords: List<String> = emptyList(),
     val category: String,

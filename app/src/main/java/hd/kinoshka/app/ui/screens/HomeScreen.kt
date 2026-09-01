@@ -100,9 +100,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.ScrollableTabRow
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
+import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -125,7 +123,8 @@ import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.RemoveCircle
 import androidx.compose.material3.Icon
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberBottomSheetState
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.ripple
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
@@ -1127,19 +1126,11 @@ private fun LibraryTabs(
 ) {
     val scope = rememberCoroutineScope()
 
-    ScrollableTabRow(
+    SecondaryScrollableTabRow(
         selectedTabIndex = pagerState.currentPage,
         edgePadding = 10.dp,
         containerColor = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.primary,
-        indicator = { tabPositions ->
-            if (pagerState.currentPage < tabPositions.size) {
-                TabRowDefaults.SecondaryIndicator(
-                    Modifier.tabIndicatorOffset(tabPositions[pagerState.currentPage]),
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        },
         divider = {},
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -2419,7 +2410,7 @@ private fun UserFilmStatus.toUiLabel(): String {
 
 private fun FilmItem.isRussianContent(): Boolean {
     return countries.any { country ->
-        when (country.country?.trim()?.lowercase(Locale("ru"))) {
+        when (country.country?.trim()?.lowercase(Locale.forLanguageTag("ru"))) {
             "россия", "ссср" -> true
             else -> false
         }
@@ -2492,10 +2483,10 @@ private fun SearchFilterBottomSheet(
         // чип лишь обещал бы пустую выдачу.
         availableGenres
             .filter { !it.genre.isNullOrBlank() && !it.genre.equals(ANIME_GENRE_NAME, ignoreCase = true) }
-            .sortedBy { it.genre.orEmpty().lowercase(Locale("ru")) }
+            .sortedBy { it.genre.orEmpty().lowercase(Locale.forLanguageTag("ru")) }
     }
     val sortedCountries = remember(availableCountries) {
-        availableCountries.sortedBy { it.country.orEmpty().lowercase(Locale("ru")) }
+        availableCountries.sortedBy { it.country.orEmpty().lowercase(Locale.forLanguageTag("ru")) }
     }
     val filteredCountries = remember(sortedCountries, countrySearchQuery) {
         if (countrySearchQuery.isBlank()) sortedCountries
@@ -2504,7 +2495,10 @@ private fun SearchFilterBottomSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberBottomSheetState(
+            initialValue = SheetValue.Hidden,
+            enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+        ),
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         Column(
@@ -2595,9 +2589,9 @@ private fun SearchFilterBottomSheet(
                             "random" to "Случайно"
                         )
                         val orders = remember(tempState.animeOrder) {
+                            // animeOrder всегда задан (дефолт "popularity") — просто поднимаем активный вверх
                             val active = tempState.animeOrder
-                            if (active == null) rawOrders
-                            else listOf(rawOrders.first { it.first == active }) + rawOrders.filter { it.first != active }
+                            listOf(rawOrders.first { it.first == active }) + rawOrders.filter { it.first != active }
                         }
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(orders) { (code, label) ->
@@ -2711,8 +2705,7 @@ private fun SearchFilterBottomSheet(
                         Text("Тип контента", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         val rawTypes = listOf("ALL" to "Все", "FILM" to "Фильмы", "TV_SERIES" to "Сериалы")
                         val types = remember(tempState.selectedType) {
-                            val active = tempState.selectedType ?: "ALL"
-                            listOf(rawTypes.first { it.first == active }) + rawTypes.filter { it.first != active }
+                            listOf(rawTypes.first { it.first == tempState.selectedType }) + rawTypes.filter { it.first != tempState.selectedType }
                         }
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(types) { (code, label) ->
@@ -2729,9 +2722,8 @@ private fun SearchFilterBottomSheet(
                         Text("Сортировка", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         val rawOrders = listOf("RATING" to "Рейтинг", "NUM_VOTE" to "Популярность", "YEAR" to "Дата")
                         val orders = remember(tempState.selectedOrder) {
-                            val active = tempState.selectedOrder
-                            if (active == null) rawOrders
-                            else listOf(rawOrders.first { it.first == active }) + rawOrders.filter { it.first != active }
+                            // selectedOrder всегда задан (дефолт "RATING") — просто поднимаем активный вверх
+                            listOf(rawOrders.first { it.first == tempState.selectedOrder }) + rawOrders.filter { it.first != tempState.selectedOrder }
                         }
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(orders) { (code, label) ->

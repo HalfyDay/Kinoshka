@@ -331,7 +331,7 @@ class WyzieSearchRepository(
 
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
-            val responseBodyString = response.body?.string() ?: ""
+            val responseBodyString = response.body.string()
             if (!response.isSuccessful) {
                 // Wyzie API returns 400 when no subtitles are found for valid parameters
                 if (response.code == 400 && responseBodyString.contains("No subtitles found", ignoreCase = true)) {
@@ -359,7 +359,7 @@ class WyzieSearchRepository(
             val response = client.newCall(Request.Builder().url(subtitle.url).build()).execute()
             if (!response.isSuccessful) return@withContext Result.failure(Exception("Download failed: ${response.code}"))
 
-            val bytes = response.body?.bytes() ?: return@withContext Result.failure(Exception("Empty body"))
+            val bytes = response.body.bytes()
             val urlExtension = subtitle.url.substringAfterLast("/", "").substringBefore("?").substringAfterLast(".", "")
             val extension = subtitle.format?.lowercase() ?: urlExtension.takeIf { it.isNotEmpty() } ?: "srt"
             
@@ -411,7 +411,7 @@ class WyzieSearchRepository(
             val request = Request.Builder().url(url).build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) throw IOException("Failed to get TV show details: ${response.code}")
-                val body = response.body?.string() ?: throw IOException("Empty body from $url")
+                val body = response.body.string()
                 Result.success(json.decodeFromString<WyzieTvShowDetails>(body))
             }
         } catch (e: Exception) {
@@ -426,7 +426,7 @@ class WyzieSearchRepository(
             val request = Request.Builder().url(url).build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) throw IOException("Failed to get season episodes: ${response.code}")
-                val body = response.body?.string() ?: throw IOException("Empty body from $url")
+                val body = response.body.string()
                 Result.success(json.decodeFromString<WyzieSeasonDetails>(body).episodes)
             }
         } catch (e: Exception) {
@@ -440,7 +440,7 @@ class WyzieSearchRepository(
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IOException("TMDb search failed: ${response.code}")
-            val body = response.body?.string() ?: throw IOException("Empty body")
+            val body = response.body.string()
             return json.decodeFromString<WyzieTmdbResponse>(body).results
         }
     }
@@ -463,7 +463,7 @@ class WyzieSearchRepository(
     private fun cleanupEmptyFolders(saveFolderUri: Uri) {
         try {
             val root = DocumentFile.fromTreeUri(context, saveFolderUri) ?: return
-            root.listFiles().forEach { if (it.isDirectory && it.listFiles()?.isEmpty() == true) it.delete() }
+            root.listFiles().forEach { if (it.isDirectory && it.listFiles().isEmpty()) it.delete() }
         } catch (e: Exception) {
             Log.e("WyzieSearchRepository", "Cleanup failed", e)
         }

@@ -54,4 +54,9 @@ kotlin {
             }
         }
     }
+
+    compilerOptions {
+        // expect/actual классы (KinoPrefs, KLog) — стабильное API, бета-предупреждение KT-61573
+        freeCompilerArgs.addAll("-Xexpect-actual-classes")
+    }
 }

@@ -98,7 +98,7 @@ object DohFallbackDns : Dns {
                     .build()
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) return@runCatching
-                    val body = response.body?.string() ?: return@runCatching
+                    val body = response.body.string()
                     val root = org.json.JSONObject(body)
                     val answers = root.optJSONArray("Answer") ?: return@runCatching
                     val addresses = mutableListOf<InetAddress>()

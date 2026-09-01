@@ -780,7 +780,7 @@ object HentaiStreamResolver {
             referer?.let { builder.header("Referer", it) }
             httpClient.newCall(builder.build()).execute().use { response ->
                 if (!response.isSuccessful) return@runCatching null
-                val head = response.body?.bytes() ?: return@runCatching null
+                val head = response.body.bytes()
                 parseMp4VideoHeight(head)
             }
         }.getOrNull() ?: return null
@@ -1611,8 +1611,8 @@ object HentaiStreamResolver {
                         KLog.i(TAG, "catalog http ${response.code}")
                         return@runCatching emptyList<CatalogEntry>()
                     }
-                    val body = response.body?.string()
-                        ?: return@runCatching emptyList<CatalogEntry>()
+                    val body = response.body.string()
+
                     if (diskFile != null) writeCatalogDisk(diskFile, body)
                     parseCatalogBody(body)
                 }
@@ -1797,7 +1797,7 @@ object HentaiStreamResolver {
             try {
                 client.newCall(builder.get().build()).execute().use { response ->
                     if (response.isSuccessful || (acceptRedirectBody && response.isRedirect)) {
-                        return response.body?.string()
+                        return response.body.string()
                     }
                     KLog.w(TAG, "GET $url -> ${response.code} (attempt ${attempt + 1})")
                     if (response.code >= 500 && attempt == 0) return@repeat // retry 5xx

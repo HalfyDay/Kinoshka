@@ -10,6 +10,9 @@ import org.apache.commons.net.ftp.FTPClient
 import org.apache.commons.net.ftp.FTPReply
 import java.io.InputStream
 
+// commons-net: устаревшие сеттеры таймаутов всё ещё делают то же самое; отдельная
+// замена на Connect/Control-таймауты нового API не меняет поведение и не требуется.
+@Suppress("DEPRECATION")
 class FtpClient(private val connection: NetworkConnection) : NetworkClient {
   private var ftpClient: FTPClient? = null
 

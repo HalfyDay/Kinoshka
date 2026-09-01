@@ -438,14 +438,12 @@ fun FileSystemBrowserScreen(path: String? = null) {
             
             Log.d("FileSystemBrowserScreen", "Total search results after deduplication: ${uniqueResults.size}")
             uniqueResults
-          } else if (currentPath != null) {
+          } else {
             // In a specific directory - search from there
             Log.d("FileSystemBrowserScreen", "Searching in directory: $currentPath")
             val results = app.marlboroadvance.mpvex.ui.browser.filesystem.searchRecursively(context, currentPath, searchQuery)
             Log.d("FileSystemBrowserScreen", "Found ${results.size} results in $currentPath")
             results
-          } else {
-            emptyList()
           }
           searchResults = results
         } catch (e: Exception) {

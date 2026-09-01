@@ -325,7 +325,7 @@ object AniStarResolver {
                 KLog.w(TAG, "GET $url -> ${response.code}")
                 null
             } else {
-                response.body?.string()
+                response.body.string()
             }
         }
     }.onFailure { KLog.w(TAG, "GET $url failed: ${it.javaClass.simpleName}") }

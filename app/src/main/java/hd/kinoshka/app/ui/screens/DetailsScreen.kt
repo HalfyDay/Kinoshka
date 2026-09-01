@@ -137,7 +137,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberBottomSheetState
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -193,7 +194,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -878,7 +879,7 @@ fun DetailsScreen(
                                                         webFallbackUrl = item.toWatchUrl()
                                                     )
                                                 )
-                                                onOpenNativePlayer?.invoke(
+                                                onOpenNativePlayer.invoke(
                                                     "", emptyMap(), emptyMap(),
                                                     filmTitle, 1, filmTitle, 0, item.kinopoiskId, "PENDING",
                                                     emptyList(), emptyList(), "", null
@@ -897,7 +898,7 @@ fun DetailsScreen(
                                                         is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
                                                             MovieVoiceoverStreamStore.put(item.kinopoiskId, payload.preparedStreams)
                                                             val selected = payload.translations.firstOrNull()?.translationId.orEmpty()
-                                                            onOpenNativePlayer?.invoke(
+                                                            onOpenNativePlayer.invoke(
                                                                 payload.stream.url, payload.stream.headers, payload.stream.qualities,
                                                                 filmTitle, 1, filmTitle, 0, item.kinopoiskId, "MOVIE",
                                                                 emptyList(), payload.translations, selected, null
@@ -905,7 +906,7 @@ fun DetailsScreen(
                                                         }
                                                         is MovieNativeLauncher.NativeLaunchPayload.MovieSeries -> {
                                                             val episode = payload.context.currentEpisode
-                                                            onOpenNativePlayer?.invoke(
+                                                            onOpenNativePlayer.invoke(
                                                                 payload.stream.url, payload.stream.headers, payload.stream.qualities,
                                                                 filmTitle, episode.playerEpisodeKey, episode.title.orEmpty(), 0,
                                                                 item.kinopoiskId, "MOVIE", emptyList(), emptyList(), "",
@@ -1856,6 +1857,7 @@ internal fun UserProfileEditorSheet(
     }
 }
 
+@Suppress("DEPRECATION") // navigationBarColor игнорируется на API 35+, но нужен для старых версий
 @Composable
 private fun KeepBottomSheetNavigationBarFromActivity() {
     val view = LocalView.current
@@ -2821,8 +2823,8 @@ private fun String?.toLocalizedType(): String? {
         "VIDEO" -> "Видео"
         "SHORT_FILM" -> "Короткометражка"
         null -> null
-        else -> this.replace('_', ' ').lowercase(Locale("ru"))
-            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale("ru")) else it.toString() }
+        else -> this.replace('_', ' ').lowercase(Locale.forLanguageTag("ru"))
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.forLanguageTag("ru")) else it.toString() }
     }
 }
 
@@ -3161,6 +3163,9 @@ private fun AnimeExpandableDescription(
             .then(if (needsCollapse) Modifier.animateContentSize() else Modifier)
             .then(if (needsCollapse) Modifier.clickable { expanded = !expanded } else Modifier)
     ) {
+        // Миграция на Text+LinkAnnotation требует переписывания parseShikimoriBbCode
+        // (кастомные string-аннотации character_id/anime_id/url) — отдельная задача.
+        @Suppress("DEPRECATION")
         ClickableText(
             text = annotatedText,
             style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
@@ -3430,7 +3435,10 @@ private fun AnimeChronologySheet(
         list.distinctBy { it.id }.sortedWith(compareBy<FilmLinkItem> { it.year ?: 9999 }.thenBy { it.id })
     }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberBottomSheetState(
+        initialValue = SheetValue.Hidden,
+        enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+    )
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -3815,8 +3823,9 @@ private fun AnimeFullDetailsCard(
 
 @Composable
 private fun DetailRow(label: String, value: String) {
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -3839,8 +3848,14 @@ private fun DetailRow(label: String, value: String) {
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
                 ) {
-                    clipboard.setText(AnnotatedString(value))
-                    Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        clipboard.setClipEntry(
+                            androidx.compose.ui.platform.ClipEntry(
+                                android.content.ClipData.newPlainText("value", value)
+                            )
+                        )
+                        Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+                    }
                 }
         )
     }
@@ -4076,7 +4091,10 @@ private fun CharacterDetailsSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberBottomSheetState(
+            initialValue = SheetValue.Hidden,
+            enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+        ),
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         Column(
@@ -4448,8 +4466,8 @@ private fun NextEpisodeCountdownCard(
 
     val dateFormatted = remember(targetTime) {
         val cal = Calendar.getInstance().apply { time = targetTime }
-        val dayOfWeek = SimpleDateFormat("EEEE", Locale("ru")).format(cal.time)
-        val dayMonth = SimpleDateFormat("d MMMM", Locale("ru")).format(cal.time)
+        val dayOfWeek = SimpleDateFormat("EEEE", Locale.forLanguageTag("ru")).format(cal.time)
+        val dayMonth = SimpleDateFormat("d MMMM", Locale.forLanguageTag("ru")).format(cal.time)
         "$dayOfWeek, $dayMonth"
     }
 

@@ -18,7 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
+import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -564,7 +564,7 @@ fun AnimePlaybackSelectionScreen(
                                     modifier = Modifier.size(48.dp)
                                 )
                                 Text(
-                                    text = errorMessage ?: "",
+                                    text = errorMessage,
                                     color = MaterialTheme.colorScheme.error,
                                     style = MaterialTheme.typography.bodyMedium,
                                     textAlign = TextAlign.Center
@@ -795,18 +795,9 @@ private fun SelectTranslationStep(
         item {
             // Translation tabs (Voice / Subtitles)
             val filterOptions = listOf(FilterMode.VOICE, FilterMode.SUBTITLES)
-            TabRow(
+            SecondaryTabRow(
                 selectedTabIndex = filterOptions.indexOf(filterMode),
                 containerColor = Color.Transparent,
-                indicator = { tabPositions ->
-                    val idx = filterOptions.indexOf(filterMode)
-                    if (idx < tabPositions.size) {
-                        TabRowDefaults.SecondaryIndicator(
-                            Modifier.tabIndicatorOffset(tabPositions[idx]),
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                },
                 divider = {},
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1344,7 +1335,7 @@ private fun SelectEpisodeStep(
                             .padding(horizontal = 16.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val isWatched = watchedEpisodes != null && ep.number <= watchedEpisodes!! && ep.number < 10000
+                        val isWatched = watchedEpisodes != null && ep.number <= watchedEpisodes && ep.number < 10000
                         Box(
                             modifier = Modifier
                                 .size(32.dp)

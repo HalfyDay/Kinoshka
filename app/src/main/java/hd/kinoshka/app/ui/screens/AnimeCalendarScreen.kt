@@ -232,8 +232,8 @@ private fun HorizontalCalendarCard(
 
 private fun groupCalendarItemsByDay(items: List<ShikimoriCalendarItem>): List<DayCalendarGroup> {
     val dayKeyFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-    val displayDateFormat = SimpleDateFormat("d MMMM", Locale("ru"))
-    val dayOfWeekFormat = SimpleDateFormat("EEEE", Locale("ru"))
+    val displayDateFormat = SimpleDateFormat("d MMMM", Locale.forLanguageTag("ru"))
+    val dayOfWeekFormat = SimpleDateFormat("EEEE", Locale.forLanguageTag("ru"))
 
     val now = Date()
     val todayKey = dayKeyFormat.format(now)
@@ -273,7 +273,7 @@ private fun groupCalendarItemsByDay(items: List<ShikimoriCalendarItem>): List<Da
             else -> {
                 val sampleDate = sortedItems.firstOrNull()?.nextEpisodeAt?.let { parseShikimoriUtc(it) }
                 if (sampleDate != null) {
-                    val dayOfWeek = dayOfWeekFormat.format(sampleDate).replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale("ru")) else it.toString() }
+                    val dayOfWeek = dayOfWeekFormat.format(sampleDate).replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.forLanguageTag("ru")) else it.toString() }
                     "$dayOfWeek, ${displayDateFormat.format(sampleDate)}"
                 } else {
                     key

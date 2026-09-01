@@ -93,7 +93,7 @@ object MediaDownloader {
     private fun fetchPlaylist(url: String, headers: Map<String, String>): Pair<String, String> =
         httpGet(url, headers).use { resp ->
             if (!resp.isSuccessful) throw DownloadException("HTTP ${resp.code}")
-            resp.body?.string().orEmpty() to resp.request.url.toString()
+            resp.body.string() to resp.request.url.toString()
         }
 
     /**
@@ -150,8 +150,8 @@ object MediaDownloader {
                 httpGet(source.url, source.headers).use { resp ->
                     if (!resp.isSuccessful) throw DownloadException("HTTP ${resp.code}")
                     val contentType = resp.header("Content-Type").orEmpty()
-                    val input = resp.body?.byteStream() ?: throw DownloadException("Пустой ответ сервера")
-                    val total = resp.body?.contentLength() ?: -1L
+                    val input = resp.body.byteStream()
+                    val total = resp.body.contentLength()
                     var done = 0L
                     var isPlaylist = false
                     input.use { stream ->
@@ -235,7 +235,7 @@ object MediaDownloader {
                 try {
                     httpGet(seg.url, source.headers, seg.rangeHeader).use { resp ->
                         if (!resp.isSuccessful) throw DownloadException("Сегмент $index: HTTP ${resp.code}")
-                        var bytes = resp.body?.bytes() ?: ByteArray(0)
+                        var bytes = resp.body.bytes()
                         if (bytes.isEmpty()) throw DownloadException("Сегмент $index пуст")
                         val key = seg.key
                         if (key != null) {
@@ -282,7 +282,7 @@ object MediaDownloader {
     private fun downloadInitSegment(seg: Segment, source: MediaSource, target: File) {
         httpGet(seg.mapUrl!!, source.headers, seg.mapRange).use { resp ->
             if (!resp.isSuccessful) throw DownloadException("Init-сегмент: HTTP ${resp.code}")
-            var bytes = resp.body?.bytes() ?: ByteArray(0)
+            var bytes = resp.body.bytes()
             if (seg.mapKey != null) {
                 bytes = decryptSegment(bytes, seg.mapKey, seg.mapIv, HashMap())
             }
@@ -476,7 +476,7 @@ object MediaDownloader {
         val keyBytes = keyCache.getOrPut(key.uri) {
             httpGet(key.uri, emptyMap()).use { resp ->
                 if (!resp.isSuccessful) throw DownloadException("Ключ HLS: HTTP ${resp.code}")
-                resp.body?.bytes() ?: ByteArray(0)
+                resp.body.bytes()
             }.also { if (it.size != 16) throw DownloadException("Ключ HLS неверной длины") }
         }
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")

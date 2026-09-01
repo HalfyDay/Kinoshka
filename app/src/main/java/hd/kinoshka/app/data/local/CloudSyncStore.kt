@@ -1,3 +1,6 @@
+@file:Suppress("DEPRECATION")
+// androidx.security.crypto (EncryptedSharedPreferences) deprecated целиком; миграция на другой
+// механизм хранения - отдельная задача, здесь легаси-API используется осознанно.
 package hd.kinoshka.app.data.local
 
 import android.content.Context

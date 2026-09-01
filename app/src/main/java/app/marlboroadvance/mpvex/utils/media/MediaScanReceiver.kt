@@ -9,6 +9,7 @@ import android.util.Log
  * Broadcast receiver that listens for media scanner events
  * Automatically notifies the app when new media files are added to the device
  */
+@Suppress("DEPRECATION") // ACTION_MEDIA_SCANNER_SCAN_FILE - легаси-броадкаст, других способов подписаться на media scan нет
 class MediaScanReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "MediaScanReceiver"

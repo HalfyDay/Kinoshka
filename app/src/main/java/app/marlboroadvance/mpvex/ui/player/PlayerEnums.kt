@@ -6,7 +6,7 @@ import app.marlboroadvance.mpvex.preferences.DecoderPreferences
 import app.marlboroadvance.mpvex.preferences.preference.Preference
 
 enum class PlayerOrientation(
-  @StringRes val titleRes: Int,
+  @param:StringRes val titleRes: Int,
 ) {
   Free(R.string.pref_player_orientation_free),
   Video(R.string.pref_player_orientation_video),
@@ -19,7 +19,7 @@ enum class PlayerOrientation(
 }
 
 enum class VideoAspect(
-  @StringRes val titleRes: Int,
+  @param:StringRes val titleRes: Int,
 ) {
   Crop(R.string.player_aspect_crop),
   Fit(R.string.player_aspect_fit),
@@ -27,7 +27,7 @@ enum class VideoAspect(
 }
 
 enum class SingleActionGesture(
-  @StringRes val titleRes: Int,
+  @param:StringRes val titleRes: Int,
 ) {
   None(R.string.pref_gesture_double_tap_none),
   Seek(R.string.pref_gesture_double_tap_seek),
@@ -63,7 +63,7 @@ enum class Decoder(
 }
 
 enum class Debanding(
-  @StringRes val titleRes: Int,
+  @param:StringRes val titleRes: Int,
 ) {
   None(R.string.player_sheets_deband_none),
   CPU(R.string.player_sheets_deband_cpu),
@@ -287,7 +287,7 @@ enum class FilterPreset(
 }
 
 enum class VideoFilters(
-  @StringRes val titleRes: Int,
+  @param:StringRes val titleRes: Int,
   val preference: (DecoderPreferences) -> Preference<Int>,
   val mpvProperty: String,
   val min: Int = -100,
@@ -328,7 +328,7 @@ enum class VideoFilters(
 }
 
 enum class DebandSettings(
-  @StringRes val titleRes: Int,
+  @param:StringRes val titleRes: Int,
   val preference: (DecoderPreferences) -> Preference<Int>,
   val mpvProperty: String,
   val start: Int,

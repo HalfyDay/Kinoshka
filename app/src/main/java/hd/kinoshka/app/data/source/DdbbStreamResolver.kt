@@ -389,7 +389,7 @@ object DdbbStreamResolver {
                     .build()
                 httpClient.newCall(req).execute().use { response ->
                     if (!response.isSuccessful) return@runCatching
-                    val body = response.body?.string() ?: return@runCatching
+                    val body = response.body.string()
                     val arr = org.json.JSONObject(body).optJSONArray("data") ?: return@runCatching
                     val seen = mutableSetOf<String>()
                     val result = mutableListOf<Pair<String, String>>()
@@ -420,7 +420,7 @@ object DdbbStreamResolver {
             .build()
         httpClient.newCall(req).execute().use { response ->
             if (!response.isSuccessful) return@runCatching null
-            response.body?.string()?.takeIf { it.isNotEmpty() }
+            response.body.string().takeIf { it.isNotEmpty() }
         }
     }.getOrNull()
 

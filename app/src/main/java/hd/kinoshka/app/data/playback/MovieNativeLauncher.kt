@@ -191,7 +191,7 @@ object MovieNativeLauncher {
             if (narrowed is MovieStreamResult.Success) narrowed
             else MovieStreamResolver.resolveEpisode(request, it, orderedCandidates)
         }
-        if (result is MovieStreamResult.Success && initialEpisode != null) {
+        if (result is MovieStreamResult.Success) {
             // One voiceover entry per Kodik dub found in the catalog.
             val voiceovers = orderedCandidates
                 .filter { !it.translationId.isNullOrBlank() }
@@ -426,11 +426,11 @@ object MovieNativeLauncher {
             // runtime-null Strings ("FlatTranslation <init>, parameter type" NPE was live).
             // Normalize every optional field at the read boundary.
             FlatTranslation(
-                source = runCatching { AnimeSourceType.valueOf(row.source ?: "") }
+                source = runCatching { AnimeSourceType.valueOf(row.source) }
                     .getOrDefault(AnimeSourceType.KODIK),
-                translationId = row.id.orEmpty().ifBlank { row.link?.hashCode()?.toString() ?: "default" },
-                title = row.title.orEmpty().ifBlank { "Озвучка" },
-                type = row.type ?: "voice",
+                translationId = row.id.ifBlank { row.link.hashCode().toString() },
+                title = row.title.ifBlank { "Озвучка" },
+                type = row.type,
                 episodes = listOf(AnimeEpisode(number = 1, title = row.title, link = row.link.orEmpty()))
             )
         })
@@ -632,7 +632,7 @@ object MovieNativeLauncher {
                     }
                     @Suppress("UNCHECKED_CAST")
                     return if (ddbb != null) MovieOutcome.FromDdbb(ddbb)
-                    else MovieOutcome.FromKodik(kodik as MovieStreamResult.Success)
+                    else MovieOutcome.FromKodik(kodik)
                 }
                 // Kodik already failed: awaiting ddbb directly — looping back through select
                 // would busy-spin on the already-completed Kodik deferral.

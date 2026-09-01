@@ -12,7 +12,7 @@ import hd.kinoshka.app.R
  * Each theme has light and dark color schemes with unique backgrounds
  */
 enum class AppTheme(
-  @StringRes val titleRes: Int,
+  @param:StringRes val titleRes: Int,
   val primaryLight: Color,
   val primaryDark: Color,
   val secondaryLight: Color,

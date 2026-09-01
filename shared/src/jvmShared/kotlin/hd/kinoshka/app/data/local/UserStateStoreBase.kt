@@ -883,7 +883,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
      * Metadata comes from the seeded profile; titles never pressed "Watch" on have no profile
      * and are silently skipped until some screen seeds one.
      */
-    fun commitRealPlayback(kinopoiskId: Int) = synchronized(BLOB_LOCK) {
+    fun commitRealPlayback(kinopoiskId: Int): Unit = synchronized(BLOB_LOCK) {
         val now = System.currentTimeMillis()
         val profile = readProfiles().firstOrNull { it.kinopoiskId == kinopoiskId } ?: return
         if (profile.status == null || profile.status == UserFilmStatus.PLANNED) {
@@ -942,7 +942,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
 private fun FilmItem.isRussianContent(): Boolean {
     return countries.any { country ->
-        when (country.country?.trim()?.lowercase(Locale("ru"))) {
+        when (country.country?.trim()?.lowercase(Locale.forLanguageTag("ru"))) {
             "россия", "ссср" -> true
             else -> false
         }
@@ -951,7 +951,7 @@ private fun FilmItem.isRussianContent(): Boolean {
 
 private fun FilmDetails.isRussianContent(): Boolean {
     return countries.any { country ->
-        when (country.country?.trim()?.lowercase(Locale("ru"))) {
+        when (country.country?.trim()?.lowercase(Locale.forLanguageTag("ru"))) {
             "россия", "ссср" -> true
             else -> false
         }
