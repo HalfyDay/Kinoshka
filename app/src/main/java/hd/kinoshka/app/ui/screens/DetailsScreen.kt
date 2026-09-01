@@ -2645,9 +2645,9 @@ private fun ImagesViewerDialog(
                             translationX = zoomOffset.x,
                             translationY = zoomOffset.y + (if (zoomScale <= 1.05f) animatedDismissOffsetY else 0f)
                         )
-                        .then(
-                            if (imageAspectRatio != null) Modifier.aspectRatio(imageAspectRatio!!) else Modifier
-                        )
+                        // 16:9 — дефолт кадра до загрузки: без пропорции бокс растягивался
+                        // почти на весь экран и заливался серым шиммером
+                        .aspectRatio(imageAspectRatio ?: (16f / 9f))
                         .clip(RoundedCornerShape(18.dp)),
                     contentAlignment = Alignment.Center
                 ) {
