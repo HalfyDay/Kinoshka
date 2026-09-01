@@ -885,7 +885,7 @@ class FeedViewModel(
                 genres = details?.genres?.mapNotNull { it.russian?.trim() }?.filter { it.isNotBlank() } ?: emptyList(),
                 description = details?.description?.let(::stripMarkup),
                 // Полные оригиналы кадров, не превью.
-                stills = screenshots.mapNotNull { it.getFullOriginalUrl() ?: it.getFullPreviewUrl() }.take(5),
+                stills = screenshots.map { it.getFullOriginalUrl() }.take(5),
                 fullPosterUrl = details?.image?.getFullOriginalUrl(shikimoriId),
                 hentaiTags = hentaiTags,
                 stillsPending = !withStills
@@ -915,7 +915,7 @@ class FeedViewModel(
         val shikimoriId = item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
         return if (item.isAnime && shikimoriId > 0) {
             runCatching { anime.screenshots(shikimoriId) }.getOrDefault(emptyList())
-                .mapNotNull { it.getFullOriginalUrl() ?: it.getFullPreviewUrl() }.take(5)
+                .map { it.getFullOriginalUrl() }.take(5)
         } else {
             runCatching { films.images(item.kinopoiskId) }.getOrDefault(emptyList())
                 .mapNotNull { it.imageUrl ?: it.previewUrl }.take(5)
@@ -1024,7 +1024,7 @@ class FeedViewModel(
                 franchiseKey = franchiseKeyOf(item.title),
                 ratingPrior = item.rating?.let { ((it - 6.5) / 5.0).coerceIn(-0.4, 0.4) } ?: 0.0
             )
-            if (turningOff && previous != null) {
+            if (previous != null && turningOff) {
                 taste.undoVote(item.kinopoiskId, features, previous)
             } else {
                 taste.applyVote(item.kinopoiskId, features, liked)

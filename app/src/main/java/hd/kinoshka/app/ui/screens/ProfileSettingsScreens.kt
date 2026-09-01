@@ -795,6 +795,7 @@ private fun <T> SelectBottomSheet(
     }
 }
 
+@Suppress("DEPRECATION") // navigationBarColor игнорируется на API 35+, но нужен для старых версий
 @Composable
 private fun KeepBottomSheetNavigationBarFromActivity() {
     val view = LocalView.current
@@ -1521,7 +1522,7 @@ private fun buildActivityBars(library: List<LibraryUiItem>): List<Pair<String, I
         counts[key] = (counts[key] ?: 0) + 1
     }
 
-    val labelFormat = SimpleDateFormat("dd.MM", Locale("ru"))
+    val labelFormat = SimpleDateFormat("dd.MM", Locale.forLanguageTag("ru"))
     return days.map { day ->
         labelFormat.format(Date(day)) to (counts[day] ?: 0)
     }

@@ -129,9 +129,9 @@ object YouTubeStreamResolver {
             }
         }
         if (bestVideoUrl != null && bestAudioUrl != null && bestVideoWidth > bestMuxedWidth &&
-            !bestVideoUrl!!.contains(';') && !bestAudioUrl!!.contains(';')
+            !bestVideoUrl.contains(';') && !bestAudioUrl.contains(';')
         ) {
-            val edl = "edl://%${bestVideoUrl!!.length}%$bestVideoUrl;!new_stream;%${bestAudioUrl!!.length}%$bestAudioUrl"
+            val edl = "edl://%${bestVideoUrl.length}%$bestVideoUrl;!new_stream;%${bestAudioUrl.length}%$bestAudioUrl"
             return DirectStream(edl, mapOf("User-Agent" to userAgent))
         }
 
@@ -159,7 +159,7 @@ object YouTubeStreamResolver {
                 Log.w(TAG, "${profile.name} POST -> ${response.code}")
                 return@use null
             }
-            response.body?.string()
+            response.body.string()
         }
     }.getOrNull()
 }

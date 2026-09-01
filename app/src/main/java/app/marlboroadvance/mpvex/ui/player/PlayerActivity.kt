@@ -201,7 +201,7 @@ class PlayerActivity :
   /**
    * The MPV player view.
    */
-  val player by lazy { binding.player as app.marlboroadvance.mpvex.ui.player.MPVView }
+  val player by lazy { binding.player }
 
   // ==================== State Management ====================
 
@@ -659,6 +659,7 @@ class PlayerActivity :
         val updatedConfiguration = Configuration(originalConfiguration).apply { fontScale = 1f }
         val configurationContext = newBase.createConfigurationContext(updatedConfiguration)
         val configurationDisplayMetrics = configurationContext.resources.displayMetrics
+        @Suppress("DEPRECATION") // фиксация масштаба шрифтов для плеера; замены поля нет
         configurationDisplayMetrics.scaledDensity = updatedConfiguration.fontScale * configurationDisplayMetrics.density
         configurationContext
       }
@@ -1038,6 +1039,7 @@ class PlayerActivity :
 
     // Set status bar color for when it will be shown (with controls)
     if (playerPreferences.showSystemStatusBar.get()) {
+      @Suppress("DEPRECATION") // setter игнорируется на API 35+, но нужен для старых версий
       window.statusBarColor = android.graphics.Color.parseColor("#80000000") // Semi-transparent black
     }
 
@@ -2130,8 +2132,7 @@ class PlayerActivity :
       }.getOrDefault(emptyMap())
       QUALITY_PREFERENCE_DESC.firstOrNull { qualities.containsKey(it) }?.let { qualities[it] }
         ?: qualities.values.firstOrNull()
-        // Extraction produced nothing playable — a raw player-page link is NOT a fallback.
-        ?: null
+      // Extraction produced nothing playable — a raw player-page link is NOT a fallback.
     }
   private fun setMovieSeriesExtras(extras: Bundle?) {
     extras ?: return
@@ -3338,6 +3339,7 @@ class PlayerActivity :
 
       // Playback returned to idle (failed load, playlist end): time-pos/duration polling
       // would only flood logcat with "was unavailable" lines from the prebuilt mpv JNI.
+      @Suppress("DEPRECATION") // mpv пометил событие deprecated, но событие всё ещё приходит из JNI
       MPVLib.MpvEvent.MPV_EVENT_IDLE -> viewModel.setPropertyPollingEnabled(false)
 
       MPVLib.MpvEvent.MPV_EVENT_END_FILE -> eventEndFile(data)

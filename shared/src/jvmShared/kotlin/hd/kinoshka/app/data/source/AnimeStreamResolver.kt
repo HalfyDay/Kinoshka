@@ -1398,7 +1398,7 @@ object AnimeStreamResolver {
             if (!response.isSuccessful) {
                 if (logTag != null) KLog.w(TAG, "$logTag HTTP ${response.code} for $url")
                 null
-            } else response.body?.string()
+            } else response.body.string()
         }
     }.onFailure { e ->
         if (logTag != null) KLog.w(TAG, "$logTag ${e.javaClass.simpleName}: ${e.message} for $url")
@@ -1461,7 +1461,7 @@ object AnimeStreamResolver {
             .addHeader("X-Requested-With", "XMLHttpRequest")
             .build()
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) null else response.body?.string()
+            if (!response.isSuccessful) null else response.body.string()
         }
     }.getOrNull()
 
@@ -1975,10 +1975,12 @@ object AnimeStreamResolver {
         if (body.isBlank() || body == "null") return null
         val titles = runCatching {
             val root = JSONObject(body.trim())
-            val arr = root.optJSONArray("data")
-                ?: root.optJSONArray("items")
-                ?: if (root.has("id")) JSONArray().put(root) else null
-                ?: return@runCatching emptyList<JSONObject>()
+            val arr = when {
+                root.optJSONArray("data") != null -> root.optJSONArray("data")
+                root.optJSONArray("items") != null -> root.optJSONArray("items")
+                root.has("id") -> JSONArray().put(root)
+                else -> null
+            } ?: return@runCatching emptyList<JSONObject>()
             (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
         }.getOrDefault(emptyList())
         if (titles.isEmpty()) return null
@@ -2285,7 +2287,7 @@ object AnimeStreamResolver {
                     continue
                 }
                 response.use {
-                    val body = it.body?.string().orEmpty()
+                    val body = it.body.string()
                     if (!it.isSuccessful) {
                         val error = runCatching { JSONObject(body).optString("error") }.getOrDefault("")
                         if (error.contains("токен", ignoreCase = true) || it.code >= 500) sawProviderFailure = true
@@ -2402,7 +2404,7 @@ object AnimeStreamResolver {
                         .build()
                     client.newCall(req).execute().use { resp ->
                         if (resp.isSuccessful) {
-                            html = resp.body?.string().orEmpty()
+                            html = resp.body.string().orEmpty()
                             baseUrl = mirror
                         }
                     }

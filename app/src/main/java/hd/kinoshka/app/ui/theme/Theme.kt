@@ -192,6 +192,7 @@ fun KinoTheme(
             AppThemeMode.DARK -> true
             AppThemeMode.AMOLED -> true
         }
+        @Suppress("DEPRECATION") // navigationBarColor deprecated на API 35, нужен для старых версий
         SideEffect {
             val window = (view.context as? Activity)?.window ?: return@SideEffect
             window.navigationBarColor =

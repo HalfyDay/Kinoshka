@@ -330,7 +330,7 @@ object SmarthardApi {
             .build()
         client.newCall(request).execute().use { response ->
             val body = response.body
-            if (!response.isSuccessful || body == null) {
+            if (!response.isSuccessful) {
                 KLog.w(TAG, "fetchHtml $url -> HTTP ${response.code}")
                 return@use null
             }
@@ -348,7 +348,7 @@ object SmarthardApi {
             .build()
         client.newCall(request).execute().use { response ->
             val body = response.body
-            if (!response.isSuccessful || body == null) {
+            if (!response.isSuccessful) {
                 KLog.w(TAG, "GET $url -> HTTP ${response.code}")
                 return@use null
             }

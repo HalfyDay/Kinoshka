@@ -1,3 +1,7 @@
+@file:Suppress("DEPRECATION")
+// android.support.v4.media + androidx.media: media-compat API сознательно используется
+// для обратной совместимости MediaSession/MediaBrowser (миграция на media3 — отдельная задача).
+
 package app.marlboroadvance.mpvex.ui.player
 
 import android.annotation.SuppressLint

@@ -20,7 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -77,7 +77,7 @@ fun AnimeFeedScreen(
                     verticalArrangement = Arrangement.Center
                 ) {
                     Icon(
-                        Icons.Default.List,
+                        Icons.AutoMirrored.Filled.List,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
                         tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
@@ -308,5 +308,5 @@ private fun formatDateShort(iso: String): String? = runCatching {
         fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
         fmt.parse(iso.substringBefore('.'))
     } ?: return null
-    java.text.SimpleDateFormat("d MMM", java.util.Locale("ru")).format(date)
+    java.text.SimpleDateFormat("d MMM", java.util.Locale.forLanguageTag("ru")).format(date)
 }.getOrNull()

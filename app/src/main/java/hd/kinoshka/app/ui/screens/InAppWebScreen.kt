@@ -43,7 +43,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -53,7 +53,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.SheetValue
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -101,7 +102,7 @@ private val httpClient by lazy {
 private const val MAX_RESPONSE_BODY_BYTES = 256L * 1024
 
 private fun readBodyLimited(response: okhttp3.Response, maxBytes: Long = MAX_RESPONSE_BODY_BYTES): String? {
-    val source = response.body?.source() ?: return null
+    val source = response.body.source()
     return try {
         val buffer = okio.Buffer()
         var totalBytes = 0L
@@ -505,6 +506,7 @@ fun InAppWebScreen(
                 currentWebView.removeAllViews()
             }
             insetsController?.show(WindowInsetsCompat.Type.systemBars())
+            @Suppress("DEPRECATION") // statusBarColor/navigationBarColor deprecated на API 35, нужны для старых версий
             if (window != null) {
                 WindowCompat.setDecorFitsSystemWindows(window, false)
                 window.statusBarColor = android.graphics.Color.TRANSPARENT
@@ -557,6 +559,7 @@ fun InAppWebScreen(
                 webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
                 webView.settings.javaScriptEnabled = true
                 webView.settings.domStorageEnabled = true
+                @Suppress("DEPRECATION") // databaseEnabled deprecated, но включён для совместимости старых страниц
                 webView.settings.databaseEnabled = true
                 webView.settings.javaScriptCanOpenWindowsAutomatically = true
                 webView.settings.setSupportMultipleWindows(true)
@@ -790,7 +793,7 @@ fun InAppWebScreen(
                         )
                     } else {
                         Icon(
-                            imageVector = Icons.Default.List,
+                            imageVector = Icons.AutoMirrored.Filled.List,
                             contentDescription = "Источники",
                             tint = androidx.compose.ui.graphics.Color.White,
                             modifier = Modifier.size(16.dp)
@@ -854,7 +857,10 @@ fun InAppWebScreen(
         if (showServerSheet) {
             ModalBottomSheet(
                 onDismissRequest = { showServerSheet = false },
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                sheetState = rememberBottomSheetState(
+                    initialValue = SheetValue.Hidden,
+                    enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded),
+                ),
                 containerColor = MaterialTheme.colorScheme.surface
             ) {
                 Column(

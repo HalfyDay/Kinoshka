@@ -97,7 +97,7 @@ object KinopoiskTrailerResolver {
                 KLog.w(TAG, "GET $url -> ${response.code}")
                 return@use null
             }
-            response.body?.string()
+            response.body.string()
         }
     }.getOrNull()
 }

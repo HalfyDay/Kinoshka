@@ -226,7 +226,7 @@ object CloudBackupManager {
                 .header("Authorization", "OAuth $t")
                 .put(byteArrayOf().toRequestBody(null))
                 .build()).execute()
-            mk.body?.close()
+            mk.body.close()
             if (mk.code in 401..403) null else true
         }
         val uploadHref = yandexCall(app, token) { t ->
@@ -236,7 +236,7 @@ object CloudBackupManager {
                 .get().build()).execute()
             resp.use {
                 if (it.code == 401 || it.code == 403) return@yandexCall null
-                val body = it.body?.string().orEmpty()
+                val body = it.body.string()
                 if (it.code != 200) error("Яндекс Диск (upload link): HTTP ${it.code} ${body.take(200)}")
                 JSONObject(body).getString("href")
             }
@@ -246,7 +246,7 @@ object CloudBackupManager {
             .url(uploadHref)
             .put(json.toByteArray(Charsets.UTF_8).toRequestBody("application/json".toMediaType()))
             .build()).execute()
-        put.body?.close()
+        put.body.close()
         if (!put.isSuccessful) error("Яндекс Диск (upload): HTTP ${put.code}")
     }
 
@@ -259,7 +259,7 @@ object CloudBackupManager {
             resp.use {
                 if (it.code == 401 || it.code == 403) return@yandexCall null
                 if (it.code == 404) return@yandexCall ""
-                val body = it.body?.string().orEmpty()
+                val body = it.body.string()
                 if (it.code != 200) error("Яндекс Диск (download link): HTTP ${it.code} ${body.take(200)}")
                 JSONObject(body).optString("href").ifBlank { "" }
             }
@@ -269,7 +269,7 @@ object CloudBackupManager {
         return get.use {
             if (it.code == 404) null
             else if (!it.isSuccessful) error("Яндекс Диск (download): HTTP ${it.code}")
-            else it.body?.string()
+            else it.body.string()
         }
     }
 
@@ -294,7 +294,7 @@ object CloudBackupManager {
             .build()
         val resp = http.newCall(Request.Builder().url("https://oauth.yandex.ru/token").post(form).build()).execute()
         resp.use {
-            val body = it.body?.string().orEmpty()
+            val body = it.body.string()
             if (!it.isSuccessful) error("OAuth Яндекс: HTTP ${it.code} ${body.take(200)}")
             JSONObject(body).takeIf { json -> json.optString("access_token").isNotBlank() }
         }
@@ -312,7 +312,7 @@ object CloudBackupManager {
                 .build()
             val resp = http.newCall(Request.Builder().url("https://oauth.yandex.ru/token").post(form).build()).execute()
             resp.use {
-                val body = it.body?.string().orEmpty()
+                val body = it.body.string()
                 if (!it.isSuccessful) return@withContext null
                 val json = JSONObject(body)
                 val token = json.optString("access_token").ifBlank { return@withContext null }
@@ -336,13 +336,13 @@ object CloudBackupManager {
         val mkcol = http.newCall(Request.Builder()
             .url(parentUrl).method("MKCOL", byteArrayOf().toRequestBody(null))
             .header("Authorization", auth).build()).execute()
-        mkcol.body?.close()
+        mkcol.body.close()
 
         val put = http.newCall(Request.Builder()
             .url(fileUrl)
             .put(json.toByteArray(Charsets.UTF_8).toRequestBody("application/json".toMediaType()))
             .header("Authorization", auth).build()).execute()
-        put.body?.close()
+        put.body.close()
         if (!put.isSuccessful) error("WebDAV (upload): HTTP ${put.code}")
     }
 
@@ -355,7 +355,7 @@ object CloudBackupManager {
         return get.use {
             if (it.code == 404) null
             else if (!it.isSuccessful) error("WebDAV (download): HTTP ${it.code}")
-            else it.body?.string()
+            else it.body.string()
         }
     }
 

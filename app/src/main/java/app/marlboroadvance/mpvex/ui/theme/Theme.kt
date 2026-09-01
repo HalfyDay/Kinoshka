@@ -271,7 +271,7 @@ fun MpvexTheme(content: @Composable () -> Unit) {
 }
 
 enum class DarkMode(
-    @StringRes val titleRes: Int,
+    @param:StringRes val titleRes: Int,
 ) {
     Dark(R.string.pref_appearance_darkmode_dark),
     Light(R.string.pref_appearance_darkmode_light),
@@ -284,6 +284,9 @@ private const val RIPPLE_HOVERED_ALPHA = .4f
 private const val RIPPLE_PRESSED_ALPHA = .6f
 
 @OptIn(ExperimentalMaterial3Api::class)
+// Кастомные альфы риппла не выражаются новым API RippleConfiguration (без rippleAlpha);
+// deprecated-конструктор - единственный способ задать их. Миграция - когда API стабилизируется.
+@Suppress("DEPRECATION")
 val playerRippleConfiguration
     @Composable get() =
         RippleConfiguration(

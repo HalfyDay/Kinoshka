@@ -32,8 +32,8 @@ import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -238,9 +238,9 @@ internal fun FeedCard(
 
         // Слой 3a: Rutube HLS нативно.
         if (showRutube) {
-            key((clipState as? FeedClipState.RutubeReady)?.hlsUrl.orEmpty()) {
+            key(clipState.hlsUrl) {
                 RutubeHlsPlayer(
-                    url = (clipState as FeedClipState.RutubeReady).hlsUrl,
+                    url = clipState.hlsUrl,
                     soundOn = soundOn,
                     active = isActive
                 )
@@ -248,7 +248,7 @@ internal fun FeedCard(
         }
         // Слой 3b: YouTube-трейлер.
         if (showYouTube) {
-            key(youtubeKey!!) {
+            key(youtubeKey) {
                 YouTubeTrailerLayer(videoKey = youtubeKey)
             }
         }
@@ -342,7 +342,7 @@ internal fun FeedCard(
             if (rutubeReady) {
                 FeedActionButton(icon = { tint ->
                     Icon(
-                        if (soundOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                        if (soundOn) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                         "Звук",
                         tint = tint,
                         modifier = Modifier.size(24.dp)

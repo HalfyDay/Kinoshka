@@ -18,7 +18,7 @@ class AudioPreferences(
 }
 
 enum class AudioChannels(
-  @StringRes val title: Int,
+  @param:StringRes val title: Int,
   val property: String,
   val value: String,
 ) {

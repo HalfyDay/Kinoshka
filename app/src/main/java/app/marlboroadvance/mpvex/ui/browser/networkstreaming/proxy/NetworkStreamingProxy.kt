@@ -24,6 +24,8 @@ import java.util.concurrent.TimeUnit
  * Local HTTP proxy server that enables seeking for network streaming protocols
  * that don't support it natively
  */
+// commons-net: устаревшие сеттеры таймаутов внутри — см. FtpClient.
+@Suppress("DEPRECATION")
 class NetworkStreamingProxy private constructor() : NanoHTTPD("127.0.0.1", 0) {
 
   companion object {
@@ -246,8 +248,7 @@ class NetworkStreamingProxy private constructor() : NanoHTTPD("127.0.0.1", 0) {
           }
 
           is app.marlboroadvance.mpvex.ui.browser.networkstreaming.clients.WebDavClient -> {
-            val webDavClient =
-              streamInfo.client as app.marlboroadvance.mpvex.ui.browser.networkstreaming.clients.WebDavClient
+            val webDavClient = streamInfo.client
             if (!webDavClient.isConnected()) {
               webDavClient.connect().getOrThrow()
             }
@@ -662,11 +663,7 @@ class NetworkStreamingProxy private constructor() : NanoHTTPD("127.0.0.1", 0) {
         return null
       }
 
-      val rawStream = response.body?.byteStream()
-      if (rawStream == null) {
-        response.close()
-        return null
-      }
+      val rawStream = response.body.byteStream()
 
       // Wrap stream to handle cleanup
       val wrappedStream = object : java.io.InputStream() {

@@ -680,7 +680,7 @@ class FilmsViewModel(
                 val authState = uiState.shikimoriAuthState
                 if (rateId != null && authState.isLoggedIn && authState.accessToken != null) {
                     viewModelScope.launch {
-                        var token = authState.accessToken!!
+                        var token = authState.accessToken
                         var success = animeRepository.deleteUserRate(token, rateId)
                         if (!success && authState.refreshToken != null) {
                             animeRepository.refreshToken(authState.refreshToken)?.let { fresh ->
@@ -744,76 +744,73 @@ class FilmsViewModel(
                         UserFilmStatus.REWATCHING -> "rewatching"
                         UserFilmStatus.ON_HOLD -> "on_hold"
                         UserFilmStatus.DROPPED -> "dropped"
-                        else -> null
                     }
                     Log.d("ShikimoriSync", "shikiStatus=$shikiStatus, existingRate=${cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }?.id}")
-                    if (shikiStatus != null) {
-                        var token = authState.accessToken
-                        val existingRate = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
-                        var success = false
+                    var token = authState.accessToken
+                    val existingRate = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
+                    var success = false
 
-                        // Try with current token first
-                        if (existingRate != null) {
-                            Log.d("ShikimoriSync", "Updating existing rate id=${existingRate.id}")
-                            val result = animeRepository.updateUserRate(
-                                token = token,
-                                rateId = existingRate.id,
-                                status = shikiStatus,
-                                episodes = safeEpisodes,
-                                score = safeRating
-                            )
-                            success = result != null
-                        } else {
-                            Log.d("ShikimoriSync", "Creating new rate for targetId=$shikimoriId")
-                            val result = animeRepository.createUserRate(
-                                token = token,
+                    // Try with current token first
+                    if (existingRate != null) {
+                        Log.d("ShikimoriSync", "Updating existing rate id=${existingRate.id}")
+                        val result = animeRepository.updateUserRate(
+                            token = token,
+                            rateId = existingRate.id,
+                            status = shikiStatus,
+                            episodes = safeEpisodes,
+                            score = safeRating
+                        )
+                        success = result != null
+                    } else {
+                        Log.d("ShikimoriSync", "Creating new rate for targetId=$shikimoriId")
+                        val result = animeRepository.createUserRate(
+                            token = token,
+                            userId = authState.userId,
+                            targetId = shikimoriId,
+                            status = shikiStatus,
+                            episodes = safeEpisodes ?: 0,
+                            score = safeRating ?: 0
+                        )
+                        success = result != null
+                    }
+
+                    // If failed with 401, try refreshing token
+                    if (!success && authState.refreshToken != null) {
+                        Log.d("ShikimoriSync", "Token expired, attempting refresh...")
+                        val newTokenResponse = animeRepository.refreshToken(authState.refreshToken)
+                        if (newTokenResponse != null) {
+                            // Save new tokens
+                            shikimoriAuthStore?.saveSession(
+                                token = newTokenResponse.accessToken,
+                                refresh = newTokenResponse.refreshToken,
                                 userId = authState.userId,
-                                targetId = shikimoriId,
-                                status = shikiStatus,
-                                episodes = safeEpisodes ?: 0,
-                                score = safeRating ?: 0
+                                nickname = authState.nickname,
+                                avatarUrl = authState.avatarUrl
                             )
-                            success = result != null
-                        }
+                            token = newTokenResponse.accessToken
+                            Log.d("ShikimoriSync", "Token refreshed, retrying...")
 
-                        // If failed with 401, try refreshing token
-                        if (!success && authState.refreshToken != null) {
-                            Log.d("ShikimoriSync", "Token expired, attempting refresh...")
-                            val newTokenResponse = animeRepository.refreshToken(authState.refreshToken)
-                            if (newTokenResponse != null) {
-                                // Save new tokens
-                                shikimoriAuthStore?.saveSession(
-                                    token = newTokenResponse.accessToken,
-                                    refresh = newTokenResponse.refreshToken,
-                                    userId = authState.userId,
-                                    nickname = authState.nickname,
-                                    avatarUrl = authState.avatarUrl
+                            // Retry with new token
+                            if (existingRate != null) {
+                                animeRepository.updateUserRate(
+                                    token = token,
+                                    rateId = existingRate.id,
+                                    status = shikiStatus,
+                                    episodes = safeEpisodes,
+                                    score = safeRating
                                 )
-                                token = newTokenResponse.accessToken
-                                Log.d("ShikimoriSync", "Token refreshed, retrying...")
-
-                                // Retry with new token
-                                if (existingRate != null) {
-                                    animeRepository.updateUserRate(
-                                        token = token,
-                                        rateId = existingRate.id,
-                                        status = shikiStatus,
-                                        episodes = safeEpisodes,
-                                        score = safeRating
-                                    )
-                                } else {
-                                    animeRepository.createUserRate(
-                                        token = token,
-                                        userId = authState.userId,
-                                        targetId = shikimoriId,
-                                        status = shikiStatus,
-                                        episodes = safeEpisodes ?: 0,
-                                        score = safeRating ?: 0
-                                    )
-                                }
                             } else {
-                                Log.e("ShikimoriSync", "Failed to refresh token, user needs to re-login")
+                                animeRepository.createUserRate(
+                                    token = token,
+                                    userId = authState.userId,
+                                    targetId = shikimoriId,
+                                    status = shikiStatus,
+                                    episodes = safeEpisodes ?: 0,
+                                    score = safeRating ?: 0
+                                )
                             }
+                        } else {
+                            Log.e("ShikimoriSync", "Failed to refresh token, user needs to re-login")
                         }
                     }
                 }
@@ -1253,7 +1250,7 @@ class FilmsViewModel(
         val rating = details.rating?.lowercase().orEmpty()
         if (rating.contains("18") || rating.startsWith("rx") || rating == "x" || rating.contains("nc17")) return true
         val hasAdultGenre = details.genres.any { g ->
-            val n = (g.russian ?: g.name)?.lowercase().orEmpty()
+            val n = (g.russian ?: g.name).lowercase()
             n.contains("хентай") || n.contains("hentai") || n.contains("эротик") || n.contains("ecchi")
         }
         return hasAdultGenre ||
@@ -1591,7 +1588,7 @@ class FilmsViewModel(
         val format = DateFormat.getDateTimeInstance(
             DateFormat.SHORT,
             DateFormat.SHORT,
-            Locale("ru")
+            Locale.forLanguageTag("ru")
         )
         val result = mutableListOf<LibraryUiItem>()
         val addedIds = mutableSetOf<Int>()
@@ -1622,7 +1619,7 @@ class FilmsViewModel(
 
         // Third: Shikimori rates (only if not already added from local sources)
         // Also merge with local cache to ensure poster/title data is available
-        (cachedShikimoriRates ?: emptyList()).forEach { rate ->
+        cachedShikimoriRates.forEach { rate ->
             val item = rate.toLibraryUiItemWithCache(localAnimeCache) ?: return@forEach
             if (addedIds.add(item.kinopoiskId)) {
                 result.add(item)
@@ -1704,7 +1701,7 @@ class FilmsViewModel(
             hd.kinoshka.app.data.local.LibrarySortType.DATE_ADDED ->
                 base.sortedByDescending { it.updatedAt }
             hd.kinoshka.app.data.local.LibrarySortType.ALPHABETICAL ->
-                base.sortedBy { it.title.lowercase(Locale("ru")) }
+                base.sortedBy { it.title.lowercase(Locale.forLanguageTag("ru")) }
             hd.kinoshka.app.data.local.LibrarySortType.RATING ->
                 base.sortedByDescending {
                     it.ratingText?.replace(Regex("[^0-9.]"), "")?.toDoubleOrNull() ?: 0.0
@@ -1720,7 +1717,7 @@ class FilmsViewModel(
         if (local != null) return local
         if (id >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
             val rawAnimeId = id - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
-            val rate = cachedShikimoriRates?.firstOrNull { 
+            val rate = cachedShikimoriRates.firstOrNull { 
                 it.targetId == rawAnimeId || it.anime?.id == rawAnimeId 
             }
             if (rate != null) {
