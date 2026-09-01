@@ -41,6 +41,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -95,7 +96,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.material3.CircularProgressIndicator
-import coil.compose.SubcomposeAsyncImage
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.spring
@@ -110,6 +110,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -174,6 +175,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
@@ -189,6 +191,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -2499,10 +2502,12 @@ private fun ImagesViewerDialog(
             val bgUrl = fullUrls.getOrNull(pageIndex)?.takeIf { it.isNotBlank() }
             Box(modifier = Modifier.fillMaxSize()) {
                 if (bgUrl != null) {
-                    coil.compose.AsyncImage(
+                    // Тот же кроссфейд, что у кадра по центру: фон больше не «выскакивает»
+                    KinoshkaAsyncImage(
                         model = bgUrl,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
+                        fadeDurationMs = 400,
                         modifier = Modifier
                             .fillMaxSize()
                             .blur(40.dp)
@@ -2516,37 +2521,75 @@ private fun ImagesViewerDialog(
             }
         }
 
-        // Main Image Pager with 2-finger Zoom & Smooth Double Tap & Image Swiping
+        // Main image pager: pinch zoom + pan clamped to the frame, double-tap zoom, swipe-down
+        // dismiss at 1x. A single tap NEVER closes (only resets the zoom) — close via ✕ or drag.
+        // Zoom state lives at the dialog level: the pager must know it to lock page swipes
+        // while zoomed, and every page switch starts from 1x anyway (swipe is 1x-only).
+        var zoomScale by remember { mutableFloatStateOf(1f) }
+        var zoomOffset by remember { mutableStateOf(Offset.Zero) }
+        LaunchedEffect(pagerState) {
+            snapshotFlow { pagerState.currentPage }
+                .drop(1)
+                .collect {
+                    zoomScale = 1f
+                    zoomOffset = Offset.Zero
+                }
+        }
+
         HorizontalPager(
             state = pagerState,
-            userScrollEnabled = dismissOffsetY == 0f,
+            userScrollEnabled = zoomScale <= 1.01f,
             modifier = Modifier.fillMaxSize()
         ) { page ->
-            var targetScale by remember(page) { mutableFloatStateOf(1f) }
-            var offset by remember(page) { mutableStateOf(Offset.Zero) }
             var imageAspectRatio by remember(page) { mutableStateOf<Float?>(null) }
-
-            val scale by animateFloatAsState(
-                targetValue = targetScale,
-                animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
-                label = "scaleAnimation"
-            )
 
             val zoomGestureModifier = Modifier.pointerInput(page) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    var multiTouch = false
                     do {
                         val event = awaitPointerEvent()
+                        if (event.changes.size > 1) multiTouch = true
+                        val zoom = event.calculateZoom()
                         val pan = event.calculatePan()
-                        if (targetScale <= 1.05f) {
-                            // Track vertical drag for dismiss when image is 1x
-                            if (kotlin.math.abs(pan.y) > kotlin.math.abs(pan.x) && kotlin.math.abs(pan.y) > 4f) {
+                        when {
+                            zoom != 1f -> {
+                                // Pinch: anchor the centroid, clamp scale to 1..6 and offset to
+                                // the frame so the picture can never be dragged out of view.
+                                val centroid = event.calculateCentroid()
+                                val newScale = (zoomScale * zoom).coerceIn(1f, 6f)
+                                val k = newScale / zoomScale
+                                val center = Offset(size.width / 2f, size.height / 2f)
+                                val raw = (centroid - center) * (1f - k) + zoomOffset * k + pan
+                                zoomScale = newScale
+                                zoomOffset = if (newScale <= 1.01f) {
+                                    Offset.Zero
+                                } else {
+                                    val maxX = size.width * (newScale - 1f) / 2f
+                                    val maxY = size.height * (newScale - 1f) / 2f
+                                    Offset(
+                                        raw.x.coerceIn(-maxX, maxX),
+                                        raw.y.coerceIn(-maxY, maxY)
+                                    )
+                                }
+                                event.changes.forEach { it.consume() }
+                            }
+                            zoomScale > 1.01f -> {
+                                // Pan while zoomed (one or two fingers), still clamped.
+                                val maxX = size.width * (zoomScale - 1f) / 2f
+                                val maxY = size.height * (zoomScale - 1f) / 2f
+                                zoomOffset = Offset(
+                                    (zoomOffset.x + pan.x).coerceIn(-maxX, maxX),
+                                    (zoomOffset.y + pan.y).coerceIn(-maxY, maxY)
+                                )
+                                event.changes.forEach { it.consume() }
+                            }
+                            !multiTouch && kotlin.math.abs(pan.y) > kotlin.math.abs(pan.x) && kotlin.math.abs(pan.y) > 4f -> {
+                                // At 1x a vertical one-finger drag pulls the image down to
+                                // dismiss. Left unconsumed so the pager still owns horizontal
+                                // swipes between frames.
                                 dismissOffsetY += pan.y
                             }
-                        } else {
-                            // Track pan when image is zoomed in via double tap
-                            offset += pan
-                            event.changes.forEach { it.consume() }
                         }
                     } while (event.changes.any { it.pressed })
 
@@ -2558,20 +2601,29 @@ private fun ImagesViewerDialog(
                 }
             }.pointerInput(page) {
                 detectTapGestures(
-                    onDoubleTap = {
-                        if (targetScale > 1.2f) {
-                            targetScale = 1f
-                            offset = Offset.Zero
+                    onDoubleTap = { tap ->
+                        if (zoomScale > 1.05f) {
+                            zoomScale = 1f
+                            zoomOffset = Offset.Zero
                         } else {
-                            targetScale = 2.5f
+                            // Zoom in anchored at the tap point, clamped to the frame
+                            val target = 2.5f
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            val raw = (tap - center) * (1f - target)
+                            val maxX = size.width * (target - 1f) / 2f
+                            val maxY = size.height * (target - 1f) / 2f
+                            zoomOffset = Offset(
+                                raw.x.coerceIn(-maxX, maxX),
+                                raw.y.coerceIn(-maxY, maxY)
+                            )
+                            zoomScale = target
                         }
                     },
+                    // One tap only resets the zoom — it must not close the viewer
                     onTap = {
-                        if (targetScale > 1.05f) {
-                            targetScale = 1f
-                            offset = Offset.Zero
-                        } else {
-                            onDismiss()
+                        if (zoomScale > 1.05f) {
+                            zoomScale = 1f
+                            zoomOffset = Offset.Zero
                         }
                     }
                 )
@@ -2588,10 +2640,10 @@ private fun ImagesViewerDialog(
                         .padding(vertical = 48.dp)
                         .then(zoomGestureModifier)
                         .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            translationX = offset.x,
-                            translationY = offset.y + (if (targetScale <= 1.05f) animatedDismissOffsetY else 0f)
+                            scaleX = zoomScale,
+                            scaleY = zoomScale,
+                            translationX = zoomOffset.x,
+                            translationY = zoomOffset.y + (if (zoomScale <= 1.05f) animatedDismissOffsetY else 0f)
                         )
                         .then(
                             if (imageAspectRatio != null) Modifier.aspectRatio(imageAspectRatio!!) else Modifier
@@ -2599,41 +2651,18 @@ private fun ImagesViewerDialog(
                         .clip(RoundedCornerShape(18.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    SubcomposeAsyncImage(
-                        // Blank entries are no longer filtered out (that shifted indices), so a page
-                        // may legitimately have no URL — pass null and let the error slot render.
+                    // Blank entries are no longer filtered out (that shifted indices), so a page
+                    // may legitimately have no URL — pass null and let the error slot render.
+                    KinoshkaAsyncImage(
                         model = fullUrls.getOrNull(page)?.takeIf { it.isNotBlank() },
                         contentDescription = "Кадр ${page + 1}",
                         contentScale = ContentScale.Fit,
-                        onSuccess = { resultState ->
-                            val drawable = resultState.result.drawable
+                        useOriginalSize = true,
+                        fadeDurationMs = 350,
+                        onSuccess = { state ->
+                            val drawable = state.result.drawable
                             if (drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {
                                 imageAspectRatio = drawable.intrinsicWidth.toFloat() / drawable.intrinsicHeight.toFloat()
-                            }
-                        },
-                        loading = {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(32.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator(
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-                                    strokeWidth = 3.dp
-                                )
-                            }
-                        },
-                        error = {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Ошибка загрузки",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                )
                             }
                         },
                         modifier = Modifier
@@ -3197,6 +3226,9 @@ private fun AnimeCharactersCard(
                     Text(
                         text = char.russian?.takeIf { it.isNotBlank() } ?: char.name ?: "",
                         style = MaterialTheme.typography.labelSmall,
+                        // Фиксированные две строки: без этого длинные имена растягивали
+                        // плитку и «прыгала» высота всей строки персонажей
+                        minLines = 2,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -3732,8 +3764,8 @@ private fun AnimeFullDetailsCard(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "Детали",
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                text = "Детали и информация",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
 
             detailsList.forEach { (label, value) ->
@@ -3745,6 +3777,8 @@ private fun AnimeFullDetailsCard(
 
 @Composable
 private fun DetailRow(label: String, value: String) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -3760,7 +3794,16 @@ private fun DetailRow(label: String, value: String) {
             text = value,
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
             color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1.2f)
+            modifier = Modifier
+                .weight(1.2f)
+                // Тап по значению копирует его — названия чаще всего нужны для поиска/перевода
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {
+                    clipboard.setText(AnnotatedString(value))
+                    Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+                }
         )
     }
 }
