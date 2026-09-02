@@ -8,16 +8,10 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
 
-data class ShikimoriAuthState(
-    val isLoggedIn: Boolean = false,
-    val accessToken: String? = null,
-    val refreshToken: String? = null,
-    val userId: Int = 0,
-    val nickname: String? = null,
-    val avatarUrl: String? = null
-)
+// ShikimoriAuthState и контракт ShikimoriAuthProvider переехали в shared (jvmShared):
+// hd.kinoshka.app.data.local.ShikimoriAuthState — пакет тот же, использования резолвятся.
 
-class ShikimoriAuthStore(context: Context) {
+class ShikimoriAuthStore(context: Context) : ShikimoriAuthProvider {
     private val prefs: SharedPreferences = createEncryptedPrefs(context)
 
     private fun createEncryptedPrefs(context: Context): SharedPreferences {
@@ -36,7 +30,7 @@ class ShikimoriAuthStore(context: Context) {
         }
     }
 
-    fun getAuthState(): ShikimoriAuthState {
+    override fun getAuthState(): ShikimoriAuthState {
         val token = prefs.getString("access_token", null)
         val refresh = prefs.getString("refresh_token", null)
         val id = prefs.getInt("user_id", 0)
@@ -53,7 +47,7 @@ class ShikimoriAuthStore(context: Context) {
         )
     }
 
-    fun saveSession(token: String, refresh: String?, userId: Int, nickname: String?, avatarUrl: String?) {
+    override fun saveSession(token: String, refresh: String?, userId: Int, nickname: String?, avatarUrl: String?) {
         prefs.edit()
             .putString("access_token", token)
             .putString("refresh_token", refresh)
@@ -63,7 +57,7 @@ class ShikimoriAuthStore(context: Context) {
             .apply()
     }
 
-    fun clearSession() {
+    override fun clearSession() {
         prefs.edit().clear().apply()
     }
 

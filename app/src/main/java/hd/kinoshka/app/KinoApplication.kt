@@ -33,8 +33,8 @@ class KinoApplication : Application(), ImageLoaderFactory {
         // Headless-WebView stream extractor needs an application context.
         hd.kinoshka.app.data.source.WebViewStreamHarvester.init(this)
 
-        // Кадры «Кадров» из видео (MediaMetadataRetriever) требуют контекста.
-        hd.kinoshka.app.data.source.HentaiStreamResolver.init(this)
+        // Кадры «Кадров» из видео и дисковой кэш каталога 18+ пишутся в кэш приложения.
+        hd.kinoshka.app.data.source.HentaiStreamResolver.init(cacheDir)
         // Каталог hanime (теги/трейлер/кадры 18+) прогревается фоном со старта.
         hd.kinoshka.app.data.source.HentaiStreamResolver.warmCatalogAsync()
 

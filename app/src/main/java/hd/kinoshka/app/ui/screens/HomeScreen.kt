@@ -1344,7 +1344,7 @@ private fun DiscoverContent(
                 SkeletonGridLoading(columns = metrics.columns, contentPadding = PaddingValues(bottom = FloatingBottomContentPadding))
             }
         }
-        state.error != null -> ErrorCard(message = state.error, onRetry = onRetry)
+        state.error != null -> ErrorCard(message = state.error ?: "", onRetry = onRetry) // Локальный elvis: error объявлен в другом модуле (shared), smart cast невозможен
         sourceItems.isEmpty() -> {
             val text = if (state.isSearchResult && state.query.isNotBlank()) {
                 "Ничего не найдено по запросу: ${state.query}"
@@ -1861,14 +1861,18 @@ private fun LibraryVerticalRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            } else if (!item.note.isNullOrBlank()) {
-                Text(
-                    text = item.note,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+            } else {
+                // Локальная копия: note объявлен в другом модуле (shared), smart cast невозможен.
+                val note = item.note
+                if (!note.isNullOrBlank()) {
+                    Text(
+                        text = note,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
@@ -1993,10 +1997,12 @@ private data class WatchProgressUi(
 
 /** Мета-строка плитки библиотеки в стиле Обзора: аниме — «ТВ • N эп.», фильмы — год. */
 private fun LibraryUiItem.libraryMetaParts(): List<String> {
+    // Локальная копия: totalEpisodes объявлен в другом модуле (shared), smart cast невозможен.
+    val episodes = totalEpisodes
     val isAnime = kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || type == "ANIME"
     return if (isAnime) {
-        val typeStr = if (totalEpisodes != null && totalEpisodes > 1) "ТВ" else "Фильм"
-        listOfNotNull(typeStr, totalEpisodes?.takeIf { it > 1 }?.let { "$it эп." })
+        val typeStr = if (episodes != null && episodes > 1) "ТВ" else "Фильм"
+        listOfNotNull(typeStr, episodes?.takeIf { it > 1 }?.let { "$it эп." })
     } else {
         listOfNotNull(subtitle?.takeIf { it.isNotBlank() })
     }

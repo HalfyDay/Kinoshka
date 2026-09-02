@@ -271,9 +271,11 @@ fun ProfileScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        // Локальная копия: avatarUrl объявлен в другом модуле (shared), smart cast невозможен.
+                        val shikiAvatar = shikimoriAuthState.avatarUrl
                         Box(contentAlignment = Alignment.BottomEnd) {
                             AvatarPreview(
-                                avatar = if (shikimoriAuthState.isLoggedIn && !shikimoriAuthState.avatarUrl.isNullOrBlank()) shikimoriAuthState.avatarUrl else avatar,
+                                avatar = if (shikimoriAuthState.isLoggedIn && !shikiAvatar.isNullOrBlank()) shikiAvatar else avatar,
                                 onClick = { pickAvatar.launch(arrayOf("image/*")) }
                             )
                         }

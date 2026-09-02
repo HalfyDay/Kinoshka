@@ -1,12 +1,19 @@
 package hd.kinoshka.app.data.feed
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+
+/** Прямой HLS-клип Rutube, найденный по названию тайтла. */
+data class RutubeClip(
+    val videoId: String,
+    val hlsUrl: String,
+    val thumbnailUrl: String?
+)
 
 /**
  * Источник видео-нарезок для фона карточек фида — открытый JSON API Rutube (без ключей).
@@ -46,7 +53,7 @@ object RutubeClipSource {
         for (query in queries) {
             val videoId = searchVideoId(query) ?: continue
             val options = fetchPlayOptions(videoId) ?: continue
-            Log.i(TAG, "clip found for \"$query\": $videoId")
+            KLog.i(TAG, "clip found for \"$query\": $videoId")
             return@withContext options
         }
         null
@@ -68,7 +75,7 @@ object RutubeClipSource {
                 if (id.isNotEmpty()) return@runCatching id
             }
             null
-        }.onFailure { Log.w(TAG, "search parse failed: ${it.javaClass.simpleName}") }
+        }.onFailure { KLog.w(TAG, "search parse failed: ${it.javaClass.simpleName}") }
             .getOrNull()
     }
 
@@ -109,7 +116,7 @@ object RutubeClipSource {
                 .build()
         ).execute().use { response ->
             if (!response.isSuccessful) {
-                Log.w(TAG, "GET $url -> ${response.code}")
+                KLog.w(TAG, "GET $url -> ${response.code}")
                 return@use null
             }
             response.body.string()
