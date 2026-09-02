@@ -1,8 +1,10 @@
 package hd.kinoshka.app.ui.components
 
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -17,43 +19,23 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.LinearOutSlowInEasing
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.layout.size
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImagePainter
-import coil.compose.SubcomposeAsyncImage
-import coil.compose.SubcomposeAsyncImageContent
-import coil.request.ImageRequest
-import coil.size.Size
-import androidx.compose.ui.platform.LocalContext
 
 fun Modifier.shimmerEffect(): Modifier = composed {
     val transition = rememberInfiniteTransition(label = "shimmer_transition")
@@ -84,134 +66,6 @@ fun Modifier.shimmerEffect(): Modifier = composed {
 
     background(brush = brush)
 }
-
-@Composable
-fun KinoshkaAsyncImage(
-    model: Any?,
-    contentDescription: String?,
-    modifier: Modifier = Modifier,
-    contentScale: ContentScale = ContentScale.Crop,
-    filterQuality: FilterQuality = FilterQuality.Medium,
-    /** When true, requests the full-resolution image (no Coil downsampling). Use on large/detail views. */
-    useOriginalSize: Boolean = false,
-    fadeDurationMs: Int = 520,
-    /** Рисуется, когда [model] и его внутренняя цепочка фолбэков не загрузились
-     *  (например, превью YouTube-трейлера недоступно без VPN — показываем постер тайтла). */
-    fallbackModel: Any? = null,
-    onSuccess: ((AsyncImagePainter.State.Success) -> Unit)? = null
-) {
-    val context = LocalContext.current
-
-    // Модель может прийти упакованной в ImageRequest с явным размером (кэш-матч
-    // с префетчем) — для цепочки фолбэков достаём сырую ссылку.
-    val rawUrl = (model as? coil.request.ImageRequest)?.data?.toString() ?: model?.toString()
-
-    val fallbackUrls = remember(rawUrl) {
-        val str = rawUrl ?: return@remember emptyList<String>()
-        val urls = mutableListOf<String>()
-        urls.add(str)
-
-        // Regex to extract anime ID from Shikimori or Smarthard URLs
-        val idRegex = Regex("""(?:animes/|animes/original/|animes/preview/|animes/x96/|animes/x48/|animes/|/static/animes/)?(\d+)(?:\.jpeg|\.jpg|\?|/|$)""")
-        val match = idRegex.find(str)
-        val animeId = match?.groupValues?.get(1)?.toIntOrNull()
-
-        if (str.contains("smarthard.net") && animeId != null && animeId > 0) {
-            urls.add("https://shikimori.io/system/animes/original/$animeId.jpg")
-            urls.add("https://shikimori.one/system/animes/original/$animeId.jpg")
-        } else if (str.contains("shikimori")) {
-            if (str.contains("shikimori.io")) {
-                urls.add(str.replace("shikimori.io", "shikimori.one"))
-            } else if (str.contains("shikimori.one")) {
-                urls.add(str.replace("shikimori.one", "shikimori.io"))
-            }
-            if (animeId != null && animeId > 0) {
-                urls.add("https://smarthard.net/static/animes/$animeId.jpeg")
-            }
-        }
-        urls.distinct()
-    }
-
-    var attemptIndex by remember(model) { mutableIntStateOf(0) }
-
-    val currentUrl = if (fallbackUrls.isNotEmpty()) {
-        fallbackUrls.getOrElse(attemptIndex) { fallbackUrls.last() }
-    } else model
-
-    // Пришедший ImageRequest (с размером под кэш префетча) сохраняем как есть;
-    // иначе строим запрос сами — оригинал или строку по умолчанию.
-    val imageModel: Any? = remember(model, currentUrl, useOriginalSize) {
-        when {
-            model is coil.request.ImageRequest -> model
-            useOriginalSize && currentUrl != null -> ImageRequest.Builder(context)
-                .data(currentUrl)
-                .size(Size.ORIGINAL)
-                .build()
-            else -> currentUrl
-        }
-    }
-
-    SubcomposeAsyncImage(
-        model = imageModel,
-        contentDescription = contentDescription,
-        modifier = modifier,
-        contentScale = contentScale,
-        filterQuality = filterQuality,
-        loading = {
-            Box(modifier = Modifier.fillMaxSize().shimmerEffect())
-        },
-        success = { state ->
-            onSuccess?.invoke(state)
-            var visible by remember(state.painter) { mutableStateOf(false) }
-            LaunchedEffect(state.painter) {
-                visible = true
-            }
-            val fadeProgress by animateFloatAsState(
-                targetValue = if (visible) 1f else 0f,
-                animationSpec = tween(
-                    durationMillis = fadeDurationMs,
-                    easing = CubicBezierEasing(0.2f, 0.0f, 0.0f, 1.0f)
-                ),
-                label = "imageFadeIn"
-            )
-            SubcomposeAsyncImageContent(
-                modifier = Modifier.graphicsLayer { alpha = fadeProgress }
-            )
-        },
-        error = {
-            if (attemptIndex < fallbackUrls.size - 1) {
-                androidx.compose.runtime.LaunchedEffect(attemptIndex) {
-                    attemptIndex++
-                }
-                Box(modifier = Modifier.fillMaxSize().shimmerEffect())
-            } else if (fallbackModel != null) {
-                KinoshkaAsyncImage(
-                    model = fallbackModel,
-                    contentDescription = contentDescription,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = contentScale,
-                    fadeDurationMs = fadeDurationMs
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                    contentAlignment = Alignment.Center
-                ) {
-                    androidx.compose.material3.Icon(
-                        imageVector = Icons.Default.Warning,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            }
-        }
-    )
-}
-
-
 
 @Composable
 fun SkeletonGridCard(

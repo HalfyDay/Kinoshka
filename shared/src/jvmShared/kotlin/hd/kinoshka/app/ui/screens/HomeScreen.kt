@@ -1,12 +1,9 @@
 ﻿package hd.kinoshka.app.ui.screens
 
-import android.app.Activity
-import android.content.ContextWrapper
-import android.widget.Toast
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.platform.LocalContext
+import hd.kinoshka.app.ui.platform.KinoBackHandler
+import hd.kinoshka.app.ui.platform.rememberKinoPlatformActions
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -98,6 +95,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SecondaryScrollableTabRow
@@ -123,8 +121,6 @@ import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.RemoveCircle
 import androidx.compose.material3.Icon
-import androidx.compose.material3.rememberBottomSheetState
-import androidx.compose.material3.SheetValue
 import androidx.compose.material3.ripple
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
@@ -134,6 +130,12 @@ import hd.kinoshka.app.data.model.FilterItem
 import hd.kinoshka.app.data.model.ANIME_GENRE_NAME
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.outlined.List
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Feed
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
@@ -177,7 +179,6 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
-import coil.compose.AsyncImage
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
 import hd.kinoshka.app.data.local.UserFilmStatus
@@ -353,24 +354,24 @@ fun HomeScreen(
     // arms a short confirm window; a second Back inside it exits. While a Discover search is
     // active this is disabled so Back closes the search instead (handler below).
     var lastBackExitAttemptAt by remember { mutableStateOf(0L) }
-    val context = LocalContext.current
-    BackHandler(enabled = !isDiscoverSearchActive) {
+    val platformActions = rememberKinoPlatformActions()
+    KinoBackHandler(enabled = !isDiscoverSearchActive) {
         val now = System.currentTimeMillis()
         if (now - lastBackExitAttemptAt < ExitConfirmWindowMs) {
-            context.findActivity()?.finish()
+            platformActions.exitApp()
         } else {
             lastBackExitAttemptAt = now
-            Toast.makeText(context, "Повторите жест «Назад», чтобы закрыть приложение", Toast.LENGTH_SHORT).show()
+            platformActions.showToast("Повторите жест «Назад», чтобы закрыть приложение")
         }
     }
     // System Back on an active Discover search: while the keyboard is still up the first Back
     // must only hide it (drop field focus); the second Back closes the search and results
     // (reload the discover feed) instead of exiting.
-    BackHandler(enabled = isDiscoverSearchActive) {
+    KinoBackHandler(enabled = isDiscoverSearchActive) {
         if (isSearchFocused) {
             isSearchFocused = false
             focusManager.clearFocus()
-            return@BackHandler
+            return@KinoBackHandler
         }
         isSearchFocused = false
         focusManager.clearFocus()
@@ -459,35 +460,61 @@ fun HomeScreen(
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
             // Единая плавающая пилюля (общий компонент с фидом рекомендаций).
+            // Глифы — material-иконки: общий код не зависит от res-ID приложения
+            // (Android-версия того же экрана в KinoApp рисует кастомные drawable-иконки).
             BottomNavPill(
                 items = listOf(
                     NavPillItem(
-                        filledRes = hd.kinoshka.app.R.drawable.ic_nav_library_filled,
-                        outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_library_outlined,
                         contentDescription = "Библиотека",
-                        selected = section == MainSection.LIBRARY
-                    ) { handleNav(MainSection.LIBRARY) },
+                        selected = section == MainSection.LIBRARY,
+                        onClick = { handleNav(MainSection.LIBRARY) },
+                        glyph = { sel ->
+                            Icon(
+                                imageVector = if (sel) Icons.AutoMirrored.Filled.List else Icons.AutoMirrored.Outlined.List,
+                                contentDescription = null,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    ),
                     NavPillItem(
-                        filledRes = hd.kinoshka.app.R.drawable.ic_nav_discover_filled,
-                        outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_discover_outlined,
                         contentDescription = "Обзор",
-                        selected = section == MainSection.DISCOVER
-                    ) { handleNav(MainSection.DISCOVER) },
+                        selected = section == MainSection.DISCOVER,
+                        onClick = { handleNav(MainSection.DISCOVER) },
+                        glyph = { sel ->
+                            Icon(
+                                imageVector = if (sel) Icons.Filled.Explore else Icons.Outlined.Explore,
+                                contentDescription = null,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    ),
                     NavPillItem(
-                        filledRes = hd.kinoshka.app.R.drawable.ic_nav_feed_filled,
-                        outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_feed_outlined,
                         contentDescription = "Лента",
-                        selected = false
-                    ) {
-                        resetLibraryAfterFeed = true
-                        onOpenRecommendationsFeed()
-                    },
+                        selected = false,
+                        onClick = {
+                            resetLibraryAfterFeed = true
+                            onOpenRecommendationsFeed()
+                        },
+                        glyph = { _ ->
+                            Icon(
+                                imageVector = Icons.Filled.Feed,
+                                contentDescription = null,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    ),
                     NavPillItem(
-                        filledRes = hd.kinoshka.app.R.drawable.ic_nav_more_filled,
-                        outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_more_outlined,
                         contentDescription = "Ещё",
-                        selected = section == MainSection.MORE
-                    ) { handleNav(MainSection.MORE) }
+                        selected = section == MainSection.MORE,
+                        onClick = { handleNav(MainSection.MORE) },
+                        glyph = { sel ->
+                            Icon(
+                                imageVector = if (sel) Icons.Filled.MoreHoriz else Icons.Outlined.MoreHoriz,
+                                contentDescription = null,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    )
                 ),
                 isAmoled = state.themeMode == AppThemeMode.AMOLED
             )
@@ -2505,10 +2532,8 @@ private fun SearchFilterBottomSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberBottomSheetState(
-            initialValue = SheetValue.Hidden,
-            enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
-        ),
+        // skipPartiallyExpanded: только Hidden и Expanded (полураскрытия нет).
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         Column(
@@ -2976,11 +3001,4 @@ private fun SearchFilterBottomSheet(
     }
 }
 
-private tailrec fun android.content.Context.findActivity(): Activity? {
-    return when (this) {
-        is Activity -> this
-        is ContextWrapper -> baseContext.findActivity()
-        else -> null
-    }
-}
 

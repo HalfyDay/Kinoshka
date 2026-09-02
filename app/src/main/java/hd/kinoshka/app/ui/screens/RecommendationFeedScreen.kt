@@ -44,6 +44,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SecondaryScrollableTabRow
@@ -145,29 +146,65 @@ fun RecommendationFeedScreen(
         BottomNavPill(
             items = listOf(
                 NavPillItem(
-                    filledRes = hd.kinoshka.app.R.drawable.ic_nav_library_filled,
-                    outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_library_outlined,
                     contentDescription = "Библиотека",
-                    selected = false
-                ) { onSelectHomeSection(HomeTab.HISTORY) },
+                    selected = false,
+                    onClick = { onSelectHomeSection(HomeTab.HISTORY) },
+                    glyph = { sel ->
+                        Icon(
+                            painter = painterResource(
+                                if (sel) hd.kinoshka.app.R.drawable.ic_nav_library_filled
+                                else hd.kinoshka.app.R.drawable.ic_nav_library_outlined
+                            ),
+                            contentDescription = null,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                ),
                 NavPillItem(
-                    filledRes = hd.kinoshka.app.R.drawable.ic_nav_discover_filled,
-                    outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_discover_outlined,
                     contentDescription = "Обзор",
-                    selected = false
-                ) { onSelectHomeSection(HomeTab.CATALOG) },
+                    selected = false,
+                    onClick = { onSelectHomeSection(HomeTab.CATALOG) },
+                    glyph = { sel ->
+                        Icon(
+                            painter = painterResource(
+                                if (sel) hd.kinoshka.app.R.drawable.ic_nav_discover_filled
+                                else hd.kinoshka.app.R.drawable.ic_nav_discover_outlined
+                            ),
+                            contentDescription = null,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                ),
                 NavPillItem(
-                    filledRes = hd.kinoshka.app.R.drawable.ic_nav_feed_filled,
-                    outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_feed_outlined,
                     contentDescription = "Лента",
-                    selected = true
-                ) { },
+                    selected = true,
+                    onClick = { },
+                    glyph = { sel ->
+                        Icon(
+                            painter = painterResource(
+                                if (sel) hd.kinoshka.app.R.drawable.ic_nav_feed_filled
+                                else hd.kinoshka.app.R.drawable.ic_nav_feed_outlined
+                            ),
+                            contentDescription = null,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                ),
                 NavPillItem(
-                    filledRes = hd.kinoshka.app.R.drawable.ic_nav_more_filled,
-                    outlinedRes = hd.kinoshka.app.R.drawable.ic_nav_more_outlined,
                     contentDescription = "Ещё",
-                    selected = false
-                ) { onSelectHomeSection(HomeTab.MORE) }
+                    selected = false,
+                    onClick = { onSelectHomeSection(HomeTab.MORE) },
+                    glyph = { sel ->
+                        Icon(
+                            painter = painterResource(
+                                if (sel) hd.kinoshka.app.R.drawable.ic_nav_more_filled
+                                else hd.kinoshka.app.R.drawable.ic_nav_more_outlined
+                            ),
+                            contentDescription = null,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                )
             ),
             isAmoled = false,
             modifier = Modifier.align(Alignment.BottomCenter)

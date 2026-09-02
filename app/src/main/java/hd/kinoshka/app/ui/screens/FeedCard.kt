@@ -170,7 +170,7 @@ internal fun FeedCard(
                         .fillMaxSize()
                         .blur(24.dp),
                     contentScale = ContentScale.Crop,
-                    onSuccess = { stillsReady = true }
+                    onSuccess = { _, _ -> stillsReady = true }
                 )
                 if (stillsReady) {
                     Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.30f)))
