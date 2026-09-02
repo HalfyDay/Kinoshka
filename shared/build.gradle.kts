@@ -51,6 +51,8 @@ kotlin {
                 implementation("net.java.dev.jna:jna:5.17.0")
                 // На Android org.json входит в платформу; на desktop нужен артефакт.
                 implementation("org.json:json:20240303")
+                // Dispatchers.Main для общего кода (FilmsViewModel): на desktop это EDT.
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
             }
         }
     }

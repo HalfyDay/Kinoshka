@@ -1,6 +1,6 @@
 package hd.kinoshka.app.ui.screens
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -12,7 +12,8 @@ import hd.kinoshka.app.data.local.FilmTileSize
 import hd.kinoshka.app.data.local.HistoryRecord
 import hd.kinoshka.app.data.local.UserFilmProfile
 import hd.kinoshka.app.data.local.UserFilmStatus
-import hd.kinoshka.app.data.local.UserStateStore
+import hd.kinoshka.app.data.local.ShikimoriAuthProvider
+import hd.kinoshka.app.data.local.UserStateStoreBase
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmImageItem
 import hd.kinoshka.app.data.model.FilmItem
@@ -184,8 +185,8 @@ data class DetailsUiState(
 class FilmsViewModel(
     private val repository: FilmsRepository,
     private val animeRepository: AnimeRepository,
-    private val userStateStore: UserStateStore,
-    private val shikimoriAuthStore: hd.kinoshka.app.data.local.ShikimoriAuthStore? = null
+    private val userStateStore: UserStateStoreBase,
+    private val shikimoriAuthStore: ShikimoriAuthProvider? = null
 ) : ViewModel() {
 
     // Пересборка библиотеки уходит на Dispatchers.Default (см. refreshAfterPlayerClosed),
@@ -477,21 +478,19 @@ class FilmsViewModel(
 
     fun saveShikimoriToken(code: String) {
         viewModelScope.launch {
-            Log.d("ShikimoriSync", "=== Starting OAuth token exchange ===")
-            Log.d("ShikimoriSync", "Authorization code: ${code.take(10)}...")
-            Log.d("ShikimoriSync", "Client ID configured: ${hd.kinoshka.app.BuildConfig.SHIKIMORI_CLIENT_ID.isNotBlank()}")
-            Log.d("ShikimoriSync", "Client Secret configured: ${hd.kinoshka.app.BuildConfig.SHIKIMORI_CLIENT_SECRET.isNotBlank()}")
+            KLog.d("ShikimoriSync", "=== Starting OAuth token exchange ===")
+            KLog.d("ShikimoriSync", "Authorization code: ${code.take(10)}...")
 
             val tokenResponse = animeRepository.exchangeCodeForToken(code)
             if (tokenResponse != null) {
-                Log.d("ShikimoriSync", "Token exchange SUCCESS!")
-                Log.d("ShikimoriSync", "Access token: ${tokenResponse.accessToken.take(10)}...")
-                Log.d("ShikimoriSync", "Refresh token: ${tokenResponse.refreshToken?.take(10)}...")
+                KLog.d("ShikimoriSync", "Token exchange SUCCESS!")
+                KLog.d("ShikimoriSync", "Access token: ${tokenResponse.accessToken.take(10)}...")
+                KLog.d("ShikimoriSync", "Refresh token: ${tokenResponse.refreshToken?.take(10)}...")
 
-                Log.d("ShikimoriSync", "Fetching user info with new token...")
+                KLog.d("ShikimoriSync", "Fetching user info with new token...")
                 val whoami = animeRepository.whoami(tokenResponse.accessToken)
                 if (whoami != null) {
-                    Log.d("ShikimoriSync", "User info fetched: id=${whoami.id}, nickname=${whoami.nickname}")
+                    KLog.d("ShikimoriSync", "User info fetched: id=${whoami.id}, nickname=${whoami.nickname}")
                     // whoami.avatar is always the tiny x48 version; image.x160 is the largest one
                     val rawAvatar = whoami.image?.x160 ?: whoami.avatar ?: whoami.image?.original
                     val fullAvatar = if (rawAvatar?.startsWith("/") == true) "https://shikimori.io$rawAvatar" else rawAvatar
@@ -506,13 +505,13 @@ class FilmsViewModel(
                         setProfileAvatar(fullAvatar)
                     }
                     refreshShikimoriAuth()
-                    Log.d("ShikimoriSync", "=== OAuth login successful! ===")
+                    KLog.d("ShikimoriSync", "=== OAuth login successful! ===")
                 } else {
-                    Log.e("ShikimoriSync", "Failed to fetch user info")
+                    KLog.e("ShikimoriSync", "Failed to fetch user info")
                 }
             } else {
-                Log.e("ShikimoriSync", "=== Token exchange FAILED ===")
-                Log.e("ShikimoriSync", "Check if SHIKIMORI_CLIENT_ID and SHIKIMORI_CLIENT_SECRET are configured in local.properties")
+                KLog.e("ShikimoriSync", "=== Token exchange FAILED ===")
+                KLog.e("ShikimoriSync", "Check if SHIKIMORI_CLIENT_ID and SHIKIMORI_CLIENT_SECRET are configured in local.properties")
             }
         }
     }
@@ -695,7 +694,7 @@ class FilmsViewModel(
                                 success = animeRepository.deleteUserRate(token, rateId)
                             }
                         }
-                        Log.d("ShikimoriSync", "Deleted rate id=$rateId for shikimoriId=$shikimoriId: success=$success")
+                        KLog.d("ShikimoriSync", "Deleted rate id=$rateId for shikimoriId=$shikimoriId: success=$success")
                     }
                 }
             }
@@ -734,7 +733,7 @@ class FilmsViewModel(
         if (details.kinopoiskId >= ANIME_ID_OFFSET) {
             val shikimoriId = details.kinopoiskId - ANIME_ID_OFFSET
             val authState = uiState.shikimoriAuthState
-            Log.d("ShikimoriSync", "saveUserProfile: kinopoiskId=${details.kinopoiskId}, shikimoriId=$shikimoriId, isLoggedIn=${authState.isLoggedIn}")
+            KLog.d("ShikimoriSync", "saveUserProfile: kinopoiskId=${details.kinopoiskId}, shikimoriId=$shikimoriId, isLoggedIn=${authState.isLoggedIn}")
             if (authState.isLoggedIn && authState.accessToken != null) {
                 viewModelScope.launch {
                     val shikiStatus = when (status) {
@@ -745,14 +744,14 @@ class FilmsViewModel(
                         UserFilmStatus.ON_HOLD -> "on_hold"
                         UserFilmStatus.DROPPED -> "dropped"
                     }
-                    Log.d("ShikimoriSync", "shikiStatus=$shikiStatus, existingRate=${cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }?.id}")
+                    KLog.d("ShikimoriSync", "shikiStatus=$shikiStatus, existingRate=${cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }?.id}")
                     var token = authState.accessToken
                     val existingRate = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
                     var success = false
 
                     // Try with current token first
                     if (existingRate != null) {
-                        Log.d("ShikimoriSync", "Updating existing rate id=${existingRate.id}")
+                        KLog.d("ShikimoriSync", "Updating existing rate id=${existingRate.id}")
                         val result = animeRepository.updateUserRate(
                             token = token,
                             rateId = existingRate.id,
@@ -762,7 +761,7 @@ class FilmsViewModel(
                         )
                         success = result != null
                     } else {
-                        Log.d("ShikimoriSync", "Creating new rate for targetId=$shikimoriId")
+                        KLog.d("ShikimoriSync", "Creating new rate for targetId=$shikimoriId")
                         val result = animeRepository.createUserRate(
                             token = token,
                             userId = authState.userId,
@@ -776,7 +775,7 @@ class FilmsViewModel(
 
                     // If failed with 401, try refreshing token
                     if (!success && authState.refreshToken != null) {
-                        Log.d("ShikimoriSync", "Token expired, attempting refresh...")
+                        KLog.d("ShikimoriSync", "Token expired, attempting refresh...")
                         val newTokenResponse = animeRepository.refreshToken(authState.refreshToken)
                         if (newTokenResponse != null) {
                             // Save new tokens
@@ -788,7 +787,7 @@ class FilmsViewModel(
                                 avatarUrl = authState.avatarUrl
                             )
                             token = newTokenResponse.accessToken
-                            Log.d("ShikimoriSync", "Token refreshed, retrying...")
+                            KLog.d("ShikimoriSync", "Token refreshed, retrying...")
 
                             // Retry with new token
                             if (existingRate != null) {
@@ -810,12 +809,12 @@ class FilmsViewModel(
                                 )
                             }
                         } else {
-                            Log.e("ShikimoriSync", "Failed to refresh token, user needs to re-login")
+                            KLog.e("ShikimoriSync", "Failed to refresh token, user needs to re-login")
                         }
                     }
                 }
             } else {
-                Log.w("ShikimoriSync", "Not logged in or no access token")
+                KLog.w("ShikimoriSync", "Not logged in or no access token")
             }
         }
     }
@@ -1542,7 +1541,7 @@ class FilmsViewModel(
      * stale values until the app was restarted.
      */
     fun refreshAfterPlayerClosed() {
-        val now = android.os.SystemClock.elapsedRealtime()
+        val now = System.nanoTime() / 1_000_000L
         if (now - lastResumeRefreshMs < RESUME_REFRESH_THROTTLE_MS) return
         lastResumeRefreshMs = now
 
@@ -1907,14 +1906,6 @@ private fun UserFilmProfile.toLibraryUiItem(): LibraryUiItem {
     )
 }
 
-class FilmsViewModelFactory(
-    private val repository: FilmsRepository,
-    private val animeRepository: AnimeRepository,
-    private val userStateStore: UserStateStore,
-    private val shikimoriAuthStore: hd.kinoshka.app.data.local.ShikimoriAuthStore? = null
-) : ViewModelProvider.Factory {
-    @Suppress("UNCHECKED_CAST")
-    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return FilmsViewModel(repository, animeRepository, userStateStore, shikimoriAuthStore) as T
-    }
-}
+// FilmsViewModelFactory переехал обратно в app: сигнатура ViewModelProvider.Factory.create(Class)
+// есть только в android-варианте lifecycle, на desktop нужен create(KClass, extras). Desktop-UI
+// конструирует FilmsViewModel напрямую, без ViewModelProvider.

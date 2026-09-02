@@ -129,12 +129,8 @@ sealed interface FeedClipState {
     data object PosterOnly : FeedClipState
 }
 
-/** Прямой HLS-клип Rutube, найденный по названию тайтла. */
-data class RutubeClip(
-    val videoId: String,
-    val hlsUrl: String,
-    val thumbnailUrl: String?
-)
+// RutubeClip переехал в shared (jvmShared) вместе с RutubeClipSource — пакет тот же,
+// использования резолвятся.
 
 fun isAnimeId(id: Int): Boolean = id >= ANIME_ID_OFFSET
 

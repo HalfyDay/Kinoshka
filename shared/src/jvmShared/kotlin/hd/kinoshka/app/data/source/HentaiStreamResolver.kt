@@ -98,24 +98,15 @@ object HentaiStreamResolver {
     /** Дисковая копия каталога hanime; mtime файла = время загрузки (TTL тот же). */
     private const val CATALOG_DISK_FILE = "hanime_catalog.json"
 
-    /** Кадры из видео: доли длительности первой серии, по которым снимаются кадры. */
-    private val VIDEO_FRAME_FRACTIONS = listOf(0.08f, 0.22f, 0.36f, 0.50f, 0.64f, 0.78f)
-
-    /** retriever'ов работает параллельно: каждый seek — отдельное HTTP-соединение (~1.5с),
-     *  и последовательные 6 кадров = 9+ секунд. 3 соединения на CDN — безопасно. */
-    private const val VIDEO_FRAME_PARALLELISM = 3
-
     /** Потолок на весь шаг извлечения кадров: зависший retriever не должен держать «Кадры». */
     private const val VIDEO_FRAMES_TIMEOUT_MS = 60 * 1000L
 
-    /** Длинная сторона сохраняемого кадра — 220dp-карточки и просмотрщика хватает. */
-    private const val VIDEO_FRAME_MAX_SIDE = 720
+    /** Каталог кэша приложения: кадры из видео и дисковая копия каталога hanime.
+     *  Платформенно-нейтральная замена прежнему android.content.Context. */
+    @Volatile private var cacheDir: java.io.File? = null
 
-    /** Application context для MediaMetadataRetriever (сетевые источники требуют Context+Uri). */
-    @Volatile private var appContext: android.content.Context? = null
-
-    fun init(context: android.content.Context) {
-        appContext = context.applicationContext
+    fun init(cacheDir: java.io.File?) {
+        this.cacheDir = cacheDir
     }
 
     /** Preferred rendition order; anything outside falls back to max height. */
@@ -1300,9 +1291,9 @@ object HentaiStreamResolver {
             // −1. Дисковый кэш кадров из видео: повторное открытие тайтла — мгновенно,
             //     без единого запроса (раньше кэш проверялся лишь после промаха hentaiz-поиска,
             //     что стоило ~4с). Сетевые источники не трогаем вовсе.
-            val context = appContext
+            val context = cacheDir
             if (context != null) {
-                val dir = java.io.File(context.cacheDir, "hentai_frames")
+                val dir = java.io.File(context, "hentai_frames")
                 val cached = dir.listFiles { f -> f.name.startsWith(cacheKeySha(cacheKey) + "-") }
                     ?.sortedBy { it.name }
                     .orEmpty()
@@ -1401,20 +1392,18 @@ object HentaiStreamResolver {
         }
 
     /**
-     * Кадры из первой серии стабильного DLE-источника: MediaMetadataRetriever читает
-     * диапазоны по ключевым кадрам (OPTION_CLOSEST_SYNC), не скачивая файл целиком.
-     * Фреймворк на каждый seek открывает новое HTTP-соединение (~1.3-1.5с), поэтому кадры
-     * снимаются ПАРАЛЛЕЛЬНО несколькими retriever'ами на одну ссылку — иначе 6 кадров
-     * тянутся 9+ секунд последовательно. Файлы складываются в
+     * Кадры из первой серии стабильного DLE-источника. Файлы складываются в
      * cacheDir/hentai_frames/<ключ>-N.jpg и живут до очистки кэша системой — повторное
-     * открытие тайтла не трогает сеть.
+     * открытие тайтла не трогает сеть. Декодирование видео платформенно-зависимо
+     * ([grabVideoFrameFiles]): на Android — MediaMetadataRetriever по ключевым кадрам,
+     * на desktop кадров из видео нет (остаются скриншоты страниц и обложки каталога).
      */
     private suspend fun extractVideoFrames(
         cacheKey: String,
         queries: List<String>
     ): List<FilmImageItem> = withContext(Dispatchers.IO) {
-        val context = appContext ?: return@withContext emptyList()
-        val dir = java.io.File(context.cacheDir, "hentai_frames").apply { mkdirs() }
+        val dir = cacheDir?.let { java.io.File(it, "hentai_frames") }?.apply { mkdirs() }
+            ?: return@withContext emptyList()
         val prefix = cacheKeySha(cacheKey) + "-"
 
         // Только hentaidream: движок и каталог у него общие с allhentai, а allhentai на
@@ -1425,109 +1414,15 @@ object HentaiStreamResolver {
             return@withContext emptyList()
         }
 
-        // Делим кадры между retriever'ами с сохранением исходного индекса: имя файла
-        // (= порядок в UI) не зависит от параллелизма.
-        val chunkSize = VIDEO_FRAME_FRACTIONS.size / VIDEO_FRAME_PARALLELISM + 1
-        val chunks = VIDEO_FRAME_FRACTIONS
-            .withIndex()
-            .groupBy { it.index / chunkSize }
-            .values
-            .map { chunk -> chunk.sortedBy { it.index } }
-
-        val written = kotlinx.coroutines.coroutineScope {
-            chunks.map { chunk ->
-                async(Dispatchers.IO) { grabFrames(stream, chunk, dir, prefix) }
-            }.awaitAll()
-        }.flatten().filterNotNull()
-
+        val written = grabVideoFrameFiles(stream, dir, prefix).filterNotNull()
         KLog.i(TAG, "video frames [${stream.url.takeLast(48)}] -> ${written.size} imgs")
         written.map(::fileFrame)
     }
 
-    /** Одна партия кадров своим retriever'ом: null — кадр снять не удалось. */
-    private fun grabFrames(
-        stream: HentaiStream,
-        chunk: List<IndexedValue<Float>>,
-        dir: java.io.File,
-        prefix: String
-    ): List<java.io.File?> {
-        val retriever = android.media.MediaMetadataRetriever()
-        try {
-            runCatching { retriever.setDataSource(stream.url, stream.headers) }.getOrElse {
-                KLog.w(TAG, "video frames: setDataSource failed: ${it.javaClass.simpleName}")
-                return List(chunk.size) { null }
-            }
-            val durationMs = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
-                ?.toLongOrNull()
-                ?.takeIf { it > 0 } ?: return List(chunk.size) { null }
-            // Декод сразу в целевом размере (API 27+): дешевле, чем полноразмерный кадр +
-            // createScaledBitmap. Пропорции сохраняем по размерам видео.
-            val srcW = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-            val srcH = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-            var dstW = 0
-            var dstH = 0
-            if (srcW > 0 && srcH > 0 && maxOf(srcW, srcH) > VIDEO_FRAME_MAX_SIDE) {
-                val scale = VIDEO_FRAME_MAX_SIDE.toFloat() / maxOf(srcW, srcH)
-                dstW = (srcW * scale).toInt().coerceAtLeast(1)
-                dstH = (srcH * scale).toInt().coerceAtLeast(1)
-            }
-            return chunk.map { (index, fraction) ->
-                val timeUs = (durationMs * fraction).toLong() * 1000
-                val bitmap = runCatching {
-                    if (dstW > 0 && android.os.Build.VERSION.SDK_INT >= 27) {
-                        retriever.getScaledFrameAtTime(
-                            timeUs,
-                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                            dstW,
-                            dstH
-                        )
-                    } else {
-                        retriever.getFrameAtTime(
-                            timeUs,
-                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                        )
-                    }
-                }.getOrNull() ?: return@map null
-                val scaled = if (bitmap.width <= VIDEO_FRAME_MAX_SIDE && bitmap.height <= VIDEO_FRAME_MAX_SIDE) {
-                    bitmap
-                } else {
-                    val resized = scaleDown(bitmap, VIDEO_FRAME_MAX_SIDE)
-                    if (resized !== bitmap) bitmap.recycle()
-                    resized
-                }
-                val file = java.io.File(dir, "$prefix$index.jpg")
-                runCatching {
-                    java.io.FileOutputStream(file).use { out ->
-                        scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
-                    }
-                }.onFailure {
-                    file.delete()
-                    return@map null
-                }
-                scaled.recycle()
-                file
-            }
-        } finally {
-            runCatching { retriever.release() }
-        }
-    }
-
     private fun fileFrame(file: java.io.File) = FilmImageItem(
-        imageUrl = android.net.Uri.fromFile(file).toString(),
-        previewUrl = android.net.Uri.fromFile(file).toString()
+        imageUrl = file.toURI().toString(),
+        previewUrl = file.toURI().toString()
     )
-
-    private fun scaleDown(bitmap: android.graphics.Bitmap, maxSide: Int): android.graphics.Bitmap {
-        val largest = maxOf(bitmap.width, bitmap.height)
-        if (largest <= maxSide) return bitmap
-        val scale = maxSide.toFloat() / largest
-        return android.graphics.Bitmap.createScaledBitmap(
-            bitmap,
-            (bitmap.width * scale).toInt().coerceAtLeast(1),
-            (bitmap.height * scale).toInt().coerceAtLeast(1),
-            true
-        )
-    }
 
     private fun cacheKeySha(cacheKey: String): String =
         MessageDigest.getInstance("MD5").digest(cacheKey.toByteArray(Charsets.UTF_8))
@@ -1583,7 +1478,7 @@ object HentaiStreamResolver {
             catalogCache?.let { cached ->
                 if (System.currentTimeMillis() - catalogFetchedAtMs < CATALOG_TTL_MS) return cached
             }
-            val diskFile = appContext?.let { java.io.File(it.cacheDir, CATALOG_DISK_FILE) }
+            val diskFile = cacheDir?.let { java.io.File(it, CATALOG_DISK_FILE) }
             val diskFresh = diskFile?.takeIf { it.isFile }?.let { file ->
                 System.currentTimeMillis() - file.lastModified() < CATALOG_TTL_MS
             } ?: false

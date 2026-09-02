@@ -454,7 +454,9 @@ fun DetailsScreen(
             }
 
             state.item != null -> {
+                // Инвариант ветки, но smart cast невозможен: item объявлен в другом модуле (shared).
                 val item = state.item
+                    ?: error("state.item проверен условием ветки when, значение не может быть null")
                 val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.any { it.genre?.lowercase() == "аниме" }
                 val scope = rememberCoroutineScope()
                 val scrollState = rememberLazyListState()
@@ -986,7 +988,7 @@ fun DetailsScreen(
                         }
 
                         // TV Series Seasons
-                        if (state.item.type == "TV_SERIES" && state.seasons.isNotEmpty()) {
+                        if (item.type == "TV_SERIES" && state.seasons.isNotEmpty()) {
                             item {
                                 Box(modifier = Modifier.padding(horizontal = 16.dp)) {
                                     SeasonsCard(state.seasons)
@@ -1048,9 +1050,11 @@ fun DetailsScreen(
             )
         }
 
-        if (showProfileEditor && state.item != null) {
+        // Локальная копия: item объявлен в другом модуле (shared), smart cast невозможен.
+        val editorItem = state.item
+        if (showProfileEditor && editorItem != null) {
             UserProfileEditorSheet(
-                item = state.item,
+                item = editorItem,
                 animeDetails = state.animeDetails,
                 seasons = state.seasons,
                 profile = state.userProfile,
@@ -1063,7 +1067,7 @@ fun DetailsScreen(
                         ?: state.animeDetails?.episodes?.takeIf { it > 0 }
 
                     onSaveUserProfile(
-                        state.item,
+                        editorItem,
                         status,
                         rating,
                         note,
