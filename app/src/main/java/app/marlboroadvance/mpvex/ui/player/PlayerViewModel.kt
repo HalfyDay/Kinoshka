@@ -2015,6 +2015,29 @@ class PlayerViewModel(
     (host as? PlayerActivity)?.playPrevious()
   }
 
+  // ==================== Episode navigation (аниме/сериалы) ====================
+
+  /**
+   * Номер серии, отстоящей на [offset] позиций от текущей в списке эпизодов; null, когда серии
+   * с таким смещением нет (или выбор серий недоступен). Используется кнопками след./пред. серии
+   * и направляет включение через штатный [onAnimeEpisodeSelected] (прогресс, оверлей загрузки).
+   */
+  private fun episodeAtOffsetOrNull(offset: Int): Int? {
+    val current = _currentAnimeEpisodeNumber.value ?: return null
+    val episodes = _animeEpisodes.value
+    val idx = episodes.indexOfFirst { it.number == current }
+    if (idx < 0) return null
+    return episodes.getOrNull(idx + offset)?.number
+  }
+
+  fun playNextEpisode() {
+    episodeAtOffsetOrNull(1)?.let { onAnimeEpisodeSelected?.invoke(it) }
+  }
+
+  fun playPreviousEpisode() {
+    episodeAtOffsetOrNull(-1)?.let { onAnimeEpisodeSelected?.invoke(it) }
+  }
+
   // ==================== Repeat and Shuffle ====================
 
   fun applyPersistedShuffleState() {

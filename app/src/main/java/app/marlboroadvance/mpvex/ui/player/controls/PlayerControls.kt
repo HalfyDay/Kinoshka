@@ -110,6 +110,7 @@ import app.marlboroadvance.mpvex.ui.player.PlayerUpdates
 import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.player.Sheets
 import app.marlboroadvance.mpvex.ui.player.VideoAspect
+import hd.kinoshka.app.data.model.AnimeEpisode
 import app.marlboroadvance.mpvex.ui.player.controls.components.BrightnessSlider
 import app.marlboroadvance.mpvex.ui.player.controls.components.CompactSpeedIndicator
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
@@ -419,6 +420,9 @@ fun PlayerControls(
         // плеер не закрывается, следующая серия включается кнопкой или по истечении.
         val nextEpisode by viewModel.nextEpisodeOverlay.collectAsState()
         val nextEpisodeCountdown by viewModel.nextEpisodeCountdown.collectAsState()
+        // Кнопки след./пред. серии (те же SkipNext/SkipPrevious) активны, когда есть выбор серий.
+        val animeEpisodes by viewModel.animeEpisodes.collectAsState()
+        val currentAnimeEpisodeNumber by viewModel.currentAnimeEpisodeNumber.collectAsState()
         nextEpisode?.let { ep ->
           Box(
             modifier = Modifier.constrainAs(nextEpisodeOverlayRef) {
@@ -860,7 +864,16 @@ fun PlayerControls(
                   1.0f to Color.Transparent,
                 )
 
-              if (playlistMode && viewModel.hasPlaylistSupport()) {
+              // Выбор серий (аниме/сериалы) переносит те же кнопки на переключение эпизодов;
+              // без серий и без плейлиста остаются только play/pause.
+              val episodeNav = animeEpisodes.size > 1
+              val episodeIdx =
+                if (episodeNav) animeEpisodes.indexOfFirst { it.number == currentAnimeEpisodeNumber } else -1
+              val canPlayPrevious = if (episodeNav) episodeIdx > 0 else viewModel.hasPrevious()
+              val canPlayNext =
+                if (episodeNav) episodeIdx in 0 until animeEpisodes.lastIndex else viewModel.hasNext()
+
+              if (episodeNav || (playlistMode && viewModel.hasPlaylistSupport())) {
                 androidx.compose.foundation.layout.Row(
                   horizontalArrangement = Arrangement.spacedBy(24.dp),
                   verticalAlignment = Alignment.CenterVertically,
@@ -871,10 +884,10 @@ fun PlayerControls(
                         .size(56.dp)
                         .clip(CircleShape)
                         .clickable(
-                          enabled = viewModel.hasPrevious(),
+                          enabled = canPlayPrevious,
                           onClick = {
                             resetControlsTimestamp = System.currentTimeMillis()
-                            if (viewModel.hasPrevious()) viewModel.playPrevious()
+                            if (episodeNav) viewModel.playPreviousEpisode() else viewModel.playPrevious()
                           },
                         )
                         .then(
@@ -900,7 +913,7 @@ fun PlayerControls(
                       imageVector = Icons.Default.SkipPrevious,
                       contentDescription = "Previous",
                       tint =
-                        if (viewModel.hasPrevious()) {
+                        if (canPlayPrevious) {
                           if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface
                         } else {
                           if (hideBackground) {
@@ -959,10 +972,10 @@ fun PlayerControls(
                         .size(56.dp)
                         .clip(CircleShape)
                         .clickable(
-                          enabled = viewModel.hasNext(),
+                          enabled = canPlayNext,
                           onClick = {
                             resetControlsTimestamp = System.currentTimeMillis()
-                            if (viewModel.hasNext()) viewModel.playNext()
+                            if (episodeNav) viewModel.playNextEpisode() else viewModel.playNext()
                           },
                         )
                         .then(
@@ -988,7 +1001,7 @@ fun PlayerControls(
                       imageVector = Icons.Default.SkipNext,
                       contentDescription = "Next",
                       tint =
-                        if (viewModel.hasNext()) {
+                        if (canPlayNext) {
                           if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface
                         } else {
                           if (hideBackground) {

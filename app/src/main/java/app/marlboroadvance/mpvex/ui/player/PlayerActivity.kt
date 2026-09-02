@@ -305,6 +305,12 @@ class PlayerActivity :
   private var currentPlayingUrl: String? = null
   private var autoStallStrikes = 0
 
+  // Бесшовная смена качества (video-add + swap): url рунга, ожидающего закрепления. Любая
+  // полная загрузка файла ([mpvLoadFile] replace) его сбрасывает — незавершённое переключение
+  // не должно «прилипать» к следующей серии/озвучке.
+  private var pendingSeamlessQualityUrl: String? = null
+  private var seamlessSwitchJob: kotlinx.coroutines.Job? = null
+
   // QOM (QUALITY_ONLY_MOVIE) active-voiceover state: url/headers/ladder of THE DUB CURRENTLY
   // PLAYING. The launch-time stream (currentAnimeStream) belongs to whichever voiceover won
   // startup — reading its ladder on a quality switch used to reload the ORIGINAL dub and
@@ -1160,6 +1166,9 @@ class PlayerActivity :
    * when it died while the activity is still alive.
    */
   private fun mpvLoadFile(vararg args: String) {
+    // Полная загрузка файла сбрасывает незавершённое бесшовное переключение качества; сам
+    // video-add идёт мимо этой функции прямым MPVLib.command.
+    pendingSeamlessQualityUrl = null
     if (mpvCoreDead) reinitMpvCore()
     AppDiagnostics.event("loadfile: ${args.firstOrNull()?.take(160) ?: "?"}")
     MPVLib.command("loadfile", *args)
@@ -1497,7 +1506,13 @@ class PlayerActivity :
           Log.d(TAG, "Ignoring duplicate anime quality selection: $qId")
           return@qualitySelected
         }
-        pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
+        // Выбран уже играющий рунг (в т.ч. Auto·1080 → 1080): закрепляем выбор без перезагрузки.
+        val activeStream = currentAnimeStream
+        if (qId != "Auto" && activeStream != null && isQualityRungPlaying(activeStream, qId)) {
+          UserStateStore(this).setPreferredQuality(qId)
+          viewModel.setAnimeData(episodes, translations, viewModel.currentAnimeEpisodeNumber.value, viewModel.currentAnimeTranslationId.value, activeStream.qualities, qId)
+          return@qualitySelected
+        }
         beginStreamLoadIndicator()
         UserStateStore(this).setPreferredQuality(qId)
 
@@ -1506,27 +1521,47 @@ class PlayerActivity :
         val epNum = viewModel.currentAnimeEpisodeNumber.value ?: currentEp ?: 1
 
         if (qId == "Auto") {
-          val shikimoriId = extras.getInt("anime_shikimori_id", 0)
-          val srcType = currentAnimeSourceType
+          // Auto поверх текущего стрима: играющий рунг НЕ перезагружается — включается только
+          // watchdog (ступени вниз с сохранением позиции). Резолв нужен лишь стриму без лестницы.
+          val activeStreamNow = currentAnimeStream
+          if (activeStreamNow != null && orderedConcreteQualities(activeStreamNow.qualities).isNotEmpty()) {
+            finishStreamLoadIndicator()
+            viewModel.setAnimeData(episodes, translations, epNum, trId, activeStreamNow.qualities, "Auto")
+            updateAutoRungHint(activeStreamNow.qualities, currentPlayingUrl)
+            startAutoQualityWatchdog()
+          } else {
+            val shikimoriId = extras.getInt("anime_shikimori_id", 0)
+            val srcType = currentAnimeSourceType
 
-          lifecycleScope.launch(Dispatchers.IO) {
-            // Local-first: скачанная серия играет из офлайн-библиотеки без сети и резолва.
-          val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
-            .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
-            ?.toAnimeMediaStream()
-            ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
-            withContext(Dispatchers.Main) {
-              if (stream != null) {
-                applyAnimeStream(stream, srcType, "Auto", animeTitle, epNum, trId, episodes, translations)
-              } else {
-                finishStreamLoadIndicator()
+            lifecycleScope.launch(Dispatchers.IO) {
+              // Local-first: скачанная серия играет из офлайн-библиотеки без сети и резолва.
+              val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
+                .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
+                ?.toAnimeMediaStream()
+                ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+              withContext(Dispatchers.Main) {
+                if (stream != null) {
+                  pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
+                  applyAnimeStream(stream, srcType, "Auto", animeTitle, epNum, trId, episodes, translations)
+                } else {
+                  finishStreamLoadIndicator()
+                }
               }
             }
           }
         } else {
           val stream = currentAnimeStream
           if (stream != null && stream.qualities.containsKey(qId)) {
-            applyAnimeStream(stream, currentAnimeSourceType, qId, animeTitle, epNum, trId, episodes, translations)
+            // Бесшовная смена (video-add + swap) вместо полной перезагрузки; оверлей гасим —
+            // он не нужен, видео не прерывается.
+            finishStreamLoadIndicator()
+            viewModel.setAnimeData(episodes, translations, epNum, trId, stream.qualities, qId)
+            currentAnimeStream = stream
+            updateAutoRungHint(stream.qualities, stream.qualities[qId])
+            if (!switchQualitySeamlessly(stream, qId)) {
+              pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
+              applyAnimeStream(stream, currentAnimeSourceType, qId, animeTitle, epNum, trId, episodes, translations)
+            }
           } else {
             finishStreamLoadIndicator()
           }
@@ -1626,20 +1661,27 @@ class PlayerActivity :
   /** Body of a QOM quality switch; safe to re-run verbatim from the failed-load retry path. */
   private fun performQomQualitySwitch(quality: String) {
     val activeStream = qomActiveStream ?: currentAnimeStream ?: return
-    pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
+    // Выбран уже играющий рунг (в т.ч. Auto·1080 → 1080): закрепляем выбор без перезагрузки.
+    if (quality != "Auto" && isQualityRungPlaying(activeStream, quality)) {
+      UserStateStore(this).setPreferredQuality(quality)
+      viewModel.setAnimeData(emptyList(), viewModel.animeTranslations.value, null, viewModel.currentAnimeTranslationId.value, activeStream.qualities, quality)
+      return
+    }
+    pendingSeekPosition = null
     UserStateStore(this).setPreferredQuality(quality)
     // "Auto" must mean the resolver's best concrete variant (see [autoQualityRungUrl]): a
     // literal Auto entry in a turbo qualities map is an adaptive/master URL mpv often cannot
     // open, and a raw base url is a signed token that can 404.
     val effectiveQuality = quality.takeIf { it != "Auto" && activeStream.qualities.containsKey(it) } ?: "Auto"
-    val url = if (effectiveQuality != "Auto") activeStream.qualities[effectiveQuality] ?: activeStream.url
-      else autoQualityRungUrl(activeStream)
+    val url = qualityUrlFor(activeStream, effectiveQuality) ?: return
     applyHttpHeaders(activeStream.headers)
     viewModel.setAnimeData(emptyList(), viewModel.animeTranslations.value, null, viewModel.currentAnimeTranslationId.value, activeStream.qualities, effectiveQuality)
     updateAutoRungHint(activeStream.qualities, url)
-    currentPlayingUrl = url
     startAutoQualityWatchdog()
     resetStreamLoadRetries()
+    if (switchQualitySeamlessly(activeStream, effectiveQuality)) return
+    pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
+    currentPlayingUrl = url
     beginTrackedStreamLoad(retry = {
       // Re-issue the same switch bypassing the duplicate guard (see wrapper above).
       performQomQualitySwitch(quality)
@@ -1900,7 +1942,8 @@ class PlayerActivity :
    * open; turbo bases are raw signed tokens that intermittently 404 — live log kp=5457758).
    */
   private fun autoQualityRungUrl(stream: AnimeMediaStream): String =
-    QUALITY_PREFERENCE_DESC.firstNotNullOfOrNull { q -> stream.qualities[q] } ?: stream.url
+    QUALITY_PREFERENCE_DESC.firstNotNullOfOrNull { q -> stream.qualities[q]?.takeIf { it.startsWith("http") } }
+      ?: stream.url
 
   /**
    * PENDING_MOVIE: the player opened before any stream existed. Pull the resolve request from
@@ -2183,7 +2226,10 @@ class PlayerActivity :
     // Launch-time usage: the dub the title starts under counts toward the preference memory.
     currentTranslationId?.let { trId ->
       context.candidates.firstOrNull { it.translationId == trId }?.let { dub ->
-        recordPlaybackUsage(hd.kinoshka.app.data.model.AnimeSourceType.KODIK, dub.translationTitle ?: trId)
+        recordPlaybackUsage(
+          if (context.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
+          dub.translationTitle ?: trId
+        )
       }
     }
 
@@ -2294,7 +2340,10 @@ class PlayerActivity :
       val activeContext = movieSeriesContext ?: return@translationSelected
       if (trId == viewModel.currentAnimeTranslationId.value) return@translationSelected
       activeContext.candidates.firstOrNull { it.translationId == trId }?.let { dub ->
-        recordPlaybackUsage(hd.kinoshka.app.data.model.AnimeSourceType.KODIK, dub.translationTitle ?: trId)
+        recordPlaybackUsage(
+          if (activeContext.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
+          dub.translationTitle ?: trId
+        )
       }
       // Commit progress of the outgoing stream, then re-resolve the SAME episode under the new dub.
       flushOutgoingEpisodeProgress()
@@ -2338,8 +2387,35 @@ class PlayerActivity :
       val activeContext = movieSeriesContext ?: return@qualitySelected
       val stream = currentAnimeStream ?: return@qualitySelected
       if (quality == viewModel.currentAnimeQualityId.value) return@qualitySelected
-      pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
       UserStateStore(this).setPreferredQuality(quality)
+      // Выбран уже играющий рунг (в т.ч. Auto·1080 → 1080): закрепляем выбор без перезагрузки.
+      if (quality != "Auto" && isQualityRungPlaying(stream, quality)) {
+        viewModel.setAnimeData(
+          viewModel.animeEpisodes.value,
+          viewModel.animeTranslations.value,
+          viewModel.currentAnimeEpisodeNumber.value,
+          viewModel.currentAnimeTranslationId.value,
+          stream.qualities,
+          quality,
+        )
+        return@qualitySelected
+      }
+      // Бесшовная смена (video-add + swap) — до общей перезагрузки.
+      val effectiveQuality = quality.takeIf { it != "Auto" && stream.qualities.containsKey(it) } ?: "Auto"
+      if (switchQualitySeamlessly(stream, effectiveQuality)) {
+        viewModel.setAnimeData(
+          viewModel.animeEpisodes.value,
+          viewModel.animeTranslations.value,
+          viewModel.currentAnimeEpisodeNumber.value,
+          viewModel.currentAnimeTranslationId.value,
+          stream.qualities,
+          effectiveQuality,
+        )
+        updateAutoRungHint(stream.qualities, currentPlayingUrl)
+        startAutoQualityWatchdog()
+        return@qualitySelected
+      }
+      pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
       // Tracked so a dead variant url auto-retries; the retry re-runs applyMovieSeriesStream
       // directly — it has no duplicate guard, unlike this callback (the first attempt already
       // updated currentAnimeQualityId, and a guarded re-issue used to no-op into a black screen).
@@ -2462,7 +2538,6 @@ class PlayerActivity :
       mpvLoadFile(next.second, "replace")
     })
     mpvLoadFile(next.second, "replace")
-    Toast.makeText(this, "Auto: сеть медленная — временно снижено до ${next.first}", Toast.LENGTH_SHORT).show()
     return true
   }
 
@@ -2595,10 +2670,15 @@ class PlayerActivity :
     translations: List<FlatTranslation>,
   ) {
     val effectiveQuality = requestedQuality.takeIf { it != "Auto" && stream.qualities.containsKey(it) } ?: "Auto"
-    val url = stream.qualities[effectiveQuality] ?: stream.url
+    // Рунг-мусор ("null" из JSON-null источника) не играется — играет текущий url стрима.
+    val url = stream.qualities[effectiveQuality]?.takeIf { it.startsWith("http") } ?: stream.url
 
     currentAnimeSourceType = sourceType
     currentAnimeStream = stream
+    // Watchdog и no-op guard'ы качества читают currentPlayingUrl: без записи первый выбор
+    // конкретного качества после загрузки серии сравнивался с null/устаревшим url и
+    // бесшовно переоткрывал тот же рунг (жалоба: Auto играет 720 — выбор 720 перезапускал видео).
+    currentPlayingUrl = url
     fileName = "$animeTitle • Серия $episodeNumber"
     mediaIdentifier = stableKinoshkaIdentifier(episodeOverride = episodeNumber)
       ?: getMediaIdentifierFromUri(Uri.parse(url), fileName)
@@ -2640,6 +2720,199 @@ class PlayerActivity :
     viewModel.setAutoQualityRungHint(rung)
   }
 
+  // ==================== Бесшовная смена качества (как на YouTube) ====================
+  //
+  // Новый рунг добавляется ВТОРОЙ видео-дорожкой ("video-add <url> cached"): mpv сразу
+  // переключает видео на неё, а мы точным seek'ом ставим новый demuxer на текущую позицию —
+  // картинка доигрывает старый вариант, пока открывается новый, без перезагрузки файла.
+  // Если вариант так и не открылся (мёртвый токен CDN), тихий откат на обычную перезагрузку.
+  // ВАЖНО: "video-add" открывает рунг по сети и блокирует вызывающий поток до конца
+  // демuxer-open (на медленном CDN — до ~7 с), поэтому выполняется строго вне главного потока.
+
+  /**
+   * Снимок дорожек mpv через поиндексные чтения свойств (тот же путь, что и в
+   * TrackSelector). Ключ track-list — "external-filename": поля "file" в track-list НЕТ,
+   * поэтому прежний вариант на getPropertyNode("track-list") с map["file"] никогда не
+   * совпадал и каждое переключение по таймауту откатывалось на полную перезагрузку.
+   */
+  private class MpvTrackSnapshot(val type: String, val id: Int, val filename: String?, val selected: Boolean)
+
+  private fun mpvTracks(type: String? = null): List<MpvTrackSnapshot> {
+    val count = runCatching { MPVLib.getPropertyInt("track-list/count") }.getOrNull() ?: return emptyList()
+    val result = ArrayList<MpvTrackSnapshot>(count)
+    for (i in 0 until count) {
+      val trackType = MPVLib.getPropertyString("track-list/$i/type") ?: continue
+      if (type != null && trackType != type) continue
+      val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
+      val filename = MPVLib.getPropertyString("track-list/$i/external-filename")
+      val selected = MPVLib.getPropertyBoolean("track-list/$i/selected") ?: false
+      result.add(MpvTrackSnapshot(trackType, id, filename, selected))
+    }
+    return result
+  }
+
+  private fun mpvVideoTracks(): List<MpvTrackSnapshot> = mpvTracks("video")
+
+  private fun isVideoTrackSelectedByUrl(url: String): Boolean =
+    mpvVideoTracks().any { it.filename == url && it.selected }
+
+  /** Убирает НЕ выбранный видео-трек, добавленный для [url] (зачистка зависших переключений). */
+  private fun removeVideoTrackByUrl(url: String) {
+    for (track in mpvVideoTracks()) {
+      if (track.filename != url || track.selected) continue
+      runCatching { MPVLib.command("video-remove", track.id.toString()) }
+    }
+  }
+
+  /**
+   * После успешного переключения выбрасывает все не выбранные треки, добавленные извне
+   * (external-filename != null). "video-add" HLS добавляет вместе с видео-треком и внешний
+   * аудио-трек: если оставить его — demuxer старого варианта останется жив и продолжит
+   * качать сегменты уже ненужного качества впустую.
+   */
+  private fun sweepUnselectedExternalTracks() {
+    for (track in mpvTracks()) {
+      if (track.selected || track.filename == null) continue
+      val command = when (track.type) {
+        "video" -> "video-remove"
+        "audio" -> "audio-remove"
+        "sub" -> "sub-remove"
+        else -> continue
+      }
+      runCatching { MPVLib.command(command, track.id.toString()) }
+    }
+  }
+
+  /** Url рунга [quality] у [stream] ("Auto" = лучший конкретный рунг); null — играть нечего.
+   *  Рунг-мусор (пусто/"null" из JSON-null источника) не играется — берётся текущий url стрима. */
+  private fun qualityUrlFor(stream: AnimeMediaStream, quality: String): String? = when {
+    quality == "Auto" -> autoQualityRungUrl(stream).takeIf { it.isNotBlank() }
+    else -> stream.qualities[quality]?.takeIf { it.startsWith("http") } ?: stream.url.takeIf { it.isNotBlank() }
+  }
+
+  /**
+   * Играет ли сейчас рунг [quality] ("Auto" = лучший конкретный рунг). Сравнение по пути URL без
+   * query: у повторных ресолвов того же рунга меняется только CDN-токен в query, а путь один —
+   * и повторный выбор играющего качества не должен ничего перезагружать (жалоба: Auto играет
+   * 720, выбор 720 в меню рестартовал видео как полноценную перезагрузку).
+   */
+  private fun isQualityRungPlaying(stream: AnimeMediaStream, quality: String): Boolean {
+    val targetUrl = qualityUrlFor(stream, quality) ?: return false
+    val targetPath = targetUrl.substringBefore('?')
+    currentPlayingUrl?.let { playing ->
+      if (playing == targetUrl || playing.substringBefore('?') == targetPath) return true
+    }
+    // Учёт мог устареть (свежий ресолв с другим хэшем в пути, гонка с перезагрузкой) — спрашиваем
+    // сам mpv: выбранный внешний видео-трек или путь открытого файла. Совпадение пути означает,
+    // что этот же рунг уже играет и video-add лишь перезапустил бы видео.
+    val playingNow = mpvPlayingUrl() ?: return false
+    return playingNow.substringBefore('?') == targetPath
+  }
+
+  /** Что mpv играет прямо сейчас: external-filename выбранного видео-трека, иначе "path"
+   *  главного файла (только http — локальные файлы к лестнице качеств не относятся). */
+  private fun mpvPlayingUrl(): String? {
+    mpvTracks("video").firstOrNull { it.selected && it.filename != null }?.let { return it.filename }
+    return runCatching { MPVLib.getPropertyString("path") }.getOrNull()?.takeIf { it.startsWith("http") }
+  }
+
+  /**
+   * Бесшовная смена качества. Возвращает false, когда путь невозможен (мёртвое ядро, файл ещё
+   * не открыт) — вызывающий делает обычный loadfile replace. Если рунг [quality] уже играет,
+   * возвращает true без действий: повторный выбор того же качества (в т.ч. Auto·720 → 720 и
+   * выбор после ресолва с новым токеном) не должен перезапускать видео.
+   */
+  private fun switchQualitySeamlessly(stream: AnimeMediaStream, quality: String): Boolean {
+    if (mpvCoreDead) return false
+    val targetUrl = qualityUrlFor(stream, quality) ?: return false
+    if (isQualityRungPlaying(stream, quality)) return true
+    if (MPVLib.getPropertyDouble("time-pos") == null) return false // файл ещё не открылся в mpv
+
+    Log.i(TAG, "Seamless quality switch to $quality")
+    AppDiagnostics.event("seamless quality switch to $quality")
+    // Зачистка зависшего трека от предыдущего незавершённого переключения выполняется в фоновой
+    // корутине (video-remove тоже ходит в mpv-ядро).
+    val cleanupUrl = pendingSeamlessQualityUrl
+    pendingSeamlessQualityUrl = targetUrl
+    currentPlayingUrl = targetUrl
+    seamlessSwitchJob?.cancel()
+    seamlessSwitchJob = lifecycleScope.launch(Dispatchers.Default) {
+      cleanupUrl?.let { removeVideoTrackByUrl(it) }
+      // Блокирующий сетевой open — только вне главного потока, иначе ANR (видео и UI замирают).
+      // Флаг "cached" в этой сборке mpv добавляет дорожку и СРАЗУ переключает видео на неё.
+      // Но свежий demuxer никогда не перематывается к позиции воспроизведения (refresh-seek для
+      // видео подавлен через after_seek=true у нового demuxer), а HLS-поток читается
+      // последовательно: без перемотки demuxer полз бы от нуля к текущей позиции, замораживая
+      // картинку на десятки секунд при живом аудио. Глобальный seek двигает demuxer'ы всех
+      // выбранных внешних треков, включая только что добавленный. Флаг "exact" обязателен:
+      // обычный seek садится на keyframe до ~5 с позади цели (GOP у Aniliberty редкий), аудио
+      // остаётся у цели — mpv держит звук ("delaying audio start") и прокручивает просмотренное.
+      runCatching { MPVLib.command("video-add", targetUrl, "cached") }
+      if (mpvVideoTracks().any { it.filename == targetUrl }) {
+        // Аудио переключаем на новый рунг вместе с видео: mpv синхронизирует видео ПО аудио
+        // (аудио = мастер-часы). Если аудио остаётся на старом demuxer'е, то пропуск одного
+        // сегмента (TLS-сбой, Packet corrupt) рвёт его PTS ("Invalid audio PTS") — mpv делает
+        // reset и видео форсажем догоняет аудио-мастер: рассинхрон и ускорение картинки.
+        // Плюс оставшись без выбранных треков, старый demuxer перестаёт качать сегменты.
+        // Меняем только если у основного файла один аудио-трек или уже выбран внешний
+        // (иначе можно потерять пользовательский дубляж из многоголосого файла).
+        val audioTracks = mpvTracks("audio")
+        val selectedAudio = audioTracks.firstOrNull { it.selected }
+        if (selectedAudio != null && (selectedAudio.filename != null || audioTracks.count { it.filename == null } == 1)) {
+          val newAudio = audioTracks.lastOrNull { it.filename == targetUrl }
+          if (newAudio != null && !newAudio.selected) {
+            runCatching { MPVLib.setPropertyString("aid", newAudio.id.toString()) }
+          }
+        }
+        val pos = MPVLib.getPropertyDouble("time-pos")
+        if (pos != null && pos > 0) {
+          runCatching { MPVLib.command("seek", pos.toString(), "absolute+exact") }
+        }
+      }
+
+      val startTime = System.currentTimeMillis()
+      var settled = false
+      while (isActive && System.currentTimeMillis() - startTime < 10_000) {
+        kotlinx.coroutines.delay(150)
+        // Переключение вытеснено (новый файл/новый рунг) — коммитить нечего.
+        if (pendingSeamlessQualityUrl != targetUrl) return@launch
+        if (isVideoTrackSelectedByUrl(targetUrl)) {
+          settled = true
+          break
+        }
+      }
+      if (settled) {
+        // Новый рунг играет — старые внешние треки можно выбросить (mpv сам их не удаляет,
+        // а наложенные незавершённые переключения оставляли по дорожке каждая).
+        sweepUnselectedExternalTracks()
+        pendingSeamlessQualityUrl = null
+      } else if (pendingSeamlessQualityUrl == targetUrl) {
+        // Вариант не открылся за 10 с (мёртвый токен): тихий откат на обычную перезагрузку.
+        Log.w(TAG, "Seamless switch to $quality did not settle — falling back to reload")
+        AppDiagnostics.event("seamless switch fallback to reload")
+        removeVideoTrackByUrl(targetUrl)
+        pendingSeamlessQualityUrl = null
+        val pos = MPVLib.getPropertyDouble("time-pos")
+        withContext(Dispatchers.Main) {
+          pendingSeekPosition = pos
+          beginTrackedStreamLoad(retry = { switchQualityWithReload(stream, quality) })
+          mpvLoadFile(targetUrl, "replace")
+        }
+      }
+    }
+    return true
+  }
+
+  /** Откат бесшовного пути: полная перезагрузка рунга с сохранением позиции. */
+  private fun switchQualityWithReload(stream: AnimeMediaStream, quality: String) {
+    val targetUrl = qualityUrlFor(stream, quality) ?: return
+    pendingSeekPosition = MPVLib.getPropertyDouble("time-pos")
+    currentPlayingUrl = targetUrl
+    beginTrackedStreamLoad(retry = { switchQualityWithReload(stream, quality) })
+    mpvLoadFile(targetUrl, "replace")
+  }
+
+
   /**
    * Watches playback while the quality selector is on "Auto": three consecutive 2s samples with
    * under ~1.5s of buffered-ahead video mean the network can't sustain the current variant, so
@@ -2662,8 +2935,13 @@ class PlayerActivity :
         autoStallStrikes = if (cacheAhead < 1.5) autoStallStrikes + 1 else 0
         if (autoStallStrikes < 3) continue
         autoStallStrikes = 0
+        // Рунг ищем и по учёту, и по факту mpv (путь без query): устаревший currentPlayingUrl
+        // давал idx<0 и молча отключал авто-деградацию.
         val currentUrl = currentPlayingUrl
-        val idx = ladder.indexOfFirst { it.second == currentUrl }
+        val playingPath = mpvPlayingUrl()?.substringBefore('?')
+        val idx = ladder.indexOfFirst { pair ->
+          pair.second == currentUrl || pair.second.substringBefore('?') == playingPath
+        }
         if (idx < 0) continue
         val next = ladder.getOrNull(idx + 1) ?: run {
           Log.i(TAG, "Auto watchdog: already at the lowest quality (${ladder.last().first})")
@@ -2672,10 +2950,12 @@ class PlayerActivity :
           return@launch
         }
         Log.i(TAG, "Auto watchdog: ${ladder[idx].first} stalls, stepping down to ${next.first}")
-        pendingSeekPosition = MPVLib.getPropertyDouble("time-pos")
-        currentPlayingUrl = next.second
-        mpvLoadFile(next.second, "replace")
-        Toast.makeText(this@PlayerActivity, "Auto: сеть медленная — временно снижено до ${next.first}", Toast.LENGTH_SHORT).show()
+        viewModel.setAutoQualityRungHint(next.first)
+        if (!switchQualitySeamlessly(stream, next.first)) {
+          pendingSeekPosition = MPVLib.getPropertyDouble("time-pos")
+          currentPlayingUrl = next.second
+          mpvLoadFile(next.second, "replace")
+        }
       }
     }
   }
@@ -2697,6 +2977,9 @@ class PlayerActivity :
       var lastPos = -1.0
       while (isActive) {
         kotlinx.coroutines.delay(1500)
+        // Во время бесшовного переключения позиция на мгновение дёргается (новый demuxer
+        // открывается с нуля и сразу перематывается) — не принимаем по ней решений.
+        if (pendingSeamlessQualityUrl != null) continue
         val pos = MPVLib.getPropertyDouble("time-pos") ?: continue
         val prev = lastPos
         lastPos = pos
@@ -3973,7 +4256,9 @@ class PlayerActivity :
   private fun recordPlaybackUsage(source: hd.kinoshka.app.data.model.AnimeSourceType, dubTitle: String) {
     val store = UserStateStore(this)
     store.recordSourceUsage(source)
-    store.recordDubUsage(dubTitle)
+    // Readers (rememberedDubId, dropdown ranking) look up the splitDubTrack display title, so raw
+    // titles like "Original" must be folded the same way or the favorite dub never restores.
+    store.recordDubUsage(MovieNativeLauncher.splitDubTrack(dubTitle).first)
   }
 
   /**

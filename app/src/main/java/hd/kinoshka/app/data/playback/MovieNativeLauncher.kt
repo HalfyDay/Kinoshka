@@ -175,10 +175,13 @@ object MovieNativeLauncher {
         // the catalog's first dub regardless of what the user watched before.
         val rememberedId = stateStore?.let { store ->
             val dubs = store.getPlaybackUsage().dubs
+            // Usage memory is keyed by the splitDubTrack display title (same fold the player's
+            // recordPlaybackUsage applies) — raw translationTitle keys miss "Original"-style dubs.
+            fun dubKey(title: String?): String = splitDubTrack(title.orEmpty()).first.trim().lowercase()
             catalog.candidates
                 .filter { !it.translationId.isNullOrBlank() }
-                .filter { (dubs[it.translationTitle?.trim()?.lowercase()]?.lastUsedAt ?: 0L) > 0L }
-                .maxByOrNull { dubs[it.translationTitle?.trim()?.lowercase()]?.lastUsedAt ?: 0L }
+                .filter { (dubs[dubKey(it.translationTitle)]?.lastUsedAt ?: 0L) > 0L }
+                .maxByOrNull { dubs[dubKey(it.translationTitle)]?.lastUsedAt ?: 0L }
                 ?.translationId
         }
         val orderedCandidates = rememberedId

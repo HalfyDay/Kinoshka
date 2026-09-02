@@ -135,8 +135,8 @@ object AnimeStreamResolver {
                 episode.optCleanString("name_english").ifBlank { "Серия $number" }
             }
             val maxQuality = when {
-                episode.optString("hls_1080").isNotBlank() -> "1080p"
-                episode.optString("hls_720").isNotBlank() -> "720p"
+                episode.optCleanString("hls_1080").isNotBlank() -> "1080p"
+                episode.optCleanString("hls_720").isNotBlank() -> "720p"
                 else -> null
             }
             AnimeEpisode(number = number, title = title, id = episode.optInt("id").takeIf { it > 0 }, maxQuality = maxQuality)
@@ -773,9 +773,12 @@ object AnimeStreamResolver {
         KLog.d(TAG, "[Aniliberty] resolveStream: found episode, ordinal=${episode.optInt("ordinal")}, sort_order=${episode.optInt("sort_order")}")
 
         val qualities = linkedMapOf<String, String>()
-        episode.optString("hls_1080").takeIf { it.isNotBlank() }?.let { qualities["1080p"] = it }
-        episode.optString("hls_720").takeIf { it.isNotBlank() }?.let { qualities["720p"] = it }
-        episode.optString("hls_480").takeIf { it.isNotBlank() }?.let { qualities["480p"] = it }
+        // optCleanString, а не optString: при JSON null (hls_1080: null) optString возвращает
+        // буквальную строку "null", она проходила isNotBlank() и попадала в лестницу качеств —
+        // video-add/mpv открывали файл "null", плеер падал в цикл переинициализаций.
+        episode.optCleanString("hls_1080").takeIf { it.isNotBlank() }?.let { qualities["1080p"] = it }
+        episode.optCleanString("hls_720").takeIf { it.isNotBlank() }?.let { qualities["720p"] = it }
+        episode.optCleanString("hls_480").takeIf { it.isNotBlank() }?.let { qualities["480p"] = it }
 
         if (qualities.isEmpty()) {
             KLog.d(TAG, "[Aniliberty] resolveStream: no direct HLS, checking external_player...")
@@ -839,7 +842,7 @@ object AnimeStreamResolver {
                 for (i in 0 until items.length()) {
                     val item = items.optJSONObject(i) ?: continue
                     val file = item.optString("file")
-                    if (file.isNotBlank()) {
+                    if (file.isNotBlank() && file.startsWith("http")) {
                         map[item.optString("title").ifBlank { "Auto" }] = file
                     }
                 }
@@ -1183,7 +1186,8 @@ object AnimeStreamResolver {
                     is String -> value
                     else -> ""
                 }
-                if (url.isNotBlank()) map[normalizeQuality(key) ?: key] = decodeKodikUrl(url)
+                // Только http: JSON-null "src" даёт literal "null", который не должен попадать в лестницу.
+                if (url.isNotBlank() && url.startsWith("http")) map[normalizeQuality(key) ?: key] = decodeKodikUrl(url)
             }
             map
         }.getOrDefault(emptyMap())
