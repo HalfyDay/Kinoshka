@@ -35,13 +35,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
 
-/** Один пункт плавающей нижней навигации (общей для главного экрана и фида рекомендаций). */
+/** Один пункт плавающей нижней навигации (общей для главного экрана и фида рекомендаций).
+ *  Глиф — слот, а не res-ID: Android рисует кастомные drawable-иконки (painterResource),
+ *  desktop — material-иконки, общий код не зависит от ресурсов приложения. */
 class NavPillItem(
-    val filledRes: Int,
-    val outlinedRes: Int,
     val contentDescription: String,
     val selected: Boolean,
-    val onClick: () -> Unit
+    val onClick: () -> Unit,
+    val glyph: @Composable (selected: Boolean) -> Unit
 )
 
 /**
@@ -120,15 +121,7 @@ private fun NavPillButton(item: NavPillItem) {
         contentAlignment = Alignment.Center
     ) {
         NavItemGlyph(
-            icon = {
-                Icon(
-                    painter = androidx.compose.ui.res.painterResource(
-                        if (item.selected) item.filledRes else item.outlinedRes
-                    ),
-                    contentDescription = item.contentDescription,
-                    modifier = Modifier.size(28.dp)
-                )
-            },
+            icon = { item.glyph(item.selected) },
             selected = item.selected
         )
     }

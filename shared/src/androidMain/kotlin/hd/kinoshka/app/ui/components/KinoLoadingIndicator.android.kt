@@ -7,15 +7,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 
 /** The expressive Material 3 loading animation used consistently by Kino. */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun KinoLoadingIndicator(
-    modifier: Modifier = Modifier,
-    size: Dp = 52.dp,
-    color: Color = Color.Unspecified,
+actual fun KinoLoadingIndicator(
+    modifier: Modifier,
+    size: Dp,
+    color: Color,
 ) {
     LoadingIndicator(
         modifier = modifier.size(size),

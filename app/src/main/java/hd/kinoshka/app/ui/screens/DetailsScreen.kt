@@ -1200,9 +1200,7 @@ private fun HeroHeader(
                     contentScale = ContentScale.Crop,
                     filterQuality = FilterQuality.High,
                     useOriginalSize = true,
-                    onSuccess = { success ->
-                        val width = success.result.drawable.intrinsicWidth
-                        val height = success.result.drawable.intrinsicHeight
+                    onSuccess = { width, height ->
                         if (width > 0 && height > 0) {
                             posterAspectRatio = width.toFloat() / height.toFloat()
                         }
@@ -2703,10 +2701,9 @@ private fun ImagesViewerDialog(
                         contentScale = ContentScale.Fit,
                         useOriginalSize = true,
                         fadeDurationMs = 350,
-                        onSuccess = { state ->
-                            val drawable = state.result.drawable
-                            if (drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {
-                                imageAspectRatio = drawable.intrinsicWidth.toFloat() / drawable.intrinsicHeight.toFloat()
+                        onSuccess = { width, height ->
+                            if (width > 0 && height > 0) {
+                                imageAspectRatio = width.toFloat() / height.toFloat()
                             }
                         },
                         modifier = Modifier

@@ -5,12 +5,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import hd.kinoshka.app.data.api.ApiClient
+import hd.kinoshka.app.data.local.KinoPrefs
+import hd.kinoshka.app.data.local.UserStateStoreBase
 import hd.kinoshka.app.data.model.FilmItem
+import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
+import hd.kinoshka.app.ui.screens.FilmsViewModel
+import hd.kinoshka.app.ui.screens.HomeScreen
+import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Properties
 
@@ -25,14 +32,51 @@ sealed interface Screen {
 
 fun main(args: Array<String>) = application {
     val repository = remember { buildRepository() }
+    // Общий FilmsViewModel (shared): тот же экран, что и на телефоне.
+    val viewModel = remember { buildViewModel(repository) }
+    val scope = rememberCoroutineScope()
     var screen by remember { mutableStateOf(initialScreen(args, repository)) }
 
     Window(onCloseRequest = ::exitApplication, title = MAIN_WINDOW_TITLE) {
         MaterialTheme(colorScheme = darkColorScheme()) {
             when (val current = screen) {
                 is Screen.Home -> HomeScreen(
-                    repository = repository,
-                    onOpen = { screen = Screen.Details(it) },
+                    state = viewModel.uiState,
+                    onQueryChange = viewModel::onQueryChange,
+                    onInstantSearch = viewModel::onSearchQueryChanged,
+                    onSubmitSearch = viewModel::submitSearch,
+                    onRetry = viewModel::retryHome,
+                    onTabSelected = viewModel::onTabSelected,
+                    onContentTypeSelected = viewModel::onContentTypeSelected,
+                    onOpenFilm = { film -> screen = Screen.Details(film) },
+                    onOpenHistoryFilm = { id ->
+                        // Из истории приходит только kp-Id — детали догружаем.
+                        scope.launch {
+                            runCatching { repository.details(id) }.onSuccess { d ->
+                                screen = Screen.Details(
+                                    FilmItem(
+                                        d.kinopoiskId, d.nameRu, d.nameOriginal,
+                                        d.posterUrlPreview, d.ratingKinopoisk, d.year
+                                    )
+                                )
+                            }
+                        }
+                    },
+                    onDiscoverCategorySelected = viewModel::onDiscoverCategorySelected,
+                    onLoadMore = viewModel::loadMore,
+                    onRemoveFromHistory = viewModel::removeFromHistory,
+                    // Разделы, для которых на desktop ещё нет экранов (M5+): no-op.
+                    onOpenProfile = {},
+                    onOpenSettings = {},
+                    onOpenAbout = {},
+                    onUpdateFilters = viewModel::updateFilters,
+                    onToggleFilterSheet = viewModel::setShowFilterSheet,
+                    onLibrarySortSelected = viewModel::setLibrarySortType,
+                    librarySortReversed = viewModel.uiState.librarySortReversed,
+                    onLibrarySortReversedChanged = viewModel::setLibrarySortReversed,
+                    onHentaiVisibilityChanged = viewModel::setHentaiVisibleInLibrary,
+                    onRemoveSearchHistory = viewModel::removeSearchQueryFromHistory,
+                    onClearSearchHistory = viewModel::clearSearchHistory
                 )
                 is Screen.Details -> DetailsScreen(
                     film = current.film,
@@ -96,4 +140,13 @@ private fun buildRepository(): FilmsRepository {
             ?.getProperty("KP_API_KEY")?.trim().orEmpty()
     val cacheDir = File(System.getProperty("user.home"), ".kino-desktop").apply { mkdirs() }
     return FilmsRepository(ApiClient.kinopoiskApi(cacheDir, apiKey))
+}
+
+private fun buildViewModel(repository: FilmsRepository): FilmsViewModel {
+    val cacheDir = File(System.getProperty("user.home"), ".kino-desktop").apply { mkdirs() }
+    return FilmsViewModel(
+        repository = repository,
+        animeRepository = AnimeRepository(ApiClient.shikimoriApi(cacheDir)),
+        userStateStore = UserStateStoreBase(KinoPrefs.createDefault())
+    )
 }
