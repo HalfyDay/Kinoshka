@@ -268,6 +268,9 @@ private data class GridMetrics(
 
 private val FloatingBottomContentPadding = 112.dp
 private val SearchChromeHeight = 70.dp
+// Библиотека: 48dp поле поиска + 8dp до вкладок — тот же отступ, что под вкладками,
+// чтобы после строки поиска не оставалось большого пустого резерва.
+private val LibrarySearchChromeHeight = 56.dp
 private val ExitConfirmWindowMs = 2_000L
 
 @Composable
@@ -392,7 +395,8 @@ fun HomeScreen(
             libraryResetCount++
         }
     }
-    val searchRowHeight = SearchChromeHeight
+    val searchRowHeight =
+        if (section == MainSection.LIBRARY) LibrarySearchChromeHeight else SearchChromeHeight
     val searchRowAlpha = 1f
     val normalizedQuery = state.query.trim()
     val libraryItemsByTab = remember(state.library, state.hideRussianContent, normalizedQuery, libraryFilter) {
