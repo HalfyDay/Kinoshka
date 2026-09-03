@@ -280,6 +280,14 @@ fun AnimeTranslationDropdown(
     // Global preference memory: dubs/sources the user launches rise to the top of the list.
     val context = LocalContext.current
     val playbackUsage = remember { UserStateStore(context).getPlaybackUsage() }
+    // Per-title ключ памяти (тот же формат, что пишет PlayerActivity): любимая озвучка тайтла
+    // ранжируется по его собственной истории, глобальная память — только как fallback.
+    val dubMediaKey = remember {
+        (context as? android.app.Activity)?.intent?.let { intent ->
+            intent.getIntExtra("movie_kinopoisk_id", 0).takeIf { it > 0 }?.let { "kp:$it" }
+                ?: intent.getIntExtra("anime_shikimori_id", 0).takeIf { it > 0 }?.let { "sh:$it" }
+        }
+    }
 
     LaunchedEffect(showDialog) {
         viewModel.setAnimeModalOpen(showDialog)
@@ -302,7 +310,7 @@ fun AnimeTranslationDropdown(
             modifier = Modifier.padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Icon(Icons.Default.ClosedCaption, contentDescription = null, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.RecordVoiceOver, contentDescription = null, modifier = Modifier.size(18.dp))
             Text(
                 text = currentTr?.title ?: "Озвучка",
                 style = MaterialTheme.typography.bodyMedium,
@@ -384,17 +392,18 @@ fun AnimeTranslationDropdown(
                             }
                         }
 
-                        val filteredTranslations = remember(translations, selectedSourceFilter, playbackUsage) {
+                        val filteredTranslations = remember(translations, selectedSourceFilter, playbackUsage, dubMediaKey) {
                             val base = if (selectedSourceFilter == null) translations
                             else translations.filter { it.source == selectedSourceFilter }
                             // Used-first ranking (recency, then frequency); stable sort keeps the
-                            // provider order for everything the user never touched.
+                            // provider order for everything the user never touched. Per-title
+                            // память (любимая озвучка тайтла) важнее глобальной.
+                            fun usageOf(tr: FlatTranslation) = dubMediaKey?.let { mk ->
+                                playbackUsage.titleDubs["$mk|${tr.title.trim().lowercase()}"]
+                            } ?: playbackUsage.dubs[tr.title.trim().lowercase()]
                             base.sortedWith(
-                                compareByDescending<FlatTranslation> { tr ->
-                                    playbackUsage.dubs[tr.title.trim().lowercase()]?.lastUsedAt ?: 0L
-                                }.thenByDescending { tr ->
-                                    playbackUsage.dubs[tr.title.trim().lowercase()]?.count ?: 0
-                                }
+                                compareByDescending<FlatTranslation> { usageOf(it)?.lastUsedAt ?: 0L }
+                                    .thenByDescending { usageOf(it)?.count ?: 0 }
                             )
                         }
 
@@ -418,7 +427,10 @@ fun AnimeTranslationDropdown(
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         // Preference badge: this dub team is in the usage memory.
-                                        if (playbackUsage.dubs.containsKey(tr.title.trim().lowercase())) {
+                                        val usedOnThisTitle = dubMediaKey?.let { mk ->
+                                            playbackUsage.titleDubs.containsKey("$mk|${tr.title.trim().lowercase()}")
+                                        } ?: false
+                                        if (usedOnThisTitle || playbackUsage.dubs.containsKey(tr.title.trim().lowercase())) {
                                             Icon(
                                                 imageVector = Icons.Default.History,
                                                 contentDescription = "Вы часто смотрите с этой озвучкой",
