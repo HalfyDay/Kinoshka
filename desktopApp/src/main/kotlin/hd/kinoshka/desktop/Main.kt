@@ -9,6 +9,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
+import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.api.ApiClient
 import hd.kinoshka.app.data.local.KinoPrefs
 import hd.kinoshka.app.data.local.UserStateStoreBase
@@ -39,7 +41,12 @@ fun main(args: Array<String>) = application {
     val scope = rememberCoroutineScope()
     var screen by remember { mutableStateOf(initialScreen(args, repository)) }
 
-    Window(onCloseRequest = ::exitApplication, title = MAIN_WINDOW_TITLE) {
+    // Стартуем достаточно широким окном, чтобы сразу попасть в TV-дизайн (ориентация landscape).
+    Window(
+        onCloseRequest = ::exitApplication,
+        title = MAIN_WINDOW_TITLE,
+        state = rememberWindowState(width = 1360.dp, height = 820.dp),
+    ) {
         MaterialTheme(colorScheme = darkColorScheme()) {
             when (val current = screen) {
                 is Screen.Home -> HomeScreen(

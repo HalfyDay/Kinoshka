@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Баннер для Android TV LEANBACK_LAUNCHER (320x180 dp): тёмный фон + «Kino». -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#0A0A0E" />
+        </shape>
+    </item>
+    <item
+        android:bottom="24dp"
+        android:end="24dp"
+        android:start="24dp"
+        android:top="24dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#16161D" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+    <item android:gravity="center">
+        <vector
+            android:width="160dp"
+            android:height="64dp"
+            android:viewportWidth="160"
+            android:viewportHeight="64">
+            <path
+                android:fillColor="#8AB4F8"
+                android:pathData="M52,6 L36,58 L24,58 L40,6 Z" />
+            <path
+                android:fillColor="#F2F2F5"
+                android:pathData="M70,8 L84,8 C98,8 106,16 106,28 C106,40 98,48 84,48 L82,48 L82,56 L70,56 Z M82,18 L82,38 L84,38 C91,38 94,34 94,28 C94,22 91,18 84,18 Z" />
+            <path
+                android:fillColor="#F2F2F5"
+                android:pathData="M112,8 L124,8 L124,46 L136,46 L136,56 L112,56 Z" />
+        </vector>
+    </item>
+</layer-list>
