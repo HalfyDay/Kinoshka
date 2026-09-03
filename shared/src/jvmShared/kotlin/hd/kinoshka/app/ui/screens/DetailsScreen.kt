@@ -29,10 +29,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.AnimationSpec
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -126,7 +123,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetState
 import androidx.compose.material3.rememberBottomSheetState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextField
@@ -215,6 +214,7 @@ import kotlinx.coroutines.async
 import hd.kinoshka.app.data.source.KodikMovieParser
 import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
+import hd.kinoshka.app.ui.components.ProfileEditorCoverBackdrop
 import hd.kinoshka.app.ui.components.sheetSquashStretch
 import hd.kinoshka.app.ui.components.shimmerEffect
 import java.util.Locale
@@ -229,8 +229,8 @@ import hd.kinoshka.app.ui.platform.KinoFullscreenDialog
 import hd.kinoshka.app.ui.platform.KinoHideSystemBarsEffect
 import hd.kinoshka.app.ui.platform.KinoKeepDialogNavBarEffect
 import hd.kinoshka.app.ui.platform.rememberKinoPlatformActions
-import hd.kinoshka.app.ui.platform.rememberReduceMotion
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DetailsScreen(
     filmId: Int,
@@ -1052,8 +1052,17 @@ fun DetailsScreen(
 
         // Локальная копия: item объявлен в другом модуле (shared), smart cast невозможен.
         val editorItem = state.item
+        // Состояние шита поднято наружу: бэкдроп гаснет по targetValue (старт hide),
+        // а не по onDismiss (конец анимации) — уход строго вместе с шитом.
+        val profileSheetState = rememberModalBottomSheetState()
         if (editorItem != null) {
-            ProfileEditorCoverBackdrop(item = editorItem, visible = showProfileEditor)
+            ProfileEditorCoverBackdrop(
+                id = editorItem.kinopoiskId,
+                title = editorItem.nameRu ?: editorItem.nameOriginal,
+                posterUrl = editorItem.posterUrl ?: editorItem.posterUrlPreview,
+                coverUrl = editorItem.coverUrl,
+                visible = showProfileEditor && profileSheetState.targetValue != SheetValue.Hidden
+            )
             if (showProfileEditor) {
             UserProfileEditorSheet(
                 item = editorItem,
@@ -1061,6 +1070,7 @@ fun DetailsScreen(
                 seasons = state.seasons,
                 profile = state.userProfile,
                 saving = state.savingProfile,
+                sheetState = profileSheetState,
                 onDismiss = { showProfileEditor = false },
                 onSave = { status, rating, note, seasons, episodes ->
                     val totalSeasons = state.seasons.size.takeIf { it > 0 }
@@ -1603,81 +1613,6 @@ private fun RoundedPlayIcon(modifier: Modifier = Modifier, color: Color = Color.
 
 
 
-/**
- * Обложка на фоне за шитом «Прогресс просмотра»: живёт в корне экрана
- * (шит — отдельный диалог поверх с прозрачным сримом), выпрыгивает снизу
- * по центру с лёгким поворотом, пока шит выезжает.
- */
-@Composable
-private fun ProfileEditorCoverBackdrop(item: FilmDetails, visible: Boolean) {
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(tween(1)),
-        exit = fadeOut(tween(180))
-    ) {
-        val calm = rememberReduceMotion()
-        val posterModel = item.posterUrl ?: item.posterUrlPreview
-        var entered by remember(item.kinopoiskId) { mutableStateOf(calm) }
-        LaunchedEffect(item.kinopoiskId) { entered = true }
-        val floatSpec: AnimationSpec<Float> =
-            if (calm) snap() else spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMediumLow
-            )
-        val dpSpec: AnimationSpec<Dp> =
-            if (calm) snap() else spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMediumLow
-            )
-        val tilt by animateFloatAsState(
-            targetValue = if (entered) -6f else -18f,
-            animationSpec = floatSpec,
-            label = "pe_cover_tilt"
-        )
-        val scale by animateFloatAsState(
-            targetValue = if (entered) 1f else 0.65f,
-            animationSpec = floatSpec,
-            label = "pe_cover_scale"
-        )
-        val rise by animateDpAsState(
-            targetValue = if (entered) 0.dp else 260.dp,
-            animationSpec = dpSpec,
-            label = "pe_cover_rise"
-        )
-        val density = LocalDensity.current
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .padding(top = 64.dp),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                shadowElevation = 12.dp,
-                modifier = Modifier
-                    .width(170.dp)
-                    .aspectRatio(2f / 3f)
-                    .graphicsLayer {
-                        translationY = with(density) { rise.toPx() }
-                        rotationZ = tilt
-                        scaleX = scale
-                        scaleY = scale
-                        transformOrigin = TransformOrigin(0.5f, 1f)
-                    }
-            ) {
-                KinoshkaAsyncImage(
-                    model = posterModel,
-                    contentDescription = item.nameRu ?: item.nameOriginal,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-        }
-    }
-}
-
 @Composable
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 fun UserProfileEditorSheet(
@@ -1686,6 +1621,7 @@ fun UserProfileEditorSheet(
     seasons: List<SeasonItem>,
     profile: UserFilmProfile?,
     saving: Boolean,
+    sheetState: SheetState = rememberModalBottomSheetState(),
     onDismiss: () -> Unit,
     onSave: (
         status: UserFilmStatus?,
@@ -1711,6 +1647,7 @@ fun UserProfileEditorSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        sheetState = sheetState,
         dragHandle = null,
         // Срим прозрачный: за шитом на фоне живёт выпрыгивающая обложка.
         // Тапы мимо шита по-прежнему перехватывает и закрывает сам диалог.

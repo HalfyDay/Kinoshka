@@ -302,9 +302,13 @@ fun HomeScreen(
     onOpenFeed: () -> Unit = {},
     // Тестовый TikTok-фид рекомендаций: кнопка «Лента» в нижней пилюле после «Обзора»
     onOpenRecommendationsFeed: () -> Unit = {},
-    // Глиф кнопки «Лента»: Android (KinoApp) инъекцией возвращает кастомные drawable-иконки,
-    // без инъекции (desktop) рисуется material-фолбэк. Общий код не зависит от res-ID приложения.
+    // Глифы кнопок пилюли: Android (KinoApp) инъекцией возвращает кастомные
+    // drawable-иконки (как до KMP M4), без инъекции (desktop) рисуются
+    // material-фолбэки. Общий код не зависит от res-ID приложения.
     feedGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
+    libraryGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
+    discoverGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
+    moreGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
     onLibrarySortSelected: (hd.kinoshka.app.data.local.LibrarySortType) -> Unit = {},
     librarySortReversed: Boolean = false,
     onLibrarySortReversedChanged: (Boolean) -> Unit = {},
@@ -468,8 +472,8 @@ fun HomeScreen(
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
             // Единая плавающая пилюля (общий компонент с фидом рекомендаций).
-            // Глифы — material-иконки: общий код не зависит от res-ID приложения;
-            // Android (KinoApp) инъекцией feedGlyph возвращает «Ленте» кастомный drawable.
+            // Глифы: Android (KinoApp) инъекцией возвращает кастомные drawable-иконки,
+            // без инъекции (desktop) рисуются material-фолбэки.
             BottomNavPill(
                 items = listOf(
                     NavPillItem(
@@ -477,11 +481,16 @@ fun HomeScreen(
                         selected = section == MainSection.LIBRARY,
                         onClick = { handleNav(MainSection.LIBRARY) },
                         glyph = { sel ->
-                            Icon(
-                                imageVector = if (sel) Icons.AutoMirrored.Filled.List else Icons.AutoMirrored.Outlined.List,
-                                contentDescription = null,
-                                modifier = Modifier.size(28.dp)
-                            )
+                            val custom = libraryGlyph
+                            if (custom != null) {
+                                custom(sel)
+                            } else {
+                                Icon(
+                                    imageVector = if (sel) Icons.AutoMirrored.Filled.List else Icons.AutoMirrored.Outlined.List,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
                         }
                     ),
                     NavPillItem(
@@ -489,11 +498,16 @@ fun HomeScreen(
                         selected = section == MainSection.DISCOVER,
                         onClick = { handleNav(MainSection.DISCOVER) },
                         glyph = { sel ->
-                            Icon(
-                                imageVector = if (sel) Icons.Filled.Explore else Icons.Outlined.Explore,
-                                contentDescription = null,
-                                modifier = Modifier.size(28.dp)
-                            )
+                            val custom = discoverGlyph
+                            if (custom != null) {
+                                custom(sel)
+                            } else {
+                                Icon(
+                                    imageVector = if (sel) Icons.Filled.Explore else Icons.Outlined.Explore,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
                         }
                     ),
                     NavPillItem(
@@ -521,11 +535,16 @@ fun HomeScreen(
                         selected = section == MainSection.MORE,
                         onClick = { handleNav(MainSection.MORE) },
                         glyph = { sel ->
-                            Icon(
-                                imageVector = if (sel) Icons.Filled.MoreHoriz else Icons.Outlined.MoreHoriz,
-                                contentDescription = null,
-                                modifier = Modifier.size(28.dp)
-                            )
+                            val custom = moreGlyph
+                            if (custom != null) {
+                                custom(sel)
+                            } else {
+                                Icon(
+                                    imageVector = if (sel) Icons.Filled.MoreHoriz else Icons.Outlined.MoreHoriz,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
                         }
                     )
                 ),
@@ -1692,7 +1711,7 @@ private fun DiscoverGridCard(
                 model = film.posterUrlPreview,
                 contentDescription = film.nameRu,
                 contentScale = ContentScale.Crop,
-                filterQuality = FilterQuality.Low,
+                filterQuality = FilterQuality.Medium,
                 modifier = Modifier.fillMaxSize()
             )
             status?.let {
@@ -1991,7 +2010,7 @@ private fun DiscoverVerticalRow(
                 model = film.posterUrlPreview,
                 contentDescription = film.nameRu,
                 contentScale = ContentScale.Crop,
-                filterQuality = FilterQuality.Low,
+                filterQuality = FilterQuality.Medium,
                 modifier = Modifier.fillMaxSize()
             )
             status?.let {

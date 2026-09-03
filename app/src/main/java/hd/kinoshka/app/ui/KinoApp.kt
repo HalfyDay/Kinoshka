@@ -19,8 +19,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.SheetState
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -80,6 +84,7 @@ import hd.kinoshka.app.ui.screens.SettingsScreen
 import hd.kinoshka.app.ui.screens.ProgressEditorSeed
 import hd.kinoshka.app.ui.screens.UserProfileEditorSheet
 import hd.kinoshka.app.ui.components.DebugPerformanceOverlay
+import hd.kinoshka.app.ui.components.ProfileEditorCoverBackdrop
 import hd.kinoshka.app.ui.components.UpdateAvailableSheet
 import hd.kinoshka.app.ui.theme.KinoTheme
 import hd.kinoshka.app.data.model.AnimeEpisode
@@ -106,6 +111,7 @@ data class NativePlayerArgs(
     val playbackMode: NativePlaybackMode = NativePlaybackMode.ANIME
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun KinoApp() {
     val context = LocalContext.current
@@ -415,6 +421,9 @@ fun KinoApp() {
                             // sheet right here. The seed is built from tile data alone — instant,
                             // no network, and the details page never opens.
                             var progressEditorSeed by remember { mutableStateOf<ProgressEditorSeed?>(null) }
+                            // Состояние шита поднято: бэкдроп гаснет по targetValue (старт hide),
+                            // а не по onDismiss (конец анимации) — уход строго вместе с шитом.
+                            val progressSheetState = rememberModalBottomSheetState()
 
                             HomeScreen(
                                 state = vm.uiState,
@@ -440,13 +449,43 @@ fun KinoApp() {
                                 onOpenCalendar = { navController.navigate("anime_calendar") },
                                 onOpenFeed = { navController.navigate("anime_feed") },
                                 onOpenRecommendationsFeed = { navController.navigate("recommendations_feed") },
-                                // Кастомная иконка «Ленты» (карточка с play-треугольником) — как до KMP M4;
+                                // Кастомные иконки пилюли (как до KMP M4);
                                 // общий HomeScreen без инъекции рисует material-фолбэк на desktop.
                                 feedGlyph = { sel ->
                                     Icon(
                                         painter = painterResource(
                                             if (sel) hd.kinoshka.app.R.drawable.ic_nav_feed_filled
                                             else hd.kinoshka.app.R.drawable.ic_nav_feed_outlined
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                },
+                                libraryGlyph = { sel ->
+                                    Icon(
+                                        painter = painterResource(
+                                            if (sel) hd.kinoshka.app.R.drawable.ic_nav_library_filled
+                                            else hd.kinoshka.app.R.drawable.ic_nav_library_outlined
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                },
+                                discoverGlyph = { sel ->
+                                    Icon(
+                                        painter = painterResource(
+                                            if (sel) hd.kinoshka.app.R.drawable.ic_nav_discover_filled
+                                            else hd.kinoshka.app.R.drawable.ic_nav_discover_outlined
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                },
+                                moreGlyph = { sel ->
+                                    Icon(
+                                        painter = painterResource(
+                                            if (sel) hd.kinoshka.app.R.drawable.ic_nav_more_filled
+                                            else hd.kinoshka.app.R.drawable.ic_nav_more_outlined
                                         ),
                                         contentDescription = null,
                                         modifier = Modifier.size(28.dp)
@@ -460,6 +499,15 @@ fun KinoApp() {
                                 onClearSearchHistory = vm::clearSearchHistory
                             )
 
+                            // Обложка на фоне за шитом (тот же общий компонент, что на странице деталей).
+                            val editorSeed = progressEditorSeed
+                            ProfileEditorCoverBackdrop(
+                                id = editorSeed?.kinopoiskId ?: 0,
+                                title = editorSeed?.title,
+                                posterUrl = editorSeed?.posterUrl,
+                                coverUrl = null,
+                                visible = editorSeed != null && progressSheetState.targetValue != SheetValue.Hidden
+                            )
                             progressEditorSeed?.let { seed ->
                                 // Minimal locally-built details: the editor only reads identity
                                 // fields (id/name/type/genres) and saves through the same path as
@@ -479,6 +527,7 @@ fun KinoApp() {
                                     seasons = emptyList(),
                                     profile = seed.profile,
                                     saving = false,
+                                    sheetState = progressSheetState,
                                     onDismiss = { progressEditorSeed = null },
                                     onSave = { status, rating, note, watchedSeasons, watchedEpisodes ->
                                         vm.saveUserProfile(

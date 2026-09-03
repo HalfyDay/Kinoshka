@@ -28,3 +28,19 @@ fun buildImageUrlFallbacks(rawUrl: String?): List<String> {
     }
     return urls.distinct()
 }
+
+/**
+ * HD-постер аниме — тот же, что страница тайтла (smarthard HD, 240KB+):
+ * shikimori-URL → `https://smarthard.net/static/animes/{id}.jpeg`.
+ * Smarthard-URL возвращает как есть (уже HD), остальное — null.
+ * Не загрузится HD — вызывающий код показывает исходник через fallbackModel.
+ */
+fun preferHdAnimePosterUrl(rawUrl: String?): String? {
+    val str = rawUrl ?: return null
+    if (!str.contains("shikimori") && !str.contains("smarthard.net")) return null
+    if (str.contains("smarthard.net")) return str
+    val animeId = Regex("""/animes/(?:original/|preview/|x96/|x48/)?(\d+)\.jpe?g""")
+        .find(str)?.groupValues?.get(1)?.toIntOrNull()
+    if (animeId == null || animeId <= 0) return null
+    return "https://smarthard.net/static/animes/$animeId.jpeg"
+}
