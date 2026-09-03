@@ -491,6 +491,7 @@ fun TvTopBar(
     onSearchSubmit: () -> Unit,
     searchPlaceholder: String,
     onAvatarClick: () -> Unit,
+    showAvatar: Boolean = true,
     modifier: Modifier = Modifier,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
@@ -553,20 +554,22 @@ fun TvTopBar(
             )
         }
         actions()
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .tvFocusable(onClick = onAvatarClick, shape = RoundedCornerShape(22.dp))
-                .clip(RoundedCornerShape(22.dp))
-                .background(TvTheme.SurfaceHigh),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Person,
-                contentDescription = "Профиль",
-                tint = TvTheme.Accent,
-                modifier = Modifier.size(26.dp),
-            )
+        if (showAvatar) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .tvFocusable(onClick = onAvatarClick, shape = RoundedCornerShape(22.dp))
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(TvTheme.SurfaceHigh),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Person,
+                    contentDescription = "Профиль",
+                    tint = TvTheme.Accent,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
         }
     }
 }

@@ -15,6 +15,8 @@ class KinoPlatformActions(
     val shareText: (text: String) -> Unit,
     /** Скопировать в буфер обмена без системного меню (тап по значению на экране деталей). */
     val copyText: (text: String) -> Unit,
+    /** Открыть внешнюю ссылку: Android — ACTION_VIEW, desktop — системный браузер. */
+    val openInBrowser: (url: String) -> Unit,
     /** Кэш-директория для ApiClient-фабрик (context.cacheDir / ~/.kino-desktop). */
     val cacheDir: File
 )

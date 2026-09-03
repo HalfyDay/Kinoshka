@@ -50,6 +50,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import hd.kinoshka.app.BuildConfig
+import hd.kinoshka.app.data.diagnostics.AppDiagnostics
 import java.io.File
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import hd.kinoshka.app.data.api.ApiClient
@@ -767,7 +768,8 @@ fun KinoApp() {
                                     onHideRussianChanged = vm::setHideRussianContent,
                                     onDiscoverTileSizeSelected = vm::setDiscoverTileSize,
                                     onLibraryTileSizeSelected = vm::setLibraryTileSize,
-                                    onShowFpsCounterChanged = vm::setShowFpsCounter
+                                    onShowFpsCounterChanged = vm::setShowFpsCounter,
+                                    showDebugSettings = BuildConfig.DEBUG
                                 )
                             }
                         }
@@ -794,7 +796,12 @@ fun KinoApp() {
                                     onCheckUpdates = { runUpdateCheck(true, true) },
                                     onOpenGithub = { openInBrowser("https://github.com/HalfyDay/Kinoshka") },
                                     onOpenTelegram = { openInBrowser("https://t.me/Kinoshka_HalfDay") },
-                                    onOpenShikimori = { openInBrowser("https://shikimori.io") }
+                                    onOpenShikimori = { openInBrowser("https://shikimori.io") },
+                                    appVersion = BuildConfig.VERSION_NAME,
+                                    appPackage = BuildConfig.APPLICATION_ID,
+                                    onReportProblem = {
+                                        context.findActivity()?.let { AppDiagnostics.shareReport(it) }
+                                    }
                                 )
                             }
                         }

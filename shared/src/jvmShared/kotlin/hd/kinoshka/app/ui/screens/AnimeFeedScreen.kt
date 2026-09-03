@@ -1,8 +1,5 @@
 package hd.kinoshka.app.ui.screens
 
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -51,7 +48,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.AnnotatedString
@@ -75,7 +71,7 @@ fun AnimeFeedScreen(
     onBack: () -> Unit,
     onOpenAnime: (Int) -> Unit
 ) {
-    val context = LocalContext.current
+    val platformActions = hd.kinoshka.app.ui.platform.rememberKinoPlatformActions()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -124,7 +120,7 @@ fun AnimeFeedScreen(
                         TopicFeedCard(
                             topic = topic,
                             onOpenAnime = onOpenAnime,
-                            onOpenLink = { url -> openExternalLink(context, url) }
+                            onOpenLink = { url -> platformActions.openInBrowser(url) }
                         )
                     }
                 }
@@ -471,16 +467,6 @@ private fun shikimoriAnimeId(url: String): Int? {
     return Regex("""/animes/(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull()
 }
 
-private fun openExternalLink(context: Context, url: String) {
-    runCatching {
-        context.startActivity(
-            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-        )
-    }
-}
-
 /** Относительный shikimori-путь → абсолютный URL. */
 private fun absShikiUrl(raw: String?): String? {
     if (raw.isNullOrBlank()) return null
@@ -685,8 +671,9 @@ private fun extractTopicVideos(htmlBody: String?, body: String?, htmlFooter: Str
         val youtubeId = youtubeVideoId(url)
         val key = if (youtubeId != null) "yt:$youtubeId" else url
         if (found.containsKey(key)) return
-        val host = runCatching { Uri.parse(url).host }.getOrNull()
-            ?.removePrefix("www.")?.removePrefix("m.")
+        val host = runCatching {
+            java.net.URI(url).host
+        }.getOrNull()?.removePrefix("www.")?.removePrefix("m.")
         found[key] = TopicVideo(
             url = url,
             youtubeId = youtubeId,
@@ -712,13 +699,8 @@ private fun extractTopicVideos(htmlBody: String?, body: String?, htmlFooter: Str
 
 /** Formats a Shikimori ISO created_at (UTC) as a short local date "d MMM". */
 private fun formatDateShort(iso: String): String? = runCatching {
-    val date = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-        val normalized = if (iso.endsWith("Z") || iso.contains("+")) iso else iso + "Z"
-        java.util.Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
-    } else {
-        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-        fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
-        fmt.parse(iso.substringBefore('.'))
-    } ?: return null
+    // minSdk 26 (O): java.time доступен всегда.
+    val normalized = if (iso.endsWith("Z") || iso.contains("+")) iso else iso + "Z"
+    val date = java.util.Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
     java.text.SimpleDateFormat("d MMM", java.util.Locale.forLanguageTag("ru")).format(date)
 }.getOrNull()

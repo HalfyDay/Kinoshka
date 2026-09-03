@@ -24,6 +24,11 @@ actual fun rememberKinoPlatformActions(): KinoPlatformActions = remember {
                     .setContents(StringSelection(text), null)
             }
         },
+        openInBrowser = { url ->
+            runCatching {
+                java.awt.Desktop.getDesktop().browse(java.net.URI(url))
+            }.onFailure { println("[Kino] Не удалось открыть ссылку: $url") }
+        },
         cacheDir = File(System.getProperty("user.home"), ".kino-desktop").apply { mkdirs() }
     )
 }
