@@ -28,7 +28,7 @@ const val MAIN_WINDOW_TITLE = "Kino Desktop"
 sealed interface Screen {
     data object Home : Screen
     data class Details(val film: FilmItem) : Screen
-    data class Player(val film: FilmItem) : Screen
+    data class Player(val args: PlayerLaunchArgs) : Screen
 }
 
 fun main(args: Array<String>) = application {
@@ -101,13 +101,39 @@ fun main(args: Array<String>) = application {
                         }
                     },
                     onBack = { screen = Screen.Home },
-                    // Слоты скачивания/выбора источника и нативный плеер — null: «Смотреть»
-                    // падает в веб-фолбэк, пока не готов общий плеер (M6).
+                    // Слоты скачивания/выбора источника — null; нативный плеер: общий
+                    // DetailsScreen передаёт полный payload, mpv играет его на ПК.
+                    onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
+                        screen = Screen.Player(
+                            PlayerLaunchArgs(
+                                streamUrl = streamUrl,
+                                headers = headers,
+                                qualities = qualities,
+                                title = title,
+                                episodeNumber = epNum,
+                                shikimoriId = shikimoriId,
+                                kinopoiskId = kinopoiskId,
+                                sourceType = srcType,
+                                episodes = episodes,
+                                translations = translations,
+                                currentTranslationId = trId,
+                                seriesContext = seriesContext
+                            )
+                        )
+                    },
                     userStateStore = userStateStore
                 )
                 is Screen.Player -> PlayerScreen(
-                    film = current.film,
-                    onBack = { screen = Screen.Details(current.film) },
+                    args = current.args,
+                    onBack = {
+                        screen = if (current.args.kinopoiskId > 0) {
+                            Screen.Details(
+                                FilmItem(current.args.kinopoiskId, current.args.title, null, null, null, null)
+                            )
+                        } else {
+                            Screen.Home
+                        }
+                    },
                 )
             }
         }
@@ -135,8 +161,15 @@ private fun initialScreen(args: Array<String>, repository: FilmsRepository): Scr
             } ?: popular.firstOrNull { (it.year ?: 0) in 1950..2025 }
         }
         println("Kino: выбранный фильм = ${picked?.nameRu} (kp=${picked?.kinopoiskId}, ${picked?.year})")
+        val film = picked ?: FilmItem(0, "Демо", null, null, null, null)
+        // С реальным kp-id играем через полный PENDING-резолв (гонка Kodik↔ddbb), без — демо-клип.
         return Screen.Player(
-            picked ?: FilmItem(0, "Демо", null, null, null, null)
+            PlayerLaunchArgs(
+                streamUrl = "",
+                title = film.nameRu ?: film.nameOriginal ?: "Демо",
+                kinopoiskId = film.kinopoiskId,
+                sourceType = if (film.kinopoiskId > 0) "PENDING" else "DEMO"
+            )
         )
     }
     if (flag(args) == "details") {

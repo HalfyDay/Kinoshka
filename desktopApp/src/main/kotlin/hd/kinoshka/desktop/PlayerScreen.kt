@@ -31,15 +31,14 @@ import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import hd.kinoshka.app.data.model.FilmItem
-import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.MovieContentKind
 import hd.kinoshka.app.data.model.MoviePlaybackRequest
-import hd.kinoshka.app.data.model.MovieStreamResult
+import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
+import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
+import hd.kinoshka.app.data.playback.MovieNativeLauncher
 import hd.kinoshka.app.data.source.AnimeStreamResolver
-import hd.kinoshka.app.data.source.MovieStreamResolver
-import hd.kinoshka.app.player.desktop.MpvNative
 import hd.kinoshka.app.player.desktop.MpvPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -51,10 +50,26 @@ import java.awt.Color as AwtColor
 private const val DEMO_URL =
     "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4"
 
+/** Payload запуска воспроизведения — зеркально onOpenNativePlayer общего DetailsScreen. */
+data class PlayerLaunchArgs(
+    val streamUrl: String,
+    val headers: Map<String, String> = emptyMap(),
+    val qualities: Map<String, String> = emptyMap(),
+    val title: String,
+    val episodeNumber: Int = 1,
+    val shikimoriId: Int = 0,
+    val kinopoiskId: Int = 0,
+    val sourceType: String = "DEMO",
+    val episodes: List<AnimeEpisode> = emptyList(),
+    val translations: List<FlatTranslation> = emptyList(),
+    val currentTranslationId: String = "",
+    val seriesContext: MovieSeriesPlaybackContext? = null,
+)
+
 private data class LoadCommand(val url: String, val headers: Map<String, String> = emptyMap())
 
 @Composable
-fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
+fun PlayerScreen(args: PlayerLaunchArgs, onBack: () -> Unit) {
     var player by remember { mutableStateOf<MpvPlayer?>(null) }
     var pending by remember { mutableStateOf<LoadCommand?>(null) }
     var loadedKey by remember { mutableStateOf<String?>(null) }
@@ -63,65 +78,93 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
     var paused by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0.0) }
     var duration by remember { mutableStateOf(0.0) }
-    var url by remember { mutableStateOf(DEMO_URL) }
-    // Озвучки: приходят из resolveMovie; выбор = ленивое извлечение потока + перемотка на текущую позицию.
-    var translations by remember { mutableStateOf<List<FlatTranslation>>(emptyList()) }
-    var currentTranslationId by remember { mutableStateOf<String?>(null) }
+    // Озвучки: приходят из Details (или из resolve для PENDING); выбор = ленивое извлечение
+    // потока + перемотка на текущую позицию.
+    var translations by remember { mutableStateOf(args.translations) }
+    var currentTranslationId by remember { mutableStateOf(args.currentTranslationId) }
+    // Качества активного потока (ladder от резолвера); выбор = смена URL + resume.
+    var qualities by remember { mutableStateOf(args.qualities) }
+    var currentQuality by remember { mutableStateOf<String?>(null) }
     var resumeAt by remember { mutableStateOf(0.0) }
     val scope = rememberCoroutineScope()
     val attachGuard = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+
+    fun scheduleLoad(url: String, headers: Map<String, String>, resume: Boolean) {
+        if (resume && duration > 1.0) resumeAt = position
+        pending = LoadCommand(url, headers)
+    }
+
+    fun switchQuality(name: String) {
+        val url = qualities[name] ?: return
+        currentQuality = name
+        scheduleLoad(url, args.headers, resume = true)
+    }
 
     fun switchTranslation(translation: FlatTranslation) {
         val link = translation.episodes.firstOrNull()?.link ?: return
         scope.launch {
             val resolved = withContext(Dispatchers.IO) {
                 runCatching {
-                    val qualities = AnimeStreamResolver.resolveKodikHls(
+                    val ladder = AnimeStreamResolver.resolveKodikHls(
                         AnimeStreamResolver.absoluteKodikUrl(link)
                     )
-                    val best = QUALITY_PREFERENCE_DESC.firstOrNull { qualities.containsKey(it) }
-                        ?: qualities.keys.firstOrNull()
-                    best?.let { qualities.getValue(it) }
+                    val best = QUALITY_PREFERENCE_DESC.firstOrNull { ladder.containsKey(it) }
+                        ?: ladder.keys.firstOrNull()
+                    best?.let { ladder.getValue(it) }
                 }.getOrNull()
             }
             if (resolved == null) {
                 resolveError = "Не удалось извлечь поток озвучки «${translation.title}»"
                 return@launch
             }
-            resumeAt = if (duration > 1.0) position else 0.0
             currentTranslationId = translation.translationId
-            url = resolved
-            pending = LoadCommand(resolved, AnimeStreamResolver.kodikPlaybackHeaders())
+            scheduleLoad(resolved, AnimeStreamResolver.kodikPlaybackHeaders(), resume = true)
         }
     }
 
-    // Для реального фильма разрешаем поток через Kodik (общий код shared);
-    // для демо (kinopoiskId == 0) сразу играем тестовый клип.
-    LaunchedEffect(film.kinopoiskId) {
-        if (film.kinopoiskId <= 0) {
-            pending = LoadCommand(DEMO_URL)
-            return@LaunchedEffect
-        }
-        withContext(Dispatchers.IO) {
-            val request = MoviePlaybackRequest(
-                kinopoiskId = film.kinopoiskId,
-                imdbId = null,
-                titles = listOfNotNull(film.nameRu, film.nameOriginal),
-                year = film.year,
-                kind = MovieContentKind.MOVIE,
-            )
-            when (val result = MovieStreamResolver.resolveMovie(request)) {
-                is MovieStreamResult.Success -> {
-                    println("MPV: поток найден (${result.stream.quality}): ${result.stream.url.take(90)}")
-                    translations = result.translations
-                    url = result.stream.url
-                    pending = LoadCommand(result.stream.url, result.stream.headers)
-                }
-                is MovieStreamResult.Unavailable -> {
-                    println("MPV: поток не найден: ${result.reason}")
-                    resolveError = "Поток недоступен: ${result.reason}"
+    // Стартовый поток: прямой (anime/quality-only/трейлер/серия контекста), демо-клип,
+    // либо PENDING — полный резолв гонкой Kodik↔ddbb (общий MovieNativeLauncher).
+    LaunchedEffect(args.title, args.kinopoiskId, args.sourceType) {
+        when {
+            args.sourceType == "DEMO" -> pending = LoadCommand(DEMO_URL)
+            args.streamUrl.isNotBlank() -> {
+                currentQuality = args.qualities.entries
+                    .firstOrNull { it.value == args.streamUrl }?.key
+                pending = LoadCommand(args.streamUrl, args.headers)
+            }
+            args.sourceType == "PENDING" -> withContext(Dispatchers.IO) {
+                println("MPV: PENDING resolve kp=${args.kinopoiskId}")
+                when (val payload = MovieNativeLauncher.resolve(
+                    MoviePlaybackRequest(
+                        kinopoiskId = args.kinopoiskId,
+                        imdbId = null,
+                        titles = listOf(args.title),
+                        year = null,
+                        kind = MovieContentKind.MOVIE,
+                    ),
+                    profile = null
+                )) {
+                    is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
+                        println("MPV: PENDING → QualityOnlyMovie: ${payload.stream.url.take(90)}")
+                        translations = payload.translations
+                        qualities = payload.stream.qualities
+                        currentQuality = payload.stream.quality
+                        pending = LoadCommand(payload.stream.url, payload.stream.headers)
+                    }
+                    is MovieNativeLauncher.NativeLaunchPayload.MovieSeries -> {
+                        val episode = payload.context.currentEpisode
+                        println("MPV: PENDING → MovieSeries ep=${episode.playerEpisodeKey}")
+                        qualities = payload.stream.qualities
+                        currentQuality = payload.stream.quality
+                        pending = LoadCommand(episode.playerUrl, payload.stream.headers)
+                    }
+                    is MovieNativeLauncher.NativeLaunchPayload.Failed -> {
+                        println("MPV: PENDING resolve failed: ${payload.reason}")
+                        resolveError = "Поток недоступен: ${payload.reason}"
+                    }
                 }
             }
+            else -> resolveError = "Нет потока для воспроизведения"
         }
     }
 
@@ -139,8 +182,7 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
                 }
                 val handle = hwnd ?: error("HWND канваса не найден")
                 println("MPV: hwnd=$handle")
-                val created = MpvPlayer.create(handle)
-                player = created
+                player = MpvPlayer.create(handle)
             } catch (t: Throwable) {
                 attachGuard.set(false)
                 attachError = t.message ?: "не удалось запустить mpv"
@@ -148,8 +190,8 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
         }
     }
 
-    // Загрузка: когда есть и плеер, и что грузить (реальный поток или демо).
-    // Переключение озвучки resume-ится на позицию, где стояли.
+    // Загрузка: когда есть и плеер, и что грузить. Переключения озвучки/качества
+    // resume-ятся на позицию, где стояли.
     LaunchedEffect(player, pending) {
         val current = player ?: return@LaunchedEffect
         val command = pending ?: return@LaunchedEffect
@@ -169,7 +211,7 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
                     waited++
                 }
                 current.seekTo(resume)
-                println("MPV: resume на $resume c после переключения озвучки")
+                println("MPV: resume на $resume c после переключения")
             }
         }
     }
@@ -208,10 +250,11 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             )
             Text(
-                film.nameRu ?: film.nameOriginal ?: "Просмотр",
+                args.title,
                 color = Color.White,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
                 modifier = Modifier.weight(1f),
             )
             if (translations.size > 1) {
@@ -245,6 +288,35 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
                                 onClick = {
                                     menuOpen = false
                                     switchTranslation(translation)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            if (qualities.size > 1) {
+                var qualityMenuOpen by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { qualityMenuOpen = true }) {
+                        Text(
+                            text = "Качество: ${currentQuality ?: "Auto"}",
+                            color = Color(0xFFB9B9C0),
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                        )
+                    }
+                    DropdownMenu(expanded = qualityMenuOpen, onDismissRequest = { qualityMenuOpen = false }) {
+                        qualities.keys.forEach { name ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        name,
+                                        color = if (name == currentQuality) Color(0xFF8AB4F8) else Color.White,
+                                    )
+                                },
+                                onClick = {
+                                    qualityMenuOpen = false
+                                    switchQuality(name)
                                 },
                             )
                         }
@@ -295,24 +367,6 @@ fun PlayerScreen(film: FilmItem, onBack: () -> Unit) {
                 color = Color(0xFF9F9FA8),
                 fontSize = 12.sp,
             )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text("URL:", color = Color(0xFF9F9FA8), fontSize = 12.sp)
-            androidx.compose.material3.OutlinedTextField(
-                value = url,
-                onValueChange = { url = it },
-                modifier = Modifier.weight(1f),
-                textStyle = MaterialTheme.typography.labelSmall.copy(color = Color(0xFFB9B9C0)),
-                singleLine = true,
-            )
-            Button(onClick = {
-                scope.launch(Dispatchers.IO) { player?.load(url) }
-            }) { Text("Играть") }
         }
     }
 }
