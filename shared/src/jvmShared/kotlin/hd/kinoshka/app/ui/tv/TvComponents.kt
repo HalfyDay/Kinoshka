@@ -376,11 +376,12 @@ fun TvButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     primary: Boolean = false,
+    enabled: Boolean = true,
 ) {
     val shape = RoundedCornerShape(12.dp)
     Box(
         modifier = modifier
-            .tvFocusable(onClick = onClick, shape = shape, focusedScale = 1.04f)
+            .tvFocusable(onClick = onClick, shape = shape, focusedScale = 1.04f, enabled = enabled)
             .clip(shape)
             .background(if (primary) TvTheme.Accent else TvTheme.Surface)
             .border(
