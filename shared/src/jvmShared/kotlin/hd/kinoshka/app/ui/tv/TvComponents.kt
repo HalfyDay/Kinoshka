@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -445,7 +446,6 @@ fun TvMenuCard(
 ) {
     Row(
         modifier = modifier
-            .widthIn(min = 260.dp, max = 420.dp)
             .tvFocusable(onClick = onClick)
             .clip(TvCardShape)
             .background(TvTheme.Surface)
@@ -490,7 +490,6 @@ fun TvTopBar(
     onQueryChange: (String) -> Unit,
     onSearchSubmit: () -> Unit,
     searchPlaceholder: String,
-    avatarEmoji: String?,
     onAvatarClick: () -> Unit,
     modifier: Modifier = Modifier,
     actions: @Composable RowScope.() -> Unit = {},
@@ -562,7 +561,12 @@ fun TvTopBar(
                 .background(TvTheme.SurfaceHigh),
             contentAlignment = Alignment.Center,
         ) {
-            Text(text = avatarEmoji ?: "🎬", fontSize = 20.sp)
+            Icon(
+                imageVector = Icons.Rounded.Person,
+                contentDescription = "Профиль",
+                tint = TvTheme.Accent,
+                modifier = Modifier.size(26.dp),
+            )
         }
     }
 }
