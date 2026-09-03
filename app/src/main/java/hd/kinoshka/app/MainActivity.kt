@@ -36,6 +36,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Телефон остаётся портретным (android:screenOrientation="portrait"); на планшетах,
+        // ТВ и foldable (smallestScreenWidthDp >= 600) ориентацию отпускаем — landscape
+        // включает TV-дизайн (rememberTvLayout).
+        if (resources.configuration.smallestScreenWidthDp >= 600) {
+            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
         enableEdgeToEdge()
         maybeOpenDownloads(intent)
 
