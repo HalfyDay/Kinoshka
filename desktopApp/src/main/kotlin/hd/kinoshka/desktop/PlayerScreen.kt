@@ -37,6 +37,7 @@ import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
 import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeSourceType
+import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import hd.kinoshka.app.data.local.UserStateStoreBase
 import hd.kinoshka.app.data.playback.MovieNativeLauncher
@@ -51,6 +52,9 @@ import java.awt.Color as AwtColor
 
 private const val DEMO_URL =
     "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4"
+
+/** Порог реального просмотра до коммита в библиотеку/историю — как в Android-плеере. */
+private const val MIN_WATCH_SECONDS_FOR_LIBRARY = 300
 
 /** Payload запуска воспроизведения — зеркально onOpenNativePlayer общего DetailsScreen. */
 data class PlayerLaunchArgs(
@@ -308,6 +312,43 @@ fun PlayerScreen(
                 }
             }
             delay(500)
+        }
+    }
+
+    // Прогресс просмотра — зеркало startPlaybackProgressLoop Android-плеера: после
+    // MIN_WATCH_SECONDS_FOR_LIBRARY реального просмотра тайтл уходит в библиотеку и историю
+    // (commitRealPlayback), сериал/аниме дополнительно фиксирует текущую серию. Один коммит
+    // на media+серию: смена серии перевзводит, но новая должна сама досмотреть свои 5 минут.
+    LaunchedEffect(player, userStateStore, dubMediaKey) {
+        val store = userStateStore ?: return@LaunchedEffect
+        var committedFor: String? = null
+        while (true) {
+            delay(5000)
+            val current = player ?: continue
+            val mediaKey = dubMediaKey ?: continue
+            val watchId = "$mediaKey#${currentEpisodeKey}"
+            if (watchId == committedFor) continue
+            val pos = withContext(Dispatchers.IO) { current.positionSeconds() } ?: continue
+            if (pos < MIN_WATCH_SECONDS_FOR_LIBRARY) continue
+            committedFor = watchId
+            val libraryKey = if (args.shikimoriId > 0) args.shikimoriId + ANIME_ID_OFFSET else args.kinopoiskId
+            withContext(Dispatchers.IO) {
+                val contextEpisodes = seriesEpisodes
+                if (contextEpisodes != null) {
+                    contextEpisodes.firstOrNull { it.playerEpisodeKey == currentEpisodeKey }?.let { ep ->
+                        store.updateSeriesProgress(args.kinopoiskId, ep.seasonNumber, ep.episodeNumber)
+                    }
+                } else if (args.shikimoriId > 0) {
+                    store.updateWatchedEpisodeByKey(
+                        kinopoiskId = libraryKey,
+                        animeTitle = args.title,
+                        episodeNum = currentEpisodeKey,
+                        totalEpisodes = args.episodes.maxOfOrNull { it.number } ?: 0,
+                        allowComplete = false,
+                    )
+                }
+                store.commitRealPlayback(libraryKey)
+            }
         }
     }
 
