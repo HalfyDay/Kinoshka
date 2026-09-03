@@ -564,7 +564,7 @@ fun KinoApp() {
                                 fadeOut(animationSpec = tween(160))
                             }
                         ) {
-                            DownloadsScreen(onBack = { navController.popBackStack() })
+                            TvAdaptiveSecondary { DownloadsScreen(onBack = { navController.popBackStack() }) }
                         }
                         composable(
                             route = "anime_calendar",
@@ -573,12 +573,14 @@ fun KinoApp() {
                             popEnterTransition = { fadeIn(animationSpec = tween(140)) },
                             popExitTransition = { fadeOut(animationSpec = tween(120)) }
                         ) {
-                            AnimeCalendarScreen(
-                                calendarItems = vm.uiState.calendarItems,
-                                loading = vm.uiState.calendarLoading,
-                                onBack = { navController.popBackStack() },
-                                onOpenAnime = { targetId -> navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)) }
-                            )
+                            TvAdaptiveSecondary {
+                                AnimeCalendarScreen(
+                                    calendarItems = vm.uiState.calendarItems,
+                                    loading = vm.uiState.calendarLoading,
+                                    onBack = { navController.popBackStack() },
+                                    onOpenAnime = { targetId -> navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)) }
+                                )
+                            }
                         }
                         composable(
                             route = "anime_feed",
@@ -587,12 +589,14 @@ fun KinoApp() {
                             popEnterTransition = { fadeIn(animationSpec = tween(140)) },
                             popExitTransition = { fadeOut(animationSpec = tween(120)) }
                         ) {
-                            AnimeFeedScreen(
-                                topics = vm.uiState.topics,
-                                loading = vm.uiState.topicsLoading,
-                                onBack = { navController.popBackStack() },
-                                onOpenAnime = { targetId -> navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)) }
-                            )
+                            TvAdaptiveSecondary {
+                                AnimeFeedScreen(
+                                    topics = vm.uiState.topics,
+                                    loading = vm.uiState.topicsLoading,
+                                    onBack = { navController.popBackStack() },
+                                    onOpenAnime = { targetId -> navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)) }
+                                )
+                            }
                         }
                         composable(
                             route = "recommendations_feed",
@@ -716,19 +720,21 @@ fun KinoApp() {
                                 fadeOut(animationSpec = tween(160))
                             }
                         ) {
-                            ProfileScreen(
-                                avatar = vm.uiState.profileAvatar,
-                                library = vm.uiState.library,
-                                onBack = { navController.popBackStack() },
-                                onAvatarSelected = vm::setProfileAvatar,
-                                onExportLibrary = vm::exportLibraryJson,
-                                onImportLibrary = vm::importLibraryJson,
-                                shikimoriAuthState = vm.uiState.shikimoriAuthState,
-                                onSaveShikimoriToken = vm::saveShikimoriToken,
-                                onSaveShikimoriSession = vm::saveShikimoriSession,
-                                onLogoutShikimori = vm::logoutShikimori,
-                                isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED
-                            )
+                            TvAdaptiveSecondary {
+                                ProfileScreen(
+                                    avatar = vm.uiState.profileAvatar,
+                                    library = vm.uiState.library,
+                                    onBack = { navController.popBackStack() },
+                                    onAvatarSelected = vm::setProfileAvatar,
+                                    onExportLibrary = vm::exportLibraryJson,
+                                    onImportLibrary = vm::importLibraryJson,
+                                    shikimoriAuthState = vm.uiState.shikimoriAuthState,
+                                    onSaveShikimoriToken = vm::saveShikimoriToken,
+                                    onSaveShikimoriSession = vm::saveShikimoriSession,
+                                    onLogoutShikimori = vm::logoutShikimori,
+                                    isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED
+                                )
+                            }
                         }
                         composable(
                             route = "settings",
@@ -745,23 +751,25 @@ fun KinoApp() {
                                 fadeOut(animationSpec = tween(160))
                             }
                         ) {
-                            SettingsScreen(
-                                onBack = { navController.popBackStack() },
-                                selectedThemeMode = vm.uiState.themeMode,
-                                hideRussianContent = vm.uiState.hideRussianContent,
-                                selectedDiscoverTileSize = vm.uiState.discoverTileSize,
-                                selectedLibraryTileSize = vm.uiState.libraryTileSize,
-                                selectedShowFpsCounter = vm.uiState.showFpsCounter,
-                                selectedPlaybackSequence = vm.uiState.playbackSequence,
-                                onPlaybackSequenceSelected = vm::setPlaybackSequence,
-                                selectedPlayerMode = vm.uiState.playerMode,
-                                onPlayerModeSelected = vm::setPlayerMode,
-                                onThemeModeSelected = vm::setThemeMode,
-                                onHideRussianChanged = vm::setHideRussianContent,
-                                onDiscoverTileSizeSelected = vm::setDiscoverTileSize,
-                                onLibraryTileSizeSelected = vm::setLibraryTileSize,
-                                onShowFpsCounterChanged = vm::setShowFpsCounter
-                            )
+                            TvAdaptiveSecondary {
+                                SettingsScreen(
+                                    onBack = { navController.popBackStack() },
+                                    selectedThemeMode = vm.uiState.themeMode,
+                                    hideRussianContent = vm.uiState.hideRussianContent,
+                                    selectedDiscoverTileSize = vm.uiState.discoverTileSize,
+                                    selectedLibraryTileSize = vm.uiState.libraryTileSize,
+                                    selectedShowFpsCounter = vm.uiState.showFpsCounter,
+                                    selectedPlaybackSequence = vm.uiState.playbackSequence,
+                                    onPlaybackSequenceSelected = vm::setPlaybackSequence,
+                                    selectedPlayerMode = vm.uiState.playerMode,
+                                    onPlayerModeSelected = vm::setPlayerMode,
+                                    onThemeModeSelected = vm::setThemeMode,
+                                    onHideRussianChanged = vm::setHideRussianContent,
+                                    onDiscoverTileSizeSelected = vm::setDiscoverTileSize,
+                                    onLibraryTileSizeSelected = vm::setLibraryTileSize,
+                                    onShowFpsCounterChanged = vm::setShowFpsCounter
+                                )
+                            }
                         }
                         composable(
                             route = "about",
@@ -778,15 +786,17 @@ fun KinoApp() {
                                 fadeOut(animationSpec = tween(160))
                             }
                         ) {
-                            AboutScreen(
-                                onBack = { navController.popBackStack() },
-                                updateStatusText = updateStatusText,
-                                isUpdateCheckRunning = isUpdateFlowRunning,
-                                onCheckUpdates = { runUpdateCheck(true, true) },
-                                onOpenGithub = { openInBrowser("https://github.com/HalfyDay/Kinoshka") },
-                                onOpenTelegram = { openInBrowser("https://t.me/Kinoshka_HalfDay") },
-                                onOpenShikimori = { openInBrowser("https://shikimori.io") }
-                            )
+                            TvAdaptiveSecondary {
+                                AboutScreen(
+                                    onBack = { navController.popBackStack() },
+                                    updateStatusText = updateStatusText,
+                                    isUpdateCheckRunning = isUpdateFlowRunning,
+                                    onCheckUpdates = { runUpdateCheck(true, true) },
+                                    onOpenGithub = { openInBrowser("https://github.com/HalfyDay/Kinoshka") },
+                                    onOpenTelegram = { openInBrowser("https://t.me/Kinoshka_HalfDay") },
+                                    onOpenShikimori = { openInBrowser("https://shikimori.io") }
+                                )
+                            }
                         }
                         composable(
                             route = "web?url={url}",
@@ -863,6 +873,20 @@ private const val KEY_PENDING_APK_TAG = "pending_apk_tag"
 private const val AUTO_UPDATE_INTERVAL_MS = 24L * 60L * 60L * 1000L
 
 private fun detailsRoute(id: Int): String = "details/$id"
+
+/**
+ * Вторичный экран в TV-режиме: тот же телефонный композабл, центрированный на TV-фоне
+ * (см. TvSecondaryContainer). В портрете рендерит как есть.
+ */
+@Composable
+private fun TvAdaptiveSecondary(content: @Composable () -> Unit) {
+    if (hd.kinoshka.app.ui.tv.rememberTvLayout()) {
+        hd.kinoshka.app.ui.tv.TvSecondaryContainer(content = content)
+    } else {
+        content()
+    }
+}
+
 
 private fun Context.findActivity(): ComponentActivity? = when (this) {
     is ComponentActivity -> this

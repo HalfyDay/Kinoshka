@@ -630,9 +630,32 @@ fun TvScreenScaffold(
     }
 }
 
+/**
+ * Центрирует существующий телефонный экран вторичной страницы (Профиль/Настройки/…) на
+ * TV-фоне: тёмный фон, ограничение ширины ~1000dp. Внутренние Material-контролы фокусируются
+ * D-pad сами, так что пультовая навигация работает без переделки самих экранов.
+ */
+@Composable
+fun TvSecondaryContainer(content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(TvTheme.Background),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .widthIn(max = 1000.dp)
+                .fillMaxWidth(),
+        ) {
+            content()
+        }
+    }
+}
+
 /** Иконка статуса библиотеки для TV-карточек (та же семантика, что на телефонных плитках). */
-fun UserFilmStatus.tvBadgeIcon(): ImageVector = when (this) {
-    UserFilmStatus.WATCHING -> Icons.Rounded.Visibility
+fun UserFilmStatus.tvBadgeIcon(): ImageVector = when (this) {    UserFilmStatus.WATCHING -> Icons.Rounded.Visibility
     UserFilmStatus.PLANNED -> Icons.Rounded.Star
     UserFilmStatus.COMPLETED -> Icons.Filled.Check
     UserFilmStatus.REWATCHING -> Icons.Filled.Refresh
