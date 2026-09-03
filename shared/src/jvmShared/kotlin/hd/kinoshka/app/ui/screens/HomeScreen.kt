@@ -204,7 +204,7 @@ private enum class MainSection {
     MORE
 }
 
-private enum class LibraryTab(val title: String) {
+internal enum class LibraryTab(val title: String) {
     HISTORY("История"),
     WATCHING("Смотрю"),
     PLANNED("В планах"),
@@ -320,6 +320,40 @@ fun HomeScreen(
     onRemoveSearchHistory: (String) -> Unit = {},
     onClearSearchHistory: () -> Unit = {}
 ) {
+    // TV-дизайн (ПК/планшет landscape/ТВ): полностью другой макет с той же моделью состояния.
+    if (hd.kinoshka.app.ui.tv.rememberTvLayout()) {
+        hd.kinoshka.app.ui.tv.HomeScreenTv(
+            state = state,
+            onQueryChange = onQueryChange,
+            onSubmitSearch = onSubmitSearch,
+            onRetry = onRetry,
+            onTabSelected = onTabSelected,
+            onContentTypeSelected = onContentTypeSelected,
+            onOpenFilm = onOpenFilm,
+            onOpenHistoryFilm = onOpenHistoryFilm,
+            onOpenFilmEditor = onOpenFilmEditor,
+            onDiscoverCategorySelected = onDiscoverCategorySelected,
+            onLoadMore = onLoadMore,
+            onRemoveFromHistory = onRemoveFromHistory,
+            onOpenProfile = onOpenProfile,
+            onOpenSettings = onOpenSettings,
+            onOpenAbout = onOpenAbout,
+            onOpenDownloads = onOpenDownloads,
+            onUpdateFilters = onUpdateFilters,
+            onToggleFilterSheet = onToggleFilterSheet,
+            onOpenCalendar = onOpenCalendar,
+            onOpenFeed = onOpenFeed,
+            onOpenRecommendationsFeed = onOpenRecommendationsFeed,
+            onLibrarySortSelected = onLibrarySortSelected,
+            librarySortReversed = librarySortReversed,
+            onLibrarySortReversedChanged = onLibrarySortReversedChanged,
+            onHentaiVisibilityChanged = onHentaiVisibilityChanged,
+            onInstantSearch = onInstantSearch,
+            onRemoveSearchHistory = onRemoveSearchHistory,
+            onClearSearchHistory = onClearSearchHistory,
+        )
+        return
+    }
     val focusManager = LocalFocusManager.current
     val libraryMetrics = state.libraryTileSize.toGridMetrics()
     val discoverMetrics = state.discoverTileSize.toGridMetrics()
@@ -2140,13 +2174,13 @@ private fun RatingChip(
     }
 }
 
-private data class WatchProgressUi(
+internal data class WatchProgressUi(
     val progress: Float,
     val progressLabel: String
 )
 
 /** Мета-строка плитки библиотеки в стиле Обзора: аниме — «ТВ • N эп.», фильмы — год. */
-private fun LibraryUiItem.libraryMetaParts(): List<String> {
+internal fun LibraryUiItem.libraryMetaParts(): List<String> {
     // Локальная копия: totalEpisodes объявлен в другом модуле (shared), smart cast невозможен.
     val episodes = totalEpisodes
     val isAnime = kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || type == "ANIME"
@@ -2159,10 +2193,10 @@ private fun LibraryUiItem.libraryMetaParts(): List<String> {
 }
 
 /** «KP 8.1» / «★ 8.1» / «8.1» → 8.1 — для RatingChip, как у плиток Обзора. */
-private fun LibraryUiItem.libraryRating(): Double? =
+internal fun LibraryUiItem.libraryRating(): Double? =
     ratingText?.replace("KP", "")?.replace("★", "")?.trim()?.toDoubleOrNull()
 
-private fun LibraryUiItem.toWatchProgressUi(): WatchProgressUi? {
+internal fun LibraryUiItem.toWatchProgressUi(): WatchProgressUi? {
     if (type != "TV_SERIES" && type != "ANIME") return null
 
     val watchedSeasonsSafe = (watchedSeasons ?: 0).coerceAtLeast(0)
@@ -2290,7 +2324,7 @@ private fun UserStatusBadge(
  * Only for active statuses (watching / rewatching / on_hold / planned) — completed/dropped
  * titles are not badged.
  */
-private fun LibraryUiItem.hasNewEpisode(): Boolean {
+internal fun LibraryUiItem.hasNewEpisode(): Boolean {
     if (status == UserFilmStatus.COMPLETED || status == UserFilmStatus.DROPPED) return false
     val aired = episodesAired ?: return false
     val watched = watchedEpisodes ?: 0
@@ -2529,7 +2563,7 @@ private fun LibraryEmptyState(tab: LibraryTab, queryActive: Boolean) {
     }
 }
 
-private fun List<LibraryUiItem>.filterByQuery(query: String): List<LibraryUiItem> {
+internal fun List<LibraryUiItem>.filterByQuery(query: String): List<LibraryUiItem> {
     if (query.isBlank()) return this
     return filter {
         it.title.contains(query, ignoreCase = true) ||
@@ -2537,12 +2571,12 @@ private fun List<LibraryUiItem>.filterByQuery(query: String): List<LibraryUiItem
     }
 }
 
-private fun List<LibraryUiItem>.filterByRussian(hideRussian: Boolean): List<LibraryUiItem> {
+internal fun List<LibraryUiItem>.filterByRussian(hideRussian: Boolean): List<LibraryUiItem> {
     if (!hideRussian) return this
     return filterNot { it.isRussian }
 }
 
-private fun List<LibraryUiItem>.filterByTab(tab: LibraryTab): List<LibraryUiItem> {
+internal fun List<LibraryUiItem>.filterByTab(tab: LibraryTab): List<LibraryUiItem> {
     return when (tab) {
         LibraryTab.HISTORY -> this
             .filter { it.viewedAtMillis != null }
@@ -2568,7 +2602,7 @@ private fun UserFilmStatus.toUiLabel(): String {
     }
 }
 
-private fun FilmItem.isRussianContent(): Boolean {
+internal fun FilmItem.isRussianContent(): Boolean {
     return countries.any { country ->
         when (country.country?.trim()?.lowercase(Locale.forLanguageTag("ru"))) {
             "россия", "ссср" -> true
