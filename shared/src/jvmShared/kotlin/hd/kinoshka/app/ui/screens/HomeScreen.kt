@@ -107,7 +107,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import hd.kinoshka.app.ui.components.BottomNavPill
 import hd.kinoshka.app.ui.components.NavPillItem
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -1175,25 +1174,30 @@ private fun LibraryTabs(
     ) {
         LibraryTab.entries.forEachIndexed { index, tab ->
             val isSelected = pagerState.currentPage == index
-            Tab(
-                selected = isSelected,
-                onClick = {
-                    onSelect(tab)
-                    scope.launch {
-                        pagerState.animateScrollToPage(index)
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        onSelect(tab)
+                        scope.launch {
+                            pagerState.animateScrollToPage(index)
+                        }
                     }
-                },
-                modifier = Modifier.height(40.dp),
-                text = {
-                    Text(
-                        text = tab.title,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                    )
-                },
-                selectedContentColor = MaterialTheme.colorScheme.primary,
-                unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+                    .padding(horizontal = 12.dp)
+            ) {
+                Text(
+                    text = tab.title,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -1760,13 +1764,15 @@ private fun LibraryGridCard(
                     modifier = Modifier.align(Alignment.TopStart)
                 )
             }
-            watchProgress?.let { progress ->
-                PosterBottomProgressBar(
-                    progress = progress.progress,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                )
+            if (item.status == UserFilmStatus.WATCHING) {
+                watchProgress?.let { progress ->
+                    PosterBottomProgressBar(
+                        progress = progress.progress,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.height(6.dp))

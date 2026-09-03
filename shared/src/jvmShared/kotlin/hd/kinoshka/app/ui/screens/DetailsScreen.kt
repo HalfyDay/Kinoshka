@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -141,6 +142,7 @@ import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Refresh
@@ -2020,16 +2022,16 @@ private fun MovieExpandableDescription(
 private fun MovieFullDetailsCard(item: FilmDetails) {
     val detailsList = remember(item) {
         buildList {
-            item.slogan?.takeIf { it.isNotBlank() }?.let { add("Слоган" to "\"$it\"") }
-            item.countries.mapNotNull { it.country }.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { add("Страны" to it) }
-            item.ratingKinopoisk?.let { r -> add("Рейтинг Кинопоиск" to "%.1f ★ (%d голосов)".format(Locale.US, r, item.ratingKinopoiskVoteCount ?: 0)) }
-            item.ratingImdb?.let { r -> add("Рейтинг IMDb" to "%.1f (%d голосов)".format(Locale.US, r, item.ratingImdbVoteCount ?: 0)) }
-            item.ratingFilmCritics?.let { r -> add("Рейтинг критиков" to "%.1f (%d)".format(Locale.US, r, item.ratingFilmCriticsVoteCount ?: 0)) }
-            item.ratingGoodReview?.let { r -> add("Положительные отзывы" to "%.0f%%".format(Locale.US, r)) }
-            item.year?.let { add("Год выхода" to "$it г.") }
-            item.filmLength?.let { add("Длительность" to "$it мин.") }
-            item.ratingAgeLimits?.replace("age", "")?.let { add("Возраст" to "$it+") }
-            item.nameOriginal?.takeIf { it.isNotBlank() }?.let { add("Оригинальное название" to it) }
+            item.slogan?.takeIf { it.isNotBlank() }?.let { add(DetailEntry("Слоган", "\"$it\"")) }
+            item.countries.mapNotNull { it.country }.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { add(DetailEntry("Страны", it)) }
+            item.ratingKinopoisk?.let { r -> add(DetailEntry("Рейтинг Кинопоиск", "%.1f ★ (%d голосов)".format(Locale.US, r, item.ratingKinopoiskVoteCount ?: 0))) }
+            item.ratingImdb?.let { r -> add(DetailEntry("Рейтинг IMDb", "%.1f (%d голосов)".format(Locale.US, r, item.ratingImdbVoteCount ?: 0))) }
+            item.ratingFilmCritics?.let { r -> add(DetailEntry("Рейтинг критиков", "%.1f (%d)".format(Locale.US, r, item.ratingFilmCriticsVoteCount ?: 0))) }
+            item.ratingGoodReview?.let { r -> add(DetailEntry("Положительные отзывы", "%.0f%%".format(Locale.US, r))) }
+            item.year?.let { add(DetailEntry("Год выхода", "$it г.")) }
+            item.filmLength?.let { add(DetailEntry("Длительность", "$it мин.")) }
+            item.ratingAgeLimits?.replace("age", "")?.let { add(DetailEntry("Возраст", "$it+")) }
+            item.nameOriginal?.takeIf { it.isNotBlank() }?.let { add(DetailEntry("Оригинальное название", it, copyable = true)) }
         }
     }
 
@@ -2048,8 +2050,8 @@ private fun MovieFullDetailsCard(item: FilmDetails) {
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
 
-            detailsList.forEach { (label, value) ->
-                DetailRow(label, value)
+            detailsList.forEach { entry ->
+                DetailRow(entry.label, entry.value, entry.copyable)
             }
         }
     }
@@ -3707,36 +3709,36 @@ private fun AnimeFullDetailsCard(
     val detailsList = remember(anime, item) {
         buildList {
             val studiosStr = anime?.studios?.mapNotNull { it.name }?.joinToString(", ")?.takeIf { it.isNotBlank() }
-            studiosStr?.let { add("Студия" to it) }
+            studiosStr?.let { add(DetailEntry("Студия", it)) }
 
             val sourceStr = formatAnimeSource(anime?.source)
             if (sourceStr != "—" && sourceStr.isNotBlank()) {
-                add("Первоисточник" to sourceStr)
+                add(DetailEntry("Первоисточник", sourceStr))
             }
 
             item.filmLength?.let { len ->
-                if (len > 0) add("Длительность эпизода" to "$len мин.")
+                if (len > 0) add(DetailEntry("Длительность эпизода", "$len мин."))
             }
 
             val licensorStr = anime?.licenseNameRu?.takeIf { it.isNotBlank() }
                 ?: anime?.licensors?.joinToString(", ")?.takeIf { it.isNotBlank() }
-            licensorStr?.let { add("Лицензировано" to it) }
+            licensorStr?.let { add(DetailEntry("Лицензировано", it)) }
 
             val nextEp = formatNextEpisode(anime?.nextEpisodeAt)
             if (nextEp != "—" && nextEp.isNotBlank()) {
-                add("Следующий эпизод" to nextEp)
+                add(DetailEntry("Следующий эпизод", nextEp))
             }
 
             val aired = formatRussianDate(anime?.airedOn)
             if (aired != "—" && aired.isNotBlank()) {
-                add("Начало показа" to aired)
+                add(DetailEntry("Начало показа", aired))
             }
 
-            item.nameOriginal?.takeIf { it.isNotBlank() }?.let { add("Ромадзи" to it) }
-            item.nameRu?.takeIf { it.isNotBlank() }?.let { add("По-русски" to it) }
-            anime?.english?.joinToString(", ")?.takeIf { it.isNotBlank() }?.let { add("По-английски" to it) }
-            anime?.japanese?.joinToString(", ")?.takeIf { it.isNotBlank() }?.let { add("По-японски" to it) }
-            anime?.synonyms?.joinToString(", ")?.takeIf { it.isNotBlank() }?.let { add("Другие названия" to it) }
+            item.nameOriginal?.takeIf { it.isNotBlank() }?.let { add(DetailEntry("Ромадзи", it, copyable = true)) }
+            item.nameRu?.takeIf { it.isNotBlank() }?.let { add(DetailEntry("По-русски", it, copyable = true)) }
+            anime?.english?.joinToString(", ")?.takeIf { it.isNotBlank() }?.let { add(DetailEntry("По-английски", it, copyable = true)) }
+            anime?.japanese?.joinToString(", ")?.takeIf { it.isNotBlank() }?.let { add(DetailEntry("По-японски", it, copyable = true)) }
+            anime?.synonyms?.joinToString(", ")?.takeIf { it.isNotBlank() }?.let { add(DetailEntry("Другие названия", it, copyable = true)) }
         }
     }
 
@@ -3755,16 +3757,21 @@ private fun AnimeFullDetailsCard(
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
 
-            detailsList.forEach { (label, value) ->
-                DetailRow(label, value)
+            detailsList.forEach { entry ->
+                DetailRow(entry.label, entry.value, entry.copyable)
             }
         }
     }
 }
 
+private data class DetailEntry(
+    val label: String,
+    val value: String,
+    val copyable: Boolean = false
+)
+
 @Composable
-private fun DetailRow(label: String, value: String) {
-    val platformActions = rememberKinoPlatformActions()
+private fun DetailRow(label: String, value: String, copyable: Boolean = false) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -3776,21 +3783,81 @@ private fun DetailRow(label: String, value: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f)
         )
+        if (!copyable) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1.2f)
+            )
+        } else {
+            CopyableDetailValue(value = value)
+        }
+    }
+}
+
+@Composable
+private fun RowScope.CopyableDetailValue(value: String) {
+    val platformActions = rememberKinoPlatformActions()
+    val scope = rememberCoroutineScope()
+    var justCopied by remember(value) { mutableStateOf(false) }
+    var resetJob by remember(value) { mutableStateOf<Job?>(null) }
+    val pressScale by animateFloatAsState(
+        targetValue = if (justCopied) 0.96f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "copyPressScale"
+    )
+
+    Row(
+        modifier = Modifier
+            .weight(1.2f)
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+            }
+            .clip(RoundedCornerShape(6.dp))
+            .clickable {
+                platformActions.copyText(value)
+                resetJob?.cancel()
+                justCopied = true
+                resetJob = scope.launch {
+                    delay(1200)
+                    justCopied = false
+                }
+            },
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.Top
+    ) {
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
             color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier
-                .weight(1.2f)
-                // Тап по значению копирует его — названия чаще всего нужны для поиска/перевода
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    platformActions.copyText(value)
-                    platformActions.showToast("Скопировано")
-                }
+            modifier = Modifier.weight(1f)
         )
+        Crossfade(
+            targetState = justCopied,
+            animationSpec = tween(180, easing = FastOutSlowInEasing),
+            label = "copyIconCrossfade"
+        ) { copied ->
+            if (copied) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.ContentCopy,
+                    contentDescription = "Скопировать",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
     }
 }
 
