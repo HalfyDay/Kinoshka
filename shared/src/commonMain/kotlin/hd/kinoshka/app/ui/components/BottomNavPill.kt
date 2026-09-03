@@ -231,6 +231,9 @@ fun BottomNavPill(
                                 .graphicsLayer {
                                     scaleX = 1f + 0.2f * stretch
                                     scaleY = 1f - 0.12f * stretch
+                                    // В полёте круг бледнеет: пролёт под чужими кнопками
+                                    // не читается как их выбор. В покое — полная яркость.
+                                    alpha = 1f - 0.3f * stretch
                                 }
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.secondaryContainer)

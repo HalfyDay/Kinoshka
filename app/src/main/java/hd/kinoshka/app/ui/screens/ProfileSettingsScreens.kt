@@ -39,6 +39,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -137,6 +141,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1210,12 +1215,13 @@ private fun ProfileSectionHeader(
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f)
         ) {
             Icon(
                 imageVector = icon,
@@ -1223,7 +1229,15 @@ private fun ProfileSectionHeader(
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(20.dp)
             )
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            // Длинный заголовок («Резервная копия в облаке») переносится, а не
+            // выдавливает кнопку действия за край экрана.
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
         action?.invoke()
     }
@@ -1408,16 +1422,19 @@ private fun ActivityBars(values: List<Pair<String, Int>>) {
 
     var selectedIndex by remember(values) { mutableIntStateOf(values.lastIndex) }
     val max = values.maxOfOrNull { it.second }?.coerceAtLeast(1) ?: 1
-    val density = LocalDensity.current
     var chartWidthPx by remember { mutableIntStateOf(0) }
+    var headerWidthPx by remember { mutableIntStateOf(0) }
 
     val pickIndex: (Float, Int) -> Unit = { x, width ->
         selectedIndex = (x / width.coerceAtLeast(1) * values.size).toInt().coerceIn(0, values.size - 1)
     }
 
-    // Дата и число просмотров над графиком, прижаты к выбранному столбцу
+    // Дата и число просмотров над графиком, прижаты к выбранному столбцу,
+    // но не уезжают за края: смещение клампится под измеренную ширину хедера.
     val slotWidthPx = chartWidthPx.toFloat() / values.size
-    val headerOffset = with(density) { (slotWidthPx * selectedIndex + slotWidthPx / 2f).toDp() }
+    val headerCenterPx = slotWidthPx * selectedIndex + slotWidthPx / 2f
+    val maxHeaderOffsetPx = (chartWidthPx - headerWidthPx).coerceAtLeast(0).toFloat()
+    val headerOffsetPx = (headerCenterPx - headerWidthPx / 2f).coerceIn(0f, maxHeaderOffsetPx)
     val selectedValue = values[selectedIndex].second
     val barColor = MaterialTheme.colorScheme.primary
     val trackColor = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -1430,7 +1447,9 @@ private fun ActivityBars(values: List<Pair<String, Int>>) {
                 .onSizeChanged { chartWidthPx = it.width }
         ) {
             Column(
-                modifier = Modifier.offset(x = headerOffset, y = 0.dp),
+                modifier = Modifier
+                    .onSizeChanged { headerWidthPx = it.width }
+                    .offset { IntOffset(headerOffsetPx.roundToInt(), 0) },
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -1495,6 +1514,25 @@ private fun ActivityBars(values: List<Pair<String, Int>>) {
                     topLeft = Offset(left, size.height - barHeight),
                     size = Size(barWidth, barHeight),
                     cornerRadius = corner
+                )
+            }
+        }
+
+        // Под столбцами только число дня без месяца: «дд.мм» в слот не влезает
+        // и режется эллипсисом. Число короткое — помещаются все 14, месяц виден в хедере.
+        Row(modifier = Modifier.fillMaxWidth()) {
+            values.forEachIndexed { index, (label, _) ->
+                val isSelected = index == selectedIndex
+                Text(
+                    text = label.substringBefore('.'),
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    fontSize = 10.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                    color = if (isSelected) barColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
                 )
             }
         }

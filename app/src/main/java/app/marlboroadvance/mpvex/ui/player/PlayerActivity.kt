@@ -297,6 +297,12 @@ class PlayerActivity :
   // mpv still buffered for seconds. The overlay now stays up until MPV_EVENT_FILE_LOADED.
   private var pendingStreamLoadIndicator = false
   private var streamLoadIndicatorTimeoutJob: kotlinx.coroutines.Job? = null
+
+  // PENDING_MOVIE resolve ещё идёт: 15-секундный slow-start таймер оверлея не должен стрелять —
+  // холодная гонка каталогов легитимно длится >15 c (лог kp=685246: resolve 15.19 c против
+  // окна 15.00 c — карточка «Повторить» выскочила за 300 мс до успешного хэндоффа). Хэндофф
+  // сам перевооружает окно через beginTrackedStreamLoad, Failed — показывает карточку.
+  private var pendingResolveInFlight = false
   private var nextEpisodeCountdownJob: kotlinx.coroutines.Job? = null
 
   // Auto-quality watchdog: while the quality selector sits on "Auto", poll mpv's demuxer cache;
@@ -1476,7 +1482,7 @@ class PlayerActivity :
         val shikimoriId = extras.getInt("anime_shikimori_id", 0)
         val animeTitle = extras.getString("anime_title", "")
         val selectedTranslation = viewModel.animeTranslations.value.firstOrNull { it.translationId == trId }
-        selectedTranslation?.let { recordPlaybackUsage(it.source, it.title) }
+        selectedTranslation?.let { recordPlaybackUsage(it.source, it.title, dubMemoryMediaKey()) }
         val srcType = selectedTranslation?.source ?: currentAnimeSourceType
         val epNum = viewModel.currentAnimeEpisodeNumber.value ?: currentEp ?: 1
         val userStateStore = UserStateStore(this)
@@ -1607,7 +1613,7 @@ class PlayerActivity :
     val currentQuality = requestedQuality.ifBlank { "Auto" }
     // Launch-time usage: the voiceover the movie starts under counts toward the memory.
     translations.firstOrNull { it.translationId == selectedTranslationId }?.let {
-      recordPlaybackUsage(it.source, it.title)
+      recordPlaybackUsage(it.source, it.title, dubMemoryMediaKey())
     }
     // The launch stream IS the first active voiceover: quality switches must read ITS ladder,
     // not a stale one from a previous session of this activity instance.
@@ -1633,7 +1639,7 @@ class PlayerActivity :
       }
       // Manual pick: any automatic cross-source fallback chain starts over from here.
       autoFallbackTriedIds.clear()
-      recordPlaybackUsage(track.source, track.title)
+      recordPlaybackUsage(track.source, track.title, dubMemoryMediaKey())
       // MovieNativeLauncher resolved every picker row before this activity was opened. Use that
       // prepared stream verbatim: switching a dub must never start a new Kodik/turbo resolve.
       val prepared = intent.getIntExtra("movie_kinopoisk_id", 0)
@@ -1857,33 +1863,41 @@ class PlayerActivity :
   }
 
   /**
-   * Default dub of a movie: the one from the user's playback memory (most recently used wins),
-   * else the merged list's head — deterministic instead of "whatever won this race".
+   * Default dub of a movie: the title's own favorite (last dub the user enabled for it), else the
+   * global memory favorite, else the merged list's head — deterministic instead of "whatever won
+   * this race".
    */
   private fun preferredTranslationId(translations: List<FlatTranslation>): String? {
     if (translations.isEmpty()) return null
-    val dubs = UserStateStore(this).getPlaybackUsage().dubs
-    val best = translations.maxWithOrNull(
-      compareBy<FlatTranslation> { (dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L) > 0L }
-        .thenByDescending { dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L }
-        .thenByDescending { dubs[it.title.trim().lowercase()]?.count ?: 0 }
-    )
-    return best?.translationId
+    return rememberedDubId(translations) ?: translations.firstOrNull()?.translationId
   }
 
   /**
-   * The dub the user actually played before (most recent wins, then most used) among
-   * [translations] — or null when nothing is remembered yet. Unlike [preferredTranslationId]
-   * it never falls back to a list position: "no memory" must keep today's default pick.
+   * The dub to auto-restore among [translations]:
+   * 1) the title's own favorite — the last dub the user enabled FOR THIS title (per-title memory);
+   *    once it exists it always wins, so dubs the user played on OTHER titles stop bleeding in
+   *    («рандомный» выбор между ранее игравшими озвучками);
+   * 2) else the global memory favorite (most recent, then most used) — only for titles without
+   *    their own favorite yet;
+   * 3) else null — "no memory" keeps today's default pick. Expired marks (месяц без включения)
+   *    уже вычищены из памяти при чтении и ни в каком виде не участвуют.
    */
   private fun rememberedDubId(translations: List<FlatTranslation>): String? {
     if (translations.isEmpty()) return null
-    val dubs = UserStateStore(this).getPlaybackUsage().dubs
+    val usage = UserStateStore(this).getPlaybackUsage()
+    dubMemoryMediaKey()?.let { mediaKey ->
+      val favoriteKey = usage.favoriteTitleDubKey(mediaKey)
+      if (favoriteKey != null) {
+        translations.firstOrNull { it.title.trim().lowercase() == favoriteKey }?.let {
+          return it.translationId
+        }
+      }
+    }
     return translations
-      .filter { (dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L) > 0L }
+      .filter { (usage.dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L) > 0L }
       .maxWithOrNull(
-        compareByDescending<FlatTranslation> { dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L }
-          .thenByDescending { dubs[it.title.trim().lowercase()]?.count ?: 0 }
+        compareByDescending<FlatTranslation> { usage.dubs[it.title.trim().lowercase()]?.lastUsedAt ?: 0L }
+          .thenByDescending { usage.dubs[it.title.trim().lowercase()]?.count ?: 0 }
       )?.translationId
   }
 
@@ -1906,7 +1920,7 @@ class PlayerActivity :
     // The remembered dub is what actually plays from now on: record it, otherwise the
     // launch-time record of the default row (applyQualityOnlyMovieSetup) stays the newest
     // memory entry and the next resume falls back to the default again.
-    recordPlaybackUsage(track.source, track.title)
+    recordPlaybackUsage(track.source, track.title, dubMemoryMediaKey())
     if (prepared != null) {
       loadPreparedQomVoiceover(track, prepared, translations)
       return true
@@ -1971,11 +1985,13 @@ class PlayerActivity :
       resetStreamLoadRetries()
       retryPendingResolve(launch, isRetry = true)
     }
+    pendingResolveInFlight = true
     beginStreamLoadIndicator()
     resolvePendingLaunch(launch)
   }
 
   private fun retryPendingResolve(launch: PendingMovieRequestStore.PendingMovieLaunch, isRetry: Boolean = true) {
+    pendingResolveInFlight = true
     beginStreamLoadIndicator()
     resolvePendingLaunch(launch, isRetry)
   }
@@ -1999,8 +2015,11 @@ class PlayerActivity :
       Log.i(TAG, "PENDING_MOVIE resolve done in ${System.currentTimeMillis() - resolveStartMs}ms (${payload.javaClass.simpleName})")
       AppDiagnostics.event("resolve done in ${System.currentTimeMillis() - resolveStartMs}ms → ${payload.javaClass.simpleName}")
       withContext(Dispatchers.Main) {
-        Log.i(TAG, "PENDING_MOVIE main-thread handoff at +${System.currentTimeMillis() - resolveStartMs}ms")
+        Log.i(TAG, "PENDING_MOVIE main-thread handoff at +${System.currentTimeMillis() - resolveStartMs}")
         if (isFinishing || isDestroyed) return@withContext
+        // Resolve завершён: спящий 15-секундный таймер запуска снова считается slow-start'ом
+        // реальной загрузки (успешные пути перевооружают своё окно, Failed гасит оверлей).
+        pendingResolveInFlight = false
         when (payload) {
           is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
             // The QOM quality-switch closure reads the field, not the parameter.
@@ -2221,14 +2240,18 @@ class PlayerActivity :
     val translations = seriesTranslationsFor(context, context.currentEpisode)
     // Preferred-start (ddbb only): highlight + usage record follow the remembered favorite
     // dub; kodik contexts can't attribute the resolved stream to a dub, so they keep first.
-    val currentTranslationId = (if (context.isDirectSource) rememberedDubId(translations) else null)
-      ?: translations.firstOrNull()?.translationId
-    // Launch-time usage: the dub the title starts under counts toward the preference memory.
-    currentTranslationId?.let { trId ->
+    val rememberedId = if (context.isDirectSource) rememberedDubId(translations) else null
+    val currentTranslationId = rememberedId ?: translations.firstOrNull()?.translationId
+    // Launch-time renewal: only the REMEMBERED favorite renews its recency. Recording the
+    // default row too made every cold start the freshest memory entry — one resume on an
+    // episode the favorite doesn't cover, and «Оригинал» (первый по алфавиту) outranked it
+    // on the next launch. Explicit picks (onAnimeTranslationSelected) record themselves.
+    rememberedId?.let { trId ->
       context.candidates.firstOrNull { it.translationId == trId }?.let { dub ->
         recordPlaybackUsage(
           if (context.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
-          dub.translationTitle ?: trId
+          dub.translationTitle ?: trId,
+          dubMemoryMediaKey(context.kinopoiskId)
         )
       }
     }
@@ -2342,7 +2365,8 @@ class PlayerActivity :
       activeContext.candidates.firstOrNull { it.translationId == trId }?.let { dub ->
         recordPlaybackUsage(
           if (activeContext.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
-          dub.translationTitle ?: trId
+          dub.translationTitle ?: trId,
+          dubMemoryMediaKey(activeContext.kinopoiskId)
         )
       }
       // Commit progress of the outgoing stream, then re-resolve the SAME episode under the new dub.
@@ -2478,6 +2502,10 @@ class PlayerActivity :
     streamLoadIndicatorTimeoutJob?.cancel()
     streamLoadIndicatorTimeoutJob = lifecycleScope.launch {
       kotlinx.coroutines.delay(15_000)
+      // PENDING_MOVIE resolve ещё идёт — молча ждём хэндофф. Стрелять сюда нельзя: slow-start
+      // логика работает с потоком, которого ещё нет (autoDowngradeOnSlowStart/evict кэша
+      // даже ломают идущий resolve), а карточка ошибки выскочила бы на ровном месте.
+      if (pendingResolveInFlight) return@launch
       if (pendingStreamLoadIndicator) {
         pendingStreamLoadIndicator = false
         viewModel.setLoadingStream(false)
@@ -4191,13 +4219,15 @@ class PlayerActivity :
         if (shikimoriId > 0) {
           val authStore = ShikimoriAuthStore(this@PlayerActivity)
           val authState = authStore.getAuthState()
-          if (authState.isLoggedIn && authState.accessToken != null) {
+          // Локальная копия: accessToken объявлен в другом модуле (shared), smart cast невозможен.
+          val token = authState.accessToken
+          if (authState.isLoggedIn && token != null) {
             lifecycleScope.launch(Dispatchers.IO) {
               val api = ApiClient.shikimoriApi(this@PlayerActivity.cacheDir)
               val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
               val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
               val newStatus = if (totalEps in 1..currentEp) "completed" else "watching"
-              val authHeader = if (authState.accessToken.startsWith("Bearer ")) authState.accessToken else "Bearer ${authState.accessToken}"
+              val authHeader = if (token.startsWith("Bearer ")) token else "Bearer $token"
 
               if (existingRate != null) {
                 runCatching {
@@ -4250,15 +4280,34 @@ class PlayerActivity :
   }
 
   /**
-   * Feeds the global preference memory: sources/dubs picked in the player rise to the top of
-   * future lists (the player's voiceover dropdown and the source-selection sheet).
+   * Per-title ключ памяти озвучек: kp:<kinopoiskId> для фильмов/сериалов, sh:<shikimoriId> для
+   * аниме — оба id всегда лежат в intent (MpvExPlayerScreen пишет их для всех режимов). null —
+   * тайтл без стабильного id, per-title память для него молча отключена.
    */
-  private fun recordPlaybackUsage(source: hd.kinoshka.app.data.model.AnimeSourceType, dubTitle: String) {
+  private fun dubMemoryMediaKey(kinopoiskIdOverride: Int = 0): String? {
+    kinopoiskIdOverride.takeIf { it > 0 }?.let { return "kp:$it" }
+    intent.getIntExtra("movie_kinopoisk_id", 0).takeIf { it > 0 }?.let { return "kp:$it" }
+    return intent.getIntExtra("anime_shikimori_id", 0).takeIf { it > 0 }?.let { "sh:$it" }
+  }
+
+  /**
+   * Feeds the global preference memory: sources/dubs picked in the player rise to the top of
+   * future lists (the player's voiceover dropdown and the source-selection sheet). With
+   * [mediaKey] the dub also becomes the title's own favorite (per-title memory), which from
+   * now on always outranks the global memory for THIS title.
+   */
+  private fun recordPlaybackUsage(
+    source: hd.kinoshka.app.data.model.AnimeSourceType,
+    dubTitle: String,
+    mediaKey: String? = null,
+  ) {
     val store = UserStateStore(this)
     store.recordSourceUsage(source)
     // Readers (rememberedDubId, dropdown ranking) look up the splitDubTrack display title, so raw
     // titles like "Original" must be folded the same way or the favorite dub never restores.
-    store.recordDubUsage(MovieNativeLauncher.splitDubTrack(dubTitle).first)
+    val dubKey = MovieNativeLauncher.splitDubTrack(dubTitle).first
+    store.recordDubUsage(dubKey)
+    if (!mediaKey.isNullOrBlank()) store.recordTitleDubUsage(mediaKey, dubKey)
   }
 
   /**

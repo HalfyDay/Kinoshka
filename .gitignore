@@ -35,3 +35,5 @@ local.properties
 /graphify-out/
 /.kino-backup/
 /.opencode/
+# IDE-артефакты модуля desktopApp
+/desktopApp/bin/

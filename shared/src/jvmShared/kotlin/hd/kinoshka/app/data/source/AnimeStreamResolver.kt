@@ -7,6 +7,7 @@ import hd.kinoshka.app.data.model.AnimeSource
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.AnimeTranslation
 import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import hd.kinoshka.app.data.model.qualityRank
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -115,6 +116,7 @@ object AnimeStreamResolver {
     suspend fun fetchAvailableSources(shikimoriId: Int, animeTitle: String = ""): List<AnimeSource> = withContext(Dispatchers.IO) {
         listOf(
             AnimeSource(AnimeSourceType.KODIK, isAvailable = true),
+            AnimeSource(AnimeSourceType.SHIKIMORI, isAvailable = true),
             AnimeSource(AnimeSourceType.ANILIBERTY, isAvailable = true),
             AnimeSource(AnimeSourceType.ANILIB, isAvailable = true)
         )
@@ -230,6 +232,7 @@ object AnimeStreamResolver {
 
         val loaded = when (source) {
             AnimeSourceType.KODIK -> fetchKodikFlatTranslations(shikimoriId, animeTitle)
+            AnimeSourceType.SHIKIMORI -> fetchShikimoriFlatTranslations(shikimoriId)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANISTAR -> fetchAniStarFlatTranslations(animeTitle)
@@ -411,19 +414,126 @@ object AnimeStreamResolver {
         null
     }
 
+    // ============================ Shikimori ============================
+    // Официальный плеер «Смотреть онлайн» (cdnvideohub): плейлист по Shikimori id без поиска,
+    // vkId серии лежит в AnimeEpisode.link и резолвится в HLS при старте воспроизведения.
+    // Лицензированные тайтлы и хентай отвечают пустым 204 — для них источник просто пуст.
+
+    private suspend fun fetchShikimoriFlatTranslations(shikimoriId: Int): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        runCatching {
+            val rows = ShikimoriVideoApi.loadPlaylist(shikimoriId)
+                .filter { it.vkId.isNotBlank() }
+                .groupBy { ShikimoriVideoApi.rowKey(it) }
+                .map { (key, rowItems) ->
+                    FlatTranslation(
+                        source = AnimeSourceType.SHIKIMORI,
+                        translationId = ShikimoriVideoApi.translationIdOf(key),
+                        title = ShikimoriVideoApi.rowTitle(rowItems.first()),
+                        type = ShikimoriVideoApi.rowType(rowItems.first()),
+                        episodes = rowItems.map { item ->
+                            AnimeEpisode(
+                                number = item.episode,
+                                title = if (item.season > 1) "Сезон ${item.season}, Серия ${item.episode}" else "Серия ${item.episode}",
+                                link = item.vkId,
+                                season = item.season.takeIf { it > 0 }
+                            )
+                        }.distinctBy { it.number }.sortedBy { it.number }
+                    )
+                }
+            if (rows.isEmpty()) return@runCatching rows
+            // Плейлист качество не отдаёт: меряем по первой серии ряда (рип внутри ряда
+            // консистентен) резолвом vkId в мастер-HLS — лучший вариант становится бейджем
+            // всех серий ряда. Резолвы кэшируются в ShikimoriVideoApi и переигрываются
+            // resolveStream'ом без повторных запросов.
+            val probeQualities = kotlinx.coroutines.coroutineScope {
+                rows.map { row -> async { probeShikimoriRowQuality(row) } }.awaitAll()
+            }
+            rows.zip(probeQualities) { row, quality ->
+                quality?.let { q ->
+                    row.copy(episodes = row.episodes.map { it.copy(maxQuality = q) })
+                } ?: row
+            }
+        }.getOrElse { e ->
+            KLog.e(TAG, "[Shikimori] playlist failed: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    /** Бейдж-качество ряда: лучший вариант мастер-HLS его первой серии. */
+    private suspend fun probeShikimoriRowQuality(row: FlatTranslation): String? {
+        val vkId = row.episodes.firstOrNull()?.link?.takeIf { it.isNotBlank() } ?: return null
+        val video = runCatching { ShikimoriVideoApi.resolveVideo(vkId) }.getOrNull() ?: return null
+        return video.qualities.keys.maxByOrNull { qualityRank(it) }
+    }
+
+    private suspend fun fetchShikimoriTranslations(shikimoriId: Int): List<AnimeTranslation> = withContext(Dispatchers.IO) {
+        fetchShikimoriFlatTranslations(shikimoriId).map { row ->
+            AnimeTranslation(
+                id = row.translationId,
+                title = row.title,
+                type = row.type,
+                episodesCount = row.episodes.size
+            )
+        }
+    }
+
+    private suspend fun fetchShikimoriEpisodes(shikimoriId: Int, translationId: String): List<AnimeEpisode> = withContext(Dispatchers.IO) {
+        fetchShikimoriFlatTranslations(shikimoriId)
+            .firstOrNull { it.translationId == translationId }?.episodes ?: emptyList()
+    }
+
+    private suspend fun resolveShikimoriStream(
+        shikimoriId: Int,
+        animeTitle: String,
+        translationId: String,
+        episodeNumber: Int
+    ): AnimeMediaStream? = withContext(Dispatchers.IO) {
+        KLog.i(TAG, "[Shikimori] resolveStream: id=$shikimoriId, ep=$episodeNumber, tr=$translationId")
+        // Быстрый путь — плейлист, уже скачанный префетчем или страницей выбора источника.
+        val vkId = cachedPrefetchedTranslations(shikimoriId, animeTitle)
+            ?.filter { it.source == AnimeSourceType.SHIKIMORI && it.translationId == translationId }
+            ?.flatMap { it.episodes }
+            ?.firstOrNull { it.number == episodeNumber }?.link?.takeIf { it.isNotBlank() }
+            ?: fetchShikimoriFlatTranslations(shikimoriId)
+                .firstOrNull { it.translationId == translationId }
+                ?.episodes?.firstOrNull { it.number == episodeNumber }?.link?.takeIf { it.isNotBlank() }
+        if (vkId == null) {
+            KLog.w(TAG, "[Shikimori] Episode $episodeNumber not found in row $translationId")
+            return@withContext null
+        }
+
+        val video = ShikimoriVideoApi.resolveVideo(vkId)
+        if (video == null) {
+            KLog.w(TAG, "[Shikimori] resolveVideo failed for vkId=$vkId")
+            return@withContext null
+        }
+        // Дефолт по QUALITY_PREFERENCE_DESC («max», соглашение резолверов с плеером);
+        // пустая лестница = играем сам мастер-плейлист.
+        val url = QUALITY_PREFERENCE_DESC.firstNotNullOfOrNull { video.qualities[it] } ?: video.url
+        KLog.i(TAG, "[Shikimori] Stream URL selected: ${url.take(100)}..., qualities=${video.qualities.keys}")
+        AnimeMediaStream(
+            url = url,
+            qualities = video.qualities,
+            quality = video.qualities.entries.firstOrNull { it.value == url }?.key ?: "Auto",
+            headers = mapOf("User-Agent" to USER_AGENT)
+        )
+    }
+
     private suspend fun prefetchAllMediaInternal(shikimoriId: Int, animeTitle: String): List<FlatTranslation> = withContext(Dispatchers.IO) {
         KLog.i(TAG, "=== prefetchAllMedia === id=$shikimoriId, title=\"$animeTitle\"")
         kotlinx.coroutines.coroutineScope {
             // Each branch goes through the per-source cache, so a progressive page that already
             // fetched some providers never repeats their network roundtrips here.
             val kodikResult = async { fetchSourceMedia(shikimoriId, animeTitle, AnimeSourceType.KODIK) }
+            val shikimoriResult = async { fetchSourceMedia(shikimoriId, animeTitle, AnimeSourceType.SHIKIMORI) }
             val anilibertyResult = async { fetchSourceMedia(shikimoriId, animeTitle, AnimeSourceType.ANILIBERTY) }
             val anilibResult = async { fetchSourceMedia(shikimoriId, animeTitle, AnimeSourceType.ANILIB) }
             val kodik = kodikResult.await()
+            val shikimori = shikimoriResult.await()
             val aniliberty = anilibertyResult.await()
             val anilib = anilibResult.await()
-            KLog.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodik.size}, Aniliberty: ${aniliberty.size}, AniLib: ${anilib.size}")
-            mergeTranslations(kodik + aniliberty + anilib)
+            KLog.i(TAG, "=== prefetchAllMedia DONE === Kodik: ${kodik.size}, Shikimori: ${shikimori.size}, Aniliberty: ${aniliberty.size}, AniLib: ${anilib.size}")
+            mergeTranslations(kodik + shikimori + aniliberty + anilib)
         }
     }
 
@@ -479,6 +589,7 @@ object AnimeStreamResolver {
     ): List<AnimeTranslation> = withContext(Dispatchers.IO) {
         when (sourceType) {
             AnimeSourceType.KODIK -> fetchKodikTranslations(shikimoriId, animeTitle)
+            AnimeSourceType.SHIKIMORI -> fetchShikimoriTranslations(shikimoriId)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANISTAR -> fetchAniStarTranslations(animeTitle)
@@ -501,6 +612,7 @@ object AnimeStreamResolver {
     ): List<AnimeEpisode> = withContext(Dispatchers.IO) {
         when (sourceType) {
             AnimeSourceType.KODIK -> fetchKodikEpisodes(shikimoriId, animeTitle, translationId)
+            AnimeSourceType.SHIKIMORI -> fetchShikimoriEpisodes(shikimoriId, translationId)
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANISTAR -> fetchAniStarEpisodes(animeTitle)
@@ -547,6 +659,7 @@ object AnimeStreamResolver {
     ): AnimeMediaStream? = withContext(Dispatchers.IO) {
         when (sourceType) {
             AnimeSourceType.KODIK -> resolveKodikStream(shikimoriId, animeTitle, translationId, episodeNumber)
+            AnimeSourceType.SHIKIMORI -> resolveShikimoriStream(shikimoriId, animeTitle, translationId, episodeNumber)
             AnimeSourceType.ANILIBERTY -> resolveAniLibertyStream(shikimoriId, animeTitle, episodeNumber, translationId)
             AnimeSourceType.ANISTAR -> resolveAniStarStream(animeTitle, episodeNumber)
             AnimeSourceType.ANILIB ->

@@ -156,6 +156,13 @@ fun AnimePlaybackSelectionScreen(
     // Дубликаты по (source, translationId) прячутся за сетевой строкой — local-first резолв
     // всё равно играет локальный файл.
     val itemKey = animeItemKey(shikimoriId, kinopoiskId)
+    // Per-title ключ памяти озвучек (тот же формат, что пишет плеер): любимая озвучка тайтла
+    // ранжируется по его собственной истории, а не по глобальной памяти всех тайтлов.
+    val dubMediaKey = when {
+        shikimoriId > 0 -> "sh:$shikimoriId"
+        kinopoiskId > 0 -> "kp:$kinopoiskId"
+        else -> null
+    }
     val library by EpisodeDownloadManager.library.collectAsState()
     val downloadTasks by EpisodeDownloadManager.tasks.collectAsState()
     val offlineTranslations = remember(library, allTranslations, itemKey) {
@@ -439,15 +446,17 @@ fun AnimePlaybackSelectionScreen(
         }
     }
 
-    BackHandler {
-        handleBack()
-    }
-
     Dialog(
         onDismissRequest = onDismissRequest,
         // Рисуем окно под системными барами — без этого по краям виден фон Details-экрана.
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
+        // BackHandler обязан жить ВНУТРИ Dialog: у диалога своё окно и свой
+        // OnBackPressedDispatcher, и back-события (в т.ч. жест) приходят только ему —
+        // хендлер снаружи не срабатывает, окно закрывалось через onDismissRequest.
+        BackHandler {
+            handleBack()
+        }
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
@@ -629,6 +638,7 @@ fun AnimePlaybackSelectionScreen(
                                                 }
                                             },
                                             playbackUsage = playbackUsage,
+                                            dubMediaKey = dubMediaKey,
                                             downloadedCountFor = ::downloadedCountFor,
                                             activeCountFor = ::activeCountFor,
                                             onDownloadTranslation = ::downloadTranslationAll
@@ -664,6 +674,7 @@ fun AnimePlaybackSelectionScreen(
                                                 }
                                             },
                                             playbackUsage = playbackUsage,
+                                            dubMediaKey = dubMediaKey,
                                             downloadedCountFor = ::downloadedCountFor,
                                             activeCountFor = ::activeCountFor,
                                             onDownloadTranslation = ::downloadTranslationAll
@@ -733,9 +744,14 @@ private fun sourceUsageRank(
     return (entry?.lastUsedAt ?: 0L) to (entry?.count ?: 0)
 }
 
-/** Recency-then-frequency rank of a dub team in the global usage memory. */
-private fun dubUsageRank(usage: hd.kinoshka.app.data.local.PlaybackUsageStats, title: String): Pair<Long, Int> {
-    val entry = usage.dubs[title.trim().lowercase()]
+/** Recency-then-frequency rank of a dub team: per-title memory first, global memory as fallback. */
+private fun dubUsageRank(
+    usage: hd.kinoshka.app.data.local.PlaybackUsageStats,
+    mediaKey: String?,
+    title: String
+): Pair<Long, Int> {
+    val key = title.trim().lowercase()
+    val entry = mediaKey?.let { mk -> usage.titleDubs["$mk|$key"] } ?: usage.dubs[key]
     return (entry?.lastUsedAt ?: 0L) to (entry?.count ?: 0)
 }
 
@@ -752,6 +768,8 @@ private fun SelectTranslationStep(
     onResumeSelected: ((FlatTranslation, AnimeEpisode) -> Unit)? = null,
     onTranslationSelected: (FlatTranslation) -> Unit,
     playbackUsage: hd.kinoshka.app.data.local.PlaybackUsageStats = hd.kinoshka.app.data.local.PlaybackUsageStats(),
+    // Per-title ключ памяти озвучек: любимая озвучка тайтла поднимается по его собственной истории.
+    dubMediaKey: String? = null,
     // Офлайн-скачивание: кнопка на озвучке качает все её серии; счётчики питают бейджи.
     downloadedCountFor: (FlatTranslation) -> Int = { 0 },
     activeCountFor: (FlatTranslation) -> Int = { 0 },
@@ -809,14 +827,21 @@ private fun SelectTranslationStep(
                         selected = isSelected,
                         onClick = { filterMode = mode },
                         text = {
-                            Text(
-                                text = when (mode) {
-                                    FilterMode.VOICE -> "Озвучка"
-                                    FilterMode.SUBTITLES -> "Субтитры"
-                                },
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                            )
+                            // Те же иконки, что и в ряду перевода ниже (Mic/ClosedCaption),
+                            // в одну строку с текстом — чтобы таб не терял компактную высоту.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = if (mode == FilterMode.VOICE) Icons.Default.Mic else Icons.Default.ClosedCaption,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (mode == FilterMode.VOICE) "Озвучка" else "Субтитры",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                )
+                            }
                         },
                         selectedContentColor = MaterialTheme.colorScheme.primary,
                         unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -894,8 +919,8 @@ private fun SelectTranslationStep(
             )
             val grouped = groupOrder.associateWith { source ->
                 filteredList.filter { it.source == source }.sortedWith(
-                    compareByDescending<FlatTranslation> { dubUsageRank(playbackUsage, it.title).first }
-                        .thenByDescending { dubUsageRank(playbackUsage, it.title).second }
+                    compareByDescending<FlatTranslation> { dubUsageRank(playbackUsage, dubMediaKey, it.title).first }
+                        .thenByDescending { dubUsageRank(playbackUsage, dubMediaKey, it.title).second }
                         // VPN-ряды (все серии на embed-хостах) тонут в конец группы: без VPN
                         // они всё равно не заиграют, а сверху оказываются рабочие варианты.
                         .thenByDescending { !it.title.endsWith(hd.kinoshka.app.data.source.SmarthardApi.VPN_ROW_SUFFIX) }
@@ -984,12 +1009,14 @@ private fun SelectTranslationStep(
                             Spacer(modifier = Modifier.width(14.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    // Kodik rows carry the dub name as the title; AniLib teams and
-                                    // AniLiberty releases also carry their own names, and the row
-                                    // already sits under the source group header — no prefix needed.
+                                    // Kodik rows carry the dub name as the title; AniLib teams,
+                                    // AniLiberty releases and Shikimori studios also carry their own
+                                    // names, and the row already sits under the source group header —
+                                    // no prefix needed.
                                     text = if (tr.source == AnimeSourceType.KODIK ||
                                         tr.source == AnimeSourceType.ANILIB ||
-                                        tr.source == AnimeSourceType.ANILIBERTY
+                                        tr.source == AnimeSourceType.ANILIBERTY ||
+                                        tr.source == AnimeSourceType.SHIKIMORI
                                     ) tr.title
                                     else "${tr.source.displayName} · ${tr.title}",
                                     style = MaterialTheme.typography.bodyLarge,
@@ -1003,7 +1030,7 @@ private fun SelectTranslationStep(
                                 )
                             }
                             // Preference badge: this dub team is in the user's usage memory.
-                            if (dubUsageRank(playbackUsage, tr.title).first > 0L) {
+                            if (dubUsageRank(playbackUsage, dubMediaKey, tr.title).first > 0L) {
                                 Icon(
                                     imageVector = Icons.Default.History,
                                     contentDescription = "Вы часто смотрите с этой озвучкой",

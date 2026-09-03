@@ -55,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -148,9 +149,12 @@ internal fun FeedCard(
     val showStills = stills.isNotEmpty() && !showRutube && !showYouTube
     val backgroundPoster = extras?.fullPosterUrl ?: item.posterUrl
 
+    // clipToBounds: Ken Burns-зум и блюр кадра рисуются за края страницы —
+    // без клипа соседние тайтлы в пейджере налазят друг на друга.
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .clipToBounds()
             .background(Color.Black)
     ) {
         // Слой 0: постер с медленным зумом — ВСЕГДА снизу. Пока кадры/видео не готовы,

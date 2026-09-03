@@ -8,6 +8,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -116,6 +117,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PauseCircle
@@ -170,6 +172,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
@@ -636,7 +639,15 @@ fun HomeScreen(
                     // Recent searches — overlay positioned right below the search bar
                 }
 
-                Box(modifier = Modifier.fillMaxSize()) {
+                // Тап мимо интерактива (пустое место) гасит фокус поиска и клавиатуру.
+                // Тапы по плиткам/кнопкам сюда не доходят — их забирают clickable.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(focusManager) {
+                            detectTapGestures(onTap = { focusManager.clearFocus() })
+                        }
+                ) {
                     when (section) {
                         MainSection.LIBRARY -> key(libraryResetCount) {
                             val pagerState = rememberPagerState(
@@ -681,7 +692,14 @@ fun HomeScreen(
                                         onRemoveFromHistory = onRemoveFromHistory,
                                         metrics = libraryMetrics,
                                         scrollToTopSignal = libraryTopSignal,
-                                        onScrollActivity = { contentScrollIntensity = it }
+                                        onScrollActivity = {
+                                            contentScrollIntensity = it
+                                            // Скролл контента гасит фокус поиска и клавиатуру.
+                                            if (it > 0f && isSearchFocused) {
+                                                isSearchFocused = false
+                                                focusManager.clearFocus()
+                                            }
+                                        }
                                     )
                                 }
                             }
@@ -707,7 +725,14 @@ fun HomeScreen(
                                     onLoadMore = onLoadMore,
                                     onOpenCalendar = onOpenCalendar,
                                     onOpenFeed = onOpenFeed,
-                                    onScrollActivity = { contentScrollIntensity = it }
+                                    onScrollActivity = {
+                                        contentScrollIntensity = it
+                                        // Скролл контента гасит фокус поиска и клавиатуру.
+                                        if (it > 0f && isSearchFocused) {
+                                            isSearchFocused = false
+                                            focusManager.clearFocus()
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -1539,39 +1564,73 @@ private fun AnimeHeaderButtonsRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
+        AnimeHeaderButton(
+            icon = Icons.Filled.CalendarMonth,
+            iconBadge = MaterialTheme.colorScheme.primaryContainer,
+            iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
+            label = "Календарь релизов",
+            onClick = onOpenCalendar,
+            modifier = Modifier.weight(1f)
+        )
+        AnimeHeaderButton(
+            icon = Icons.Filled.Feed,
+            iconBadge = MaterialTheme.colorScheme.tertiaryContainer,
+            iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
+            label = "Лента релизов",
+            onClick = onOpenFeed,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+/** Кнопка-раздел в стиле карточек ленты: общий фон + цветной бейдж с иконкой. */
+@Composable
+private fun AnimeHeaderButton(
+    icon: ImageVector,
+    iconBadge: Color,
+    iconTint: Color,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .height(56.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
             modifier = Modifier
-                .weight(1f)
-                .height(42.dp)
-                .clip(RoundedCornerShape(21.dp))
-                .clickable(onClick = onOpenCalendar),
-            shape = RoundedCornerShape(21.dp),
-            color = MaterialTheme.colorScheme.primaryContainer
+                .fillMaxSize()
+                .padding(horizontal = 10.dp)
         ) {
-            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                Text(
-                    text = "Календарь релизов",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+            Surface(
+                shape = CircleShape,
+                color = iconBadge,
+                modifier = Modifier.size(34.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = iconTint,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
-        }
-        Surface(
-            modifier = Modifier
-                .weight(1f)
-                .height(42.dp)
-                .clip(RoundedCornerShape(21.dp))
-                .clickable(onClick = onOpenFeed),
-            shape = RoundedCornerShape(21.dp),
-            color = MaterialTheme.colorScheme.secondaryContainer
-        ) {
-            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                Text(
-                    text = "Лента релизов",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                )
-            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

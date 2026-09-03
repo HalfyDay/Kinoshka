@@ -77,11 +77,32 @@ data class SourceUsage(val count: Int = 0, val lastUsedAt: Long = 0)
  */
 data class DubUsage(val count: Int = 0, val lastUsedAt: Long = 0)
 
-/** Global preference memory backing the used-first ranking of source/dub lists. */
+/**
+ * Global preference memory backing the used-first ranking of source/dub lists.
+ *
+ * [dubs] — глобальная память «эта озвучка играла» (ключ — нормализованное имя команды). Применяется
+ * только к тайтлам, у которых ещё нет собственной любимой озвучки.
+ * [titleDubs] — per-title память: ключ "<mediaKey>|<dubKey>" (mediaKey: "kp:<kinopoiskId>" /
+ * "sh:<shikimoriId>"), значение — счётчики этой озвучки на этом тайтле. Последняя включённая
+ * пользователем для просмотра тайтла озвучка — его любимая, она всегда и включается.
+ */
 data class PlaybackUsageStats(
     val sources: Map<String, SourceUsage> = emptyMap(),
-    val dubs: Map<String, DubUsage> = emptyMap()
-)
+    val dubs: Map<String, DubUsage> = emptyMap(),
+    val titleDubs: Map<String, DubUsage> = emptyMap()
+) {
+    /** Любимая озвучка тайтла: последняя включённая для его просмотра (ключ команды), или null. */
+    fun favoriteTitleDubKey(mediaKey: String): String? {
+        if (mediaKey.isEmpty()) return null
+        val prefix = "$mediaKey|"
+        return titleDubs.entries
+            .filter { it.key.startsWith(prefix) }
+            .maxByOrNull { it.value.lastUsedAt }
+            ?.key?.removePrefix(prefix)
+    }
+
+    fun titleDubUsage(mediaKey: String, dubKey: String): DubUsage? = titleDubs["$mediaKey|$dubKey"]
+}
 
 /**
  * One merged movie voiceover row persisted between launches: [id]/[title] feed the dropdown,
@@ -141,6 +162,17 @@ enum class LibrarySortType(val label: String) {
 private const val MAX_PROFILES = 5000
 private const val PROFILE_HARD_CEILING = 20_000
 private const val MAX_DUB_USAGE_ENTRIES = 100
+private const val MAX_TITLE_DUB_USAGE_ENTRIES = 400
+
+/**
+ * Пометка «эта озвучка играла» снимается сама: месяц без включения — и запись выпадает из
+ * памяти (глобальной и per-title) при первом же чтении/записи. Без TTL память разрастается
+ * мусором из давно заброшенных тайтлов и вечно тянет за собой дефолтную озвучку.
+ */
+private const val DUB_MARK_TTL_MS = 30L * 24 * 60 * 60 * 1000
+
+private fun dubMarkIsFresh(lastUsedAt: Long, now: Long = System.currentTimeMillis()): Boolean =
+    lastUsedAt > 0L && now - lastUsedAt <= DUB_MARK_TTL_MS
 
 private fun UserFilmProfile.isCurated(): Boolean =
     status != null || userRating != null || !note.isNullOrBlank() ||
@@ -807,8 +839,17 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
     fun getPlaybackUsage(): PlaybackUsageStats {
         val raw = prefs.getString(playbackUsageKey, null) ?: return PlaybackUsageStats()
-        return runCatching { gson.fromJson(raw, PlaybackUsageStats::class.java) }
-            .getOrNull() ?: PlaybackUsageStats()
+        val stats = runCatching { gson.fromJson(raw, PlaybackUsageStats::class.java) }
+            .getOrNull() ?: return PlaybackUsageStats()
+        return dropExpiredDubs(stats)
+    }
+
+    /** TTL-очистка: пометки озвучек, которые давно не включались, из памяти уходят. */
+    private fun dropExpiredDubs(stats: PlaybackUsageStats): PlaybackUsageStats {
+        val dubs = stats.dubs.filterValues { dubMarkIsFresh(it.lastUsedAt) }
+        val titleDubs = stats.titleDubs.filterValues { dubMarkIsFresh(it.lastUsedAt) }
+        return if (dubs.size == stats.dubs.size && titleDubs.size == stats.titleDubs.size) stats
+        else stats.copy(dubs = dubs, titleDubs = titleDubs)
     }
 
     fun recordSourceUsage(source: AnimeSourceType) = editPlaybackUsage { stats ->
@@ -837,13 +878,37 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         )
     }
 
+    /**
+     * Per-title память: [dubKey] (уже свёрнутый splitDubTrack-ключом, lowercase) включили для
+     * просмотра тайтла [mediaKey] — она становится его любимой озвучкой.
+     */
+    fun recordTitleDubUsage(mediaKey: String, dubKey: String) = editPlaybackUsage { stats ->
+        val mk = mediaKey.trim()
+        val dk = dubKey.trim().lowercase()
+        if (mk.isEmpty() || dk.isEmpty()) return@editPlaybackUsage stats
+        val key = "$mk|$dk"
+        val current = stats.titleDubs[key] ?: DubUsage()
+        stats.copy(
+            titleDubs = stats.titleDubs + (
+                key to DubUsage(
+                    count = current.count + 1,
+                    lastUsedAt = System.currentTimeMillis()
+                )
+                )
+        )
+    }
+
     private fun editPlaybackUsage(edit: (PlaybackUsageStats) -> PlaybackUsageStats) = synchronized(BLOB_LOCK) {
-        val updated = edit(getPlaybackUsage())
+        val updated = edit(dropExpiredDubs(getPlaybackUsage()))
         // Bound growth: numeric Kodik labels accumulate fast across titles — keep the freshest.
         val capped = updated.copy(
             dubs = updated.dubs.entries
                 .sortedByDescending { it.value.lastUsedAt }
                 .take(MAX_DUB_USAGE_ENTRIES)
+                .associate { it.toPair() },
+            titleDubs = updated.titleDubs.entries
+                .sortedByDescending { it.value.lastUsedAt }
+                .take(MAX_TITLE_DUB_USAGE_ENTRIES)
                 .associate { it.toPair() }
         )
         prefs.putString(playbackUsageKey, gson.toJson(capped)).apply()

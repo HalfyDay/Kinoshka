@@ -174,15 +174,23 @@ object MovieNativeLauncher {
         // resolveEpisode resolves it directly. Without it a kodik-won resume always started on
         // the catalog's first dub regardless of what the user watched before.
         val rememberedId = stateStore?.let { store ->
-            val dubs = store.getPlaybackUsage().dubs
+            val usage = store.getPlaybackUsage()
             // Usage memory is keyed by the splitDubTrack display title (same fold the player's
             // recordPlaybackUsage applies) — raw translationTitle keys miss "Original"-style dubs.
             fun dubKey(title: String?): String = splitDubTrack(title.orEmpty()).first.trim().lowercase()
-            catalog.candidates
-                .filter { !it.translationId.isNullOrBlank() }
-                .filter { (dubs[dubKey(it.translationTitle)]?.lastUsedAt ?: 0L) > 0L }
-                .maxByOrNull { dubs[dubKey(it.translationTitle)]?.lastUsedAt ?: 0L }
-                ?.translationId
+            val keyed = catalog.candidates.filter { !it.translationId.isNullOrBlank() }
+            // 1) Любимая озвучка самого тайтла: последняя включённая пользователем для его
+            //    просмотра — глобальная память для такого тайтла больше не применяется.
+            request.kinopoiskId?.takeIf { it > 0 }?.let { kp ->
+                usage.favoriteTitleDubKey("kp:$kp")?.let { fav ->
+                    keyed.firstOrNull { dubKey(it.translationTitle) == fav }?.translationId
+                }
+            }
+                // 2) У тайтла ещё нет своей любимой — глобальная память (самая свежая озвучка).
+                ?: keyed
+                    .filter { (usage.dubs[dubKey(it.translationTitle)]?.lastUsedAt ?: 0L) > 0L }
+                    .maxByOrNull { usage.dubs[dubKey(it.translationTitle)]?.lastUsedAt ?: 0L }
+                    ?.translationId
         }
         val orderedCandidates = rememberedId
             ?.let { rid -> catalog.candidates.sortedBy { it.translationId != rid } }
@@ -248,7 +256,7 @@ object MovieNativeLauncher {
         val outcome = awaitFirstMovieOutcome(kodikDeferred, ddbbDeferred)
         val winnerName = when (outcome) { is MovieOutcome.FromDdbb -> "ddbb"; is MovieOutcome.FromKodik -> "kodik"; is MovieOutcome.Failed -> "none" }
         KLog.i(TAG, "movie race winner=$winnerName at ${System.currentTimeMillis() - raceStartMs}ms")
-        hd.kinoshka.app.data.diagnostics.AppDiagnostics.event("movie race winner=$winnerName at ${System.currentTimeMillis() - raceStartMs}ms")
+        hd.kinoshka.app.data.diagnostics.SharedDiag.event("movie race winner=$winnerName at ${System.currentTimeMillis() - raceStartMs}ms")
         return when (outcome) {
             is MovieOutcome.FromKodik -> {
                 // The loser is neither awaited nor cancelled here: playback starts on the
@@ -334,7 +342,7 @@ object MovieNativeLauncher {
             "${row.source.name}:${row.title.take(24)}=${streams[row.translationId]?.qualities?.keys?.joinToString("/") ?: "lazy"}"
         }
         KLog.i(TAG, "readyQualityMovie: rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), kp=$kinopoiskId, ladders: $ladderSummary")
-        hd.kinoshka.app.data.diagnostics.AppDiagnostics.event("prepared rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), ladders: $ladderSummary".take(380))
+        hd.kinoshka.app.data.diagnostics.SharedDiag.event("prepared rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), ladders: $ladderSummary".take(380))
         NativeLaunchPayload.QualityOnlyMovie(initial, orderedRows, streams)
     }
 
@@ -501,8 +509,11 @@ object MovieNativeLauncher {
      * Splits a raw dub title into (clean base, FlatTranslation.type). Display name stays FREE
      * of the kind — the row's subtitle line ("Озвучка/Субтитры/Оригинал") carries it already;
      * duplicating it inside the title doubled every label visually.
+     *
+     * Public (не internal): вызывает и PlayerActivity из app-модуля — после переезда в shared
+     * internal стал невидим за границей модуля, и :app:compileDebugKotlin краснел.
      */
-    internal fun splitDubTrack(title: String): Pair<String, String> {
+    fun splitDubTrack(title: String): Pair<String, String> {
         val lower = title.lowercase()
         return when {
             SUB_TRACK_HINTS.any { it in lower } ->
