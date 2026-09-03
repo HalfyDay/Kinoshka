@@ -1052,7 +1052,9 @@ fun DetailsScreen(
 
         // Локальная копия: item объявлен в другом модуле (shared), smart cast невозможен.
         val editorItem = state.item
-        if (showProfileEditor && editorItem != null) {
+        if (editorItem != null) {
+            ProfileEditorCoverBackdrop(item = editorItem, visible = showProfileEditor)
+            if (showProfileEditor) {
             UserProfileEditorSheet(
                 item = editorItem,
                 animeDetails = state.animeDetails,
@@ -1084,6 +1086,7 @@ fun DetailsScreen(
                     showProfileEditor = false
                 }
             )
+            }
         }
 
         selectedCharacterId?.let { charId ->
@@ -1600,6 +1603,81 @@ private fun RoundedPlayIcon(modifier: Modifier = Modifier, color: Color = Color.
 
 
 
+/**
+ * Обложка на фоне за шитом «Прогресс просмотра»: живёт в корне экрана
+ * (шит — отдельный диалог поверх с прозрачным сримом), выпрыгивает снизу
+ * по центру с лёгким поворотом, пока шит выезжает.
+ */
+@Composable
+private fun ProfileEditorCoverBackdrop(item: FilmDetails, visible: Boolean) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(1)),
+        exit = fadeOut(tween(180))
+    ) {
+        val calm = rememberReduceMotion()
+        val posterModel = item.posterUrl ?: item.posterUrlPreview
+        var entered by remember(item.kinopoiskId) { mutableStateOf(calm) }
+        LaunchedEffect(item.kinopoiskId) { entered = true }
+        val floatSpec: AnimationSpec<Float> =
+            if (calm) snap() else spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        val dpSpec: AnimationSpec<Dp> =
+            if (calm) snap() else spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        val tilt by animateFloatAsState(
+            targetValue = if (entered) -6f else -18f,
+            animationSpec = floatSpec,
+            label = "pe_cover_tilt"
+        )
+        val scale by animateFloatAsState(
+            targetValue = if (entered) 1f else 0.65f,
+            animationSpec = floatSpec,
+            label = "pe_cover_scale"
+        )
+        val rise by animateDpAsState(
+            targetValue = if (entered) 0.dp else 260.dp,
+            animationSpec = dpSpec,
+            label = "pe_cover_rise"
+        )
+        val density = LocalDensity.current
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(top = 64.dp),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shadowElevation = 12.dp,
+                modifier = Modifier
+                    .width(170.dp)
+                    .aspectRatio(2f / 3f)
+                    .graphicsLayer {
+                        translationY = with(density) { rise.toPx() }
+                        rotationZ = tilt
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(0.5f, 1f)
+                    }
+            ) {
+                KinoshkaAsyncImage(
+                    model = posterModel,
+                    contentDescription = item.nameRu ?: item.nameOriginal,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+    }
+}
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 fun UserProfileEditorSheet(
@@ -1634,6 +1712,9 @@ fun UserProfileEditorSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         dragHandle = null,
+        // Срим прозрачный: за шитом на фоне живёт выпрыгивающая обложка.
+        // Тапы мимо шита по-прежнему перехватывает и закрывает сам диалог.
+        scrimColor = Color.Transparent,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         KinoKeepDialogNavBarEffect()
@@ -1644,64 +1725,6 @@ fun UserProfileEditorSheet(
                 .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            val calmMotion = rememberReduceMotion()
-            // Обложка: выпрыгивает из-под шита по центру, с лёгким поворотом.
-            val posterModel = item.posterUrl ?: item.posterUrlPreview
-            var coverEntered by remember(item.kinopoiskId) { mutableStateOf(calmMotion) }
-            LaunchedEffect(item.kinopoiskId) { coverEntered = true }
-            val coverFloatSpec: AnimationSpec<Float> =
-                if (calmMotion) snap() else spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
-            val coverDpSpec: AnimationSpec<Dp> =
-                if (calmMotion) snap() else spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
-            val coverTilt by animateFloatAsState(
-                targetValue = if (coverEntered) -5f else -16f,
-                animationSpec = coverFloatSpec,
-                label = "progress_cover_tilt"
-            )
-            val coverScale by animateFloatAsState(
-                targetValue = if (coverEntered) 1f else 0.7f,
-                animationSpec = coverFloatSpec,
-                label = "progress_cover_scale"
-            )
-            val coverRise by animateDpAsState(
-                targetValue = if (coverEntered) 0.dp else 160.dp,
-                animationSpec = coverDpSpec,
-                label = "progress_cover_rise"
-            )
-            val density = LocalDensity.current
-            Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.Center
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    shadowElevation = 8.dp,
-                    modifier = Modifier
-                        .width(128.dp)
-                        .aspectRatio(2f / 3f)
-                        .graphicsLayer {
-                            translationY = with(density) { coverRise.toPx() }
-                            rotationZ = coverTilt
-                            scaleX = coverScale
-                            scaleY = coverScale
-                            transformOrigin = TransformOrigin(0.5f, 1f)
-                        }
-                ) {
-                    KinoshkaAsyncImage(
-                        model = posterModel,
-                        contentDescription = item.nameRu ?: item.nameOriginal,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
             // Header with Save and Delete icons
             Row(
                 modifier = Modifier.fillMaxWidth(),
