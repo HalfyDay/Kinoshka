@@ -217,7 +217,6 @@ fun HomeScreenTv(
                 TvHomeSection.LIBRARY -> "Поиск в библиотеке"
                 TvHomeSection.MORE -> "Поиск"
             },
-            avatarEmoji = state.profileAvatar,
             onAvatarClick = onOpenProfile,
         )
 
@@ -261,13 +260,10 @@ fun HomeScreenTv(
                 onHentaiVisibilityChanged = onHentaiVisibilityChanged,
             )
             TvHomeSection.MORE -> MoreTvContent(
-                query = normalizedQuery,
                 onOpenProfile = onOpenProfile,
                 onOpenSettings = onOpenSettings,
                 onOpenAbout = onOpenAbout,
                 onOpenDownloads = onOpenDownloads,
-                onOpenCalendar = onOpenCalendar,
-                onOpenFeed = onOpenFeed,
             )
         }
     }
@@ -335,27 +331,17 @@ private fun DiscoverTvContent(
         contentPadding = PaddingValues(bottom = 40.dp),
     ) {
         item(key = "hero") {
-            val heroItem = items.firstOrNull()
-            val watchLabel = if (continueWatching != null) "Продолжить" else "Смотреть"
+            // Баннер-герой — только реальное «продолжение просмотра»; каталог без истории
+            // начинается сразу с ряда категорий, без «случайно выбранного» тайтла.
             if (continueWatching != null) {
                 TvHeroBanner(
                     posterUrl = continueWatching.posterUrl,
                     title = continueWatching.title,
                     metaText = continueWatching.libraryMetaParts().joinToString("  •  "),
                     rating = continueWatching.libraryRating(),
-                    watchLabel = watchLabel,
+                    watchLabel = "Продолжить",
                     onWatch = { onOpenHistoryFilm(continueWatching.kinopoiskId) },
                     onOpen = { onOpenHistoryFilm(continueWatching.kinopoiskId) },
-                )
-            } else if (heroItem != null) {
-                TvHeroBanner(
-                    posterUrl = heroItem.posterUrlPreview,
-                    title = heroItem.nameRu ?: heroItem.nameOriginal ?: "",
-                    metaText = heroItem.year?.toString(),
-                    rating = heroItem.ratingKinopoisk,
-                    watchLabel = watchLabel,
-                    onWatch = { onOpenFilm(heroItem) },
-                    onOpen = { onOpenFilm(heroItem) },
                 )
             }
         }
@@ -555,33 +541,48 @@ private fun LibraryTvContent(
 
 @Composable
 private fun MoreTvContent(
-    query: String,
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenDownloads: () -> Unit,
-    onOpenCalendar: () -> Unit,
-    onOpenFeed: () -> Unit,
 ) {
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(horizontal = 36.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         TvSectionTitle("Ещё")
         Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            TvMenuCard("Загрузки", "Скачанные серии и очередь", Icons.Filled.CloudDownload, onOpenDownloads)
-            TvMenuCard("Профиль", "Аккаунты, облако и статистика", Icons.Filled.Person, onOpenProfile)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            TvMenuCard("Настройки", "Тема, плеер и playback", Icons.Filled.Settings, onOpenSettings)
-            TvMenuCard("О приложении", "Версия и обновления", Icons.Filled.Info, onOpenAbout)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            TvMenuCard("Календарь релизов", null, Icons.Filled.CalendarMonth, onOpenCalendar)
-            TvMenuCard("Лента релизов", null, Icons.Filled.Feed, onOpenFeed)
+        // Симметричная сетка 2×N: карточки одного ряда всегда равной ширины.
+        listOf(
+            listOf(
+                Triple("Загрузки", "Скачанные серии и очередь", Icons.Filled.CloudDownload) to onOpenDownloads,
+                Triple("Профиль", "Аккаунты, облако и статистика", Icons.Filled.Person) to onOpenProfile,
+            ),
+            listOf(
+                Triple("Настройки", "Тема, плеер и playback", Icons.Filled.Settings) to onOpenSettings,
+                Triple("О приложении", "Версия и обновления", Icons.Filled.Info) to onOpenAbout,
+            ),
+        ).forEachIndexed { rowIndex, rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                rowItems.forEach { (card, onClick) ->
+                    val (title, subtitle, icon) = card
+                    TvMenuCard(
+                        title = title,
+                        subtitle = subtitle,
+                        icon = icon,
+                        onClick = onClick,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (rowItems.size == 1) {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
         }
     }
 }

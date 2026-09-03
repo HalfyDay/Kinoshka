@@ -558,6 +558,62 @@ fun DetailsScreen(
                         } else {
                             onOpenUrl(item.toWatchUrl())
                         }
+                    } else if (animeSelectionScreen != null) {
+                        activePlaybackSelection = true
+                    } else if (onOpenNativePlayer != null) {
+                        // Desktop fallback: листа выбора источника нет — резолвим сразу.
+                        // Источник Kodik, озвучка — любимая из памяти просмотров (или первая).
+                        scope.launch {
+                            val shikimoriId = item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                            if (shikimoriId <= 0) {
+                                platformActions.showToast("Не удалось определить аниме для воспроизведения")
+                                return@launch
+                            }
+                            val animeTitle = item.nameRu ?: item.nameOriginal ?: "Аниме"
+                            val voiceRows = runCatching {
+                                withContext(Dispatchers.IO) {
+                                    hd.kinoshka.app.data.source.AnimeStreamResolver
+                                        .prefetchAllMedia(shikimoriId, animeTitle)
+                                }
+                            }.getOrDefault(emptyList())
+                                .filter { it.type == "voice" && it.episodes.isNotEmpty() }
+                            if (voiceRows.isEmpty()) {
+                                platformActions.showToast("Озвучки не найдены")
+                                return@launch
+                            }
+                            val favoriteKey = userStateStore?.getPlaybackUsage()?.favoriteTitleDubKey("sh:$shikimoriId")
+                            val chosen = voiceRows.firstOrNull { row ->
+                                hd.kinoshka.app.data.playback.MovieNativeLauncher
+                                    .splitDubTrack(row.title).first.lowercase() == favoriteKey
+                            } ?: voiceRows.first()
+                            val episodeNumber = chosen.episodes.minOfOrNull { it.number } ?: 1
+                            val stream = runCatching {
+                                withContext(Dispatchers.IO) {
+                                    hd.kinoshka.app.data.source.AnimeStreamResolver.resolveStream(
+                                        shikimoriId, animeTitle, chosen.source, chosen.translationId, episodeNumber
+                                    )
+                                }
+                            }.getOrNull()
+                            if (stream == null) {
+                                platformActions.showToast("Не удалось получить поток")
+                                return@launch
+                            }
+                            onOpenNativePlayer.invoke(
+                                stream.url,
+                                stream.headers,
+                                stream.qualities,
+                                animeTitle,
+                                episodeNumber,
+                                chosen.episodes.firstOrNull { it.number == episodeNumber }?.title.orEmpty(),
+                                shikimoriId,
+                                item.kinopoiskId,
+                                chosen.source.name,
+                                chosen.episodes,
+                                voiceRows,
+                                chosen.translationId,
+                                null
+                            )
+                        }
                     } else {
                         activePlaybackSelection = true
                     }
@@ -625,12 +681,13 @@ fun DetailsScreen(
                         onOpenUrl(item.toWatchUrl())
                     }
                 }
+                val tvLayout = rememberTvLayout()
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer { alpha = contentAlpha }
                 ) {
-                    if (rememberTvLayout()) {
+                    if (tvLayout) {
                         DetailsTvLayout(
                             item = item,
                             state = state,
@@ -1051,7 +1108,8 @@ fun DetailsScreen(
                     }
                 }
 
-                if (!isAnime || !activePlaybackSelection) {
+                // TV-макет рисует свою кнопку «Назад» — телефонный топ-бар там лишний.
+                if (!tvLayout && (!isAnime || !activePlaybackSelection)) {
                     DetailsTopBar(
                         item = item,
                         isAnime = isAnime,
