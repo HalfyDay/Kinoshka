@@ -78,6 +78,18 @@ data class SourceUsage(val count: Int = 0, val lastUsedAt: Long = 0)
 data class DubUsage(val count: Int = 0, val lastUsedAt: Long = 0)
 
 /**
+ * Сохранённая позиция просмотра одного media-файла. Ключ — стабильный идентификатор
+ * ("ks_movie_<kp>", "ks_series_<kp>_s<season>e<ep>", "ks_anime_<key>_e<ep>" — те же схемы,
+ * что в Android-плеере): URL потоков ротируются между запусками, поэтому ключуется
+ * тайтл/серия, а не адрес.
+ */
+data class PlaybackPosition(
+    val positionSeconds: Double,
+    val durationSeconds: Double,
+    val updatedAt: Long
+)
+
+/**
  * Global preference memory backing the used-first ranking of source/dub lists.
  *
  * [dubs] — глобальная память «эта озвучка играла» (ключ — нормализованное имя команды). Применяется
@@ -163,6 +175,7 @@ private const val MAX_PROFILES = 5000
 private const val PROFILE_HARD_CEILING = 20_000
 private const val MAX_DUB_USAGE_ENTRIES = 100
 private const val MAX_TITLE_DUB_USAGE_ENTRIES = 400
+private const val MAX_PLAYBACK_POSITION_ENTRIES = 300
 
 /**
  * Пометка «эта озвучка играла» снимается сама: месяц без включения — и запись выпадает из
@@ -217,6 +230,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     private val showHentaiInLibraryKey = "show_hentai_in_library"
     private val searchHistoryKey = "search_history_json"
     private val playbackUsageKey = "playback_usage_json"
+    private val playbackPositionsKey = "playback_positions_json"
     private val movieVoiceoverKeyPrefix = "movie_voiceovers_"
     private val detailsCacheKeyPrefix = "details_cache_"
 
@@ -912,6 +926,45 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 .associate { it.toPair() }
         )
         prefs.putString(playbackUsageKey, gson.toJson(capped)).apply()
+    }
+
+    // ---- Resume-позиции (cross-session playback state, ключ — стабильный media-идентификатор) ----
+
+    private fun readPlaybackPositions(): Map<String, PlaybackPosition> {
+        val raw = prefs.getString(playbackPositionsKey, null) ?: return emptyMap()
+        val type = object : TypeToken<Map<String, PlaybackPosition>>() {}.type
+        return runCatching { gson.fromJson<Map<String, PlaybackPosition>>(raw, type) }
+            .getOrNull().orEmpty()
+    }
+
+    /** Сохранённая позиция [identifier]'а либо null (нет записи / досмотрено / позиция < 5 c). */
+    fun getPlaybackPosition(identifier: String): Double? {
+        val id = identifier.trim()
+        if (id.isEmpty()) return null
+        val entry = readPlaybackPositions()[id] ?: return null
+        return entry.positionSeconds.takeIf { it > 5.0 }
+    }
+
+    /**
+     * Сохраняет позицию просмотра. Досмотренный файл (позиция у конца) запись обнуляет —
+     * resume на последней секунде не нужен. Записи ограничены freshest-first, как даб-память.
+     */
+    fun savePlaybackPosition(identifier: String, positionSeconds: Double, durationSeconds: Double) {
+        val id = identifier.trim()
+        if (id.isEmpty() || positionSeconds < 5.0) return
+        synchronized(BLOB_LOCK) {
+            val current = readPlaybackPositions().toMutableMap()
+            if (durationSeconds > 1.0 && positionSeconds >= durationSeconds - 10.0) {
+                current.remove(id)
+            } else {
+                current[id] = PlaybackPosition(positionSeconds, durationSeconds, System.currentTimeMillis())
+            }
+            val capped = current.entries
+                .sortedByDescending { it.value.updatedAt }
+                .take(MAX_PLAYBACK_POSITION_ENTRIES)
+                .associate { it.toPair() }
+            prefs.putString(playbackPositionsKey, gson.toJson(capped)).apply()
+        }
     }
 
     // ---- Merged movie voiceover list cache (stable dropdown across launches) ----

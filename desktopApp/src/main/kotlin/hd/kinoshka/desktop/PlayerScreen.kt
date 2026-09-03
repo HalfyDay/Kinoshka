@@ -145,11 +145,40 @@ fun PlayerScreen(
         dubMediaKey?.let { store.recordTitleDubUsage(it, dubKey) }
     }
 
+    // Стабильный идентификатор media-файла для resume-позиции — те же схемы, что
+    // stableKinoshkaIdentifier в Android-плеере: URL потоков ротируются, позиция
+    // ключуется тайтлом/серией.
+    fun mediaIdFor(episodeKey: Int): String? = when {
+        seriesEpisodes != null -> seriesEpisodes
+            .firstOrNull { it.playerEpisodeKey == episodeKey }
+            ?.let { "ks_series_${args.kinopoiskId}_s${it.seasonNumber}e${it.episodeNumber}" }
+        args.episodes.isNotEmpty() -> {
+            val key = args.shikimoriId.takeIf { it > 0 } ?: args.kinopoiskId.takeIf { it > 0 }
+            key?.let { "ks_anime_${it}_e$episodeKey" }
+        }
+        args.kinopoiskId > 0 -> "ks_movie_${args.kinopoiskId}"
+        else -> null
+    }
+
+    fun currentMediaId(): String? = mediaIdFor(currentEpisodeKey)
+
+    fun savedResumeFor(episodeKey: Int): Double =
+        userStateStore?.let { store -> mediaIdFor(episodeKey)?.let { store.getPlaybackPosition(it) } } ?: 0.0
+
+    /** Сохранить позицию текущей серии: перед переключением, в периодическом тике и при закрытии. */
+    fun flushPlaybackPosition(pos: Double = position, dur: Double = duration) {
+        val store = userStateStore ?: return
+        val id = currentMediaId() ?: return
+        if (pos >= 10.0) store.savePlaybackPosition(id, pos, dur)
+    }
+
     fun switchEpisode(choice: EpisodeChoice) {
         scope.launch {
             val contextEpisodes = seriesEpisodes
             if (contextEpisodes != null) {
                 val ep = contextEpisodes.firstOrNull { it.playerEpisodeKey == choice.key } ?: return@launch
+                // flush уходящей серии ДО переустановки currentEpisodeKey — идентификатор ещё старый.
+                flushPlaybackPosition()
                 currentEpisodeKey = choice.key
                 val headers = if (args.seriesContext?.isDirectSource == true) {
                     args.seriesContext?.directHeaders ?: args.headers
@@ -169,6 +198,7 @@ fun PlayerScreen(
                     resolveError = "Не удалось открыть ${choice.label.lowercase()}"
                     return@launch
                 }
+                flushPlaybackPosition()
                 currentEpisodeKey = choice.key
                 qualities = stream.qualities
                 currentQuality = stream.quality
@@ -214,6 +244,12 @@ fun PlayerScreen(
             args.streamUrl.isNotBlank() -> {
                 currentQuality = args.qualities.entries
                     .firstOrNull { it.value == args.streamUrl }?.key
+                if (seriesEpisodes != null) {
+                    // Контекст сериала: ключ стартовой серии — из контекста, не args.episodeNumber.
+                    currentEpisodeKey = args.seriesContext?.currentEpisode?.playerEpisodeKey
+                        ?: args.episodeNumber
+                }
+                resumeAt = savedResumeFor(currentEpisodeKey)
                 pending = LoadCommand(args.streamUrl, args.headers)
             }
             args.sourceType == "PENDING" -> withContext(Dispatchers.IO) {
@@ -234,13 +270,16 @@ fun PlayerScreen(
                         translations = payload.translations
                         qualities = payload.stream.qualities
                         currentQuality = payload.stream.quality
+                        resumeAt = savedResumeFor(currentEpisodeKey)
                         pending = LoadCommand(payload.stream.url, payload.stream.headers)
                     }
                     is MovieNativeLauncher.NativeLaunchPayload.MovieSeries -> {
                         val episode = payload.context.currentEpisode
                         println("MPV: PENDING → MovieSeries ep=${episode.playerEpisodeKey}")
+                        currentEpisodeKey = episode.playerEpisodeKey
                         qualities = payload.stream.qualities
                         currentQuality = payload.stream.quality
+                        resumeAt = savedResumeFor(episode.playerEpisodeKey)
                         pending = LoadCommand(episode.playerUrl, payload.stream.headers)
                     }
                     is MovieNativeLauncher.NativeLaunchPayload.Failed -> {
@@ -322,13 +361,23 @@ fun PlayerScreen(
     LaunchedEffect(player, userStateStore, dubMediaKey) {
         val store = userStateStore ?: return@LaunchedEffect
         var committedFor: String? = null
+        var lastPositionSaveAt = 0L
         while (true) {
             delay(5000)
             val current = player ?: continue
             val mediaKey = dubMediaKey ?: continue
+            val pos = withContext(Dispatchers.IO) { current.positionSeconds() } ?: continue
+            // Периодический автосейв resume-позиции (раз в ~30 c), независимо от порога коммита.
+            if (pos > 10.0) {
+                val now = System.currentTimeMillis()
+                if (now - lastPositionSaveAt >= 30_000) {
+                    lastPositionSaveAt = now
+                    val dur = withContext(Dispatchers.IO) { current.durationSeconds() } ?: 0.0
+                    currentMediaId()?.let { id -> store.savePlaybackPosition(id, pos, dur) }
+                }
+            }
             val watchId = "$mediaKey#${currentEpisodeKey}"
             if (watchId == committedFor) continue
-            val pos = withContext(Dispatchers.IO) { current.positionSeconds() } ?: continue
             if (pos < MIN_WATCH_SECONDS_FOR_LIBRARY) continue
             committedFor = watchId
             val libraryKey = if (args.shikimoriId > 0) args.shikimoriId + ANIME_ID_OFFSET else args.kinopoiskId
@@ -353,7 +402,10 @@ fun PlayerScreen(
     }
 
     DisposableEffect(Unit) {
-        onDispose { player?.close() }
+        onDispose {
+            flushPlaybackPosition()
+            player?.close()
+        }
     }
 
     Column(Modifier.fillMaxSize().background(Color.Black)) {
