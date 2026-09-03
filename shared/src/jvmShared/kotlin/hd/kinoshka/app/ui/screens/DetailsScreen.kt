@@ -3,8 +3,6 @@ package hd.kinoshka.app.ui.screens
 import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.Schedule
-import hd.kinoshka.app.data.download.tryRequestNotificationPermission
-import hd.kinoshka.app.data.download.toPlayableUriString
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.TimeZone
@@ -17,22 +15,11 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.graphics.SolidColor
-import hd.kinoshka.app.ui.components.AnimePlaybackSelectionSheet
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
 
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
-import android.util.Log
-import android.widget.Toast
 import hd.kinoshka.app.data.feed.YouTubeStreamResolver
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -88,7 +75,6 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.fadeIn
@@ -124,7 +110,6 @@ import kotlinx.coroutines.isActive
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -193,28 +178,18 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.activity.compose.BackHandler
-import androidx.compose.ui.window.DialogWindowProvider
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import coil.compose.AsyncImage
 import hd.kinoshka.app.data.local.UserFilmProfile
 import hd.kinoshka.app.data.local.UserFilmStatus
-import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.playback.MovieNativeLauncher
 import hd.kinoshka.app.data.model.MovieVoiceoverStreamStore
 import hd.kinoshka.app.data.model.FilmDetails
@@ -239,6 +214,15 @@ import hd.kinoshka.app.ui.components.shimmerEffect
 import java.util.Locale
 import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalLocale
+import androidx.compose.ui.platform.LocalWindowInfo
+import hd.kinoshka.app.data.local.UserStateStoreBase
+import hd.kinoshka.app.util.log.KLog
+import hd.kinoshka.app.ui.platform.KinoBackHandler
+import hd.kinoshka.app.ui.platform.KinoFreeOrientationEffect
+import hd.kinoshka.app.ui.platform.KinoFullscreenDialog
+import hd.kinoshka.app.ui.platform.KinoHideSystemBarsEffect
+import hd.kinoshka.app.ui.platform.KinoKeepDialogNavBarEffect
+import hd.kinoshka.app.ui.platform.rememberKinoPlatformActions
 
 @Composable
 fun DetailsScreen(
@@ -277,9 +261,41 @@ fun DetailsScreen(
         movieSeriesContext: hd.kinoshka.app.data.model.MovieSeriesPlaybackContext?
     ) -> Unit)? = null,
     playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
-    playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.MPVEX
+    playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.MPVEX,
+    userStateStore: UserStateStoreBase? = null,
+    // Платформенные слоты: Android подставляет живые реализации, desktop — null
+    // (соответствующие элементы UI скрываются, «Смотреть» падает в веб-фолбэк).
+    animeSelectionScreen: (@Composable (
+        shikimoriId: Int,
+        kinopoiskId: Int,
+        animeTitle: String,
+        playbackSequence: PlaybackSequenceOption,
+        onDismissRequest: () -> Unit,
+        onWebFallback: (() -> Unit)?,
+        onStreamSelected: (
+            stream: hd.kinoshka.app.data.model.AnimeMediaStream,
+            episodeNumber: Int,
+            episodeTitle: String,
+            source: hd.kinoshka.app.data.model.AnimeSourceType,
+            translationTitle: String,
+            episodes: List<hd.kinoshka.app.data.model.AnimeEpisode>,
+            translations: List<hd.kinoshka.app.data.model.FlatTranslation>,
+            currentTranslationId: String
+        ) -> Unit
+    ) -> Unit)? = null,
+    downloadSheet: (@Composable (item: FilmDetails, isAnime: Boolean, onDismiss: () -> Unit) -> Unit)? = null,
+    hentaiDownloadButton: (@Composable (
+        title: String,
+        kinopoiskId: Int,
+        provider: hd.kinoshka.app.data.source.HentaiProvider,
+        label: String,
+        episodeNumber: Int,
+        episodeUrl: String?,
+        headers: Map<String, String>
+    ) -> Unit)? = null,
+    findLocalHentai: ((kinopoiskId: Int, providerName: String, translationId: String, episodeNumber: Int) -> String?)? = null
 ) {
-    val context = LocalContext.current
+    val platformActions = rememberKinoPlatformActions()
     val lifecycleOwner = LocalLifecycleOwner.current
     var previewPosterUrl by remember(filmId) { mutableStateOf<String?>(null) }
     var previewPosterOffset by remember(filmId) { mutableStateOf<Offset?>(null) }
@@ -302,7 +318,7 @@ fun DetailsScreen(
         load(filmId)
     }
 
-    BackHandler {
+    KinoBackHandler {
         when {
             activeHentaiSelection -> {
                 hentaiJobs.values.forEach { it.cancel() }
@@ -484,18 +500,16 @@ fun DetailsScreen(
                     } else {
                         val videoId = youTubeVideoIdOf(trailer.url)
                         if (videoId == null) {
-                            Toast.makeText(context, "Трейлер недоступен для mpvEx", Toast.LENGTH_SHORT).show()
+                            platformActions.showToast("Трейлер недоступен для mpvEx")
                         } else {
                             scope.launch {
                                 val stream = runCatching {
                                     withContext(Dispatchers.IO) { YouTubeStreamResolver.resolve(videoId) }
                                 }.getOrNull()
                                 if (stream == null) {
-                                    Toast.makeText(
-                                        context,
-                                        "Не удалось получить поток трейлера — YouTube недоступен без VPN",
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                                    platformActions.showToast(
+                                        "Не удалось получить поток трейлера — YouTube недоступен без VPN"
+                                    )
                                 } else {
                                     onOpenNativePlayer?.invoke(
                                         stream.url,
@@ -590,43 +604,42 @@ fun DetailsScreen(
                             } else {
                                 0
                             }
-                            AnimePlaybackSelectionScreen(
-                                shikimoriId = shikimoriId,
-                                kinopoiskId = item.kinopoiskId,
-                                animeTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
-                                playbackSequence = playbackSequence,
-                                onDismissRequest = { activePlaybackSelection = false },
-                                onWebFallback = { onOpenUrl(item.toWatchUrl()) },
-                                onStreamSelected = { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
-                                    var normalizedUrl = stream.url
-                                    if (normalizedUrl.startsWith("//")) {
-                                        normalizedUrl = "https:$normalizedUrl"
-                                    }
-                                    // file:// и абсолютные пути — скачанные серии из офлайн-библиотеки:
-                                    // они играются тем же плеером, но без сети и заголовков.
-                                    val isLocal = normalizedUrl.startsWith("file:", ignoreCase = true) ||
-                                        (normalizedUrl.startsWith("/") && !normalizedUrl.startsWith("//"))
-                                    if (normalizedUrl.startsWith("http", ignoreCase = true) || isLocal) {
-                                        onOpenNativePlayer?.invoke(
-                                            normalizedUrl,
-                                            stream.headers,
-                                            stream.qualities,
-                                            item.nameRu ?: item.nameOriginal ?: "Аниме",
-                                            epNum,
-                                            epTitle,
-                                            shikimoriId,
-                                            item.kinopoiskId,
-                                            source.name,
-                                            episodes,
-                                            translations,
-                                            trId,
-                                            null
-                                        )
-                                    } else {
-                                        throw IllegalArgumentException("Некорректная ссылка на видеопоток: $normalizedUrl")
-                                    }
-                                },
-                            )
+                            animeSelectionScreen?.invoke(
+                                shikimoriId,
+                                item.kinopoiskId,
+                                item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                playbackSequence,
+                                { activePlaybackSelection = false },
+                                { onOpenUrl(item.toWatchUrl()) }
+                            ) { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
+                                var normalizedUrl = stream.url
+                                if (normalizedUrl.startsWith("//")) {
+                                    normalizedUrl = "https:$normalizedUrl"
+                                }
+                                // file:// и абсолютные пути — скачанные серии из офлайн-библиотеки:
+                                // они играются тем же плеером, но без сети и заголовков.
+                                val isLocal = normalizedUrl.startsWith("file:", ignoreCase = true) ||
+                                    (normalizedUrl.startsWith("/") && !normalizedUrl.startsWith("//"))
+                                if (normalizedUrl.startsWith("http", ignoreCase = true) || isLocal) {
+                                    onOpenNativePlayer?.invoke(
+                                        normalizedUrl,
+                                        stream.headers,
+                                        stream.qualities,
+                                        item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                        epNum,
+                                        epTitle,
+                                        shikimoriId,
+                                        item.kinopoiskId,
+                                        source.name,
+                                        episodes,
+                                        translations,
+                                        trId,
+                                        null
+                                    )
+                                } else {
+                                    throw IllegalArgumentException("Некорректная ссылка на видеопоток: $normalizedUrl")
+                                }
+                            }
                         }
                         if (activeHentaiSelection) {
                             // Cached episode lists from earlier successful resolutions — shown
@@ -662,7 +675,7 @@ fun DetailsScreen(
                                     } catch (e: kotlinx.coroutines.CancellationException) {
                                         throw e
                                     } catch (e: Exception) {
-                                        Log.w("DetailsScreen", "Hentai ${provider.name} failed", e)
+                                        KLog.w("DetailsScreen", "Hentai ${provider.name} failed", e)
                                         HentaiSourceState.Failed(
                                             when (e) {
                                                 is java.net.SocketTimeoutException -> "Таймаут — источник недоступен. Включите VPN"
@@ -696,15 +709,12 @@ fun DetailsScreen(
                                 } else {
                                     "hentai:${provider.name}"
                                 }
-                                val local = if (item.kinopoiskId > 0) {
-                                    hd.kinoshka.app.data.download.EpisodeDownloadManager.findLocal(
-                                        0, item.kinopoiskId, provider.name, hentaiTrId, episodeNumber
-                                    )
+                                val localPlayable = if (item.kinopoiskId > 0) {
+                                    findLocalHentai?.invoke(item.kinopoiskId, provider.name, hentaiTrId, episodeNumber)
                                 } else null
-                                val localPlayable = local?.toPlayableUriString()
                                 val effectiveUrl = localPlayable ?: url
-                                val effectiveHeaders = if (local != null) emptyMap() else stream.headers
-                                val effectiveQualities = if (local != null) emptyMap() else stream.qualities
+                                val effectiveHeaders = if (localPlayable != null) emptyMap() else stream.headers
+                                val effectiveQualities = if (localPlayable != null) emptyMap() else stream.qualities
                                 // Переключатель озвучек плеера показывает ВСЕ найденные хентай-
                                 // источники тайтла: каждая серия каждого провайдера — отдельная
                                 // дорожка с реальным именем источника (не «Kodik»). Prepared-
@@ -786,7 +796,7 @@ fun DetailsScreen(
                                 }
                                 // Скачанная серия: подменяем её дорожку в prepared-потоках на локальный файл,
                                 // чтобы смена дорожек в плеере не уводила обратно в сеть.
-                                if (local != null) {
+                                if (localPlayable != null) {
                                     prepared[currentTrId]?.let { s ->
                                         prepared[currentTrId] = s.copy(url = localPlayable!!, headers = emptyMap())
                                     }
@@ -812,6 +822,7 @@ fun DetailsScreen(
                                 kinopoiskId = item.kinopoiskId,
                                 states = hentaiSources,
                                 backups = hentaiBackups,
+                                hentaiDownloadButton = hentaiDownloadButton,
                                 onBack = {
                                     hentaiJobs.values.forEach { it.cancel() }
                                     hentaiJobs.clear()
@@ -832,11 +843,11 @@ fun DetailsScreen(
                         kotlinx.coroutines.coroutineScope {
                             launch(kotlinx.coroutines.Dispatchers.IO) {
                                 runCatching { MovieStreamResolver.loadCatalog(warmRequest) }
-                                    .onFailure { Log.d("DetailsScreen", "prefetch kodik: ${it.javaClass.simpleName}") }
+                                    .onFailure { KLog.d("DetailsScreen", "prefetch kodik: ${it.javaClass.simpleName}") }
                             }
                             launch(kotlinx.coroutines.Dispatchers.IO) {
                                 runCatching { DdbbStreamResolver.resolveMovieStream(warmKpId) }
-                                    .onFailure { Log.d("DetailsScreen", "prefetch ddbb: ${it.javaClass.simpleName}") }
+                                    .onFailure { KLog.d("DetailsScreen", "prefetch ddbb: ${it.javaClass.simpleName}") }
                             }
                         }
                     }
@@ -894,7 +905,7 @@ fun DetailsScreen(
                                                         MovieNativeLauncher.resolve(
                                                             request,
                                                             state.userProfile,
-                                                            UserStateStore(context)
+                                                            userStateStore
                                                         )
                                                     }) {
                                                         is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
@@ -1024,7 +1035,8 @@ fun DetailsScreen(
                         item = item,
                         isAnime = isAnime,
                         scrollState = scrollState,
-                        onBack = onBack
+                        onBack = onBack,
+                        downloadSheet = downloadSheet
                     )
                 }
             }
@@ -1115,7 +1127,6 @@ private fun HeroHeader(
     item: FilmDetails,
     onPosterClick: (Offset) -> Unit
 ) {
-    val context = LocalContext.current
     val cover = item.coverUrl ?: item.posterUrl
     var posterAspectRatio by remember(item.kinopoiskId) { mutableStateOf(2f / 3f) }
     var isLoaded by remember(item.kinopoiskId) { mutableStateOf(false) }
@@ -1311,13 +1322,14 @@ private fun PosterPreviewDialog(
     clickOffset: Offset? = null,
     onDismiss: () -> Unit
 ) {
-    HideStatusBarEffect()
+    KinoHideSystemBarsEffect()
     var isVisible by remember { mutableStateOf(false) }
 
-    val density = LocalDensity.current
-    val configuration = LocalConfiguration.current
-    val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
-    val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
+    // Размер окна в пикселях: LocalConfiguration — android-only, а координаты клика и так
+    // в пикселях composition — они в одном пространстве с containerSize.
+    val windowInfo = LocalWindowInfo.current
+    val screenWidthPx = windowInfo.containerSize.width.toFloat()
+    val screenHeightPx = windowInfo.containerSize.height.toFloat()
 
     val dynamicOrigin = remember(clickOffset, screenWidthPx, screenHeightPx) {
         if (clickOffset != null && screenWidthPx > 0f && screenHeightPx > 0f) {
@@ -1345,7 +1357,7 @@ private fun PosterPreviewDialog(
         }
     }
 
-    BackHandler(enabled = true, onBack = { handleDismiss() })
+    KinoBackHandler(enabled = true, onBack = { handleDismiss() })
 
     Box(
         modifier = Modifier
@@ -1602,7 +1614,7 @@ private fun RoundedPlayIcon(modifier: Modifier = Modifier, color: Color = Color.
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
-internal fun UserProfileEditorSheet(
+fun UserProfileEditorSheet(
     item: FilmDetails,
     animeDetails: hd.kinoshka.app.data.model.ShikimoriAnimeDetails?,
     seasons: List<SeasonItem>,
@@ -1636,7 +1648,7 @@ internal fun UserProfileEditorSheet(
         dragHandle = null,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
-        KeepBottomSheetNavigationBarFromActivity()
+        KinoKeepDialogNavBarEffect()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1859,47 +1871,8 @@ internal fun UserProfileEditorSheet(
     }
 }
 
-@Suppress("DEPRECATION") // navigationBarColor игнорируется на API 35+, но нужен для старых версий
-@Composable
-private fun KeepBottomSheetNavigationBarFromActivity() {
-    val view = LocalView.current
-    DisposableEffect(view) {
-        val dialogWindow = (view.parent as? DialogWindowProvider)?.window
-        val activityWindow = view.context.findActivity()?.window
-        if (dialogWindow == null || activityWindow == null) {
-            onDispose { }
-        } else {
-            val oldNavColor = dialogWindow.navigationBarColor
-            val oldLightNav =
-                WindowCompat.getInsetsController(dialogWindow, view).isAppearanceLightNavigationBars
-            val oldContrastEnforced =
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    dialogWindow.isNavigationBarContrastEnforced
-                } else {
-                    false
-                }
-
-            val activityController =
-                WindowCompat.getInsetsController(activityWindow, activityWindow.decorView)
-            val dialogController = WindowCompat.getInsetsController(dialogWindow, view)
-            dialogWindow.navigationBarColor = activityWindow.navigationBarColor
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                dialogWindow.isNavigationBarContrastEnforced =
-                    activityWindow.isNavigationBarContrastEnforced
-            }
-            dialogController.isAppearanceLightNavigationBars =
-                activityController.isAppearanceLightNavigationBars
-
-            onDispose {
-                dialogWindow.navigationBarColor = oldNavColor
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    dialogWindow.isNavigationBarContrastEnforced = oldContrastEnforced
-                }
-                dialogController.isAppearanceLightNavigationBars = oldLightNav
-            }
-        }
-    }
-}
+// KeepBottomSheetNavigationBarFromActivity переехал в expect/actual
+// hd.kinoshka.app.ui.platform.KinoKeepDialogNavBarEffect (androidActual).
 
 @Composable
 private fun CompactCounterField(
@@ -2482,20 +2455,9 @@ private fun ImagesViewerDialog(
         pageCount = { fullUrls.size }
     )
 
-    // Активность залочена в портрет манифестом — иначе поворот не работает нигде.
-    // Пока просмотрщик открыт, отпускаем лок на датчики (там кадр идёт на весь экран),
-    // при закрытии возвращаем прежнее состояние.
-    val activityContext = LocalContext.current
-    DisposableEffect(Unit) {
-        val activity = activityContext.findActivity()
-        val previousOrientation = activity?.requestedOrientation
-            ?: android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        activity?.requestedOrientation =
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-        onDispose {
-            activity?.requestedOrientation = previousOrientation
-        }
-    }
+    // Активность залочена в портрет манифестом — пока просмотрщик открыт, лок отпускается
+    // датчикам (Android-actual); при закрытии прежнее состояние возвращается. Desktop — no-op.
+    KinoFreeOrientationEffect()
 
     var dismissOffsetY by remember { mutableFloatStateOf(0f) }
     val animatedDismissOffsetY by animateFloatAsState(
@@ -2505,7 +2467,7 @@ private fun ImagesViewerDialog(
     )
     val backgroundAlpha = (1f - (kotlin.math.abs(animatedDismissOffsetY) / 450f)).coerceIn(0.2f, 1f)
 
-    HideStatusBarEffect()
+    KinoHideSystemBarsEffect()
 
     Box(
         modifier = Modifier
@@ -2669,8 +2631,8 @@ private fun ImagesViewerDialog(
             ) {
                 // Горизонтальный режим: кадр занимает весь экран целиком — без 94% ширины,
                 // вертикальных отступов и скруглений. Пропорцию задаёт ContentScale.Fit.
-                val isLandscape = LocalConfiguration.current.orientation ==
-                    android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                // LocalConfiguration — android-only: ориентация выводится из размера контейнера.
+                val isLandscape = LocalWindowInfo.current.containerSize.let { it.width > it.height }
                 Box(
                     modifier = Modifier
                         .then(
@@ -2757,29 +2719,8 @@ private fun ImagesViewerDialog(
     }
 }
 
-@Composable
-private fun HideStatusBarEffect() {
-    val view = LocalView.current
-    DisposableEffect(view) {
-        val activityWindow = view.context.findActivity()?.window
-        val controller =
-            activityWindow?.let { WindowCompat.getInsetsController(it, it.decorView) }
-        controller?.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller?.hide(WindowInsetsCompat.Type.statusBars())
-        onDispose {
-            controller?.show(WindowInsetsCompat.Type.statusBars())
-        }
-    }
-}
-
-private tailrec fun Context.findActivity(): Activity? {
-    return when (this) {
-        is Activity -> this
-        is ContextWrapper -> baseContext.findActivity()
-        else -> null
-    }
-}
+// HideStatusBarEffect и Context.findActivity переехали в expect/actual
+// hd.kinoshka.app.ui.platform.KinoHideSystemBarsEffect (androidActual).
 
 private data class FactEntry(
     val label: String,
@@ -2846,7 +2787,6 @@ private fun AnimeDetailsLayout(
 ) {
     val item = state.item ?: return
     val anime = state.animeDetails
-    val context = LocalContext.current
     var showCharactersSheet by remember { mutableStateOf(false) }
     var showChronologySheet by remember { mutableStateOf(false) }
 
@@ -3292,7 +3232,7 @@ private fun AnimeCharactersSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss
     ) {
-        KeepBottomSheetNavigationBarFromActivity()
+        KinoKeepDialogNavBarEffect()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3446,7 +3386,7 @@ private fun AnimeChronologySheet(
         sheetState = sheetState,
         modifier = Modifier.fillMaxHeight()
     ) {
-        KeepBottomSheetNavigationBarFromActivity()
+        KinoKeepDialogNavBarEffect()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3824,9 +3764,7 @@ private fun AnimeFullDetailsCard(
 
 @Composable
 private fun DetailRow(label: String, value: String) {
-    val clipboard = LocalClipboard.current
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val platformActions = rememberKinoPlatformActions()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -3849,14 +3787,8 @@ private fun DetailRow(label: String, value: String) {
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
                 ) {
-                    scope.launch {
-                        clipboard.setClipEntry(
-                            androidx.compose.ui.platform.ClipEntry(
-                                android.content.ClipData.newPlainText("value", value)
-                            )
-                        )
-                        Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
-                    }
+                    platformActions.copyText(value)
+                    platformActions.showToast("Скопировано")
                 }
         )
     }
@@ -3952,19 +3884,14 @@ private fun formatNextEpisode(isoDate: String?): String {
  */
 private fun utcToLocalDateString(iso: String): String? {
     return runCatching {
-        val instant = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val normalized = iso.trim().let {
-                when {
-                    it.endsWith("Z") || it.contains("+") || it.substringAfterLast('T').contains("-") -> it
-                    else -> it + "Z" // bare UTC string — append Z so Instant can parse it
-                }
+        // minSdk 26: java.time доступен всегда — легаси-SimpleDateFormat ветка удалена.
+        val normalized = iso.trim().let {
+            when {
+                it.endsWith("Z") || it.contains("+") || it.substringAfterLast('T').contains("-") -> it
+                else -> it + "Z" // bare UTC string — append Z so Instant can parse it
             }
-            java.time.OffsetDateTime.parse(normalized).toInstant()
-        } else {
-            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-            fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
-            fmt.parse(iso.substringBefore('.'))?.toInstant()
-        } ?: return null
+        }
+        val instant = java.time.OffsetDateTime.parse(normalized).toInstant()
         val zdt = instant.atZone(java.time.ZoneId.systemDefault())
         String.format(
             java.util.Locale.US,
@@ -4079,12 +4006,12 @@ private fun CharacterDetailsSheet(
     onOpenFilm: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val context = LocalContext.current
+    val platformActions = rememberKinoPlatformActions()
     var characterDetails by remember(characterId) { mutableStateOf<hd.kinoshka.app.data.model.ShikimoriCharacterDetails?>(null) }
     var isLoading by remember(characterId) { mutableStateOf(true) }
 
     LaunchedEffect(characterId) {
-        val api = hd.kinoshka.app.data.api.ApiClient.shikimoriApi(context.cacheDir)
+        val api = hd.kinoshka.app.data.api.ApiClient.shikimoriApi(platformActions.cacheDir)
         val repo = hd.kinoshka.app.data.repo.AnimeRepository(api)
         characterDetails = repo.character(characterId)
         isLoading = false
@@ -4255,9 +4182,10 @@ private fun DetailsTopBar(
     item: FilmDetails,
     isAnime: Boolean,
     scrollState: LazyListState,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    downloadSheet: (@Composable (item: FilmDetails, isAnime: Boolean, onDismiss: () -> Unit) -> Unit)? = null
 ) {
-    val context = LocalContext.current
+    val platformActions = rememberKinoPlatformActions()
     val density = LocalDensity.current
     var showTorrentSheet by remember { mutableStateOf(false) }
 
@@ -4319,27 +4247,26 @@ private fun DetailsTopBar(
                     textAlign = TextAlign.Center
                 )
 
-                IconButton(
-                    onClick = { showTorrentSheet = true }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Download,
-                        contentDescription = "Скачать",
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
+                // Скачивание — платформенный слот: на desktop офлайн-библиотеки нет, кнопка скрыта.
+                if (downloadSheet != null) {
+                    IconButton(
+                        onClick = { showTorrentSheet = true }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "Скачать",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
                 IconButton(
                     onClick = {
-                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            val shareUrl = if (isAnime) {
-                                item.webUrl ?: "https://shikimori.io/animes/${item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET}"
-                            } else {
-                                item.webUrl ?: "https://www.kinopoisk.ru/film/${item.kinopoiskId}/"
-                            }
-                            putExtra(Intent.EXTRA_TEXT, shareUrl)
+                        val shareUrl = if (isAnime) {
+                            item.webUrl ?: "https://shikimori.io/animes/${item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET}"
+                        } else {
+                            item.webUrl ?: "https://www.kinopoisk.ru/film/${item.kinopoiskId}/"
                         }
-                        context.startActivity(Intent.createChooser(shareIntent, "Поделиться"))
+                        platformActions.shareText(shareUrl)
                     }
                 ) {
                     Icon(
@@ -4354,11 +4281,7 @@ private fun DetailsTopBar(
 
     // Шит загрузки: торренты (AniLiberty/AniStar/Rutor) + скачивание серий в офлайн-библиотеку.
     if (showTorrentSheet) {
-        TitleDownloadSheet(
-            item = item,
-            isAnime = isAnime,
-            onDismiss = { showTorrentSheet = false }
-        )
+        downloadSheet?.invoke(item, isAnime) { showTorrentSheet = false }
     }
 }
 
@@ -4425,19 +4348,14 @@ private fun NextEpisodeCountdownCard(
 ) {
     val targetTime = remember(nextEpisodeAt) {
         runCatching {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                val normalized = nextEpisodeAt.trim().let {
-                    when {
-                        it.endsWith("Z") || it.contains("+") || it.substringAfterLast('T').contains("-") -> it
-                        else -> it + "Z"
-                    }
+            // minSdk 26: java.time доступен всегда — легаси-SimpleDateFormat ветка удалена.
+            val normalized = nextEpisodeAt.trim().let {
+                when {
+                    it.endsWith("Z") || it.contains("+") || it.substringAfterLast('T').contains("-") -> it
+                    else -> it + "Z"
                 }
-                java.util.Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
-            } else {
-                val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-                fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
-                fmt.parse(nextEpisodeAt.substringBefore('.'))
             }
+            java.util.Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
         }.getOrNull()
     } ?: return
 
@@ -4541,6 +4459,15 @@ private fun HentaiSourceScreen(
     backups: Map<hd.kinoshka.app.data.source.HentaiProvider, hd.kinoshka.app.data.source.HentaiStream?> = emptyMap(),
     onBack: () -> Unit,
     onRetry: (hd.kinoshka.app.data.source.HentaiProvider) -> Unit,
+    hentaiDownloadButton: (@Composable (
+        title: String,
+        kinopoiskId: Int,
+        provider: hd.kinoshka.app.data.source.HentaiProvider,
+        label: String,
+        episodeNumber: Int,
+        episodeUrl: String?,
+        headers: Map<String, String>
+    ) -> Unit)? = null,
     onPlay: (
         stream: hd.kinoshka.app.data.source.HentaiStream,
         url: String,
@@ -4548,12 +4475,7 @@ private fun HentaiSourceScreen(
         provider: hd.kinoshka.app.data.source.HentaiProvider
     ) -> Unit
 ) {
-    Dialog(
-        onDismissRequest = onBack,
-        // Окно диалога должно рисоваться ПОД системными барами: с дефолтным
-        // decorFitsSystemWindows=true сверху и снизу остаётся зазор с фономDetails-экрана.
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
-    ) {
+    KinoFullscreenDialog(onDismissRequest = onBack) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
@@ -4709,14 +4631,14 @@ private fun HentaiSourceScreen(
                                                 maxQuality = episode.maxQuality,
                                                 onClick = { onPlay(stream, episode.url, episode.label, provider) },
                                                 trailing = {
-                                                    HentaiDownloadButton(
-                                                        title = filmTitle,
-                                                        kinopoiskId = kinopoiskId,
-                                                        provider = provider,
-                                                        label = episode.label,
-                                                        episodeNumber = index + 1,
-                                                        episodeUrl = episode.url,
-                                                        headers = stream.headers
+                                                    hentaiDownloadButton?.invoke(
+                                                        filmTitle,
+                                                        kinopoiskId,
+                                                        provider,
+                                                        episode.label,
+                                                        index + 1,
+                                                        episode.url,
+                                                        stream.headers
                                                     )
                                                 }
                                             )
@@ -4729,14 +4651,14 @@ private fun HentaiSourceScreen(
                                             maxQuality = stream.quality,
                                             onClick = { onPlay(stream, stream.url, "Фильм", provider) },
                                             trailing = {
-                                                HentaiDownloadButton(
-                                                    title = filmTitle,
-                                                    kinopoiskId = kinopoiskId,
-                                                    provider = provider,
-                                                    label = "Фильм",
-                                                    episodeNumber = 1,
-                                                    episodeUrl = stream.url,
-                                                    headers = stream.headers
+                                                hentaiDownloadButton?.invoke(
+                                                    filmTitle,
+                                                    kinopoiskId,
+                                                    provider,
+                                                    "Фильм",
+                                                    1,
+                                                    stream.url,
+                                                    stream.headers
                                                 )
                                             }
                                         )
@@ -4920,80 +4842,6 @@ private fun HentaiEpisodeRow(
     }
 }
 
-/** Кнопка скачивания хентай-серии в офлайн-библиотеку (состояние: скачать/прогресс/скачано/ошибка). */
-@Composable
-private fun HentaiDownloadButton(
-    title: String,
-    kinopoiskId: Int,
-    provider: hd.kinoshka.app.data.source.HentaiProvider,
-    label: String,
-    episodeNumber: Int,
-    episodeUrl: String?,
-    headers: Map<String, String>
-) {
-    if (kinopoiskId <= 0 || episodeUrl.isNullOrBlank()) return
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val itemKey = hd.kinoshka.app.data.download.animeItemKey(0, kinopoiskId)
-    val translationId = if (label == "Фильм") "hentai:${provider.name}" else "hentai:${provider.name}:$label"
-    val key = hd.kinoshka.app.data.download.offlineKey(itemKey, provider.name, translationId, episodeNumber)
-    val tasks by hd.kinoshka.app.data.download.EpisodeDownloadManager.tasks.collectAsState()
-    val library by hd.kinoshka.app.data.download.EpisodeDownloadManager.library.collectAsState()
-    val task = tasks[key]
-    val downloaded = library.any { it.key == key }
-    when {
-        downloaded -> Icon(
-            imageVector = Icons.Default.DownloadDone,
-            contentDescription = "Скачано",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(20.dp)
-        )
-        task != null && task.phase == hd.kinoshka.app.data.download.DownloadPhase.FAILED -> IconButton(
-            onClick = { hd.kinoshka.app.data.download.EpisodeDownloadManager.retry(key) },
-            modifier = Modifier.size(32.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Refresh,
-                contentDescription = "Повторить скачивание",
-                tint = MaterialTheme.colorScheme.error,
-                modifier = Modifier.size(18.dp)
-            )
-        }
-        task != null -> IconButton(
-            onClick = { hd.kinoshka.app.data.download.EpisodeDownloadManager.cancel(key) },
-            modifier = Modifier.size(32.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Close,
-                contentDescription = "Отменить скачивание",
-                modifier = Modifier.size(18.dp)
-            )
-        }
-        else -> IconButton(
-            onClick = {
-                context.tryRequestNotificationPermission()
-                hd.kinoshka.app.data.download.EpisodeDownloadManager.enqueue(
-                    hd.kinoshka.app.data.download.EpisodeDownloadManager.EpisodeDownloadRequest(
-                        itemKey = itemKey,
-                        title = title,
-                        source = provider.name,
-                        translationId = translationId,
-                        translationTitle = "${provider.displayName} · $label",
-                        episodeNumber = episodeNumber,
-                        episodeLabel = label,
-                        resolve = {
-                            hd.kinoshka.app.data.download.MediaDownloader.MediaSource(episodeUrl, headers)
-                        }
-                    )
-                )
-            },
-            modifier = Modifier.size(32.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Download,
-                contentDescription = "Скачать серию",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(19.dp)
-            )
-        }
-    }
-}
+// HentaiDownloadButton переехал в app (hd.kinoshka.app.ui.screens.DetailsSlots):
+// он завязан на EpisodeDownloadManager/уведомления — Android-механику скачивания
+// общий экран получает платформенным слотом hentaiDownloadButton.

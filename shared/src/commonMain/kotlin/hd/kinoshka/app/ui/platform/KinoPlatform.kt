@@ -3,16 +3,28 @@ package hd.kinoshka.app.ui.platform
 import androidx.compose.runtime.Composable
 
 /**
- * Платформенно-нейтральные действия уровня приложения для общих экранов:
- * системный тост и завершение приложения (двойной «Назад» на Android).
+ * Платформенно-нейтральные швы для общих экранов. KinoPlatformActions живёт в jvmShared
+ * (ему нужен java.io.File для cacheDir), чистые expect-эффекты — здесь, в commonMain.
  */
-class KinoPlatformActions(
-    val exitApp: () -> Unit,
-    val showToast: (message: String) -> Unit
-)
 
+/** Android: прячет системный статус-бар на время полноэкранного просмотрщика; desktop — no-op. */
 @Composable
-expect fun rememberKinoPlatformActions(): KinoPlatformActions
+expect fun KinoHideSystemBarsEffect()
+
+/** Android: диалоговое окно наследует цвет навбара активити (низ шита не белеет); desktop — no-op. */
+@Composable
+expect fun KinoKeepDialogNavBarEffect()
+
+/** Android: пока просмотрщик кадров открыт, портретный лок активности отпускается датчикам; desktop — no-op. */
+@Composable
+expect fun KinoFreeOrientationEffect()
+
+/**
+ * Полноэкранный Dialog общих экранов: на Android окно рисуется ПОД системными барами
+ * (decorFitsSystemWindows=false), у compose-multiplatform этот параметр недоступен.
+ */
+@Composable
+expect fun KinoFullscreenDialog(onDismissRequest: () -> Unit, content: @Composable () -> Unit)
 
 /**
  * Общий обработчик системной кнопки «Назад». Android — androidx.activity BackHandler,

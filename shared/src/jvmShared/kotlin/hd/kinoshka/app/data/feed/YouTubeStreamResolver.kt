@@ -1,6 +1,6 @@
 package hd.kinoshka.app.data.feed
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -68,11 +68,11 @@ object YouTubeStreamResolver {
             val json = httpPost(body, profile.userAgent, profile) ?: continue
             val stream = parsePlayerResponse(json, profile.userAgent)
             if (stream != null) {
-                Log.i(TAG, "resolved $videoId via ${profile.name}: …${stream.url.takeLast(40)}")
+                KLog.i(TAG, "resolved $videoId via ${profile.name}: …${stream.url.takeLast(40)}")
                 return@withContext stream
             }
         }
-        Log.i(TAG, "no stream for $videoId")
+        KLog.i(TAG, "no stream for $videoId")
         null
     }
 
@@ -156,7 +156,7 @@ object YouTubeStreamResolver {
                 .build()
         ).execute().use { response ->
             if (!response.isSuccessful) {
-                Log.w(TAG, "${profile.name} POST -> ${response.code}")
+                KLog.w(TAG, "${profile.name} POST -> ${response.code}")
                 return@use null
             }
             response.body.string()

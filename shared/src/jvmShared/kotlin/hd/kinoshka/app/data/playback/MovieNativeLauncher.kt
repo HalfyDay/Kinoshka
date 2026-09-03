@@ -1,10 +1,10 @@
 package hd.kinoshka.app.data.playback
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import hd.kinoshka.app.data.local.CachedMovieVoiceover
 import hd.kinoshka.app.data.local.MovieVoiceoverCache
 import hd.kinoshka.app.data.local.UserFilmProfile
-import hd.kinoshka.app.data.local.UserStateStore
+import hd.kinoshka.app.data.local.UserStateStoreBase
 import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.AnimeEpisode
@@ -75,7 +75,7 @@ object MovieNativeLauncher {
     suspend fun resolve(
         request: MoviePlaybackRequest,
         profile: UserFilmProfile?,
-        stateStore: UserStateStore? = null,
+        stateStore: UserStateStoreBase? = null,
         onLateVoiceovers: ((List<FlatTranslation>) -> Unit)? = null,
     ): NativeLaunchPayload =
         withContext(Dispatchers.IO) {
@@ -89,7 +89,7 @@ object MovieNativeLauncher {
     private suspend fun resolveSeries(
         request: MoviePlaybackRequest,
         profile: UserFilmProfile?,
-        stateStore: UserStateStore? = null,
+        stateStore: UserStateStoreBase? = null,
     ): NativeLaunchPayload {
         val raceStartMs = System.currentTimeMillis()
         // Detached race scope — same reason as in [resolveMovie]: a coroutineScope here would
@@ -100,14 +100,14 @@ object MovieNativeLauncher {
         val ddbbSeriesDeferred = raceScope.async {
             request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
                 runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
-                    .onFailure { Log.w(TAG, "ddbb series race failed", it) }
+                    .onFailure { KLog.w(TAG, "ddbb series race failed", it) }
                     .getOrNull()
             }
         }
         val catalogDeferred = raceScope.async { MovieStreamResolver.loadCatalog(request) }
         val payload = when (val outcome = awaitFirstSeriesOutcome(catalogDeferred, ddbbSeriesDeferred)) {
             is SeriesOutcome.FromKodik -> {
-                Log.i(TAG, "series race winner=kodik at ${System.currentTimeMillis() - raceStartMs}ms")
+                KLog.i(TAG, "series race winner=kodik at ${System.currentTimeMillis() - raceStartMs}ms")
                 kodikSeriesPayload(request, outcome.catalog, profile, stateStore)
             }
             is SeriesOutcome.FromDdbb -> {
@@ -122,10 +122,10 @@ object MovieNativeLauncher {
                     .distinctBy { it.seasonNumber to it.episodeNumber }.size
                 val kodikEpisodeCount = kodikCatalog?.let { canonicalSeriesEpisodes(it.candidates).size } ?: 0
                 if (kodikCatalog != null && kodikEpisodeCount > ddbbEpisodeCount) {
-                    Log.i(TAG, "series race winner=ddbb at ${System.currentTimeMillis() - raceStartMs}ms, but kodik structure broader ($kodikEpisodeCount > $ddbbEpisodeCount eps) → kodik")
+                    KLog.i(TAG, "series race winner=ddbb at ${System.currentTimeMillis() - raceStartMs}ms, but kodik structure broader ($kodikEpisodeCount > $ddbbEpisodeCount eps) → kodik")
                     kodikSeriesPayload(request, kodikCatalog, profile)
                 } else {
-                    Log.i(TAG, "series race winner=ddbb/${harvested.sourceName} at ${System.currentTimeMillis() - raceStartMs}ms (ddbb eps=$ddbbEpisodeCount, kodik eps=$kodikEpisodeCount)")
+                    KLog.i(TAG, "series race winner=ddbb/${harvested.sourceName} at ${System.currentTimeMillis() - raceStartMs}ms (ddbb eps=$ddbbEpisodeCount, kodik eps=$kodikEpisodeCount)")
                     val context = buildDdbbSeriesContext(request, harvested, profile)
                     if (context != null) {
                         val ep = context.currentEpisode
@@ -160,7 +160,7 @@ object MovieNativeLauncher {
         request: MoviePlaybackRequest,
         catalog: MovieCatalogResult.Available,
         profile: UserFilmProfile?,
-        stateStore: UserStateStore? = null,
+        stateStore: UserStateStoreBase? = null,
     ): NativeLaunchPayload = coroutineScope {
         val episodes = canonicalSeriesEpisodes(catalog.candidates)
         // find-player-discovered rows expose only a whole-title player link; present them
@@ -219,14 +219,14 @@ object MovieNativeLauncher {
         } else {
             val reason = (result as? MovieStreamResult.Unavailable)?.reason
                 ?: MoviePlaybackFailure.NO_PLAYABLE_REFERENCES
-            Log.i(TAG, "series kodik unplayable: $reason")
+            KLog.i(TAG, "series kodik unplayable: $reason")
             NativeLaunchPayload.Failed(reason)
         }
     }
 
     private suspend fun resolveMovie(
         request: MoviePlaybackRequest,
-        stateStore: UserStateStore?,
+        stateStore: UserStateStoreBase?,
         onLateVoiceovers: ((List<FlatTranslation>) -> Unit)?,
     ): NativeLaunchPayload {
         val raceStartMs = System.currentTimeMillis()
@@ -240,14 +240,14 @@ object MovieNativeLauncher {
         val ddbbDeferred = raceScope.async {
             request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
                 runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
-                    .onFailure { Log.w(TAG, "ddbb race failed", it) }
+                    .onFailure { KLog.w(TAG, "ddbb race failed", it) }
                     .getOrNull()
             }
         }
         val kodikDeferred = raceScope.async { MovieStreamResolver.resolveMovie(request) }
         val outcome = awaitFirstMovieOutcome(kodikDeferred, ddbbDeferred)
         val winnerName = when (outcome) { is MovieOutcome.FromDdbb -> "ddbb"; is MovieOutcome.FromKodik -> "kodik"; is MovieOutcome.Failed -> "none" }
-        Log.i(TAG, "movie race winner=$winnerName at ${System.currentTimeMillis() - raceStartMs}ms")
+        KLog.i(TAG, "movie race winner=$winnerName at ${System.currentTimeMillis() - raceStartMs}ms")
         hd.kinoshka.app.data.diagnostics.AppDiagnostics.event("movie race winner=$winnerName at ${System.currentTimeMillis() - raceStartMs}ms")
         return when (outcome) {
             is MovieOutcome.FromKodik -> {
@@ -333,7 +333,7 @@ object MovieNativeLauncher {
         val ladderSummary = rows.joinToString { row ->
             "${row.source.name}:${row.title.take(24)}=${streams[row.translationId]?.qualities?.keys?.joinToString("/") ?: "lazy"}"
         }
-        Log.i(TAG, "readyQualityMovie: rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), kp=$kinopoiskId, ladders: $ladderSummary")
+        KLog.i(TAG, "readyQualityMovie: rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), kp=$kinopoiskId, ladders: $ladderSummary")
         hd.kinoshka.app.data.diagnostics.AppDiagnostics.event("prepared rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), ladders: $ladderSummary".take(380))
         NativeLaunchPayload.QualityOnlyMovie(initial, orderedRows, streams)
     }
@@ -348,7 +348,7 @@ object MovieNativeLauncher {
         request: MoviePlaybackRequest,
         winnerKodikTranslations: List<FlatTranslation>,
         ddbbDeferred: kotlinx.coroutines.Deferred<DdbbStream?>,
-        stateStore: UserStateStore?,
+        stateStore: UserStateStoreBase?,
         onLateVoiceovers: (List<FlatTranslation>) -> Unit,
     ) {
         raceScope.launch {
@@ -369,7 +369,7 @@ object MovieNativeLauncher {
         request: MoviePlaybackRequest,
         ddbbStream: DdbbStream,
         kodikDeferred: kotlinx.coroutines.Deferred<MovieStreamResult>,
-        stateStore: UserStateStore?,
+        stateStore: UserStateStoreBase?,
         onLateVoiceovers: (List<FlatTranslation>) -> Unit,
     ) {
         raceScope.launch {
@@ -409,7 +409,7 @@ object MovieNativeLauncher {
         request: MoviePlaybackRequest,
         ddbbStream: DdbbStream?,
         kodikTranslations: List<FlatTranslation>,
-        stateStore: UserStateStore? = null,
+        stateStore: UserStateStoreBase? = null,
     ): List<FlatTranslation> {
         val persistKey = translationCacheKey(request)
         val sessionTranslations = persistKey?.let { key ->

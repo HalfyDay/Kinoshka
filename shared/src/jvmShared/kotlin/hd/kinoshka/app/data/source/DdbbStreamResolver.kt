@@ -1,6 +1,6 @@
 package hd.kinoshka.app.data.source
 
-import android.util.Log
+import hd.kinoshka.app.util.log.KLog
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -93,7 +93,7 @@ object DdbbStreamResolver {
     private suspend fun resolveMovieStreamInternal(kinopoiskId: Int): DdbbStream? = withContext(Dispatchers.IO) {
         if (kinopoiskId <= 0) return@withContext null
         val players = fetchPlayers(kinopoiskId)
-        Log.i(TAG, "ddbb offered ${players.size} sources for kp=$kinopoiskId: ${players.map { it.first }}")
+        KLog.i(TAG, "ddbb offered ${players.size} sources for kp=$kinopoiskId: ${players.map { it.first }}")
         // Hard budget: the movie race starts playback from the winner as soon as one source
         // succeeds, but a title where every source stalls must not hold the Watch button for
         // minutes — a single WebView harvest alone can burn HARVEST_TIMEOUT_MS.
@@ -101,7 +101,7 @@ object DdbbStreamResolver {
         var harvestAttempted = false
         players.forEach { (type, iframeUrl) ->
             if (System.currentTimeMillis() >= deadline) {
-                Log.w(TAG, "resolveMovieStream deadline hit, giving up before ${type.lowercase()}")
+                KLog.w(TAG, "resolveMovieStream deadline hit, giving up before ${type.lowercase()}")
                 return@forEach
             }
             val lowerType = type.lowercase()
@@ -111,7 +111,7 @@ object DdbbStreamResolver {
                 extractFromEmbed(html, iframeUrl)?.let { (headers, qualities) ->
                     if (qualities.isNotEmpty()) {
                         val bestKey = qualityPreference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
-                        Log.i(TAG, "$lowerType: extracted ${qualities.size} qualities, using $bestKey")
+                        KLog.i(TAG, "$lowerType: extracted ${qualities.size} qualities, using $bestKey")
                         // extractTurboTracks must receive the obfuscated config blob, not the whole
                         // embed page: findTurboWindow scans a short base64 prefix, and feeding it the
                         // full HTML made the window search fail → voiceover list silently empty.
@@ -130,7 +130,7 @@ object DdbbStreamResolver {
                             registerTurboCatalog(kinopoiskId, headers, serialParse.copy(ladders = perDubLadders), translations)
                         }
                         if (serialParse.tracks.isNotEmpty()) {
-                            Log.i(TAG, "$lowerType: structured serial catalog: " +
+                            KLog.i(TAG, "$lowerType: structured serial catalog: " +
                                 "${serialParse.tracks.map { it.dubTitle }.distinct().size} dubs, " +
                                 "${serialParse.tracks.map { it.seasonNumber to it.episodeNumber }.distinct().size} episodes")
                         }
@@ -171,8 +171,8 @@ object DdbbStreamResolver {
                 // One harvest attempt per resolve: serial headless-WebView runs over every
                 // remaining source multiply latency without materially raising hit-rate.
                 harvestAttempted = true
-                Log.i(TAG, "$lowerType: direct extraction failed, harvesting embed in a headless browser…")
-                WebViewStreamHarvester.harvest(
+                KLog.i(TAG, "$lowerType: direct extraction failed, harvesting embed in a headless browser…")
+                DdbbHarvestBridge.harvest(
                     embedUrl = iframeUrl,
                     pageReferer = "https://ddbb.lol/",
                     timeoutMs = HARVEST_TIMEOUT_MS,
@@ -180,7 +180,7 @@ object DdbbStreamResolver {
                     val referer = harvested.referer
                         ?: runCatching { java.net.URI(iframeUrl) }.getOrNull()?.let { "${it.scheme}://${it.host}/" }
                         ?: "https://ddbb.lol/"
-                    Log.i(TAG, "$lowerType: harvested ${harvested.url.take(100)}")
+                    KLog.i(TAG, "$lowerType: harvested ${harvested.url.take(100)}")
                     return@withContext DdbbStream(
                         url = harvested.url,
                         headers = mapOf("Referer" to referer, "User-Agent" to USER_AGENT),
@@ -188,9 +188,9 @@ object DdbbStreamResolver {
                         sourceName = type.replaceFirstChar { it.uppercase() }
                     )
                 }
-                Log.w(TAG, "$lowerType: harvest found nothing")
+                KLog.w(TAG, "$lowerType: harvest found nothing")
             } else {
-                Log.w(TAG, "$lowerType: no stream extracted")
+                KLog.w(TAG, "$lowerType: no stream extracted")
             }
         }
         null
@@ -269,15 +269,15 @@ object DdbbStreamResolver {
                 if (attempts >= LAUNCH_PROBE_MAX_ATTEMPTS) break
                 attempts += 1
                 if (validateDirectUrl(url, headers)) {
-                    Log.i(TAG, "launch probe OK after $attempts attempt(s): ${url.take(90)}")
+                    KLog.i(TAG, "launch probe OK after $attempts attempt(s): ${url.take(90)}")
                     return@withContext LaunchChoice(url, ladder)
                 }
-                Log.w(TAG, "launch probe dead ($attempts): ${url.take(90)}")
+                KLog.w(TAG, "launch probe dead ($attempts): ${url.take(90)}")
             }
         }
         // Everything dead (or budget spent): hand back the original default and let the
         // player's tracked retry handle it — probing cannot block playback entirely.
-        Log.w(TAG, "launch probe exhausted ($attempts attempts), using default url")
+        KLog.w(TAG, "launch probe exhausted ($attempts attempts), using default url")
         LaunchChoice(defaultUrl, defaultLadder)
     }
 
@@ -407,7 +407,7 @@ object DdbbStreamResolver {
                         return sorted
                     }
                 }
-            }.onFailure { Log.w(TAG, "players api attempt $attempt failed", it) }
+            }.onFailure { KLog.w(TAG, "players api attempt $attempt failed", it) }
         }
         return emptyList()
     }
@@ -460,7 +460,7 @@ object DdbbStreamResolver {
                     "User-Agent" to USER_AGENT
                 ) to qualities
             }
-            Log.w(TAG, "turbo blob present but no stream harvested")
+            KLog.w(TAG, "turbo blob present but no stream harvested")
         }
         return null
     }
@@ -658,7 +658,7 @@ object DdbbStreamResolver {
                 }
             }
         }
-        Log.i(TAG, "turbo entries: ${merged.size} merged from ${windows.size} phase window(s)")
+        KLog.i(TAG, "turbo entries: ${merged.size} merged from ${windows.size} phase window(s)")
         return merged.values.toList()
     }
 
@@ -769,9 +769,9 @@ object DdbbStreamResolver {
             )
             ladders[bestUrl] = entry.ladder
         }
-        if (duplicateRows > 0) Log.i(TAG, "turbo serial parse: dropped $duplicateRows duplicate-stream rows")
+        if (duplicateRows > 0) KLog.i(TAG, "turbo serial parse: dropped $duplicateRows duplicate-stream rows")
         val seasons = tracks.values.map { it.seasonNumber }.distinct().sorted()
-        Log.i(TAG, "turbo serial parse: ${tracks.size} rows, ${ladders.size} ladders, seasons=$seasons")
+        KLog.i(TAG, "turbo serial parse: ${tracks.size} rows, ${ladders.size} ladders, seasons=$seasons")
         return TurboSerialParse(tracks.values.toList(), ladders)
     }
 

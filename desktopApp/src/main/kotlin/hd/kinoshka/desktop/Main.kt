@@ -15,6 +15,7 @@ import hd.kinoshka.app.data.local.UserStateStoreBase
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
+import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.FilmsViewModel
 import hd.kinoshka.app.ui.screens.HomeScreen
 import kotlinx.coroutines.launch
@@ -33,7 +34,8 @@ sealed interface Screen {
 fun main(args: Array<String>) = application {
     val repository = remember { buildRepository() }
     // Общий FilmsViewModel (shared): тот же экран, что и на телефоне.
-    val viewModel = remember { buildViewModel(repository) }
+    val userStateStore = remember { UserStateStoreBase(KinoPrefs.createDefault()) }
+    val viewModel = remember { buildViewModel(repository, userStateStore) }
     val scope = rememberCoroutineScope()
     var screen by remember { mutableStateOf(initialScreen(args, repository)) }
 
@@ -79,10 +81,29 @@ fun main(args: Array<String>) = application {
                     onClearSearchHistory = viewModel::clearSearchHistory
                 )
                 is Screen.Details -> DetailsScreen(
-                    film = current.film,
-                    repository = repository,
+                    filmId = current.film.kinopoiskId,
+                    state = viewModel.detailsState,
+                    load = viewModel::loadDetails,
+                    onWatch = viewModel::onWatch,
+                    onSaveUserProfile = viewModel::saveUserProfile,
+                    onOpenUrl = ::openInBrowser,
+                    onOpenFilm = { targetId ->
+                        // Детали догружаются по kp-Id, экран сам подтянет данные.
+                        scope.launch {
+                            runCatching { repository.details(targetId) }.onSuccess { d ->
+                                screen = Screen.Details(
+                                    FilmItem(
+                                        d.kinopoiskId, d.nameRu, d.nameOriginal,
+                                        d.posterUrlPreview, d.ratingKinopoisk, d.year
+                                    )
+                                )
+                            }
+                        }
+                    },
                     onBack = { screen = Screen.Home },
-                    onWatch = { screen = Screen.Player(current.film) },
+                    // Слоты скачивания/выбора источника и нативный плеер — null: «Смотреть»
+                    // падает в веб-фолбэк, пока не готов общий плеер (M6).
+                    userStateStore = userStateStore
                 )
                 is Screen.Player -> PlayerScreen(
                     film = current.film,
@@ -142,11 +163,16 @@ private fun buildRepository(): FilmsRepository {
     return FilmsRepository(ApiClient.kinopoiskApi(cacheDir, apiKey))
 }
 
-private fun buildViewModel(repository: FilmsRepository): FilmsViewModel {
+private fun buildViewModel(repository: FilmsRepository, userStateStore: UserStateStoreBase): FilmsViewModel {
     val cacheDir = File(System.getProperty("user.home"), ".kino-desktop").apply { mkdirs() }
     return FilmsViewModel(
         repository = repository,
         animeRepository = AnimeRepository(ApiClient.shikimoriApi(cacheDir)),
-        userStateStore = UserStateStoreBase(KinoPrefs.createDefault())
+        userStateStore = userStateStore
     )
+}
+
+private fun openInBrowser(url: String) {
+    runCatching { java.awt.Desktop.getDesktop().browse(java.net.URI(url)) }
+        .onFailure { println("[Kino] Не удалось открыть ссылку: $url — ${it.message}") }
 }
