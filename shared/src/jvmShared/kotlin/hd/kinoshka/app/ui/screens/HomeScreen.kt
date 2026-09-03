@@ -108,6 +108,7 @@ import androidx.compose.material3.Switch
 import hd.kinoshka.app.ui.components.BottomNavPill
 import hd.kinoshka.app.ui.components.NavPillItem
 import hd.kinoshka.app.ui.components.ScrollIntensityEffect
+import hd.kinoshka.app.ui.components.sheetSquashStretch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -2583,6 +2584,7 @@ private fun SearchFilterBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .sheetSquashStretch()
                 .padding(horizontal = 18.dp, vertical = 4.dp)
         ) {
             // Header Row

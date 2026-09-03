@@ -200,6 +200,7 @@ fun AnimePlaybackSelectionSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .sheetSquashStretch()
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
             // Header bar
