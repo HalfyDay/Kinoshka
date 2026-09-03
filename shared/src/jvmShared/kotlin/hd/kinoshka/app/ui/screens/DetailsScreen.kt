@@ -380,11 +380,9 @@ fun DetailsScreen(
             .background(MaterialTheme.colorScheme.background)
     ) {
         when {
-            // Страница открывается сразу: пока нет ни данных, ни ошибки — скелетон
-            // вместо центрального спиннера; контент с прогружаемыми картинками
-            // заменяет его по мере готовности.
+            // Загрузка без спиннера и скелетона: пустой фон, страница появляется
+            // сразу с контентом и прогружаемыми картинками по мере готовности.
             state.item == null && state.error == null -> {
-                DetailsLoadingSkeleton()
             }
 
             state.error != null && state.animeBlocked -> {
@@ -1646,49 +1644,47 @@ fun UserProfileEditorSheet(
                 .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Header with Save and Delete icons
             val calmMotion = rememberReduceMotion()
-            Row(
+            // Обложка: выпрыгивает из-под шита по центру, с лёгким поворотом.
+            val posterModel = item.posterUrl ?: item.posterUrlPreview
+            var coverEntered by remember(item.kinopoiskId) { mutableStateOf(calmMotion) }
+            LaunchedEffect(item.kinopoiskId) { coverEntered = true }
+            val coverFloatSpec: AnimationSpec<Float> =
+                if (calmMotion) snap() else spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            val coverDpSpec: AnimationSpec<Dp> =
+                if (calmMotion) snap() else spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            val coverTilt by animateFloatAsState(
+                targetValue = if (coverEntered) -5f else -16f,
+                animationSpec = coverFloatSpec,
+                label = "progress_cover_tilt"
+            )
+            val coverScale by animateFloatAsState(
+                targetValue = if (coverEntered) 1f else 0.7f,
+                animationSpec = coverFloatSpec,
+                label = "progress_cover_scale"
+            )
+            val coverRise by animateDpAsState(
+                targetValue = if (coverEntered) 0.dp else 160.dp,
+                animationSpec = coverDpSpec,
+                label = "progress_cover_rise"
+            )
+            val density = LocalDensity.current
+            Box(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                contentAlignment = Alignment.Center
             ) {
-                // Обложка вторым слоем: выпрыгивает снизу с лёгким поворотом.
-                val posterModel = item.posterUrl ?: item.posterUrlPreview
-                var coverEntered by remember(item.kinopoiskId) { mutableStateOf(calmMotion) }
-                LaunchedEffect(item.kinopoiskId) { coverEntered = true }
-                val coverFloatSpec: AnimationSpec<Float> =
-                    if (calmMotion) snap() else spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
-                val coverDpSpec: AnimationSpec<Dp> =
-                    if (calmMotion) snap() else spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
-                val coverTilt by animateFloatAsState(
-                    targetValue = if (coverEntered) -6f else -18f,
-                    animationSpec = coverFloatSpec,
-                    label = "progress_cover_tilt"
-                )
-                val coverScale by animateFloatAsState(
-                    targetValue = if (coverEntered) 1f else 0.75f,
-                    animationSpec = coverFloatSpec,
-                    label = "progress_cover_scale"
-                )
-                val coverRise by animateDpAsState(
-                    targetValue = if (coverEntered) 0.dp else 90.dp,
-                    animationSpec = coverDpSpec,
-                    label = "progress_cover_rise"
-                )
-                val density = LocalDensity.current
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    shadowElevation = 6.dp,
+                    shadowElevation = 8.dp,
                     modifier = Modifier
-                        .width(64.dp)
+                        .width(128.dp)
                         .aspectRatio(2f / 3f)
                         .graphicsLayer {
                             translationY = with(density) { coverRise.toPx() }
@@ -1705,6 +1701,13 @@ fun UserProfileEditorSheet(
                         modifier = Modifier.fillMaxSize()
                     )
                 }
+            }
+            // Header with Save and Delete icons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Прогресс просмотра",
@@ -3902,65 +3905,6 @@ private fun RowScope.CopyableDetailValue(value: String) {
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun DetailsLoadingSkeleton() {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 12.dp)
-            .padding(top = 48.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // Хиро-обложка
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(300.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .shimmerEffect()
-        )
-        // Заголовок
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.72f)
-                .height(24.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .shimmerEffect()
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.45f)
-                .height(14.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .shimmerEffect()
-        )
-        // Кнопки действий
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .shimmerEffect()
-            )
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .shimmerEffect()
-            )
-        }
-        // Инфо-карточка
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(140.dp)
-                .clip(RoundedCornerShape(18.dp))
-                .shimmerEffect()
-        )
     }
 }
 
