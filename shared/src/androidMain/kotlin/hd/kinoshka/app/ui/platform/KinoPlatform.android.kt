@@ -39,6 +39,11 @@ actual fun rememberKinoPlatformActions(): KinoPlatformActions {
                     context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 clipboardManager.setPrimaryClip(android.content.ClipData.newPlainText("value", text))
             },
+            openInBrowser = { url ->
+                runCatching {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                }
+            },
             cacheDir = context.cacheDir
         )
     }

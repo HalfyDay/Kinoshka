@@ -318,7 +318,9 @@ fun HomeScreen(
     onHentaiVisibilityChanged: (Boolean) -> Unit = {},
     onInstantSearch: (String) -> Unit = {},
     onRemoveSearchHistory: (String) -> Unit = {},
-    onClearSearchHistory: () -> Unit = {}
+    onClearSearchHistory: () -> Unit = {},
+    // Android-only возможности (Загрузки/Профиль/ТикТок-лента): на desktop их экранов нет.
+    androidFeaturesAvailable: Boolean = true
 ) {
     // TV-дизайн (ПК/планшет landscape/ТВ): полностью другой макет с той же моделью состояния.
     if (hd.kinoshka.app.ui.tv.rememberTvLayout()) {
@@ -351,6 +353,7 @@ fun HomeScreen(
             onInstantSearch = onInstantSearch,
             onRemoveSearchHistory = onRemoveSearchHistory,
             onClearSearchHistory = onClearSearchHistory,
+            androidFeaturesAvailable = androidFeaturesAvailable,
         )
         return
     }

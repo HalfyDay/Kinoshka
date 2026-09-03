@@ -36,6 +36,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import hd.kinoshka.app.data.local.LibrarySortType
@@ -103,7 +104,10 @@ fun HomeScreenTv(
     onHentaiVisibilityChanged: (Boolean) -> Unit = {},
     onInstantSearch: (String) -> Unit = {},
     onRemoveSearchHistory: (String) -> Unit = {},
-    onClearSearchHistory: () -> Unit = {}
+    onClearSearchHistory: () -> Unit = {},
+    // Android-only возможности (Загрузки, Профиль, TikTok-лента): на desktop их экранов нет,
+    // соответствующие точки входа скрываются.
+    androidFeaturesAvailable: Boolean = true
 ) {
     var section by remember { mutableStateOf(TvHomeSection.DISCOVER) }
     var discoverQuery by rememberSaveable { mutableStateOf("") }
@@ -158,38 +162,40 @@ fun HomeScreenTv(
             .fillMaxSize()
             .background(TvTheme.Background)
     ) {
+        // Индексы зависят от того, есть ли Android-only «Лента» между «Обзор» и «Ещё».
+        val feedIndex = if (androidFeaturesAvailable) 2 else null
+        val moreIndex = if (androidFeaturesAvailable) 3 else 2
         TvTopBar(
-            sections = listOf(
-                TvHomeSection.LIBRARY.label,
-                TvHomeSection.DISCOVER.label,
-                "Лента",
-                TvHomeSection.MORE.label,
-            ),
+            sections = buildList {
+                add(TvHomeSection.LIBRARY.label)
+                add(TvHomeSection.DISCOVER.label)
+                if (androidFeaturesAvailable) add("Лента")
+                add(TvHomeSection.MORE.label)
+            },
             selectedSection = when (section) {
                 TvHomeSection.LIBRARY -> 0
                 TvHomeSection.DISCOVER -> 1
-                TvHomeSection.MORE -> 3
+                TvHomeSection.MORE -> moreIndex
             },
             onSectionSelected = { index ->
-                when (index) {
-                    2 -> onOpenRecommendationsFeed()
-                    else -> {
-                        val target = when (index) {
-                            0 -> TvHomeSection.LIBRARY
-                            3 -> TvHomeSection.MORE
-                            else -> TvHomeSection.DISCOVER
+                if (index == feedIndex) {
+                    onOpenRecommendationsFeed()
+                } else {
+                    val target = when (index) {
+                        0 -> TvHomeSection.LIBRARY
+                        moreIndex -> TvHomeSection.MORE
+                        else -> TvHomeSection.DISCOVER
+                    }
+                    if (target != section) {
+                        if (target != TvHomeSection.DISCOVER) {
+                            discoverQuery = ""
+                            onQueryChange("")
+                            onTabSelected(if (target == TvHomeSection.LIBRARY) HomeTab.HISTORY else HomeTab.MORE)
+                        } else {
+                            onQueryChange(discoverQuery)
+                            onTabSelected(HomeTab.CATALOG)
                         }
-                        if (target != section) {
-                            if (target != TvHomeSection.DISCOVER) {
-                                discoverQuery = ""
-                                onQueryChange("")
-                                onTabSelected(if (target == TvHomeSection.LIBRARY) HomeTab.HISTORY else HomeTab.MORE)
-                            } else {
-                                onQueryChange(discoverQuery)
-                                onTabSelected(HomeTab.CATALOG)
-                            }
-                            section = target
-                        }
+                        section = target
                     }
                 }
             },
@@ -218,6 +224,7 @@ fun HomeScreenTv(
                 TvHomeSection.MORE -> "Поиск"
             },
             onAvatarClick = onOpenProfile,
+            showAvatar = androidFeaturesAvailable,
         )
 
         when (section) {
@@ -264,6 +271,7 @@ fun HomeScreenTv(
                 onOpenSettings = onOpenSettings,
                 onOpenAbout = onOpenAbout,
                 onOpenDownloads = onOpenDownloads,
+                androidFeaturesAvailable = androidFeaturesAvailable,
             )
         }
     }
@@ -545,6 +553,7 @@ private fun MoreTvContent(
     onOpenSettings: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenDownloads: () -> Unit,
+    androidFeaturesAvailable: Boolean,
 ) {
     Column(
         modifier = Modifier
@@ -555,16 +564,24 @@ private fun MoreTvContent(
         TvSectionTitle("Ещё")
         Spacer(Modifier.height(6.dp))
         // Симметричная сетка 2×N: карточки одного ряда всегда равной ширины.
-        listOf(
-            listOf(
-                Triple("Загрузки", "Скачанные серии и очередь", Icons.Filled.CloudDownload) to onOpenDownloads,
-                Triple("Профиль", "Аккаунты, облако и статистика", Icons.Filled.Person) to onOpenProfile,
-            ),
-            listOf(
-                Triple("Настройки", "Тема, плеер и playback", Icons.Filled.Settings) to onOpenSettings,
-                Triple("О приложении", "Версия и обновления", Icons.Filled.Info) to onOpenAbout,
-            ),
-        ).forEachIndexed { rowIndex, rowItems ->
+        // Загрузки/Профиль — только там, где есть Android-механика (desktop их скрывает).
+        val rows: List<List<Pair<Triple<String, String, ImageVector>, () -> Unit>>> = buildList {
+            add(
+                listOf(
+                    Triple("Настройки", "Тема, плеер и playback", Icons.Filled.Settings) to onOpenSettings,
+                    Triple("О приложении", "Версия и обновления", Icons.Filled.Info) to onOpenAbout,
+                )
+            )
+            if (androidFeaturesAvailable) {
+                add(
+                    listOf(
+                        Triple("Загрузки", "Скачанные серии и очередь", Icons.Filled.CloudDownload) to onOpenDownloads,
+                        Triple("Профиль", "Аккаунты, облако и статистика", Icons.Filled.Person) to onOpenProfile,
+                    )
+                )
+            }
+        }
+        rows.forEach { rowItems ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),

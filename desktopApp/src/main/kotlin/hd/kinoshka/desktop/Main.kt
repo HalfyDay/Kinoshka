@@ -17,9 +17,14 @@ import hd.kinoshka.app.data.local.UserStateStoreBase
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
+import hd.kinoshka.app.ui.screens.AboutScreen
+import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
+import hd.kinoshka.app.ui.screens.AnimeFeedScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.FilmsViewModel
 import hd.kinoshka.app.ui.screens.HomeScreen
+import hd.kinoshka.app.ui.screens.SettingsScreen
+import hd.kinoshka.app.ui.tv.TvSecondaryContainer
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Properties
@@ -27,8 +32,15 @@ import java.util.Properties
 /** Заголовок главного окна; используется и для поиска HWND в Win32. */
 const val MAIN_WINDOW_TITLE = "Kino Desktop"
 
+/** Версия desktop-сборки для экрана «О приложении». */
+const val DESKTOP_VERSION = "desktop (TV UI)"
+
 sealed interface Screen {
     data object Home : Screen
+    data object Settings : Screen
+    data object About : Screen
+    data object Calendar : Screen
+    data object Feed : Screen
     data class Details(val film: FilmItem) : Screen
     data class Player(val args: PlayerLaunchArgs) : Screen
 }
@@ -40,6 +52,16 @@ fun main(args: Array<String>) = application {
     val viewModel = remember { buildViewModel(repository, userStateStore) }
     val scope = rememberCoroutineScope()
     var screen by remember { mutableStateOf(initialScreen(args, repository)) }
+
+    fun openDetailsById(targetId: Int) {
+        scope.launch {
+            runCatching { repository.details(targetId) }.onSuccess { d ->
+                screen = Screen.Details(
+                    FilmItem(d.kinopoiskId, d.nameRu, d.nameOriginal, d.posterUrlPreview, d.ratingKinopoisk, d.year)
+                )
+            }
+        }
+    }
 
     // Стартуем достаточно широким окном, чтобы сразу попасть в TV-дизайн (ориентация landscape).
     Window(
@@ -74,10 +96,11 @@ fun main(args: Array<String>) = application {
                     onDiscoverCategorySelected = viewModel::onDiscoverCategorySelected,
                     onLoadMore = viewModel::loadMore,
                     onRemoveFromHistory = viewModel::removeFromHistory,
-                    // Разделы, для которых на desktop ещё нет экранов (M5+): no-op.
                     onOpenProfile = {},
-                    onOpenSettings = {},
-                    onOpenAbout = {},
+                    onOpenSettings = { screen = Screen.Settings },
+                    onOpenAbout = { screen = Screen.About },
+                    onOpenCalendar = { screen = Screen.Calendar },
+                    onOpenFeed = { screen = Screen.Feed },
                     onUpdateFilters = viewModel::updateFilters,
                     onToggleFilterSheet = viewModel::setShowFilterSheet,
                     onLibrarySortSelected = viewModel::setLibrarySortType,
@@ -85,7 +108,9 @@ fun main(args: Array<String>) = application {
                     onLibrarySortReversedChanged = viewModel::setLibrarySortReversed,
                     onHentaiVisibilityChanged = viewModel::setHentaiVisibleInLibrary,
                     onRemoveSearchHistory = viewModel::removeSearchQueryFromHistory,
-                    onClearSearchHistory = viewModel::clearSearchHistory
+                    onClearSearchHistory = viewModel::clearSearchHistory,
+                    // Загрузки/Профиль/TikTok-лента на desktop отсутствуют — скрываем их входы.
+                    androidFeaturesAvailable = false
                 )
                 is Screen.Details -> DetailsScreen(
                     filmId = current.film.kinopoiskId,
@@ -143,6 +168,58 @@ fun main(args: Array<String>) = application {
                         }
                     },
                 )
+                is Screen.Settings -> TvSecondaryContainer {
+                    SettingsScreen(
+                        onBack = { screen = Screen.Home },
+                        selectedThemeMode = viewModel.uiState.themeMode,
+                        hideRussianContent = viewModel.uiState.hideRussianContent,
+                        selectedDiscoverTileSize = viewModel.uiState.discoverTileSize,
+                        selectedLibraryTileSize = viewModel.uiState.libraryTileSize,
+                        selectedShowFpsCounter = viewModel.uiState.showFpsCounter,
+                        selectedPlaybackSequence = viewModel.uiState.playbackSequence,
+                        onPlaybackSequenceSelected = viewModel::setPlaybackSequence,
+                        selectedPlayerMode = viewModel.uiState.playerMode,
+                        onPlayerModeSelected = viewModel::setPlayerMode,
+                        onThemeModeSelected = viewModel::setThemeMode,
+                        onHideRussianChanged = viewModel::setHideRussianContent,
+                        onDiscoverTileSizeSelected = viewModel::setDiscoverTileSize,
+                        onLibraryTileSizeSelected = viewModel::setLibraryTileSize,
+                        onShowFpsCounterChanged = viewModel::setShowFpsCounter,
+                        showDebugSettings = false
+                    )
+                }
+                is Screen.About -> TvSecondaryContainer {
+                    AboutScreen(
+                        onBack = { screen = Screen.Home },
+                        updateStatusText = "Проверка обновлений — в мобильной версии",
+                        isUpdateCheckRunning = false,
+                        onCheckUpdates = {},
+                        onOpenGithub = { openInBrowser("https://github.com/HalfyDay/Kinoshka") },
+                        onOpenTelegram = { openInBrowser("https://t.me/Kinoshka_HalfDay") },
+                        onOpenShikimori = { openInBrowser("https://shikimori.io") },
+                        appVersion = DESKTOP_VERSION
+                    )
+                }
+                is Screen.Calendar -> TvSecondaryContainer {
+                    AnimeCalendarScreen(
+                        calendarItems = viewModel.uiState.calendarItems,
+                        loading = viewModel.uiState.calendarLoading,
+                        onBack = { screen = Screen.Home },
+                        onOpenAnime = { targetId ->
+                            openDetailsById(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
+                        }
+                    )
+                }
+                is Screen.Feed -> TvSecondaryContainer {
+                    AnimeFeedScreen(
+                        topics = viewModel.uiState.topics,
+                        loading = viewModel.uiState.topicsLoading,
+                        onBack = { screen = Screen.Home },
+                        onOpenAnime = { targetId ->
+                            openDetailsById(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
+                        }
+                    )
+                }
             }
         }
     }

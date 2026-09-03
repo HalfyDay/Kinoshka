@@ -292,19 +292,14 @@ private fun groupCalendarItemsByDay(items: List<ShikimoriCalendarItem>): List<Da
  * null out every time badge. Interprets the value as UTC.
  */
 private fun parseShikimoriUtc(iso: String): Date? = runCatching {
-    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-        val normalized = iso.trim().let {
-            when {
-                it.endsWith("Z") || it.contains("+") || it.substringAfterLast('T').contains("-") -> it
-                else -> it + "Z"
-            }
+    // minSdk 26 (O): java.time доступен всегда, ветка SimpleDateFormat не нужна.
+    val normalized = iso.trim().let {
+        when {
+            it.endsWith("Z") || it.contains("+") || it.substringAfterLast('T').contains("-") -> it
+            else -> it + "Z"
         }
-        Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
-    } else {
-        val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-        fmt.timeZone = TimeZone.getTimeZone("UTC")
-        fmt.parse(iso.substringBefore('.'))
     }
+    Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
 }.getOrNull()
 
 private fun formatReleaseExactTime(isoDate: String?): String? {
