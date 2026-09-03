@@ -71,6 +71,7 @@ import hd.kinoshka.app.data.feed.FeedChip
 import hd.kinoshka.app.data.feed.FeedClipState
 import hd.kinoshka.app.data.feed.FeedItem
 import hd.kinoshka.app.ui.components.BottomNavPill
+import hd.kinoshka.app.ui.components.ScrollIntensityEffect
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.ui.components.NavPillItem
 
@@ -109,6 +110,8 @@ fun RecommendationFeedScreen(
     LaunchedEffect(Unit) { onOpened() }
     var showTastes by remember { mutableStateOf(false) }
     var showLiked by remember { mutableStateOf(false) }
+    // Свайп карточек оживляет нижнюю пилюлю силой пролистывания.
+    var feedScrollIntensity by remember { mutableStateOf(0f) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         when {
@@ -123,7 +126,8 @@ fun RecommendationFeedScreen(
                 onPlan = onPlan,
                 onToggleSound = onToggleSound,
                 onResetSeen = onResetSeen,
-                onShareDiagnostics = onShareDiagnostics
+                onShareDiagnostics = onShareDiagnostics,
+                onPagerScrolling = { feedScrollIntensity = it }
             )
         }
 
@@ -207,6 +211,7 @@ fun RecommendationFeedScreen(
                 )
             ),
             isAmoled = false,
+            scrollIntensity = feedScrollIntensity,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
@@ -247,10 +252,18 @@ private fun FeedPagerContent(
     onPlan: (FeedItem) -> Unit,
     onToggleSound: () -> Unit,
     onResetSeen: () -> Unit,
-    onShareDiagnostics: () -> Unit
+    onShareDiagnostics: () -> Unit,
+    onPagerScrolling: (Float) -> Unit = {}
 ) {
     val items = state.items
     val pagerState = rememberPagerState(pageCount = { items.size })
+    // Интенсивность свайпа по реальному смещению карточки: жест без движения не в счёт.
+    ScrollIntensityEffect(
+        positionIndex = pagerState.currentPage,
+        positionOffset = (pagerState.currentPageOffsetFraction * 10000).toInt(),
+        fullStrengthPxPerSec = 30000f,
+        onIntensity = onPagerScrolling
+    )
 
     // Позиция восстанавливается ДО первого onItemShown — иначе показ нулевой карточки
     // затрёт сохранённый индекс. Возврат на экран продолжает с места остановки.
