@@ -38,6 +38,7 @@ import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
+import hd.kinoshka.app.data.local.UserStateStoreBase
 import hd.kinoshka.app.data.playback.MovieNativeLauncher
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.player.desktop.MpvPlayer
@@ -73,7 +74,11 @@ private data class LoadCommand(val url: String, val headers: Map<String, String>
 private data class EpisodeChoice(val key: Int, val label: String)
 
 @Composable
-fun PlayerScreen(args: PlayerLaunchArgs, onBack: () -> Unit) {
+fun PlayerScreen(
+    args: PlayerLaunchArgs,
+    userStateStore: UserStateStoreBase? = null,
+    onBack: () -> Unit,
+) {
     var player by remember { mutableStateOf<MpvPlayer?>(null) }
     var pending by remember { mutableStateOf<LoadCommand?>(null) }
     var loadedKey by remember { mutableStateOf<String?>(null) }
@@ -118,6 +123,23 @@ fun PlayerScreen(args: PlayerLaunchArgs, onBack: () -> Unit) {
         else -> emptyList()
     }
     var currentEpisodeKey by remember(args.title) { mutableStateOf(args.episodeNumber) }
+
+    // Per-title ключ памяти озвучек — как dubMemoryMediaKey в Android-плеере:
+    // kp:<kinopoiskId> для фильмов/сериалов, sh:<shikimoriId> для аниме.
+    val dubMediaKey: String? = when {
+        args.kinopoiskId > 0 -> "kp:${args.kinopoiskId}"
+        args.shikimoriId > 0 -> "sh:${args.shikimoriId}"
+        else -> null
+    }
+
+    fun recordDubChoice(title: String) {
+        val store = userStateStore ?: return
+        // Читатели (rememberedDubId, ранжирование dropdown'а) сравнивают ключом splitDubTrack,
+        // поэтому и пишем свёрнутый ключ — иначе «Original»/субтитровые треки не восстановятся.
+        val dubKey = MovieNativeLauncher.splitDubTrack(title).first
+        store.recordDubUsage(dubKey)
+        dubMediaKey?.let { store.recordTitleDubUsage(it, dubKey) }
+    }
 
     fun switchEpisode(choice: EpisodeChoice) {
         scope.launch {
@@ -175,6 +197,7 @@ fun PlayerScreen(args: PlayerLaunchArgs, onBack: () -> Unit) {
                 return@launch
             }
             currentTranslationId = translation.translationId
+            recordDubChoice(translation.title)
             scheduleLoad(resolved, AnimeStreamResolver.kodikPlaybackHeaders(), resume = true)
         }
     }
@@ -199,7 +222,8 @@ fun PlayerScreen(args: PlayerLaunchArgs, onBack: () -> Unit) {
                         year = null,
                         kind = MovieContentKind.MOVIE,
                     ),
-                    profile = null
+                    profile = null,
+                    stateStore = userStateStore
                 )) {
                     is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
                         println("MPV: PENDING → QualityOnlyMovie: ${payload.stream.url.take(90)}")

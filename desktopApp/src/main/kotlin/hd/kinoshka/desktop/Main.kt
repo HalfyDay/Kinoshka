@@ -125,6 +125,7 @@ fun main(args: Array<String>) = application {
                 )
                 is Screen.Player -> PlayerScreen(
                     args = current.args,
+                    userStateStore = userStateStore,
                     onBack = {
                         screen = if (current.args.kinopoiskId > 0) {
                             Screen.Details(
