@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -48,6 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.awt.Canvas
+import java.awt.event.KeyEvent
 import java.awt.Color as AwtColor
 
 private const val DEMO_URL =
@@ -99,6 +101,8 @@ fun PlayerScreen(
     var qualities by remember { mutableStateOf(args.qualities) }
     var currentQuality by remember { mutableStateOf<String?>(null) }
     var resumeAt by remember { mutableStateOf(0.0) }
+    var volume by remember { mutableStateOf(100) }
+    var muted by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val attachGuard = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
 
@@ -536,7 +540,47 @@ fun PlayerScreen(
                 background = Color.Black,
                 modifier = Modifier.fillMaxSize(),
                 factory = {
-                    Canvas().apply { background = AwtColor.BLACK }
+                    Canvas().apply {
+                        background = AwtColor.BLACK
+                        // Клавиатура плеера (пробел/стрелки/M) приходит на AWT-канвас: у mpv
+                        // input-default-bindings=no, свои биндинги вешаем здесь.
+                        isFocusable = true
+                        addKeyListener(object : java.awt.event.KeyAdapter() {
+                            override fun keyPressed(e: java.awt.event.KeyEvent) {
+                                val current = player ?: return
+                                when (e.keyCode) {
+                                    KeyEvent.VK_SPACE -> scope.launch(Dispatchers.IO) {
+                                        paused = current.togglePause()
+                                    }
+                                    KeyEvent.VK_LEFT, KeyEvent.VK_RIGHT -> {
+                                        val delta =
+                                            if (e.keyCode == KeyEvent.VK_LEFT) -10.0 else 10.0
+                                        scope.launch(Dispatchers.IO) {
+                                            val target = (current.positionSeconds() ?: 0.0) + delta
+                                            current.seekTo(target)
+                                            position = target
+                                        }
+                                    }
+                                    KeyEvent.VK_UP, KeyEvent.VK_DOWN -> {
+                                        volume = (volume +
+                                            if (e.keyCode == KeyEvent.VK_UP) 10 else -10)
+                                            .coerceIn(0, 130)
+                                        if (muted) {
+                                            muted = false
+                                            scope.launch(Dispatchers.IO) { current.setMuted(false) }
+                                        }
+                                        val v = volume
+                                        scope.launch(Dispatchers.IO) { current.setVolume(v) }
+                                    }
+                                    KeyEvent.VK_M -> {
+                                        val next = !muted
+                                        muted = next
+                                        scope.launch(Dispatchers.IO) { current.setMuted(next) }
+                                    }
+                                }
+                            }
+                        })
+                    }
                 },
             )
             (attachError ?: resolveError)?.let { message ->
@@ -559,6 +603,27 @@ fun PlayerScreen(
             }) {
                 Text(if (paused) "▶" else "⏸")
             }
+            TextButton(onClick = {
+                val next = !muted
+                muted = next
+                scope.launch(Dispatchers.IO) { player?.setMuted(next) }
+            }) {
+                Text(if (muted) "🔇" else "🔊")
+            }
+            Slider(
+                value = volume / 130f,
+                onValueChange = {
+                    volume = (it * 130).toInt()
+                    if (muted) {
+                        muted = false
+                        scope.launch(Dispatchers.IO) { player?.setMuted(false) }
+                    }
+                    val v = volume
+                    scope.launch(Dispatchers.IO) { player?.setVolume(v) }
+                },
+                valueRange = 0f..1f,
+                modifier = Modifier.width(110.dp),
+            )
             Slider(
                 value = position.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(0.1f)),
                 onValueChange = { position = it.toDouble() },
