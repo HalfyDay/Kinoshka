@@ -36,6 +36,7 @@ import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
 import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.AnimeEpisode
+import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import hd.kinoshka.app.data.playback.MovieNativeLauncher
 import hd.kinoshka.app.data.source.AnimeStreamResolver
@@ -68,6 +69,9 @@ data class PlayerLaunchArgs(
 
 private data class LoadCommand(val url: String, val headers: Map<String, String> = emptyMap())
 
+/** Пункт dropdown'а серий: key — AnimeEpisode.number либо MovieEpisodeRef.playerEpisodeKey. */
+private data class EpisodeChoice(val key: Int, val label: String)
+
 @Composable
 fun PlayerScreen(args: PlayerLaunchArgs, onBack: () -> Unit) {
     var player by remember { mutableStateOf<MpvPlayer?>(null) }
@@ -92,6 +96,59 @@ fun PlayerScreen(args: PlayerLaunchArgs, onBack: () -> Unit) {
     fun scheduleLoad(url: String, headers: Map<String, String>, resume: Boolean) {
         if (resume && duration > 1.0) resumeAt = position
         pending = LoadCommand(url, headers)
+    }
+
+    // Список серий: movie-series контекст (готовые playerUrl) либо anime-эпизоды
+    // (ленивый resolveStream по выбранной озвучке).
+    val seriesEpisodes = args.seriesContext?.episodes
+    val episodeChoices: List<EpisodeChoice> = when {
+        seriesEpisodes != null -> seriesEpisodes.map { ep ->
+            EpisodeChoice(
+                ep.playerEpisodeKey,
+                "S%02dE%02d".format(ep.seasonNumber, ep.episodeNumber) +
+                    (ep.title?.let { " — $it" } ?: "")
+            )
+        }
+        args.episodes.isNotEmpty() -> args.episodes.map { ep ->
+            EpisodeChoice(
+                ep.number,
+                if ((ep.season ?: 0) > 1) "Сезон ${ep.season}, серия ${ep.number}" else "Серия ${ep.number}"
+            )
+        }
+        else -> emptyList()
+    }
+    var currentEpisodeKey by remember(args.title) { mutableStateOf(args.episodeNumber) }
+
+    fun switchEpisode(choice: EpisodeChoice) {
+        scope.launch {
+            val contextEpisodes = seriesEpisodes
+            if (contextEpisodes != null) {
+                val ep = contextEpisodes.firstOrNull { it.playerEpisodeKey == choice.key } ?: return@launch
+                currentEpisodeKey = choice.key
+                val headers = if (args.seriesContext?.isDirectSource == true) {
+                    args.seriesContext?.directHeaders ?: args.headers
+                } else {
+                    args.headers
+                }
+                scheduleLoad(ep.playerUrl, headers, resume = false)
+            } else {
+                val ep = args.episodes.firstOrNull { it.number == choice.key } ?: return@launch
+                val sourceType = AnimeSourceType.entries.firstOrNull { it.name == args.sourceType }
+                    ?: AnimeSourceType.KODIK
+                val trId = currentTranslationId.ifEmpty { args.currentTranslationId }
+                val stream = withContext(Dispatchers.IO) {
+                    AnimeStreamResolver.resolveStream(args.shikimoriId, args.title, sourceType, trId, ep.number)
+                }
+                if (stream == null) {
+                    resolveError = "Не удалось открыть ${choice.label.lowercase()}"
+                    return@launch
+                }
+                currentEpisodeKey = choice.key
+                qualities = stream.qualities
+                currentQuality = stream.quality
+                scheduleLoad(stream.url, stream.headers, resume = false)
+            }
+        }
     }
 
     fun switchQuality(name: String) {
@@ -288,6 +345,38 @@ fun PlayerScreen(args: PlayerLaunchArgs, onBack: () -> Unit) {
                                 onClick = {
                                     menuOpen = false
                                     switchTranslation(translation)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            if (episodeChoices.isNotEmpty()) {
+                var epMenuOpen by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { epMenuOpen = true }) {
+                        Text(
+                            text = "Серия: " + (
+                                episodeChoices.firstOrNull { it.key == currentEpisodeKey }?.label
+                                    ?: currentEpisodeKey.toString()
+                                ),
+                            color = Color(0xFFB9B9C0),
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                        )
+                    }
+                    DropdownMenu(expanded = epMenuOpen, onDismissRequest = { epMenuOpen = false }) {
+                        episodeChoices.forEach { choice ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        choice.label,
+                                        color = if (choice.key == currentEpisodeKey) Color(0xFF8AB4F8) else Color.White,
+                                    )
+                                },
+                                onClick = {
+                                    epMenuOpen = false
+                                    switchEpisode(choice)
                                 },
                             )
                         }
