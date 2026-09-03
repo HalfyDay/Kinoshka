@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -31,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -59,6 +62,11 @@ import hd.kinoshka.app.ui.screens.AboutScreen
 import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
 import hd.kinoshka.app.ui.screens.AnimeFeedScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
+import hd.kinoshka.app.ui.screens.HentaiDownloadButton
+import hd.kinoshka.app.ui.screens.TitleDownloadSheet
+import hd.kinoshka.app.ui.screens.AnimePlaybackSelectionScreen
+import hd.kinoshka.app.data.download.EpisodeDownloadManager
+import hd.kinoshka.app.data.download.toPlayableUriString
 import hd.kinoshka.app.ui.screens.FeedViewModel
 import hd.kinoshka.app.ui.screens.FeedViewModelFactory
 import hd.kinoshka.app.ui.screens.FilmsViewModel
@@ -432,6 +440,18 @@ fun KinoApp() {
                                 onOpenCalendar = { navController.navigate("anime_calendar") },
                                 onOpenFeed = { navController.navigate("anime_feed") },
                                 onOpenRecommendationsFeed = { navController.navigate("recommendations_feed") },
+                                // Кастомная иконка «Ленты» (карточка с play-треугольником) — как до KMP M4;
+                                // общий HomeScreen без инъекции рисует material-фолбэк на desktop.
+                                feedGlyph = { sel ->
+                                    Icon(
+                                        painter = painterResource(
+                                            if (sel) hd.kinoshka.app.R.drawable.ic_nav_feed_filled
+                                            else hd.kinoshka.app.R.drawable.ic_nav_feed_outlined
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                },
                                 onLibrarySortSelected = vm::setLibrarySortType,
                                 librarySortReversed = vm.uiState.librarySortReversed,
                                 onLibrarySortReversedChanged = vm::setLibrarySortReversed,
@@ -604,7 +624,32 @@ fun KinoApp() {
                                      activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext, mode)
                                  },
                                 playbackSequence = vm.uiState.playbackSequence,
-                                playerMode = vm.uiState.playerMode
+                                playerMode = vm.uiState.playerMode,
+                                // Платформенные слоты DetailsScreen: скачивание и выбор источника
+                                // живут в app (Android-механика), сам экран теперь общий.
+                                userStateStore = UserStateStore(LocalContext.current),
+                                animeSelectionScreen = { shikimoriId, kinopoiskId, animeTitle, sequence, onDismissRequest, onWebFallback, onStreamSelected ->
+                                    AnimePlaybackSelectionScreen(
+                                        shikimoriId = shikimoriId,
+                                        kinopoiskId = kinopoiskId,
+                                        animeTitle = animeTitle,
+                                        playbackSequence = sequence,
+                                        onDismissRequest = onDismissRequest,
+                                        onWebFallback = onWebFallback,
+                                        onStreamSelected = onStreamSelected
+                                    )
+                                },
+                                downloadSheet = { item, isAnime, onDismiss ->
+                                    TitleDownloadSheet(item = item, isAnime = isAnime, onDismiss = onDismiss)
+                                },
+                                hentaiDownloadButton = { title, kinopoiskId, provider, label, episodeNumber, episodeUrl, headers ->
+                                    HentaiDownloadButton(title, kinopoiskId, provider, label, episodeNumber, episodeUrl, headers)
+                                },
+                                findLocalHentai = { kinopoiskId, providerName, translationId, episodeNumber ->
+                                    EpisodeDownloadManager.findLocal(
+                                        0, kinopoiskId, providerName, translationId, episodeNumber
+                                    )?.toPlayableUriString()
+                                }
                             )
                         }
                         composable(

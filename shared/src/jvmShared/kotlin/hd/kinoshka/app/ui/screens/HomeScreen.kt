@@ -301,6 +301,9 @@ fun HomeScreen(
     onOpenFeed: () -> Unit = {},
     // Тестовый TikTok-фид рекомендаций: кнопка «Лента» в нижней пилюле после «Обзора»
     onOpenRecommendationsFeed: () -> Unit = {},
+    // Глиф кнопки «Лента»: Android (KinoApp) инъекцией возвращает кастомные drawable-иконки,
+    // без инъекции (desktop) рисуется material-фолбэк. Общий код не зависит от res-ID приложения.
+    feedGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
     onLibrarySortSelected: (hd.kinoshka.app.data.local.LibrarySortType) -> Unit = {},
     librarySortReversed: Boolean = false,
     onLibrarySortReversedChanged: (Boolean) -> Unit = {},
@@ -460,8 +463,8 @@ fun HomeScreen(
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
             // Единая плавающая пилюля (общий компонент с фидом рекомендаций).
-            // Глифы — material-иконки: общий код не зависит от res-ID приложения
-            // (Android-версия того же экрана в KinoApp рисует кастомные drawable-иконки).
+            // Глифы — material-иконки: общий код не зависит от res-ID приложения;
+            // Android (KinoApp) инъекцией feedGlyph возвращает «Ленте» кастомный drawable.
             BottomNavPill(
                 items = listOf(
                     NavPillItem(
@@ -495,12 +498,17 @@ fun HomeScreen(
                             resetLibraryAfterFeed = true
                             onOpenRecommendationsFeed()
                         },
-                        glyph = { _ ->
-                            Icon(
-                                imageVector = Icons.Filled.Feed,
-                                contentDescription = null,
-                                modifier = Modifier.size(28.dp)
-                            )
+                        glyph = { sel ->
+                            val custom = feedGlyph
+                            if (custom != null) {
+                                custom(sel)
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Filled.Feed,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
                         }
                     ),
                     NavPillItem(

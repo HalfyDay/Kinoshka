@@ -32,6 +32,15 @@ class KinoApplication : Application(), ImageLoaderFactory {
 
         // Headless-WebView stream extractor needs an application context.
         hd.kinoshka.app.data.source.WebViewStreamHarvester.init(this)
+        // Мосты общих (shared) резолверов к Android-механике: ddbb-харвест и события диагностики.
+        // Маппим app-тип Harvested в тип моста: у каждого модуля свой data class (одинаковые поля).
+        hd.kinoshka.app.data.source.DdbbHarvestBridge.harvester =
+            { embedUrl, pageReferer, timeoutMs ->
+                hd.kinoshka.app.data.source.WebViewStreamHarvester.harvest(embedUrl, pageReferer, timeoutMs)
+                    ?.let { hd.kinoshka.app.data.source.DdbbHarvestBridge.Harvested(it.url, it.referer) }
+            }
+        hd.kinoshka.app.data.diagnostics.SharedDiag.sink =
+            { message -> hd.kinoshka.app.data.diagnostics.AppDiagnostics.event(message) }
 
         // Кадры «Кадров» из видео и дисковой кэш каталога 18+ пишутся в кэш приложения.
         hd.kinoshka.app.data.source.HentaiStreamResolver.init(cacheDir)
