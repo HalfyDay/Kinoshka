@@ -107,6 +107,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import hd.kinoshka.app.ui.components.BottomNavPill
 import hd.kinoshka.app.ui.components.NavPillItem
+import hd.kinoshka.app.ui.components.ScrollIntensityEffect
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -389,6 +390,10 @@ fun HomeScreen(
     var libraryTopSignal by rememberSaveable { mutableStateOf(0) }
     var libraryResetCount by rememberSaveable { mutableStateOf(0) }
     var resetLibraryAfterFeed by rememberSaveable { mutableStateOf(false) }
+    // Интенсивность вертикального скролла контента (0..1 по скорости) для физики
+    // нижней пилюли: сетки сообщают сюда через колбэки. Горизонтальный свайп
+    // вкладок и жесты без движения — не в счёт.
+    var contentScrollIntensity by remember { mutableStateOf(0f) }
     // Лента рекомендаций — отдельный маршрут: возврат в неё восстанавливает сохранённые
     // вкладку и позицию библиотеки. Сбрасываем на «Смотрю», как при переключении разделов.
     LaunchedEffect(Unit) {
@@ -523,7 +528,8 @@ fun HomeScreen(
                         }
                     )
                 ),
-                isAmoled = state.themeMode == AppThemeMode.AMOLED
+                isAmoled = state.themeMode == AppThemeMode.AMOLED,
+                scrollIntensity = contentScrollIntensity
             )
         }
     ) { innerPadding ->
@@ -654,7 +660,8 @@ fun HomeScreen(
                                         onOpenFilmEditor = onOpenFilmEditor,
                                         onRemoveFromHistory = onRemoveFromHistory,
                                         metrics = libraryMetrics,
-                                        scrollToTopSignal = libraryTopSignal
+                                        scrollToTopSignal = libraryTopSignal,
+                                        onScrollActivity = { contentScrollIntensity = it }
                                     )
                                 }
                             }
@@ -679,7 +686,8 @@ fun HomeScreen(
                                     onOpenFilmEditor = onOpenFilmEditor,
                                     onLoadMore = onLoadMore,
                                     onOpenCalendar = onOpenCalendar,
-                                    onOpenFeed = onOpenFeed
+                                    onOpenFeed = onOpenFeed,
+                                    onScrollActivity = { contentScrollIntensity = it }
                                 )
                             }
                         }
@@ -1213,11 +1221,20 @@ private fun LibraryPageGrid(
     onOpenFilmEditor: (ProgressEditorSeed) -> Unit = {},
     onRemoveFromHistory: (Int) -> Unit,
     metrics: GridMetrics,
-    scrollToTopSignal: Int = 0
+    scrollToTopSignal: Int = 0,
+    onScrollActivity: (Float) -> Unit = {}
 ) {
     var pendingDeleteId by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
+    // Интенсивность скролла по фактическому смещению активной сетки.
+    val activeIndex = if (metrics.columns == 1) listState.firstVisibleItemIndex else gridState.firstVisibleItemIndex
+    val activeOffset = if (metrics.columns == 1) listState.firstVisibleItemScrollOffset else gridState.firstVisibleItemScrollOffset
+    ScrollIntensityEffect(
+        positionIndex = activeIndex,
+        positionOffset = activeOffset,
+        onIntensity = onScrollActivity
+    )
     // Клик по вкладке или смена сортировки: список всегда показываем с начала. Lazy-контейнер
     // с ключами иначе «якорится» за первым видимым элементом и остаётся на старой позиции.
     LaunchedEffect(scrollToTopSignal) {
@@ -1368,13 +1385,24 @@ private fun DiscoverContent(
     onOpenFilmEditor: (ProgressEditorSeed) -> Unit = {},
     onLoadMore: () -> Unit,
     onOpenCalendar: () -> Unit,
-    onOpenFeed: () -> Unit
+    onOpenFeed: () -> Unit,
+    onScrollActivity: (Float) -> Unit = {}
 ) {
     // Local profile snapshots for the quick progress editor: matched from the library list
     // the screen already holds, so long-press never needs to fetch anything.
     val libraryById = remember(state.library) {
         state.library.associateBy { it.kinopoiskId }
     }
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
+    // Интенсивность скролла по фактическому смещению активной сетки.
+    val activeIndex = if (metrics.columns == 1) listState.firstVisibleItemIndex else gridState.firstVisibleItemIndex
+    val activeOffset = if (metrics.columns == 1) listState.firstVisibleItemScrollOffset else gridState.firstVisibleItemScrollOffset
+    ScrollIntensityEffect(
+        positionIndex = activeIndex,
+        positionOffset = activeOffset,
+        onIntensity = onScrollActivity
+    )
     when {
         state.loading -> {
             if (metrics.columns == 1) {
@@ -1396,6 +1424,7 @@ private fun DiscoverContent(
         else -> {
             if (metrics.columns == 1) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -1435,6 +1464,7 @@ private fun DiscoverContent(
             }
 
             LazyVerticalGrid(
+                state = gridState,
                 columns = GridCells.Fixed(metrics.columns),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
