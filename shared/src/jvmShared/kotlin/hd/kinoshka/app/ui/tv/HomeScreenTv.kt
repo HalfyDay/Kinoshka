@@ -1,8 +1,10 @@
 package hd.kinoshka.app.ui.tv
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -25,6 +27,7 @@ import androidx.compose.material.icons.filled.Feed
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -157,11 +160,28 @@ fun HomeScreenTv(
             ?: state.library.firstOrNull { it.viewedAtMillis != null }
     }
 
-    Column(
+    // Фоновый бэкдроп Обзора: постер тайтла под фокусом (Lampa .full-start__background).
+    var discoverBackdropUrl by remember { mutableStateOf<String?>(null) }
+    val windowSize = rememberTvWindowSize()
+    val hPad = when (windowSize) {
+        TvWindowSize.COMPACT -> 16.dp
+        TvWindowSize.MEDIUM -> 24.dp
+        TvWindowSize.EXPANDED -> 36.dp
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(TvTheme.Background)
+            .background(MaterialTheme.colorScheme.background)
     ) {
+        TvAnimatedBackdrop(
+            imageUrl = discoverBackdropUrl.takeIf { section == TvHomeSection.DISCOVER },
+            modifier = Modifier.fillMaxSize(),
+        )
+        // Единая focusGroup на весь экран: стрелки клавиатуры (ПК/планшет с
+        // клавиатурой) ходят по фокусу так же, как D-pad на ТВ — вверх/вниз между
+        // топ-баром, рядами и сетками, влево/вправо внутри рядов.
+        Column(modifier = Modifier.fillMaxSize().focusGroup()) {
         // Индексы зависят от того, есть ли Android-only «Лента» между «Обзор» и «Ещё».
         val feedIndex = if (androidFeaturesAvailable) 2 else null
         val moreIndex = if (androidFeaturesAvailable) 3 else 2
@@ -244,6 +264,7 @@ fun HomeScreenTv(
                 onContentTypeSelected = onContentTypeSelected,
                 onUpdateFilters = onUpdateFilters,
                 onToggleFilterSheet = onToggleFilterSheet,
+                onItemFocused = { url -> discoverBackdropUrl = url },
             )
             TvHomeSection.LIBRARY -> LibraryTvContent(
                 state = state,
@@ -274,6 +295,7 @@ fun HomeScreenTv(
                 androidFeaturesAvailable = androidFeaturesAvailable,
             )
         }
+        }
     }
 }
 
@@ -294,7 +316,63 @@ private fun DiscoverTvContent(
     onContentTypeSelected: (ContentType) -> Unit,
     onUpdateFilters: (SearchFilterState) -> Unit,
     onToggleFilterSheet: (Boolean) -> Unit,
+    onItemFocused: (String?) -> Unit,
 ) {
+    // Адаптив под ширину окна (включая ультраширокие мониторы): карточки и
+    // отступы растут вместе с экраном, ряды всегда заполняют ширину целиком.
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val windowSize = rememberTvWindowSize()
+        val hPad = tvHPadFor(maxWidth, windowSize)
+        val cardWidth = tvCardWidthFor(maxWidth, hPad, windowSize)
+        DiscoverTvBody(
+            state = state,
+            items = items,
+            continueWatching = continueWatching,
+            query = query,
+            normalizedQuery = normalizedQuery,
+            hPad = hPad,
+            cardWidth = cardWidth,
+            onOpenFilm = onOpenFilm,
+            onOpenHistoryFilm = onOpenHistoryFilm,
+            onDiscoverCategorySelected = onDiscoverCategorySelected,
+            onLoadMore = onLoadMore,
+            onOpenCalendar = onOpenCalendar,
+            onOpenFeed = onOpenFeed,
+            onRetry = onRetry,
+            onContentTypeSelected = onContentTypeSelected,
+            onUpdateFilters = onUpdateFilters,
+            onToggleFilterSheet = onToggleFilterSheet,
+            onItemFocused = onItemFocused,
+        )
+    }
+}
+
+@Composable
+private fun DiscoverTvBody(
+    state: HomeUiState,
+    items: List<FilmItem>,
+    continueWatching: LibraryUiItem?,
+    query: String,
+    normalizedQuery: String,
+    hPad: androidx.compose.ui.unit.Dp,
+    cardWidth: androidx.compose.ui.unit.Dp,
+    onOpenFilm: (FilmItem) -> Unit,
+    onOpenHistoryFilm: (Int) -> Unit,
+    onDiscoverCategorySelected: (DiscoverCategory) -> Unit,
+    onLoadMore: () -> Unit,
+    onOpenCalendar: () -> Unit,
+    onOpenFeed: () -> Unit,
+    onRetry: () -> Unit,
+    onContentTypeSelected: (ContentType) -> Unit,
+    onUpdateFilters: (SearchFilterState) -> Unit,
+    onToggleFilterSheet: (Boolean) -> Unit,
+    onItemFocused: (String?) -> Unit,
+) {
+    // При входе в Обзор фон = постер героя (продолжение просмотра), пока фокус
+    // не перейдёт на конкретную карточку.
+    LaunchedEffect(continueWatching?.kinopoiskId) {
+        if (continueWatching != null) onItemFocused(continueWatching.posterUrl)
+    }
     if (state.loading && items.isEmpty()) {
         TvEmpty("Загрузка…", Modifier.fillMaxSize())
         return
@@ -307,7 +385,7 @@ private fun DiscoverTvContent(
         ) {
             Text(
                 text = state.error,
-                color = TvTheme.TextSecondary,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 16.sp,
             )
             TvButton("Повторить", onClick = onRetry)
@@ -317,7 +395,7 @@ private fun DiscoverTvContent(
 
     if (normalizedQuery.isNotBlank()) {
         // Результаты поиска — сетка, как в телефонном Обзоре.
-        SearchResultsTvGrid(items = items, onOpenFilm = onOpenFilm)
+        SearchResultsTvGrid(items = items, onOpenFilm = onOpenFilm, onItemFocused = onItemFocused)
         return
     }
 
@@ -355,8 +433,8 @@ private fun DiscoverTvContent(
         }
         item(key = "categories") {
             Row(
-                modifier = Modifier.padding(horizontal = 36.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(horizontal = hPad),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 DiscoverCategory.entries.forEach { category ->
@@ -401,10 +479,12 @@ private fun DiscoverTvContent(
                         rating = libraryItem.libraryRating(),
                         progress = progressUi?.progress,
                         status = libraryItem.status,
+                        cardWidth = cardWidth,
                         newEpisodes = libraryItem.takeIf { it.hasNewEpisode() }?.episodesAired?.let { aired ->
                             (aired - (libraryItem.watchedEpisodes ?: 0)).coerceAtLeast(1)
                         },
                         onClick = { onOpenHistoryFilm(libraryItem.kinopoiskId) },
+                        onFocused = { onItemFocused(libraryItem.posterUrl) },
                     )
                 }
             }
@@ -420,13 +500,40 @@ private fun DiscoverTvContent(
                     title = film.nameRu ?: film.nameOriginal ?: "",
                     metaText = film.year?.toString(),
                     rating = film.ratingKinopoisk,
+                    cardWidth = cardWidth,
                     onClick = { onOpenFilm(film) },
+                    onFocused = { onItemFocused(film.posterUrlPreview) },
                 )
+            }
+        }
+        // Лента «Обзора»: те же карусели, что на телефоне (топы + жанры кино/аниме).
+        val overviewSections = if (state.contentType == ContentType.ANIME) {
+            state.overviewAnimeSections
+        } else {
+            state.overviewFilmSections
+        }
+        overviewSections.forEach { section ->
+            item(key = "overview_${section.id}") {
+                TvRow(
+                    title = section.title,
+                    items = section.items,
+                    key = { "overview_${section.id}_${it.kinopoiskId}" },
+                ) { film ->
+                    TvPosterCard(
+                        posterUrl = film.posterUrlPreview,
+                        title = film.nameRu ?: film.nameOriginal ?: "",
+                        metaText = film.year?.toString(),
+                        rating = film.ratingKinopoisk,
+                        cardWidth = cardWidth,
+                        onClick = { onOpenFilm(film) },
+                        onFocused = { onItemFocused(film.posterUrlPreview) },
+                    )
+                }
             }
         }
         item(key = "anime-links") {
             Row(
-                modifier = Modifier.padding(horizontal = 36.dp),
+                modifier = Modifier.padding(horizontal = hPad),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 TvMenuCard(
@@ -436,7 +543,7 @@ private fun DiscoverTvContent(
                     onClick = onOpenCalendar,
                 )
                 TvMenuCard(
-                    title = "Лента релизов",
+                    title = "Новости",
                     subtitle = "Новости аниме от Shikimori",
                     icon = Icons.Filled.Feed,
                     onClick = onOpenFeed,
@@ -447,22 +554,33 @@ private fun DiscoverTvContent(
 }
 
 @Composable
-private fun SearchResultsTvGrid(items: List<FilmItem>, onOpenFilm: (FilmItem) -> Unit) {
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 170.dp),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 36.dp, vertical = 24.dp),
-        horizontalArrangement = Arrangement.spacedBy(18.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp),
-    ) {
-        itemsIndexed(items, key = { _, film -> film.kinopoiskId }) { _, film ->
-            TvPosterCard(
-                posterUrl = film.posterUrlPreview,
-                title = film.nameRu ?: film.nameOriginal ?: "",
-                metaText = film.year?.toString(),
-                rating = film.ratingKinopoisk,
-                onClick = { onOpenFilm(film) },
-            )
+private fun SearchResultsTvGrid(
+    items: List<FilmItem>,
+    onOpenFilm: (FilmItem) -> Unit,
+    onItemFocused: (String?) -> Unit,
+) {
+    val windowSize = rememberTvWindowSize()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val hPad = tvHPadFor(maxWidth, windowSize)
+        val minCell = tvCardWidthFor(maxWidth, hPad, windowSize)
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = minCell),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = hPad, vertical = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            itemsIndexed(items, key = { _, film -> film.kinopoiskId }) { _, film ->
+                TvPosterCard(
+                    posterUrl = film.posterUrlPreview,
+                    title = film.nameRu ?: film.nameOriginal ?: "",
+                    metaText = film.year?.toString(),
+                    rating = film.ratingKinopoisk,
+                    cardWidth = minCell,
+                    onClick = { onOpenFilm(film) },
+                    onFocused = { onItemFocused(film.posterUrlPreview) },
+                )
+            }
         }
     }
 }
@@ -482,12 +600,52 @@ private fun LibraryTvContent(
     onRemoveFromHistory: (Int) -> Unit,
     onHentaiVisibilityChanged: (Boolean) -> Unit,
 ) {
+    val windowSize = rememberTvWindowSize()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val hPad = tvHPadFor(maxWidth, windowSize)
+        val minCell = tvCardWidthFor(maxWidth, hPad, windowSize)
+        LibraryTvBody(
+            state = state,
+            items = items,
+            selectedTab = selectedTab,
+            onTabSelected = onTabSelected,
+            filterAll = filterAll,
+            onFilterAllChanged = onFilterAllChanged,
+            sort = sort,
+            onSortSelected = onSortSelected,
+            onOpenHistoryFilm = onOpenHistoryFilm,
+            onOpenFilmEditor = onOpenFilmEditor,
+            onRemoveFromHistory = onRemoveFromHistory,
+            onHentaiVisibilityChanged = onHentaiVisibilityChanged,
+            hPad = hPad,
+            minCell = minCell,
+        )
+    }
+}
+
+@Composable
+private fun LibraryTvBody(
+    state: HomeUiState,
+    items: List<LibraryUiItem>,
+    selectedTab: LibraryTab,
+    onTabSelected: (LibraryTab) -> Unit,
+    filterAll: Boolean,
+    onFilterAllChanged: (Boolean) -> Unit,
+    sort: LibrarySortType,
+    onSortSelected: (LibrarySortType) -> Unit,
+    onOpenHistoryFilm: (Int) -> Unit,
+    onOpenFilmEditor: (ProgressEditorSeed) -> Unit,
+    onRemoveFromHistory: (Int) -> Unit,
+    onHentaiVisibilityChanged: (Boolean) -> Unit,
+    hPad: androidx.compose.ui.unit.Dp,
+    minCell: androidx.compose.ui.unit.Dp,
+) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 36.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(horizontal = hPad, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             LibraryTab.entries.forEach { tab ->
@@ -522,11 +680,11 @@ private fun LibraryTvContent(
             return
         }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 170.dp),
+            columns = GridCells.Adaptive(minSize = minCell),
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 36.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+            contentPadding = PaddingValues(horizontal = hPad, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             itemsIndexed(items, key = { _, item -> item.kinopoiskId }) { _, item ->
                 val progressUi = item.toWatchProgressUi()
@@ -535,6 +693,7 @@ private fun LibraryTvContent(
                     title = item.title,
                     metaText = progressUi?.progressLabel ?: item.libraryMetaParts().joinToString("  •  "),
                     rating = item.libraryRating(),
+                    cardWidth = minCell,
                     progress = progressUi?.progress,
                     status = item.status,
                     newEpisodes = item.takeIf { it.hasNewEpisode() }?.episodesAired?.let { aired ->
@@ -555,13 +714,18 @@ private fun MoreTvContent(
     onOpenDownloads: () -> Unit,
     androidFeaturesAvailable: Boolean,
 ) {
+    val hPad = when (rememberTvWindowSize()) {
+        TvWindowSize.COMPACT -> 16.dp
+        TvWindowSize.MEDIUM -> 24.dp
+        TvWindowSize.EXPANDED -> 36.dp
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 36.dp, vertical = 20.dp),
+            .padding(horizontal = hPad, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        TvSectionTitle("Ещё")
+        TvSectionTitle("Ещё", modifier = Modifier.padding(horizontal = 0.dp))
         Spacer(Modifier.height(6.dp))
         // Симметричная сетка 2×N: карточки одного ряда всегда равной ширины.
         // Загрузки/Профиль — только там, где есть Android-механика (desktop их скрывает).

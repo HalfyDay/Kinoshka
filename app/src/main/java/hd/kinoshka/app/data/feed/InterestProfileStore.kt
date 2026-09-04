@@ -53,6 +53,16 @@ class InterestProfileStore(context: Context) {
         prefs.edit().putBoolean(KEY_ADULT_CONFIRMED, true).apply()
     }
 
+    /**
+     * Выученный индекс пробника type для /films (MOVIE→400, рабочий — FILM): переживает
+     * рестарт, чтобы каждый запуск не упирался в 400 + ретрай (+500мс и варнинг в логе).
+     */
+    fun kpTypeProbeIndex(): Int = prefs.getInt(KEY_KP_TYPE_PROBE, 0)
+
+    fun setKpTypeProbeIndex(index: Int) {
+        prefs.edit().putInt(KEY_KP_TYPE_PROBE, index).apply()
+    }
+
     // ==================== онбординг вкусов (по разделам) ====================
 
     /** Разделы (имена FeedChip), для которых первичный опрос уже пройден. */
@@ -281,6 +291,7 @@ class InterestProfileStore(context: Context) {
         const val KEY_COUNTRIES = "country_weights"
         const val KEY_DECADES = "decade_weights"
         const val KEY_LIKED_SEEDS = "liked_seed_ids"
+        const val KEY_KP_TYPE_PROBE = "kp_type_probe_index"
         const val MAX_W = 6.0
         const val MIN_W = -6.0
 

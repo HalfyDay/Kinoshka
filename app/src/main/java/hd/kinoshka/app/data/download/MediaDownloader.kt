@@ -84,6 +84,14 @@ object MediaDownloader {
         return client.newCall(builder.build()).execute()
     }
 
+    /** Полный размер файла: из Content-Range «bytes a-b/total» (206) либо contentLength+offset. */
+    private fun parseTotalLength(resp: okhttp3.Response, offset: Long): Long {
+        resp.header("Content-Range")?.substringAfter('/')?.trim()?.toLongOrNull()
+            ?.takeIf { it > 0 }?.let { return it }
+        val bodyLen = resp.body.contentLength()
+        return if (bodyLen >= 0) bodyLen + offset else -1L
+    }
+
     /**
      * Текст плейлиста и ФИНАЛЬНЫЙ url ответа. Прямые ссылки ddbb/turbo отвечают 302 на
      * токенизированный плейлист другого CDN-хоста: относительные сегменты внутри плейлиста
@@ -107,7 +115,8 @@ object MediaDownloader {
         baseName: String,
         onProgress: (MediaProgress) -> Unit
     ): MediaFile = withContext(Dispatchers.IO) {
-        dir.listFiles()?.forEach { it.delete() }
+        // Каталог НЕ чистим upfront: partial-файлы нужны для докачки (direct — Range,
+        // HLS — пропуск готовых сегментов). Мусор чистится после успеха внутри веток.
         val looksHls = source.url.substringBefore('?').substringAfterLast('/').contains(".m3u8")
         if (looksHls) {
             val (body, playlistUrl) = fetchPlaylist(source.url, source.headers)
@@ -119,7 +128,8 @@ object MediaDownloader {
                 is DirectOutcome.IsHls -> {
                     val (body, playlistUrl) = fetchPlaylist(source.url, source.headers)
                     if (!body.contains("#EXTM3U")) throw DownloadException("Ожидался HLS-плейлист, получен другой ответ")
-                    dir.listFiles()?.forEach { it.delete() }
+                    // Ссылка притворилась direct: недокачанный partial удаляем, HLS-сегменты докачаем.
+                    dir.listFiles()?.filter { it.name.startsWith("$baseName.") }?.forEach { it.delete() }
                     downloadHls(body, playlistUrl, source, dir, onProgress)
                 }
             }
@@ -144,23 +154,48 @@ object MediaDownloader {
         val ext = source.url.substringBefore('?').substringAfterLast('.', "").lowercase()
             .takeIf { it.length in 2..5 && it.all(Char::isLetterOrDigit) && it != "m3u8" } ?: "mp4"
         val target = File(dir, "$baseName.$ext")
+        // Файлы с чужим расширением от прошлых попыток — мусор (ext выводится из URL).
+        dir.listFiles()?.filter { it.name.startsWith("$baseName.") && it.name != target.name }
+            ?.forEach { it.delete() }
         var lastError: Exception? = null
         repeat(2) { attempt ->
             try {
-                httpGet(source.url, source.headers).use { resp ->
+                // Докачка: продолжаем в существующий partial с места обрыва.
+                val existing = if (target.exists()) target.length() else 0L
+                val range = if (existing > 0) "bytes=$existing-" else null
+                httpGet(source.url, source.headers, range).use { resp ->
+                    // Сервер без поддержки Range отвечает 200 на Range-запрос — честно начинаем заново.
+                    val resumed = existing > 0 && resp.code == 206
+                    if (existing > 0 && resp.code == 416) {
+                        // Диапазон за пределами: файл уже полон (или сервер врёт) — считаем готовым.
+                        val size = target.length()
+                        if (size > 0) {
+                            dir.listFiles()?.filter { it.isFile && it.name != target.name }
+                                ?.forEach { it.delete() }
+                            return DirectOutcome.File(
+                                MediaFile(target.absolutePath, dir.absolutePath, size, isHls = false)
+                            )
+                        }
+                        target.delete()
+                        throw DownloadException("HTTP 416")
+                    }
                     if (!resp.isSuccessful) throw DownloadException("HTTP ${resp.code}")
                     val contentType = resp.header("Content-Type").orEmpty()
                     val input = resp.body.byteStream()
-                    val total = resp.body.contentLength()
-                    var done = 0L
+                    // 206: total = Content-Range «bytes <from>-<to>/<total>», иначе contentLength.
+                    val total = parseTotalLength(resp, if (resumed) existing else 0L)
+                    var done = if (resumed) existing else 0L
                     var isPlaylist = false
+                    var firstChunk = done == 0L
                     input.use { stream ->
-                        target.outputStream().use { output ->
+                        // 206 — дописываем, 200 после обрыва — перезаписываем с нуля.
+                        java.io.FileOutputStream(target, resumed).use { output ->
                             val buf = ByteArray(64 * 1024)
                             while (true) {
                                 val n = stream.read(buf)
                                 if (n < 0) break
-                                if (done == 0L) {
+                                if (firstChunk) {
+                                    firstChunk = false
                                     // Direct-ссылки, прячущие плейлист: первые байты — "#EXTM3U".
                                     val head = String(buf, 0, n, Charsets.US_ASCII)
                                     isPlaylist = head.startsWith("#EXTM3U") ||
@@ -179,17 +214,19 @@ object MediaDownloader {
                     }
                     val size = target.length()
                     if (size <= 0) throw DownloadException("Пустой ответ сервера")
+                    // Успех direct: в каталоге нужен только готовый файл.
+                    dir.listFiles()?.filter { it.isFile && it.name != target.name }
+                        ?.forEach { it.delete() }
                     return DirectOutcome.File(
                         MediaFile(target.absolutePath, dir.absolutePath, size, isHls = false)
                     )
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                target.delete()
                 throw e
             } catch (e: Exception) {
                 lastError = e
                 Log.w(TAG, "direct download attempt ${attempt + 1} failed: ${e.message}")
-                target.delete()
+                // Partial НЕ удаляем — следующая попытка докачает по Range.
             }
         }
         throw lastError ?: DownloadException("Скачивание не удалось")
@@ -228,6 +265,20 @@ object MediaDownloader {
         segments.forEachIndexed { index, seg ->
             val name = "seg_%04d%s".format(index, seg.ext)
             val target = File(dir, name)
+            // Докачка HLS: готовый сегмент прошлой попытки пропускаем (перезапуск с места обрыва).
+            if (target.exists() && target.length() > 0) {
+                totalBytes += target.length()
+                written += name to seg.durationSec
+                onProgress(
+                    MediaProgress(
+                        bytesDone = totalBytes,
+                        bytesTotal = -1,
+                        segmentsDone = index + 1,
+                        segmentsTotal = segments.size
+                    )
+                )
+                return@forEachIndexed
+            }
             var lastError: Exception? = null
             var attempt = 0
             while (attempt < 3) {
@@ -276,6 +327,17 @@ object MediaDownloader {
 
         val playlistFile = File(dir, "index.m3u8")
         writeLocalPlaylist(playlistFile, initName, written)
+        // Чистим мусор прошлых попыток: direct-partial и сегменты за пределами плейлиста.
+        // Пустые (недокачанные при обрыве) тоже удаляем — их перезапишет следующая попытка.
+        val keep = written.map { it.first }.toSet() + setOf("index.m3u8", initName)
+        dir.listFiles()?.forEach {
+            if (!it.isFile || it.name in keep) return@forEach
+            when {
+                it.name.startsWith("episode.") -> it.delete()
+                it.name.startsWith("seg_") &&
+                    (indexOfSeg(it.name) >= segments.size || it.length() == 0L) -> it.delete()
+            }
+        }
         return MediaFile(playlistFile.absolutePath, dir.absolutePath, totalBytes, isHls = true)
     }
 
@@ -439,6 +501,11 @@ object MediaDownloader {
         byterangeRunningOffset = start + len
         return if (len > 0) "bytes=$start-${start + len - 1}" else ""
     }
+
+    /** Индекс из имени seg_XXXX.ext, -1 если не сегмент. */
+    private fun indexOfSeg(name: String): Int =
+        if (!name.startsWith("seg_")) -1
+        else name.substringAfter("seg_").substringBefore('.').toIntOrNull() ?: -1
 
     private fun segmentExt(url: String): String {
         val path = url.substringBefore('?')

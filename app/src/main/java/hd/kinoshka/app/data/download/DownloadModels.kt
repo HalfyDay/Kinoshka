@@ -32,7 +32,9 @@ data class OfflineEpisode(
     val filePath: String,
     val sizeBytes: Long,
     val downloadedAt: Long,
-    val isHls: Boolean
+    val isHls: Boolean,
+    /** Обложка тайтла для экрана загрузок; у старых записей отсутствует (null). */
+    val posterUrl: String? = null
 ) {
     val key: String get() = offlineKey(itemKey, source, translationId, episodeNumber)
 }

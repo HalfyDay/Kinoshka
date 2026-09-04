@@ -123,7 +123,8 @@ object DownloadBridges {
         title: String,
         translationId: String,
         stream: AnimeMediaStream,
-        voiceoverTitle: String
+        voiceoverTitle: String,
+        posterUrl: String? = null
     ): EpisodeDownloadManager.EpisodeDownloadRequest {
         val itemKey = animeItemKey(0, kinopoiskId)
         return EpisodeDownloadManager.EpisodeDownloadRequest(
@@ -134,6 +135,7 @@ object DownloadBridges {
             translationTitle = voiceoverTitle,
             episodeNumber = 1,
             episodeLabel = "Фильм",
+            posterUrl = posterUrl,
             resolve = { fromStream(stream) }
         )
     }
@@ -153,7 +155,8 @@ object DownloadBridges {
         translationTitle: String,
         episodes: List<MovieEpisodeRef>,
         isDirectSource: Boolean = false,
-        directHeaders: Map<String, String> = emptyMap()
+        directHeaders: Map<String, String> = emptyMap(),
+        posterUrl: String? = null
     ): List<EpisodeDownloadManager.EpisodeDownloadRequest> {
         val itemKey = animeItemKey(0, kinopoiskId)
         val headers = directHeaders.ifEmpty { DdbbStreamResolver.directHeaders(kinopoiskId) }
@@ -167,6 +170,7 @@ object DownloadBridges {
                     translationTitle = translationTitle,
                     episodeNumber = offlineEpisodeNumber(ep),
                     episodeLabel = seriesEpisodeLabel(ep),
+                    posterUrl = posterUrl,
                     resolve = {
                         if (isDirectSource) {
                             candidates.firstOrNull { it.translationId == translationId }
@@ -185,7 +189,7 @@ object DownloadBridges {
             }
     }
 
-    private fun seriesEpisodeLabel(ep: MovieEpisodeRef): String =
+    internal fun seriesEpisodeLabel(ep: MovieEpisodeRef): String =
         if (ep.seasonNumber > 0) "S%02dE%02d".format(ep.seasonNumber, ep.episodeNumber)
         else "Серия ${ep.episodeNumber}"
 
@@ -194,6 +198,6 @@ object DownloadBridges {
      * S1E1 и S2E1 склеились бы в один ключ очереди и молча терялись. Пакуем сезон в номер
      * эпизода тем же способом, каким шит загрузки сортирует список серий.
      */
-    private fun offlineEpisodeNumber(ep: MovieEpisodeRef): Int =
+    internal fun offlineEpisodeNumber(ep: MovieEpisodeRef): Int =
         if (ep.seasonNumber > 0) ep.seasonNumber * 1000 + ep.episodeNumber else ep.episodeNumber
 }

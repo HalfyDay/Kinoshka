@@ -25,6 +25,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items as listItems
+import androidx.compose.material.icons.filled.Casino
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -47,6 +51,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
@@ -70,6 +75,7 @@ import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.feed.FeedChip
 import hd.kinoshka.app.data.feed.FeedClipState
 import hd.kinoshka.app.data.feed.FeedItem
+import hd.kinoshka.app.data.feed.GenreOption
 import hd.kinoshka.app.ui.components.BottomNavPill
 import hd.kinoshka.app.ui.components.ScrollIntensityEffect
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
@@ -104,14 +110,22 @@ fun RecommendationFeedScreen(
     onShareDiagnostics: () -> Unit,
     onLoadTastes: () -> List<Pair<String, Double>>,
     onLoadLiked: () -> List<hd.kinoshka.app.data.feed.LikedTitle>,
-    onRemoveLiked: (hd.kinoshka.app.data.feed.LikedTitle) -> Unit
+    onRemoveLiked: (hd.kinoshka.app.data.feed.LikedTitle) -> Unit,
+    onSelectGenre: (String?) -> Unit,
+    onSurprise: () -> Unit
 ) {
     // Первый показ за сессию: обогащение интересов + визард вкусов.
     LaunchedEffect(Unit) { onOpened() }
     var showTastes by remember { mutableStateOf(false) }
     var showLiked by remember { mutableStateOf(false) }
+    var showGenres by remember { mutableStateOf(false) }
     // Свайп карточек оживляет нижнюю пилюлю силой пролистывания.
     var feedScrollIntensity by remember { mutableStateOf(0f) }
+    // Вход на экран отдельным маршрутом: пилюля создаётся заново уже с выбранной
+    // «Лентой» — без этого флага переезд blob нечем анимировать. Стартуем с невыбранной
+    // и поднимаем флаг первым кадром: круг выделения visibly переезжает на «Ленту».
+    var feedEntered by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { feedEntered = true }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         when {
@@ -136,6 +150,8 @@ fun RecommendationFeedScreen(
             onChipSelected = onChipSelected,
             onShowTastes = { showTastes = true },
             onShowLiked = { showLiked = true },
+            onShowGenres = { showGenres = true },
+            onSurprise = onSurprise,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
@@ -144,6 +160,20 @@ fun RecommendationFeedScreen(
 
         if (showTastes) {
             TasteInsightsDialog(tastes = onLoadTastes(), onDismiss = { showTastes = false })
+        }
+
+        // Sheet жанров раздела (справочник его источника) — срез ленты по жанру.
+        if (showGenres) {
+            FeedGenreSheet(
+                title = "Жанры · ${state.selectedChip.title}",
+                items = state.genreOptions,
+                selectedKey = state.genreKey,
+                onSelect = { key ->
+                    showGenres = false
+                    onSelectGenre(key)
+                },
+                onDismiss = { showGenres = false }
+            )
         }
 
         // Плавающая навигация — ТОТ ЖЕ общий компонент, что и на главном экране.
@@ -181,7 +211,7 @@ fun RecommendationFeedScreen(
                 ),
                 NavPillItem(
                     contentDescription = "Лента",
-                    selected = true,
+                    selected = feedEntered,
                     onClick = { },
                     glyph = { sel ->
                         Icon(
@@ -403,6 +433,8 @@ private fun FeedSectionDropdown(
     onChipSelected: (FeedChip) -> Unit,
     onShowTastes: () -> Unit,
     onShowLiked: () -> Unit,
+    onShowGenres: () -> Unit,
+    onSurprise: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -466,6 +498,37 @@ private fun FeedSectionDropdown(
             }
         }
         Spacer(Modifier.weight(1f))
+        // Инструменты раздела: срез по жанру его справочника + «Мне повезет».
+        // У «Всё» единого справочника нет (смесь KP и Шикимори) — там только кубик.
+        if (state.selectedChip != FeedChip.ALL) {
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = Color.Black.copy(alpha = 0.45f),
+                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onShowGenres() }
+            ) {
+                Icon(
+                    Icons.Filled.FilterList,
+                    contentDescription = "Жанры: ${state.selectedChip.title}",
+                    tint = if (state.genreKey != null) MaterialTheme.colorScheme.primary
+                    else Color.White.copy(alpha = 0.9f),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp).size(18.dp)
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+        }
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = Color.Black.copy(alpha = 0.45f),
+            modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onSurprise() }
+        ) {
+            Icon(
+                Icons.Filled.Casino,
+                contentDescription = "Мне повезет",
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp).size(18.dp)
+            )
+        }
+        Spacer(Modifier.width(6.dp))
         // Кнопка «мои вкусы»: что система выучила из голосов.
         Surface(
             shape = RoundedCornerShape(50),
@@ -880,6 +943,83 @@ private fun SkeletonStrip(alpha: Float, highlighted: Boolean = false) {
                 contentDescription = null,
                 tint = Color.Black.copy(alpha = alpha.coerceAtMost(1f)),
                 modifier = Modifier.size(34.dp)
+            )
+        }
+    }
+}
+
+/** Sheet жанров раздела ленты: срез по справочнику источника, «Все жанры» — обычная выдача. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun FeedGenreSheet(
+    title: String,
+    items: List<GenreOption>,
+    selectedKey: String?,
+    onSelect: (String?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp)
+        )
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 32.dp)
+        ) {
+            item(key = "all") {
+                GenreRow(
+                    title = "Все жанры",
+                    selected = selectedKey == null,
+                    onClick = { onSelect(null) }
+                )
+            }
+            if (items.isEmpty()) {
+                item(key = "loading") {
+                    Text(
+                        "Загружаем справочник жанров…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
+                }
+            } else {
+                listItems(items, key = { it.key }) { option ->
+                    GenreRow(
+                        title = option.title,
+                        selected = option.key == selectedKey,
+                        onClick = { onSelect(option.key) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GenreRow(title: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 11.dp)
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            modifier = Modifier.weight(1f)
+        )
+        if (selected) {
+            Icon(
+                Icons.Filled.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
             )
         }
     }

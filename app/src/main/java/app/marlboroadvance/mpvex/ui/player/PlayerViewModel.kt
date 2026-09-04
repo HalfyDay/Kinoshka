@@ -256,9 +256,6 @@ class PlayerViewModel(
   private val _pendingResolveError = MutableStateFlow<String?>(null)
   val pendingResolveError: StateFlow<String?> = _pendingResolveError.asStateFlow()
 
-  private val _pendingWebFallbackUrl = MutableStateFlow<String?>(null)
-  val pendingWebFallbackUrl: StateFlow<String?> = _pendingWebFallbackUrl.asStateFlow()
-
   /** Wired by PlayerActivity; re-runs the background resolve. */
   var onPendingRetry: (() -> Unit)? = null
 
@@ -267,10 +264,6 @@ class PlayerViewModel(
 
   fun setPendingResolveError(message: String?) {
     _pendingResolveError.value = message
-  }
-
-  fun setPendingWebFallbackUrl(url: String?) {
-    _pendingWebFallbackUrl.value = url
   }
 
   fun retryPendingResolve() {

@@ -1975,7 +1975,6 @@ class PlayerActivity :
       return
     }
     PendingMovieRequestStore.remove(kpId)
-    viewModel.setPendingWebFallbackUrl(launch.webFallbackUrl)
     // Manual retry is an explicit "give me fresh tokens" (vpn toggled, CDN hiccup): it must
     // grant a FULL auto-retry budget again. Without the reset the budget stayed exhausted from
     // the pre-retry failures, so the next END_FILE error skipped straight to source-hopping on
@@ -2622,12 +2621,24 @@ class PlayerActivity :
         // splitDubTrack also strips "(субтитры)"/Original markers into proper types.
         val rawTitle = dub.translationTitle ?: dub.translationId.orEmpty()
         val (dubTitle, kind) = MovieNativeLauncher.splitDubTrack(rawTitle)
+        // Бейдж качества в «Вариантах озвучки»: у direct-источника лучший рунг серии
+        // лежит в кэшированной лестнице turbo-каталога; у Kodik данных о качестве нет.
+        val best = if (context.isDirectSource) {
+          dub.episodes.firstOrNull {
+            it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber
+          }?.playerUrl?.takeIf { it.isNotBlank() }?.let { url ->
+            DdbbStreamResolver.directQualities(context.kinopoiskId, url)?.let { ladder ->
+              QUALITY_PREFERENCE_DESC.firstOrNull { rung -> ladder.containsKey(rung) }
+            }
+          }
+        } else null
         FlatTranslation(
           source = if (context.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
           translationId = dub.translationId ?: rawTitle,
           title = if (rawTitle.isBlank()) "Озвучка" else dubTitle,
           type = kind,
-          episodes = emptyList()
+          episodes = if (best == null) emptyList()
+          else listOf(AnimeEpisode(number = episode.playerEpisodeKey, maxQuality = best))
         )
       }
 

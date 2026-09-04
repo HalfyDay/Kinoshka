@@ -69,6 +69,23 @@ class FilmsRepository(private val api: KinopoiskApi) {
         return loaded
     }
 
+    /** Подборки для ленты «Обзора»: топы, свежее по годам, жанры. */
+    suspend fun topMovies(page: Int = 1): List<FilmItem> =
+        popular(collectionType = "TOP_250_MOVIES", page = page)
+
+    suspend fun topShows(page: Int = 1): List<FilmItem> =
+        popular(collectionType = "TOP_250_TV_SHOWS", page = page)
+
+    suspend fun freshSince(yearFrom: Int, page: Int = 1): List<FilmItem> =
+        search(order = "YEAR", type = "ALL", yearFrom = yearFrom, page = page)
+
+    suspend fun byGenre(genreId: Int, page: Int = 1): List<FilmItem> =
+        search(genreId = genreId, order = "RATING", type = "ALL", page = page)
+
+    /** Самое обсуждаемое (по числу оценок) — пул витрины, без дублей каруселей. */
+    suspend fun mostDiscussed(page: Int = 1): List<FilmItem> =
+        search(order = "NUM_VOTE", type = "ALL", page = page)
+
     suspend fun filters(): FiltersResponse {
         filtersCache.get("filters")?.let { return it }
         val loaded = api.filters()

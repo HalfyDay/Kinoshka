@@ -24,6 +24,7 @@ class AnimeRepository(
     private val screenshotsCache = BoundedCache<Int, List<ShikimoriScreenshot>>()
     private val videosCache = BoundedCache<Int, List<hd.kinoshka.app.data.model.ShikimoriVideoItem>>()
     private val relatedCache = BoundedCache<Int, List<hd.kinoshka.app.data.model.ShikimoriRelatedItem>>()
+    @Volatile private var genresCache: List<hd.kinoshka.app.data.model.ShikimoriGenre>? = null
     private val franchiseCache = BoundedCache<Int, hd.kinoshka.app.data.model.ShikimoriFranchiseResponse>()
     private val rolesCache = BoundedCache<Int, List<hd.kinoshka.app.data.model.ShikimoriRole>>()
 
@@ -74,8 +75,59 @@ class AnimeRepository(
     }
 
     suspend fun popular(page: Int = 1): List<ShikimoriAnimeItem> {
-        return search(order = "popularity", page = page)
+        return search(order = "popularity", censored = false, page = page)
     }
+
+    /** Подборки для ленты «Обзора»: топ по оценке, онгоинги, форматы, жанры. */
+    suspend fun topRanked(page: Int = 1): List<ShikimoriAnimeItem> =
+        search(order = "ranked", censored = false, page = page)
+
+    suspend fun ongoing(page: Int = 1): List<ShikimoriAnimeItem> =
+        search(order = "popularity", status = "ongoing", censored = false, page = page)
+
+    /** «Сейчас на экранах»: онгоинги текущего+прошлого сезонов, score > 7.3 — формула
+     *  главной Shikimori (DashboardView: ONGOINGS_FETCH → shuffle → take 8 → sort by ranked).
+     *  Долгоиграющий мусор главной (вечные онгоинги) вырезан тем же IGNORE-списком. */
+    suspend fun nowOnScreens(currentSeason: String, priorSeason: String): List<ShikimoriAnimeItem> {
+        val pool = (
+            search(order = "popularity", status = "ongoing", season = currentSeason, scoreFrom = 7, censored = false, limit = 50, page = 1) +
+                search(order = "popularity", status = "ongoing", season = priorSeason, scoreFrom = 7, censored = false, limit = 50, page = 1)
+            )
+            .distinctBy { it.id }
+            .filter { it.id !in IGNORED_ONGOING_IDS }
+            .filter { (it.score?.toDoubleOrNull() ?: 0.0) > NOW_ON_SCREENS_MIN_SCORE }
+        return pool.shuffled().take(NOW_ON_SCREENS_TAKE)
+            .sortedByDescending { it.score?.toDoubleOrNull() ?: 0.0 }
+    }
+
+    /** Скоро выйдет: анонсы по популярности — пул витрины (без дублей каруселей). */
+    suspend fun comingSoon(page: Int = 1): List<ShikimoriAnimeItem> =
+        search(order = "popularity", status = "anons", censored = false, page = page)
+
+    companion object {
+        const val NOW_ON_SCREENS_MIN_SCORE = 7.3
+        const val NOW_ON_SCREENS_TAKE = 8
+
+        /** Вечные онгоинги, которые главная Shikimori прячет (DashboardView::IGNORE_ONGOING_IDS). */
+        private val IGNORED_ONGOING_IDS = setOf(
+            31592, 32585, 35517, 32977, 8687, 36231, 38008, 38427, 39003, 40368, 48753, 49520
+        )
+    }
+
+    /** Сезон Shikimori: fall_2026, summer_2026, а также год целиком (2026, 2025). */
+    suspend fun bySeason(
+        season: String,
+        order: String = "ranked",
+        scoreFrom: Int? = null,
+        page: Int = 1
+    ): List<ShikimoriAnimeItem> =
+        search(order = order, season = season, scoreFrom = scoreFrom, censored = false, page = page)
+
+    suspend fun byKind(kind: String, page: Int = 1): List<ShikimoriAnimeItem> =
+        search(kind = kind, order = "ranked", censored = false, page = page)
+
+    suspend fun byGenreId(genreId: Int, page: Int = 1): List<ShikimoriAnimeItem> =
+        search(genreId = genreId, order = "ranked", censored = false, page = page)
 
     suspend fun search(
         query: String? = null,
@@ -83,25 +135,30 @@ class AnimeRepository(
         status: String? = null,
         rating: String? = null,
         genreId: Int? = null,
+        studioId: Int? = null,
         order: String? = "popularity",
         scoreFrom: Int? = null,
+        season: String? = null,
         censored: Boolean? = null,
+        limit: Int = 20,
         page: Int = 1
     ): List<ShikimoriAnimeItem> {
         val cleanQuery = query?.trim()?.ifEmpty { null }
         val genreStr = genreId?.toString()
-        val key = "$cleanQuery:$kind:$status:$rating:$genreStr:$order:$scoreFrom:$censored:$page"
+        val key = "$cleanQuery:$kind:$status:$rating:$genreStr:$studioId:$order:$scoreFrom:$season:$censored:$limit:$page"
         searchCache.get(key)?.let { return it }
         val loaded = api.search(
             search = cleanQuery,
             order = order,
             kind = kind,
             status = status,
+            season = season,
             score = scoreFrom,
             rating = rating,
             genre = genreStr,
+            studio = studioId,
             censored = censored,
-            limit = 20,
+            limit = limit,
             page = page
         )
         searchCache.put(key, loaded)
@@ -154,8 +211,27 @@ class AnimeRepository(
         return runCatching { api.calendar() }.getOrDefault(emptyList())
     }
 
+    /**
+     * Справочник жанров для sheet фильтра аниме-ленты. Тип записи — entry_type
+     * (kind всегда "genre"). Без хентая (у него свой раздел 18+).
+     * Кэш на сессию — справочник статичен.
+     */
+    suspend fun animeGenres(): List<hd.kinoshka.app.data.model.ShikimoriGenre> {
+        genresCache?.let { return it }
+        val loaded = runCatching { api.genres() }.getOrDefault(emptyList())
+            .filter { it.entryType.equals("anime", ignoreCase = true) }
+            .filterNot { it.name.equals("hentai", ignoreCase = true) }
+        if (loaded.isNotEmpty()) genresCache = loaded
+        return loaded
+    }
+
     suspend fun topics(): List<hd.kinoshka.app.data.model.ShikimoriTopic> {
         return runCatching { api.topics() }.getOrDefault(emptyList())
+    }
+
+    /** Комментарии новостного поста. Ошибка сети — пустой список, карточка скроет раздел. */
+    suspend fun topicComments(topicId: Int): List<hd.kinoshka.app.data.model.ShikimoriComment> {
+        return runCatching { api.topicComments(commentableId = topicId) }.getOrDefault(emptyList())
     }
 
     suspend fun character(characterId: Int): hd.kinoshka.app.data.model.ShikimoriCharacterDetails? {
@@ -179,7 +255,16 @@ class AnimeRepository(
         return if (r2.isFailure && r1.isFailure) r2 else Result.success(r2.getOrDefault(emptyList()))
     }
 
-    suspend fun createUserRate(token: String, userId: Int, targetId: Int, status: String, episodes: Int = 0, score: Int = 0): hd.kinoshka.app.data.model.ShikimoriUserRate? {
+    suspend fun getUserRateForTarget(userId: Int, targetId: Int): Result<hd.kinoshka.app.data.model.ShikimoriUserRate?> {
+        // Точечный запрос надёжнее полного списка: кэш/пагинация полного списка могли
+        // не содержать рейт, и удаление молча считалось успехом (id=null), не доходя до сервера.
+        runCatching { api.getUserRates(userId, targetId = targetId) }.getOrNull()
+            ?.firstOrNull { it.targetId == targetId }
+            ?.let { return Result.success(it) }
+        return getUserRates(userId).map { list -> list.firstOrNull { it.targetId == targetId } }
+    }
+
+    suspend fun createUserRate(token: String, userId: Int, targetId: Int, status: String, episodes: Int = 0, score: Int = 0, rewatches: Int? = null): hd.kinoshka.app.data.model.ShikimoriUserRate? {
         val authHeader = if (token.startsWith("Bearer ")) token else "Bearer $token"
         val request = UserRateRequest(
             userRate = UserRateData(
@@ -188,40 +273,63 @@ class AnimeRepository(
                 targetType = "Anime",
                 status = status,
                 episodes = episodes,
-                score = score
+                score = score,
+                rewatches = rewatches
             )
         )
-        KLog.d("ShikimoriSync", "Creating user rate: targetId=$targetId, status=$status, episodes=$episodes, score=$score")
+        KLog.d("ShikimoriSync", "Creating user rate: targetId=$targetId, status=$status, episodes=$episodes, score=$score, rewatches=$rewatches")
         return runCatching {
             val result = api.createUserRate(authHeader, request)
             KLog.d("ShikimoriSync", "Created user rate successfully: id=${result.id}")
             result
         }.onFailure { e ->
-            KLog.e("ShikimoriSync", "Failed to create user rate: ${e.message}", e)
+            logShikimoriError("create", e)
         }.getOrNull()
     }
 
-    suspend fun updateUserRate(token: String, rateId: Int, status: String? = null, episodes: Int? = null, score: Int? = null): hd.kinoshka.app.data.model.ShikimoriUserRate? {
+    suspend fun updateUserRate(token: String, rateId: Int, status: String? = null, episodes: Int? = null, score: Int? = null, rewatches: Int? = null): hd.kinoshka.app.data.model.ShikimoriUserRate? {
         val authHeader = if (token.startsWith("Bearer ")) token else "Bearer $token"
         val request = UserRateUpdateRequest(
             userRate = UserRateUpdateData(
                 status = status,
                 episodes = episodes,
-                score = score
+                score = score,
+                rewatches = rewatches
             )
         )
-        KLog.d("ShikimoriSync", "Updating user rate: rateId=$rateId, status=$status, episodes=$episodes, score=$score")
+        KLog.d("ShikimoriSync", "Updating user rate: rateId=$rateId, status=$status, episodes=$episodes, score=$score, rewatches=$rewatches")
         return runCatching {
             val result = api.updateUserRate(authHeader, rateId, request)
             KLog.d("ShikimoriSync", "Updated user rate successfully: id=${result.id}")
             result
         }.onFailure { e ->
-            KLog.e("ShikimoriSync", "Failed to update user rate: ${e.message}", e)
+            logShikimoriError("update", e)
         }.getOrNull()
     }
 
     suspend fun deleteUserRate(token: String, rateId: Int): Boolean {
         val authHeader = if (token.startsWith("Bearer ")) token else "Bearer $token"
-        return runCatching { api.deleteUserRate(authHeader, rateId) }.isSuccess
+        return runCatching { api.deleteUserRate(authHeader, rateId) }
+            .fold(
+                onSuccess = { true },
+                // Рейт уже отсутствует на сервере — цель удаления достигнута, не провал.
+                // Ошибкой не логируем, иначе каждая повторная чистка спамит E Failed + 404.
+                onFailure = { e ->
+                    val code = (e as? retrofit2.HttpException)?.code()
+                    if (code == 404) {
+                        KLog.d("ShikimoriSync", "delete rateId=$rateId: already gone on server (404), treating as success")
+                        true
+                    } else {
+                        logShikimoriError("delete rateId=$rateId", e)
+                        false
+                    }
+                }
+            )
+    }
+
+    private fun logShikimoriError(op: String, e: Throwable) {
+        val http = e as? retrofit2.HttpException
+        val body = http?.let { runCatching { it.response()?.errorBody()?.string() }.getOrNull() }
+        KLog.e("ShikimoriSync", "Failed to $op user rate: ${e.message}, http=${http?.code()}, body=$body", e)
     }
 }

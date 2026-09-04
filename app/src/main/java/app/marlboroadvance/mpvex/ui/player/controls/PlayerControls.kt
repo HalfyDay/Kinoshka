@@ -440,9 +440,8 @@ fun PlayerControls(
           }
         }
 
-        // PENDING_MOVIE: background stream resolve failed — retry or fall back to the web player.
+        // PENDING_MOVIE: background stream resolve failed — retry from here.
         val pendingResolveError by viewModel.pendingResolveError.collectAsState()
-        val pendingWebFallbackUrl by viewModel.pendingWebFallbackUrl.collectAsState()
         if (pendingResolveError != null) {
           Box(
             modifier = Modifier.constrainAs(pendingOverlay) {
@@ -490,18 +489,6 @@ fun PlayerControls(
                     activity?.let { hd.kinoshka.app.data.diagnostics.AppDiagnostics.shareReport(it) }
                   }) {
                     Text("Отчёт", color = Color.White)
-                  }
-                  if (pendingWebFallbackUrl != null && activity != null) {
-                    androidx.compose.material3.OutlinedButton(onClick = {
-                      runCatching {
-                        activity.startActivity(
-                          android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(pendingWebFallbackUrl))
-                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                      }
-                    }) {
-                      Text("Веб-плеер", color = Color.White)
-                    }
                   }
                 }
               }

@@ -28,8 +28,12 @@ import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.data.source.HentaiStreamResolver
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -44,6 +48,12 @@ data class FeedUiState(
     /** Чипсы, доступные к показу: без 18+/Хентай до подтверждения возраста. */
     val adultUnlocked: Boolean = false,
     val showAdultGate: Boolean = false,
+    /**
+     * Sheet жанров текущего раздела (справочник его источника) + выбранный срез.
+     * «Мне повезет» прыгает на случайную страницу выдачи (см. FeedViewModel.surpriseMe).
+     */
+    val genreOptions: List<hd.kinoshka.app.data.feed.GenreOption> = emptyList(),
+    val genreKey: String? = null,
     /** Раздел, для которого сейчас показывается визард «что вам нравится» (первый вход). */
     val onboardingChip: FeedChip? = null,
     /** Лента исчерпана: показанное не повторяем, предлагаем ручной сброс. */
@@ -91,9 +101,10 @@ class FeedViewModel(
     /** Вектор вкуса на РАЗДЕЛ: голоса «Всё» раскладываются в вектор раздела тайтла. */
     private val tastes = FeedChip.entries.filter { it != FeedChip.ALL }
         .associateWith { TasteVectorStore(appContext, it.name) }
-    private val repository = FeedRepository(films, anime, userState, interests) { chip ->
-        tastes[chip] ?: tastes.getValue(FeedChip.FILMS)
-    }
+    private val repository = FeedRepository(
+        films, anime, userState, interests,
+        tasteOf = { chip -> tastes[chip] ?: tastes.getValue(FeedChip.FILMS) }
+    )
 
     /** Снимок ленты каждого раздела на диск — мгновенный показ при повторном запуске. */
     private val cache = FeedCacheStore(appContext)
@@ -118,9 +129,12 @@ class FeedViewModel(
     private var pageIndex = 0
     private var rescuePageIndex = 0
     private var consecutiveEmptyRuns = 0
-    /** Готовая к мгновенной отдаче партия СВОЕГО раздела, обогретая фоном заранее. */
+    /** Готовая к мгновенной отдаче партия СВОЕГО раздела и СВОЕГО жанра,
+     *  обогретая фоном заранее. genreKey — барьер от утечек между срезами:
+     *  потребитель сверяет его с текущим, чужой срез выбрасывается. */
     private data class ReadyBatch(
         val chip: FeedChip,
+        val genreKey: String?,
         val items: List<FeedItem>,
         val extras: Map<Int, FeedItemExtras> = emptyMap()
     )
@@ -134,6 +148,31 @@ class FeedViewModel(
     /** Префетч следующей партии; применяется только к своему разделу. */
     @Volatile private var pendingBatch: ReadyBatch? = null
     private var prefetchJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Экранные джобы (обогащение карточек, клипы, прогрев соседей): viewModel живёт на
+     * уровне Activity и переживает уход с ленты, поэтому всё fire-and-forget трекаем здесь
+     * и гасим в onScreenClosed — иначе сеть/декод продолжают долбить под входную
+     * анимацию home (вклад в чёрный экран при спаме навигацией).
+     */
+    private val screenJobs: MutableSet<Job> = java.util.Collections.synchronizedSet(mutableSetOf())
+
+    private fun launchScreen(block: suspend CoroutineScope.() -> Unit): Job =
+        viewModelScope.launch(Dispatchers.IO, block = block).also { job ->
+            screenJobs.add(job)
+            job.invokeOnCompletion { screenJobs.remove(job) }
+        }
+
+    /** Уход с экрана ленты: остановить всё, что крутилось под неё. */
+    fun onScreenClosed() {
+        loadJob?.cancel()
+        prefetchJob?.cancel()
+        screenJobs.forEach { it.cancel() }
+        screenJobs.clear()
+        inFlightExtras.clear()
+        inFlightClips.clear()
+        pendingBatch = null
+    }
 
     // Дедуп кандидатов чешется из нескольких фоновых джобов (добор/префетч):
     // обычный HashSet под конкурентной записью терял записи и пробивал дедуп ленты.
@@ -205,30 +244,109 @@ class FeedViewModel(
             return
         }
         if (chip == uiState.selectedChip && uiState.items.isNotEmpty()) return
-        loadJob?.cancel()
+        // Жанр запоминается за разделом: подсветка и справочник — свои у каждого чипса.
+        // Синхронно — только мгновенная обратная связь (таб, скелетон); сам перезапуск
+        // уходит в restartFeed (там дожимается старая джоба).
         uiState = uiState.copy(
             selectedChip = chip,
-            items = emptyList(),
+            genreKey = repository.feedGenreKey(chip),
+            genreOptions = emptyList(),
             loading = true,
-            canLoadMore = true,
-            exhausted = false,
-            extras = emptyMap(),
-            clipStates = emptyMap(),
-            expandedIds = emptySet(),
-            reactions = emptyMap(),
-            currentPageIndex = 0,
-            pendingDropIds = emptySet(),
             errorMessage = null
         )
-        pageIndex = 0
-        rescuePageIndex = 0
-        prefetchJob?.cancel()
-        pendingBatch = null
-        loadMoreInternal()
+        if (chip != FeedChip.ALL) loadGenreOptionsIfNeeded(chip)
+        restartFeed(chip)
+    }
+
+    /**
+     * Перезапуск выдачи раздела с нуля: смена чипса/жанра, «Мне повезет».
+     * Старая загрузка и префетч ДОЖИМАЮТСЯ (cancelAndJoin) до сброса стейта:
+     * голый cancel() асинхронен, и хвост отменённой джобы (publishChunk, запись
+     * pendingBatch) приземлялся поверх уже очищенного стейта — жанры текли друг
+     * в друга. Сериализация через resetMutex: быстрые тапы выстраиваются в очередь.
+     */
+    private val resetMutex = Mutex()
+
+    private fun restartFeed(chip: FeedChip, startPage: Int = 1) {
+        viewModelScope.launch(Dispatchers.IO) {
+            resetMutex.withLock {
+                loadJob?.cancelAndJoin()
+                prefetchJob?.cancelAndJoin()
+                pendingBatch = null
+                mutateState {
+                    it.copy(
+                        selectedChip = chip,
+                        items = emptyList(),
+                        loading = true,
+                        canLoadMore = true,
+                        exhausted = false,
+                        extras = emptyMap(),
+                        clipStates = emptyMap(),
+                        expandedIds = emptySet(),
+                        reactions = emptyMap(),
+                        currentPageIndex = 0,
+                        pendingDropIds = emptySet(),
+                        errorMessage = null
+                    )
+                }
+                pageIndex = (startPage - 1).coerceAtLeast(0)
+                rescuePageIndex = 0
+                loadMoreInternal()
+            }
+        }
     }
 
     fun dismissAdultGate() {
         uiState = uiState.copy(showAdultGate = false)
+    }
+
+    /** Раздел, для которого уже загружен справочник жанров (сброс при смене чипса). */
+    private var genresLoadedFor: FeedChip? = null
+
+    /**
+     * Sheet жанров раздела: справочник его источника тянется один раз.
+     * У «Всё» единого справочника нет (смесь KP и Шикимори) — sheet там не показываем.
+     */
+    fun loadGenreOptionsIfNeeded(chip: FeedChip) {
+        if (chip == FeedChip.ALL || genresLoadedFor == chip) return
+        genresLoadedFor = chip
+        viewModelScope.launch(Dispatchers.IO) {
+            val options = when (chip) {
+                FeedChip.ANIME -> runCatching { repository.animeGenreOptions() }.getOrDefault(emptyList())
+                FeedChip.HENTAI -> runCatching { repository.hentaiTagOptions() }.getOrDefault(emptyList())
+                else -> runCatching { repository.kpGenreOptions() }.getOrDefault(emptyList())
+            }
+            if (options.isNotEmpty()) {
+                mutateState { st -> st.copy(genreOptions = options) }
+            } else {
+                genresLoadedFor = null // справочник не приехал — ретрай при следующем входе
+            }
+        }
+    }
+
+    /**
+     * Срез ленты раздела по жанру sheet (null = сброс к обычной выдаче):
+     * пересбор с нуля. Выбор запоминается за разделом.
+     */
+    fun selectFeedGenre(key: String?) {
+        val chip = uiState.selectedChip
+        if (chip == FeedChip.ALL || repository.feedGenreKey(chip) == key) return
+        val title = uiState.genreOptions.firstOrNull { it.key == key }?.title
+        repository.setFeedGenre(chip, key, title)
+        uiState = uiState.copy(genreKey = key, loading = true, errorMessage = null)
+        // Дисковый снимок хранит старый срез — без сброса лента
+        // поднимет его вместо новой выдачи.
+        cache.clear(chip)
+        restartFeed(chip)
+    }
+
+    /** «Мне повезет»: случайная страница выдачи раздела с нового места. */
+    fun surpriseMe() {
+        val chip = uiState.selectedChip
+        // Иначе restoreFromCache поднимет начало выдачи вместо случайной страницы.
+        cache.clear(chip)
+        uiState = uiState.copy(loading = true, errorMessage = null)
+        restartFeed(chip, startPage = (1..8).random())
     }
 
     fun confirmAdultGate() {
@@ -263,12 +381,13 @@ class FeedViewModel(
                     return@runCatching
                 }
 
-                // Готовые партии применяются только к СВОЕМУ разделу: чужая (префетч
-                // завершился уже после переключения вкладки) выбрасывается — иначе
-                // карточки одной вкладки утекали бы в другую.
+                // Готовые партии применяются только к СВОЕМУ разделу и СВОЕМУ жанру:
+                // префетч, завершившийся уже после переключения, выбрасывается — иначе
+                // карточки одного среза утекали бы в другой.
                 pendingBatch?.let { pre ->
                     pendingBatch = null
                     if (pre.chip == chip &&
+                        pre.genreKey == repository.feedGenreKey(chip) &&
                         applyReadyBatch(pre, "партия «${chip.title}» из префетча: +")
                     ) return@runCatching
                 }
@@ -526,7 +645,7 @@ class FeedViewModel(
             }
             val validated = runCatching { validateBatch(chip, raw) }.getOrDefault(ValidatedBatch.EMPTY)
             if (validated.items.isNotEmpty()) {
-                pendingBatch = ReadyBatch(chip, validated.items, validated.extras)
+                pendingBatch = ReadyBatch(chip, repository.feedGenreKey(chip), validated.items, validated.extras)
                 FeedDiagnostics.record("префетч «${chip.title}» готов: ${validated.items.size} карточек")
             }
         }
@@ -641,7 +760,7 @@ class FeedViewModel(
         if (removedBefore == 0) return
         // items берём из СВЕЖЕГО стейта под мьютексом: переданный в onItemShown список
         // мог устареть — прямая перезапись стёрла бы батч, прилепившийся с добора.
-        viewModelScope.launch {
+        launchScreen {
             mutateState { st ->
                 st.copy(
                     items = st.items.filterIndexed { i, it -> !(i < currentIndex && it.kinopoiskId in pending) },
@@ -673,7 +792,7 @@ class FeedViewModel(
             if (cached != null) {
                 preloadImages(listOf(cached.fullPosterUrl))
             } else {
-                viewModelScope.launch(Dispatchers.IO) {
+                launchScreen {
                     runCatching {
                         val extras = loadExtras(neighbor, withStills = false) ?: return@runCatching
                         mutateState { st ->
@@ -710,7 +829,7 @@ class FeedViewModel(
     private fun onPosterLoadFailed(itemId: Int) {
         val item = uiState.items.firstOrNull { it.kinopoiskId == itemId } ?: return
         if (itemId in uiState.pendingDropIds) return
-        viewModelScope.launch(Dispatchers.IO) { dropQuietly(item, "битый постер") }
+        launchScreen { dropQuietly(item, "битый постер") }
     }
 
     fun toggleSound() {
@@ -727,33 +846,36 @@ class FeedViewModel(
         if (item.kinopoiskId in inFlightExtras) return
         inFlightExtras.add(item.kinopoiskId)
         val chip = uiState.selectedChip
-        viewModelScope.launch(Dispatchers.IO) {
-            val extras = if (existing != null) {
-                existing.copy(stills = loadStills(item), stillsPending = false)
-            } else {
-                loadExtras(item, withStills = true)
-            }
-            inFlightExtras.remove(item.kinopoiskId)
-            if (extras == null) return@launch
-
-            if (existing == null) {
-                // Гард вкуса раздела: жанры пришли из details — можно проверить честно.
-                if (violatesSectionTaste(chip, extras.genres)) {
-                    dropQuietly(item, "гард раздела $chip")
-                    return@launch
+        launchScreen {
+            try {
+                val extras = if (existing != null) {
+                    existing.copy(stills = loadStills(item), stillsPending = false)
+                } else {
+                    loadExtras(item, withStills = true)
                 }
-                // Хентай, протёкший в аниме/общую подачу по каталогу — тихо убираем.
-                if ((chip == FeedChip.ANIME || chip == FeedChip.ALL) &&
-                    HentaiStreamResolver.isKnownHentai(item.originalTitle, item.title)
-                ) {
-                    dropQuietly(item, "гард хентая в $chip")
-                    return@launch
-                }
-            }
+                if (extras == null) return@launchScreen
 
-            mutateState { st -> st.copy(extras = st.extras + (item.kinopoiskId to extras)) }
-            // Кадры/полный постер этой карточки — в кэш Coil, карусель не будет мигать.
-            preloadImages(listOf(extras.fullPosterUrl) + extras.stills)
+                if (existing == null) {
+                    // Гард вкуса раздела: жанры пришли из details — можно проверить честно.
+                    if (violatesSectionTaste(chip, extras.genres)) {
+                        dropQuietly(item, "гард раздела $chip")
+                        return@launchScreen
+                    }
+                    // Хентай, протёкший в аниме/общую подачу по каталогу — тихо убираем.
+                    if ((chip == FeedChip.ANIME || chip == FeedChip.ALL) &&
+                        HentaiStreamResolver.isKnownHentai(item.originalTitle, item.title)
+                    ) {
+                        dropQuietly(item, "гард хентая в $chip")
+                        return@launchScreen
+                    }
+                }
+
+                mutateState { st -> st.copy(extras = st.extras + (item.kinopoiskId to extras)) }
+                // Кадры/полный постер этой карточки — в кэш Coil, карусель не будет мигать.
+                preloadImages(listOf(extras.fullPosterUrl) + extras.stills)
+            } finally {
+                inFlightExtras.remove(item.kinopoiskId)
+            }
         }
     }
 
@@ -936,27 +1058,40 @@ class FeedViewModel(
         viewModelScope.launch {
             mutateState { st -> st.copy(clipStates = st.clipStates + (id to FeedClipState.Loading)) }
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            val state = resolveClip(item)
-            inFlightClips.remove(id)
-            mutateState { st -> st.copy(clipStates = st.clipStates + (id to state)) }
-            // Карточка без видео живёт кадрами — добираем их сразу после
-            // того, как стало ясно, что клипа не будет.
-            if (state is FeedClipState.PosterOnly) ensureExtras(item)
+        launchScreen {
+            try {
+                val state = resolveClip(item)
+                mutateState { st -> st.copy(clipStates = st.clipStates + (id to state)) }
+                // Карточка без видео живёт кадрами — добираем их сразу после
+                // того, как стало ясно, что клипа не будет.
+                if (state is FeedClipState.PosterOnly) ensureExtras(item)
+            } finally {
+                inFlightClips.remove(id)
+            }
         }
     }
 
     private suspend fun resolveClip(item: FeedItem): FeedClipState = withContext(Dispatchers.IO) {
         // 1) Rutube: нативный HLS без WebView; перебираем оба названия.
+        // CancellationException обязательно пробрасываем: иначе отмена (уход с экрана)
+        // превращается в фейковый PosterOnly + лишние запросы и записи в стейт,
+        // а в логе — «rutube failed: JobCancellationException».
         val rutube = runCatching {
             RutubeClipSource.findClip(title = item.title, originalTitle = item.originalTitle)
-        }.getOrElse { Log.w(TAG, "rutube failed: ${it.javaClass.simpleName}"); null }
+        }.getOrElse {
+            if (it is CancellationException) throw it
+            Log.w(TAG, "rutube failed: ${it.javaClass.simpleName}")
+            null
+        }
         if (rutube != null) return@withContext FeedClipState.RutubeReady(rutube.hlsUrl, rutube.thumbnailUrl)
 
         // 2) Официальный трейлер из KP /videos — только для настоящих KP-id: у синтетических
         //    аниме-id (>=ANIME_ID_OFFSET) эндпоинт отвечает 400, это чистый спам запросов.
         if (!hd.kinoshka.app.data.feed.isAnimeId(item.kinopoiskId)) {
-            val videos = runCatching { films.videos(item.kinopoiskId) }.getOrDefault(emptyList())
+            val videos = runCatching { films.videos(item.kinopoiskId) }.getOrElse {
+                if (it is CancellationException) throw it
+                emptyList()
+            }
             val ytKey = videos
                 .mapNotNull { it.url }
                 .firstOrNull { it.contains("youtu", ignoreCase = true) }

@@ -3,6 +3,7 @@ package hd.kinoshka.app.ui.screens
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,16 +56,22 @@ import hd.kinoshka.app.data.download.OfflineEpisode
 import hd.kinoshka.app.data.download.downloadProgressText
 import hd.kinoshka.app.data.download.formatBytes
 import hd.kinoshka.app.data.download.progressPercent
+import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import java.io.File
 
 /**
  * Офлайн-библиотека приложения: активные скачивания с прогрессом и скачанные серии
  * по тайтлам. Серия играется локальным файлом/плейлистом через PlayerActivity —
  * mpv читает и видеофайлы, и локальные index.m3u8.
+ * Шапка тайтла открывает его страницу ([onOpenTitle] — id в конвенции деталей).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DownloadsScreen(onBack: () -> Unit) {
+fun DownloadsScreen(
+    onBack: () -> Unit,
+    onOpenTitle: (Int) -> Unit = {}
+) {
     val context = LocalContext.current
     val tasks by EpisodeDownloadManager.tasks.collectAsState()
     val library by EpisodeDownloadManager.library.collectAsState()
@@ -190,25 +198,41 @@ fun DownloadsScreen(onBack: () -> Unit) {
 
             grouped.forEach { (key, title, episodes) ->
                 item(key = "group:${key.first}") {
+                    val filmId = downloadItemFilmId(key.first)
+                    val poster = episodes.firstOrNull { it.posterUrl != null }?.posterUrl
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 2.dp),
+                            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 2.dp)
+                            .let { m -> if (filmId != null) m.clickable { onOpenTitle(filmId) } else m },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Text(
-                            text = "${episodes.size} сер. · ${formatBytes(episodes.sumOf { it.sizeBytes })}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        if (poster != null) {
+                            KinoshkaAsyncImage(
+                                model = poster,
+                                contentDescription = title,
+                                modifier = Modifier
+                                    .size(width = 44.dp, height = 66.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${episodes.size} сер. · ${formatBytes(episodes.sumOf { it.sizeBytes })}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         IconButton(
                             onClick = { EpisodeDownloadManager.deleteItem(key.first) },
                             modifier = Modifier.size(30.dp)
@@ -301,6 +325,16 @@ fun DownloadsScreen(onBack: () -> Unit) {
             }
         )
     }
+}
+
+/**
+ * Ключ тайтла («a<shikimoriId>»/«k<kinopoiskId>») в id конвенции деталей;
+ * null — ключ не распознан, шапка некликабельна.
+ */
+private fun downloadItemFilmId(itemKey: String): Int? {
+    val shikimoriId = itemKey.removePrefix("a").toIntOrNull()?.takeIf { itemKey.startsWith("a") }
+    if (shikimoriId != null) return shikimoriId + ANIME_ID_OFFSET
+    return itemKey.removePrefix("k").toIntOrNull()?.takeIf { itemKey.startsWith("k") }
 }
 
 @Composable

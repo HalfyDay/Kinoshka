@@ -1153,6 +1153,9 @@ object HentaiStreamResolver {
     /** Служебные слаги, не несущие смысла как жанр. */
     private val TAG_JUNK = setOf("hd")
 
+    /** Все жанры-теги каталога для sheet фильтра хентай-ленты (русские, отсортированы). */
+    fun allGenreTags(): List<String> = localizeTags(TAG_RU.keys.toList()).sorted()
+
     /** Переводит слаги каталога в чипы-жанры; порядок каталога сохраняется. */
     fun localizeTags(tags: List<String>): List<String> = tags.asSequence()
         .map { it.trim().lowercase() }

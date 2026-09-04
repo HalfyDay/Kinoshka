@@ -1,13 +1,19 @@
 package hd.kinoshka.app.data.download
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.util.Log
+import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeSourceType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
@@ -51,9 +57,45 @@ object EpisodeDownloadManager {
     @Volatile private var currentKey: String? = null
     @Volatile private var currentJob: Job? = null
 
+    /** Повторные попытки внутри задачи: обрыв сети не роняет загрузку сразу. */
+    private const val MAX_ATTEMPTS = 5
+    private const val BASE_RETRY_DELAY_MS = 2_000L
+    private const val MAX_RETRY_DELAY_MS = 15_000L
+
+    /** Ключи, по которым уведомление о завершении уже показано (одно на задачу). */
+    private val notifiedDone = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    @Volatile private var networkWatching = false
+
     fun init(context: Context) {
         appContext = context.applicationContext
         _library.value = loadLibrary()
+        watchConnectivity()
+    }
+
+    // ------------------------------------------------------------------
+    // Сеть: авто-retry при восстановлении
+    // ------------------------------------------------------------------
+
+    /** Слушатель смены connectivity: при появлении сети упавшие задачи встают в очередь заново. */
+    private fun watchConnectivity() {
+        if (networkWatching) return
+        networkWatching = true
+        runCatching {
+            val manager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            manager.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    scope.launch {
+                        val failed = failedRequests.value.keys.toList()
+                        if (failed.isEmpty()) return@launch
+                        Log.i(TAG, "network back, retrying ${failed.size} failed")
+                        failed.forEach { retry(it) }
+                    }
+                }
+            })
+        }.onFailure { Log.w(TAG, "network callback failed: ${it.message}") }
     }
 
     // ------------------------------------------------------------------
@@ -72,6 +114,8 @@ object EpisodeDownloadManager {
         val translationTitle: String,
         val episodeNumber: Int,
         val episodeLabel: String,
+        /** Обложка тайтла для экрана загрузок; null — подтянется из аниме-кэша/плейсхолдер. */
+        val posterUrl: String? = null,
         val resolve: suspend () -> MediaDownloader.MediaSource?
     )
 
@@ -92,6 +136,7 @@ object EpisodeDownloadManager {
                 if (pending.value.any { itKey(it) == key }) return@withLock
                 _tasks.value = _tasks.value - key
                 failedRequests.value = failedRequests.value - key
+                notifiedDone.remove(key)
                 pending.value = pending.value + request
                 _tasks.value = _tasks.value + (key to taskState(request, DownloadPhase.QUEUED))
                 ensureWorker()
@@ -114,6 +159,7 @@ object EpisodeDownloadManager {
                 } else {
                     _tasks.value = _tasks.value - key
                     failedRequests.value = failedRequests.value - key
+                    notifiedDone.remove(key)
                 }
             }
         }
@@ -133,6 +179,7 @@ object EpisodeDownloadManager {
                 if (task.phase == DownloadPhase.FAILED) {
                     _tasks.value = _tasks.value - key
                     failedRequests.value = failedRequests.value - key
+                    notifiedDone.remove(key)
                 }
             }
         }
@@ -194,91 +241,118 @@ object EpisodeDownloadManager {
                 _tasks.value = _tasks.value + (key to (transform(_tasks.value[key] ?: taskState(request, DownloadPhase.RESOLVING))))
             }
 
-            update { it.copy(phase = DownloadPhase.RESOLVING) }
-            val media = try {
-                request.resolve() ?: throw MediaDownloader.DownloadException("Не удалось получить ссылку на видео")
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "resolve failed for $key: ${e.message}")
-                failedRequests.value = failedRequests.value + (key to request)
-                update { it.copy(phase = DownloadPhase.FAILED, error = e.message ?: "Ошибка резолва") }
-                currentKey = null
-                return@launch
+            // Повторные попытки с backoff: короткий разрыв сети переживается внутри задачи,
+            // partial-файлы при этом сохраняются — следующая попытка докачивает по Range/HLS-сегментам.
+            // Скорость — EMA по дельтам bytesDone (direct обновляет по 64КБ-чанкам, HLS — по
+            // завершённым сегментам). Сброс дельт (перезапуск попытки) обнуляет замер.
+            var speedEma = 0.0
+            var sampleMs = 0L
+            var sampleBytes = 0L
+            fun onProgress(progress: MediaDownloader.MediaProgress) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (sampleMs > 0 && now > sampleMs) {
+                    val delta = progress.bytesDone - sampleBytes
+                    if (delta >= 0) {
+                        val inst = delta * 1000.0 / (now - sampleMs)
+                        speedEma = if (speedEma == 0.0) inst else 0.35 * inst + 0.65 * speedEma
+                    } else {
+                        speedEma = 0.0
+                    }
+                }
+                sampleMs = now
+                sampleBytes = progress.bytesDone
+                // Для HLS сервер не отдаёт общий размер: оцениваем по среднему сегменту.
+                val (total, estimated) = when {
+                    progress.bytesTotal > 0 -> progress.bytesTotal to false
+                    progress.segmentsDone > 0 && progress.segmentsTotal > 0 ->
+                        (progress.bytesDone * progress.segmentsTotal / progress.segmentsDone) to true
+                    else -> -1L to false
+                }
+                update {
+                    it.copy(
+                        phase = DownloadPhase.DOWNLOADING,
+                        bytesDone = progress.bytesDone,
+                        bytesTotal = total,
+                        sizeEstimated = estimated,
+                        segmentsDone = progress.segmentsDone,
+                        segmentsTotal = progress.segmentsTotal,
+                        speedBytesPerSec = speedEma.toLong()
+                    )
+                }
             }
-
-            update { it.copy(phase = DownloadPhase.DOWNLOADING) }
-            try {
-                val dir = MediaDownloader.episodeDir(
-                    appContext, request.itemKey, request.source, request.translationId, request.episodeNumber
-                )
-                // Скорость — EMA по дельтам bytesDone (direct обновляет по 64КБ-чанкам, HLS — по
-                // завершённым сегментам). Сброс дельт (перезапуск попытки) обнуляет замер.
-                var speedEma = 0.0
-                var sampleMs = 0L
-                var sampleBytes = 0L
-                val file = MediaDownloader.download(media, dir, "episode") { progress ->
-                    val now = android.os.SystemClock.elapsedRealtime()
-                    if (sampleMs > 0 && now > sampleMs) {
-                        val delta = progress.bytesDone - sampleBytes
-                        if (delta >= 0) {
-                            val inst = delta * 1000.0 / (now - sampleMs)
-                            speedEma = if (speedEma == 0.0) inst else 0.35 * inst + 0.65 * speedEma
-                        } else {
-                            speedEma = 0.0
+            var attempt = 0
+            var downloaded: MediaDownloader.MediaFile? = null
+            while (attempt < MAX_ATTEMPTS) {
+                attempt += 1
+                // Новая попытка после обрыва: замер скорости начинаем заново.
+                speedEma = 0.0
+                sampleMs = 0L
+                sampleBytes = 0L
+                try {
+                    update { it.copy(phase = DownloadPhase.RESOLVING) }
+                    val media = request.resolve()
+                        ?: throw MediaDownloader.DownloadException("Не удалось получить ссылку на видео")
+                    update { it.copy(phase = DownloadPhase.DOWNLOADING) }
+                    val dir = MediaDownloader.episodeDir(
+                        appContext, request.itemKey, request.source, request.translationId, request.episodeNumber
+                    )
+                    downloaded = MediaDownloader.download(media, dir, "episode", ::onProgress)
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // Отмена пользователем: подчистить недокачанный каталог и убрать задачу.
+                    runCatching {
+                        MediaDownloader.episodeDir(appContext, request.itemKey, request.source, request.translationId, request.episodeNumber)
+                            .deleteRecursively()
+                    }
+                    _tasks.value = _tasks.value - key
+                    notifiedDone.remove(key)
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "attempt $attempt/$MAX_ATTEMPTS failed for $key: ${e.message}")
+                    if (attempt >= MAX_ATTEMPTS) {
+                        failedRequests.value = failedRequests.value + (key to request)
+                        update { it.copy(phase = DownloadPhase.FAILED, error = e.message ?: "Ошибка скачивания") }
+                    } else {
+                        // Фазу не меняем (прогресс/очередь живы), только hint — следующий retry докачает.
+                        update { it.copy(error = "Повтор $attempt/$MAX_ATTEMPTS: ${e.message ?: "обрыв сети"}") }
+                        try {
+                            delay((BASE_RETRY_DELAY_MS shl (attempt - 1)).coerceAtMost(MAX_RETRY_DELAY_MS))
+                        } catch (ce: kotlinx.coroutines.CancellationException) {
+                            // Отмена в окне backoff: чистим partial как при обычной отмене.
+                            runCatching {
+                                MediaDownloader.episodeDir(appContext, request.itemKey, request.source, request.translationId, request.episodeNumber)
+                                    .deleteRecursively()
+                            }
+                            _tasks.value = _tasks.value - key
+                            notifiedDone.remove(key)
+                            throw ce
                         }
                     }
-                    sampleMs = now
-                    sampleBytes = progress.bytesDone
-                    // Для HLS сервер не отдаёт общий размер: оцениваем по среднему сегменту.
-                    val (total, estimated) = when {
-                        progress.bytesTotal > 0 -> progress.bytesTotal to false
-                        progress.segmentsDone > 0 && progress.segmentsTotal > 0 ->
-                            (progress.bytesDone * progress.segmentsTotal / progress.segmentsDone) to true
-                        else -> -1L to false
-                    }
-                    update {
-                        it.copy(
-                            phase = DownloadPhase.DOWNLOADING,
-                            bytesDone = progress.bytesDone,
-                            bytesTotal = total,
-                            sizeEstimated = estimated,
-                            segmentsDone = progress.segmentsDone,
-                            segmentsTotal = progress.segmentsTotal,
-                            speedBytesPerSec = speedEma.toLong()
-                        )
-                    }
                 }
-                val entry = OfflineEpisode(
-                    itemKey = request.itemKey,
-                    title = request.title,
-                    source = request.source,
-                    translationId = request.translationId,
-                    translationTitle = request.translationTitle,
-                    episodeNumber = request.episodeNumber,
-                    episodeLabel = request.episodeLabel,
-                    dirPath = file.dirPath,
-                    filePath = file.filePath,
-                    sizeBytes = file.sizeBytes,
-                    downloadedAt = System.currentTimeMillis(),
-                    isHls = file.isHls
-                )
-                _tasks.value = _tasks.value - key
-                _library.value = (_library.value.filter { it.key != key } + entry).sortedBy { it.key }
-                saveLibrary(_library.value)
-                Log.i(TAG, "downloaded $key (${formatBytes(file.sizeBytes)})")
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                // Отмена: подчистить недокачанный каталог и убрать задачу.
-                runCatching {
-                    MediaDownloader.episodeDir(appContext, request.itemKey, request.source, request.translationId, request.episodeNumber)
-                        .deleteRecursively()
-                }
-                _tasks.value = _tasks.value - key
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "download failed for $key: ${e.message}")
-                failedRequests.value = failedRequests.value + (key to request)
-                update { it.copy(phase = DownloadPhase.FAILED, error = e.message ?: "Ошибка скачивания") }
+            }
+            val file = downloaded ?: run { currentKey = null; return@launch }
+            val entry = OfflineEpisode(
+                itemKey = request.itemKey,
+                title = request.title,
+                source = request.source,
+                translationId = request.translationId,
+                translationTitle = request.translationTitle,
+                episodeNumber = request.episodeNumber,
+                episodeLabel = request.episodeLabel,
+                dirPath = file.dirPath,
+                filePath = file.filePath,
+                sizeBytes = file.sizeBytes,
+                downloadedAt = System.currentTimeMillis(),
+                isHls = file.isHls,
+                posterUrl = request.posterUrl ?: cachedAnimePoster(request.itemKey)
+            )
+            _tasks.value = _tasks.value - key
+            _library.value = (_library.value.filter { it.key != key } + entry).sortedBy { it.key }
+            saveLibrary(_library.value)
+            Log.i(TAG, "downloaded $key (${formatBytes(file.sizeBytes)})")
+            // Отдельное завершающееся уведомление (не foreground-прогресс): одно на задачу.
+            if (notifiedDone.add(key)) {
+                DownloadNotifications.postCompleted(appContext, key, request.title, request.episodeLabel)
             }
             currentKey = null
         }
@@ -378,6 +452,20 @@ object EpisodeDownloadManager {
 
     /** Суммарный размер библиотеки. */
     fun totalSizeBytes(): Long = _library.value.sumOf { it.sizeBytes }
+
+    /**
+     * Обложка аниме из локального кэша приложения (ключ «a<shikimoriId>»): запросы из
+     * шитов/пикеров постер не несут, а кэш деталей обычно уже прогрет просмотром тайтла.
+     * Чистый read префов, сети нет.
+     */
+    private val userStore by lazy { UserStateStore(appContext) }
+
+    private fun cachedAnimePoster(itemKey: String): String? {
+        val shikimoriId = itemKey.removePrefix("a").toIntOrNull()?.takeIf { itemKey.startsWith("a") }
+            ?: return null
+        return runCatching { userStore.getShikimoriAnimeCache()[shikimoriId]?.posterUrl }
+            .getOrNull()
+    }
 
     // ------------------------------------------------------------------
     // Персистентность

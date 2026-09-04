@@ -2,7 +2,9 @@ package hd.kinoshka.app.data.api
 
 import hd.kinoshka.app.data.model.ShikimoriAnimeDetails
 import hd.kinoshka.app.data.model.ShikimoriAnimeItem
+import hd.kinoshka.app.data.model.ShikimoriGenre
 import hd.kinoshka.app.data.model.ShikimoriCalendarItem
+import hd.kinoshka.app.data.model.ShikimoriComment
 import hd.kinoshka.app.data.model.ShikimoriScreenshot
 import hd.kinoshka.app.data.model.ShikimoriTokenResponse
 import hd.kinoshka.app.data.model.ShikimoriTopic
@@ -32,6 +34,7 @@ interface ShikimoriApi {
         @Query("score") score: Int? = null,
         @Query("rating") rating: String? = null,
         @Query("genre") genre: String? = null,
+        @Query("studio") studio: Int? = null,
         @Query("censored") censored: Boolean? = null,
         @Query("limit") limit: Int = 20,
         @Query("page") page: Int = 1
@@ -87,6 +90,7 @@ interface ShikimoriApi {
     @GET("api/v2/user_rates")
     suspend fun getUserRates(
         @Query("user_id") userId: Int,
+        @Query("target_id") targetId: Int? = null,
         @Query("target_type") targetType: String = "Anime",
         @Query("limit") limit: Int = 5000
     ): List<ShikimoriUserRate>
@@ -110,6 +114,9 @@ interface ShikimoriApi {
         @Path("id") rateId: Int
     )
 
+    @GET("api/genres")
+    suspend fun genres(): List<ShikimoriGenre>
+
     @GET("api/calendar")
     suspend fun calendar(): List<ShikimoriCalendarItem>
 
@@ -118,6 +125,14 @@ interface ShikimoriApi {
         @Query("forum") forum: String = "news",
         @Query("limit") limit: Int = 30
     ): List<ShikimoriTopic>
+
+    @GET("api/comments")
+    suspend fun topicComments(
+        @Query("commentable_id") commentableId: Int,
+        @Query("commentable_type") commentableType: String = "Topic",
+        @Query("limit") limit: Int = 30,
+        @Query("page") page: Int = 1
+    ): List<ShikimoriComment>
 
     @FormUrlEncoded
     @POST("oauth/token")

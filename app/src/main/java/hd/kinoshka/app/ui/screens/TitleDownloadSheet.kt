@@ -294,6 +294,21 @@ private fun TorrentRow(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
+                if (link.codec == "HEVC") {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.tertiaryContainer
+                    ) {
+                        Text(
+                            text = "HEVC",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
                 if (!link.label.isNullOrBlank() && link.label != link.quality) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
@@ -759,7 +774,8 @@ private fun EpisodeDownloadMiniRow(
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
             modifier = Modifier.weight(1f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -769,34 +785,34 @@ private fun EpisodeDownloadMiniRow(
                 Icons.Default.DownloadDone,
                 contentDescription = "Скачано",
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(22.dp)
             )
             task != null && task.phase == DownloadPhase.FAILED -> {
-                IconButton(onClick = onRetry, modifier = Modifier.size(30.dp)) {
+                IconButton(onClick = onRetry, modifier = Modifier.size(40.dp)) {
                     Icon(
                         Icons.Default.Refresh,
                         contentDescription = "Повторить",
                         tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 }
-                IconButton(onClick = { EpisodeDownloadManager.dismissFailed(task.key) }, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = "Скрыть", modifier = Modifier.size(16.dp))
+                IconButton(onClick = { EpisodeDownloadManager.dismissFailed(task.key) }, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Скрыть", modifier = Modifier.size(20.dp))
                 }
             }
             task != null -> {
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                Spacer(modifier = Modifier.width(6.dp))
-                IconButton(onClick = onCancel, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = "Отменить", modifier = Modifier.size(16.dp))
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(onClick = onCancel, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Отменить", modifier = Modifier.size(20.dp))
                 }
             }
-            else -> IconButton(onClick = onDownload, modifier = Modifier.size(30.dp)) {
+            else -> IconButton(onClick = onDownload, modifier = Modifier.size(40.dp)) {
                 Icon(
                     Icons.Default.Download,
                     contentDescription = "Скачать серию",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(17.dp)
+                    modifier = Modifier.size(21.dp)
                 )
             }
         }
@@ -836,6 +852,7 @@ private fun MovieOfflineSection(
 ) {
     val uiContext = LocalContext.current
     var state by remember(item.kinopoiskId) { mutableStateOf<MovieOfflineState>(MovieOfflineState.Loading) }
+    var expandedSeriesKey by remember(item.kinopoiskId) { mutableStateOf<String?>(null) }
     val library by EpisodeDownloadManager.library.collectAsState()
     val tasks by EpisodeDownloadManager.tasks.collectAsState()
 
@@ -874,7 +891,7 @@ private fun MovieOfflineSection(
                     if (payload.preparedStreams.isEmpty()) {
                         item(key = "qom-empty") {
                             Text(
-                                text = "Озвучки не найдены. Используйте торренты или веб-плеер.",
+                                text = "Озвучки не найдены. Попробуйте торренты.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(8.dp)
@@ -895,7 +912,8 @@ private fun MovieOfflineSection(
                                 EpisodeDownloadManager.enqueue(
                                     DownloadBridges.qomRequest(
                                         item.kinopoiskId, displayTitle, trId,
-                                        payload.preparedStreams.getValue(trId), titles[trId] ?: trId
+                                        payload.preparedStreams.getValue(trId), titles[trId] ?: trId,
+                                        posterUrl = item.posterUrlPreview ?: item.posterUrl
                                     )
                                 )
                             },
@@ -922,6 +940,10 @@ private fun MovieOfflineSection(
                             .flatMap { c -> c.episodes }
                             .distinctBy { it.seasonNumber to it.episodeNumber }
                             .sortedBy { it.seasonNumber * 1000 + it.episodeNumber }
+                        val downloadedEpNumbers = library
+                            .filter { it.itemKey == itemKey && it.translationId == trId }
+                            .map { it.episodeNumber }
+                            .toSet()
                         SeriesVoiceoverRow(
                             title = candidate.translationTitle ?: "Озвучка",
                             episodeCount = eps.size,
@@ -929,6 +951,8 @@ private fun MovieOfflineSection(
                             activeLabel = tasks.values
                                 .firstOrNull { it.itemKey == itemKey && it.translationId == trId }
                                 ?.episodeLabel,
+                            expanded = expandedSeriesKey == trId,
+                            onToggleExpand = { expandedSeriesKey = if (expandedSeriesKey == trId) null else trId },
                             onDownloadAll = {
                                 if (eps.isNotEmpty()) {
                                     uiContext.tryRequestNotificationPermission()
@@ -938,10 +962,27 @@ private fun MovieOfflineSection(
                                             context.candidates, trId,
                                             candidate.translationTitle ?: "Озвучка", eps,
                                             isDirectSource = context.isDirectSource,
-                                            directHeaders = context.directHeaders
+                                            directHeaders = context.directHeaders,
+                                            posterUrl = item.posterUrlPreview ?: item.posterUrl
                                         )
                                     )
                                 }
+                            },
+                            episodes = eps,
+                            downloadedEpNumbers = downloadedEpNumbers,
+                            tasks = tasks,
+                            itemKey = itemKey,
+                            trId = trId,
+                            onDownloadEpisode = { ep ->
+                                uiContext.tryRequestNotificationPermission()
+                                DownloadBridges.seriesRequests(
+                                    item.kinopoiskId, displayTitle, context.request,
+                                    context.candidates, trId,
+                                    candidate.translationTitle ?: "Озвучка", listOf(ep),
+                                    isDirectSource = context.isDirectSource,
+                                    directHeaders = context.directHeaders,
+                                    posterUrl = item.posterUrlPreview ?: item.posterUrl
+                                ).firstOrNull()?.let { EpisodeDownloadManager.enqueue(it) }
                             }
                         )
                     }
@@ -960,73 +1001,106 @@ private fun MovieOfflineSection(
     }
 }
 
-/** Строка сериальной озвучки: «скачать все серии» с прогрессом по активным задачам. */
+/** Строка сериальной озвучки: «скачать все серии» + раскрытие списка серий. */
 @Composable
 private fun SeriesVoiceoverRow(
     title: String,
     episodeCount: Int,
     downloadedCount: Int,
     activeLabel: String?,
-    onDownloadAll: () -> Unit
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onDownloadAll: () -> Unit,
+    episodes: List<MovieEpisodeRef>,
+    downloadedEpNumbers: Set<Int>,
+    tasks: Map<String, DownloadTaskState>,
+    itemKey: String,
+    trId: String,
+    onDownloadEpisode: (MovieEpisodeRef) -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
+        Column {
+            Row(
                 modifier = Modifier
-                    .size(28.dp)
-                    .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .clickable { onToggleExpand() }
+                    .padding(start = 12.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Default.Movie,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.size(15.dp)
-                )
-            }
-            Spacer(modifier = Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                val status = buildString {
-                    append("$episodeCount сер.")
-                    if (downloadedCount > 0) append(" · скачано $downloadedCount")
-                    activeLabel?.let { append(" · загрузка: $it") }
-                }
-                Text(
-                    text = status,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            val allDone = episodeCount in 1..downloadedCount
-            if (allDone) {
-                Icon(
-                    Icons.Default.CheckCircle,
-                    contentDescription = "Всё скачано",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-            } else {
-                IconButton(onClick = onDownloadAll, modifier = Modifier.size(38.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
-                        Icons.Default.Download,
-                        contentDescription = "Скачать все серии",
-                        tint = MaterialTheme.colorScheme.primary
+                        Icons.Default.Movie,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(15.dp)
                     )
                 }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    val status = buildString {
+                        append("$episodeCount сер.")
+                        if (downloadedCount > 0) append(" · скачано $downloadedCount")
+                        activeLabel?.let { append(" · загрузка: $it") }
+                    }
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                val allDone = episodeCount in 1..downloadedCount
+                if (allDone) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = "Всё скачано",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                } else {
+                    IconButton(onClick = onDownloadAll, modifier = Modifier.size(38.dp)) {
+                        Icon(
+                            Icons.Default.Download,
+                            contentDescription = "Скачать все серии",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (expanded) {
+                episodes.forEach { ep ->
+                    val epNumber = DownloadBridges.offlineEpisodeNumber(ep)
+                    val key = offlineKey(itemKey, AnimeSourceType.KODIK.name, trId, epNumber)
+                    EpisodeDownloadMiniRow(
+                        label = DownloadBridges.seriesEpisodeLabel(ep),
+                        downloaded = epNumber in downloadedEpNumbers,
+                        task = tasks[key],
+                        onDownload = { onDownloadEpisode(ep) },
+                        onCancel = { EpisodeDownloadManager.cancel(key) },
+                        onRetry = { EpisodeDownloadManager.retry(key) }
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
             }
         }
     }

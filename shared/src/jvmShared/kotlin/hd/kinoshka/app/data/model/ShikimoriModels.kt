@@ -61,7 +61,9 @@ data class ShikimoriGenre(
     @SerializedName("id") val id: Int,
     @SerializedName("name") val name: String,
     @SerializedName("russian") val russian: String? = null,
-    @SerializedName("kind") val kind: String? = null
+    @SerializedName("kind") val kind: String? = null,
+    /** Тип записи: "Anime"/"Manga" (поле kind всегда "genre" — по нему не фильтровать). */
+    @SerializedName("entry_type") val entryType: String? = null
 )
 
 data class ShikimoriFranchiseNode(
@@ -124,7 +126,7 @@ data class ShikimoriAnimeItem(
             else -> null
         }
         val epStr = if (status == "ongoing" && episodesAired != null && episodesAired > 0) {
-            "$episodesAired/${if (episodes != null && episodes > 0) episodes else "?"} эп."
+            if (episodes != null && episodes > 0) "$episodesAired/$episodes эп." else "$episodesAired"
         } else if (episodes != null && episodes > 0) {
             "$episodes эп."
         } else null
@@ -385,6 +387,15 @@ data class ShikimoriTopic(
     @SerializedName("comments_count") val commentsCount: Int = 0,
     @SerializedName("user") val user: ShikimoriWhoami? = null,
     @SerializedName("linked") val linked: ShikimoriAnimeItem? = null
+)
+
+/** Комментарий к топику (api/comments?commentable_type=Topic). Только чтение. */
+data class ShikimoriComment(
+    @SerializedName("id") val id: Int,
+    @SerializedName("user") val user: ShikimoriWhoami? = null,
+    @SerializedName("body") val body: String? = null,
+    @SerializedName("html_body") val htmlBody: String? = null,
+    @SerializedName("created_at") val createdAt: String? = null
 )
 
 data class ShikimoriTokenResponse(
