@@ -144,8 +144,7 @@ data class LibraryBackup(
     val profiles: List<UserFilmProfile>? = null
 )
 
-data class ShikimoriAnimeCache(
-    val shikimoriId: Int,
+data class ShikimoriAnimeCache(    val shikimoriId: Int,
     val name: String?,
     val russian: String?,
     val posterUrl: String?,
@@ -162,6 +161,19 @@ data class ShikimoriAnimeCache(
 ) {
     val displayTitle: String get() = russian?.takeIf { it.isNotBlank() } ?: name ?: "Аниме #$shikimoriId"
 }
+
+/**
+ * Дисковый снапшот оценок Shikimori: библиотека при старте строится до сетевого
+ * фетча рейтов, и без него аниме из Shikimori появлялись в разделе с задержкой
+ * (сеть + тяжёлая пересборка). Первый кадр — из снапшота, сеть освежает фоном
+ * (тот же приём, что дисковый кэш Обзора). Привязка к userId — чтобы после
+ * смены аккаунта не мигнуть чужим списком.
+ */
+data class ShikimoriRatesSnapshot(
+    val userId: Int = 0,
+    val savedAtMs: Long = 0,
+    val rates: List<hd.kinoshka.app.data.model.ShikimoriUserRate> = emptyList()
+)
 
 enum class LibrarySortType(val label: String) {
     LAST_VIEWED("По последнему просмотру"),
@@ -225,10 +237,13 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     private val playbackSequenceKey = "playback_sequence"
     private val preferredQualityKey = "preferred_quality"
     private val shikimoriAnimeCacheKey = "shikimori_anime_cache"
+    private val shikimoriRatesSnapshotKey = "shikimori_rates_snapshot"
     private val librarySortKey = "library_sort_type"
     private val librarySortReversedKey = "library_sort_reversed"
     private val showHentaiInLibraryKey = "show_hentai_in_library"
     private val searchHistoryKey = "search_history_json"
+    private val overviewFilmCacheKey = "overview_film_cache_json"
+    private val overviewAnimeCacheKey = "overview_anime_cache_json"
     private val playbackUsageKey = "playback_usage_json"
     private val playbackPositionsKey = "playback_positions_json"
     private val movieVoiceoverKeyPrefix = "movie_voiceovers_"
@@ -261,8 +276,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         return getShikimoriAnimeCache()[shikimoriId]
     }
 
-    fun saveShikimoriAnimeInfo(info: ShikimoriAnimeCache) = synchronized(BLOB_LOCK) {
-        val cache = getShikimoriAnimeCache().toMutableMap()
+    fun saveShikimoriAnimeInfo(info: ShikimoriAnimeCache) = synchronized(BLOB_LOCK) {        val cache = getShikimoriAnimeCache().toMutableMap()
         cache[info.shikimoriId] = info
         // Keep only last 500 entries
         if (cache.size > 500) {
@@ -271,6 +285,21 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             toRemove.forEach { cache.remove(it) }
         }
         saveShikimoriAnimeCache(cache)
+    }
+
+    fun getShikimoriRatesSnapshot(): ShikimoriRatesSnapshot {
+        val raw = prefs.getString(shikimoriRatesSnapshotKey, null) ?: return ShikimoriRatesSnapshot()
+        return runCatching {
+            gson.fromJson(raw, ShikimoriRatesSnapshot::class.java) ?: ShikimoriRatesSnapshot()
+        }.getOrDefault(ShikimoriRatesSnapshot())
+    }
+
+    fun saveShikimoriRatesSnapshot(snapshot: ShikimoriRatesSnapshot) {
+        prefs.putString(shikimoriRatesSnapshotKey, gson.toJson(snapshot)).apply()
+    }
+
+    fun clearShikimoriRatesSnapshot() {
+        prefs.putString(shikimoriRatesSnapshotKey, null).apply()
     }
 
     fun getLibrarySortType(): LibrarySortType {
@@ -1049,6 +1078,99 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
     fun clearSearchHistory() {
         prefs.remove(searchHistoryKey).apply()
+    }
+
+    // ---- Overview sections disk cache (stale-while-revalidate) ----
+    // Лента Обзора рисуется из этого кэша мгновенно на холодном старте, сеть лишь
+    // освежает фоном. Без него каждый рестарт = ~30 HTTP + скелетон на секунды.
+    data class OverviewBranchCache(
+        val sections: List<hd.kinoshka.app.ui.screens.OverviewSection> = emptyList(),
+        val hero: List<FilmItem> = emptyList(),
+        val savedAt: Long = 0L
+    )
+
+    private data class OverviewSectionDto(
+        val id: String,
+        val title: String,
+        val items: List<FilmItem> = emptyList(),
+        val seeAll: String? = null
+    )
+
+    private data class OverviewBranchDto(
+        val sections: List<OverviewSectionDto> = emptyList(),
+        val hero: List<FilmItem> = emptyList(),
+        val savedAt: Long = 0L
+    )
+
+    private fun encodeSeeAll(seeAll: hd.kinoshka.app.ui.screens.OverviewSeeAll?): String? = when (seeAll) {
+        null -> null
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.DiscoverCategoryTarget -> "cat|${seeAll.category.name}"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.FilmPopular -> "fpop"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.FilmGenreTarget -> "fg|${seeAll.genreId}|${seeAll.genreName}"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.FilmFresh -> "fresh"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeGenreTarget -> "ag|${seeAll.genreId}|${seeAll.genreName}"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeKindTarget -> "ak|${seeAll.kind}|${seeAll.title}"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeSeasonTarget -> "as|${seeAll.season}|${seeAll.title}|${seeAll.order}"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeOngoing -> "ao"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeOnAir -> "aon"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeRanked -> "ar"
+        is hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimePopular -> "apop"
+    }
+
+    private fun decodeSeeAll(raw: String?): hd.kinoshka.app.ui.screens.OverviewSeeAll? {
+        if (raw.isNullOrEmpty()) return null
+        val p = raw.split("|")
+        return runCatching {
+            when (p[0]) {
+                "cat" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.DiscoverCategoryTarget(
+                    hd.kinoshka.app.ui.screens.DiscoverCategory.valueOf(p[1])
+                )
+                "fg" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.FilmGenreTarget(p[1].toInt(), p.getOrElse(2) { "" })
+                "fpop" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.FilmPopular
+                "fresh" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.FilmFresh
+                "ag" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeGenreTarget(p[1].toInt(), p.getOrElse(2) { "" })
+                "ak" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeKindTarget(p[1], p.getOrElse(2) { "" })
+                "as" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeSeasonTarget(
+                    p[1], p.getOrElse(2) { "" }, p.getOrElse(3) { "ranked" }
+                )
+                "ao" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeOngoing
+                "aon" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeOnAir
+                "ar" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimeRanked
+                "apop" -> hd.kinoshka.app.ui.screens.OverviewSeeAll.AnimePopular
+                else -> null
+            }
+        }.getOrNull()
+    }
+
+    fun saveOverviewCache(
+        branch: String,
+        sections: List<hd.kinoshka.app.ui.screens.OverviewSection>,
+        hero: List<FilmItem>
+    ) {
+        val key = if (branch == "anime") overviewAnimeCacheKey else overviewFilmCacheKey
+        val dto = OverviewBranchDto(
+            sections = sections.map { s ->
+                OverviewSectionDto(s.id, s.title, s.items, encodeSeeAll(s.seeAll))
+            },
+            hero = hero,
+            savedAt = System.currentTimeMillis()
+        )
+        prefs.putString(key, gson.toJson(dto)).apply()
+    }
+
+    fun getOverviewCache(branch: String): OverviewBranchCache {
+        val key = if (branch == "anime") overviewAnimeCacheKey else overviewFilmCacheKey
+        val raw = prefs.getString(key, null) ?: return OverviewBranchCache()
+        return runCatching {
+            val dto = gson.fromJson(raw, OverviewBranchDto::class.java) ?: return OverviewBranchCache()
+            OverviewBranchCache(
+                sections = dto.sections.map { s ->
+                    hd.kinoshka.app.ui.screens.OverviewSection(s.id, s.title, s.items, decodeSeeAll(s.seeAll))
+                },
+                hero = dto.hero,
+                savedAt = dto.savedAt
+            )
+        }.getOrDefault(OverviewBranchCache())
     }
 
     private fun <T : Enum<T>> readEnum(key: String, fallback: T): T {

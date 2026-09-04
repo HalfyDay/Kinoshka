@@ -102,25 +102,26 @@ private val httpClient by lazy {
 private const val MAX_RESPONSE_BODY_BYTES = 256L * 1024
 
 private fun readBodyLimited(response: okhttp3.Response, maxBytes: Long = MAX_RESPONSE_BODY_BYTES): String? {
-    val source = response.body.source()
-    return try {
-        val buffer = okio.Buffer()
-        var totalBytes = 0L
-        val readBuffer = okio.Buffer()
-        while (true) {
-            val read = source.read(readBuffer, 65536)
-            if (read == -1L) break
-            totalBytes += read
-            if (totalBytes > maxBytes) {
-                response.close()
-                return null
+    // Ответ закрываем всегда: раньше success-путь его не закрывал (close был только на
+    // перелимите/исключении) — отсюда «A resource failed to call close» в логе.
+    // Повторный close у вызывающих безвреден (идемпотентен).
+    response.use {
+        val source = it.body.source()
+        return try {
+            val buffer = okio.Buffer()
+            var totalBytes = 0L
+            val readBuffer = okio.Buffer()
+            while (true) {
+                val read = source.read(readBuffer, 65536)
+                if (read == -1L) break
+                totalBytes += read
+                if (totalBytes > maxBytes) return null
+                buffer.write(readBuffer, read)
             }
-            buffer.write(readBuffer, read)
+            buffer.readUtf8()
+        } catch (_: Exception) {
+            null
         }
-        buffer.readUtf8()
-    } catch (_: Exception) {
-        response.close()
-        null
     }
 }
 

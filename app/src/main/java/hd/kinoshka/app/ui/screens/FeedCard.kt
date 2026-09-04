@@ -428,19 +428,23 @@ private fun StillDots(count: Int, current: Int, modifier: Modifier = Modifier) {
 @Composable
 private fun RutubeHlsPlayer(url: String, soundOn: Boolean, active: Boolean) {
     val context = LocalContext.current
-    val player = remember(url) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(url))
-            repeatMode = Player.REPEAT_MODE_ONE
-            volume = 0f
-            prepare()
+    // Плеер живёт только у активной карточки: при потере активности release() сразу,
+    // а не когда страницу выкинет pager-кэш. Иначе спам навигацией держал N плееров
+    // с HLS-буферами поверх кроссфейда NavHost — чёрный экран на слабых GPU.
+    var player by remember(url) { mutableStateOf<ExoPlayer?>(null) }
+    DisposableEffect(url, active) {
+        if (active) {
+            player = ExoPlayer.Builder(context).build().apply {
+                setMediaItem(MediaItem.fromUri(url))
+                repeatMode = Player.REPEAT_MODE_ONE
+                volume = 0f
+                playWhenReady = true
+                prepare()
+            }
         }
+        onDispose { player?.release(); player = null }
     }
-    DisposableEffect(player) {
-        onDispose { player.release() }
-    }
-    LaunchedEffect(active) { player.playWhenReady = active }
-    LaunchedEffect(soundOn) { player.volume = if (soundOn) 1f else 0f }
+    LaunchedEffect(soundOn) { player?.volume = if (soundOn) 1f else 0f }
 
     AndroidView(
         factory = { ctx ->
@@ -459,9 +463,23 @@ private fun RutubeHlsPlayer(url: String, soundOn: Boolean, active: Boolean) {
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun YouTubeTrailerLayer(videoKey: String) {
+    // Без destroy() каждый свайп/уход с ленты оставлял живой WebView с iframe-автоплеем:
+    // они держат Activity-контекст и GPU-сурфейсы — чёрный экран и фризы при спаме навигацией.
+    var webView by remember(videoKey) { mutableStateOf<WebView?>(null) }
+    DisposableEffect(videoKey) {
+        onDispose {
+            webView?.apply {
+                loadUrl("about:blank")
+                removeAllViews()
+                destroy()
+            }
+            webView = null
+        }
+    }
     AndroidView(
         factory = { ctx ->
             WebView(ctx).apply {
+                webView = this
                 settings.javaScriptEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false
                 setBackgroundColor(android.graphics.Color.BLACK)

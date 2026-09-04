@@ -142,12 +142,18 @@ fun AnimeCalendarScreen(
 }
 
 @Composable
-private fun HorizontalCalendarCard(
+internal fun HorizontalCalendarCard(
     item: ShikimoriCalendarItem,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    /** Карусель в Обзоре: бейдж показывает оставшееся время, а не точное время выхода. */
+    showRemainingTime: Boolean = false
 ) {
     val anime = item.anime ?: return
-    val timeStr = formatReleaseExactTime(item.nextEpisodeAt)
+    val timeStr = if (showRemainingTime) {
+        formatRemainingTime(item.nextEpisodeAt) ?: formatReleaseExactTime(item.nextEpisodeAt)
+    } else {
+        formatReleaseExactTime(item.nextEpisodeAt)
+    }
 
     Column(
         modifier = Modifier
@@ -169,44 +175,72 @@ private fun HorizontalCalendarCard(
                 contentScale = ContentScale.Crop
             )
 
-            // Top gradient overlay for badge contrast
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(60.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Black.copy(alpha = 0.65f),
-                                Color.Transparent
+            // Затемнение для контраста бейджа: в карусели — снизу
+            // (бейдж «через…» по центру внизу), на странице — сверху.
+            if (showRemainingTime) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(60.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.65f)
+                                )
                             )
                         )
-                    )
-            )
-
-            // Episode Badge (Top Left)
-            Surface(
-                shape = RoundedCornerShape(topStart = 16.dp, bottomEnd = 12.dp),
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.align(Alignment.TopStart)
-            ) {
-                Text(
-                    text = item.nextEpisode?.let { "$it эп." } ?: "Новый",
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(60.dp)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Black.copy(alpha = 0.65f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
                 )
             }
 
-            // Time Badge (Top Right)
+            // Бейдж эпизода (слева сверху) — только на странице календаря,
+            // в карусели обложка чистая.
+            if (!showRemainingTime) {
+                Surface(
+                    shape = RoundedCornerShape(topStart = 16.dp, bottomEnd = 12.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.align(Alignment.TopStart)
+                ) {
+                    Text(
+                        text = item.nextEpisode?.let { "$it эп." } ?: "Новый",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+            }
+
+            // Бейдж времени: в карусели «через…» снизу по центру,
+            // на странице точное время — справа сверху.
             if (timeStr != null) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
                     color = Color.Black.copy(alpha = 0.7f),
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 6.dp, end = 6.dp)
+                    modifier = if (showRemainingTime) {
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 6.dp)
+                    } else {
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 6.dp, end = 6.dp)
+                    }
                 ) {
                     Text(
                         text = timeStr,
@@ -255,7 +289,11 @@ private fun groupCalendarItemsByDay(items: List<ShikimoriCalendarItem>): List<Da
         groupedMap.getOrPut(key) { mutableListOf() }.add(item)
     }
 
-    return groupedMap.map { (key, itemList) ->
+    // Прошедшие дни (API отдаёт и уже вышедшие эпизоды) скрываем —
+    // верхний день всегда сегодня, далее по возрастанию. Без даты — в конец.
+    return groupedMap
+        .filterKeys { it == "unknown" || it >= todayKey }
+        .map { (key, itemList) ->
         val sortedItems = itemList.sortedBy { item ->
             item.nextEpisodeAt?.let { str -> parseShikimoriUtc(str)?.time } ?: Long.MAX_VALUE
         }
@@ -302,9 +340,33 @@ private fun parseShikimoriUtc(iso: String): Date? = runCatching {
     Date.from(java.time.OffsetDateTime.parse(normalized).toInstant())
 }.getOrNull()
 
-private fun formatReleaseExactTime(isoDate: String?): String? {
+internal fun formatReleaseExactTime(isoDate: String?): String? {
     if (isoDate == null) return null
     val date = parseShikimoriUtc(isoDate) ?: return null
     // Output formatter intentionally leaves timezone unset → device local time (UTC instant → local).
     return runCatching { SimpleDateFormat("HH:mm", Locale.getDefault()).format(date) }.getOrNull()
 }
+
+/**
+ * Оставшееся время до выхода эпизода для бейджа карусели («через 2 ч 15 мин»).
+ * null — дата не распарсилась или эпизод уже вышел (показываем точное время).
+ */
+internal fun formatRemainingTime(isoDate: String?): String? {
+    if (isoDate == null) return null
+    val target = parseShikimoriUtc(isoDate)?.time ?: return null
+    val diffMin = (target - System.currentTimeMillis()) / 60_000L
+    if (diffMin <= 0) return null
+    val days = diffMin / 1_440L
+    if (days > 0) return "через $days дн."
+    val hours = diffMin / 60L
+    val mins = diffMin % 60L
+    return when {
+        hours > 0 && mins > 0 -> "через $hours ч $mins мин"
+        hours > 0 -> "через $hours ч"
+        else -> "через $mins мин"
+    }
+}
+
+/** Epoch-ms выхода эпизода; null — дата неизвестна/не распарсилась. */
+internal fun calendarEpisodeTimeMs(isoDate: String?): Long? =
+    isoDate?.let { parseShikimoriUtc(it)?.time }

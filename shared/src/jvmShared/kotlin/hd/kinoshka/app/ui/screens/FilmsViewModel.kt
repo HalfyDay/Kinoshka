@@ -29,7 +29,10 @@ import hd.kinoshka.app.utils.SearchQueryUtils
 import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import retrofit2.HttpException
 import java.text.DateFormat
@@ -92,13 +95,18 @@ data class SearchFilterState(
     val animeRating: String? = null,
     val animeGenreId: Int? = null,
     val animeOrder: String = "popularity",
-    val animeScoreFrom: Int? = null
+    val animeScoreFrom: Int? = null,
+    /** Студия Shikimori (id из ссылок /animes/studio/{id} в новостях). */
+    val animeStudioId: Int? = null,
+    /** Сезон Shikimori: fall_2026, summer_2026 или год целиком (2026). */
+    val animeSeason: String? = null
 ) {
     val isActive: Boolean
         get() = selectedCountryId != null || selectedGenreId != null || selectedOrder != "RATING" ||
                 selectedType != "ALL" || ratingFrom != null || ratingTo != null || yearFrom != null || yearTo != null ||
                 animeKind != null || animeStatus != null || animeRating != null || animeGenreId != null ||
-                animeOrder != "popularity" || animeScoreFrom != null
+                animeOrder != "popularity" || animeScoreFrom != null || animeSeason != null ||
+                animeStudioId != null
 }
 
 val shikimoriGenres = listOf(
@@ -159,7 +167,17 @@ data class HomeUiState(
     val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
     val playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.MPVEX,
     val searchHistory: List<hd.kinoshka.app.data.local.SearchHistoryRecord> = emptyList(),
-    val isInstantSearch: Boolean = false
+    val isInstantSearch: Boolean = false,
+    /** Лента «Обзора»: карусели кино и аниме одновременно (см. OverviewModels). */
+    val overviewFilmSections: List<OverviewSection> = emptyList(),
+    val overviewAnimeSections: List<OverviewSection> = emptyList(),
+    /** Витрины сверху ленты: кино — обсуждаемое, аниме — скоро выйдет. */
+    val overviewFilmHero: List<FilmItem> = emptyList(),
+    val overviewAnimeHero: List<FilmItem> = emptyList(),
+    val overviewLoading: Boolean = false,
+    val overviewError: String? = null,
+    /** Заголовок открытого раздела Обзора (кнопка «Все»): виден в сетке раздела. Null — главная лента. */
+    val discoverTitle: String? = null
 )
 
 data class DetailsUiState(
@@ -194,6 +212,15 @@ class FilmsViewModel(
     @Volatile
     private var cachedShikimoriRates: List<hd.kinoshka.app.data.model.ShikimoriUserRate> = emptyList()
 
+    // Дисковый снапшот рейтов уже подтянут в cachedShikimoriRates (один раз за жизнь VM).
+    // Без него первый кадр библиотеки строился с пустым кэшем и аниме из Shikimori
+    // появлялись только после сетевого фетча.
+    @Volatile
+    private var shikimoriRatesSnapshotHydrated = false
+    // userId владельца подтянутого снапшота: смена аккаунта гасит чужой список сразу.
+    @Volatile
+    private var snapshotUserId = 0
+
     // Snapshot of the Shikimori calendar fetched by loadCalendar(). buildLibraryItems reads this
     // instead of uiState.calendarItems because the calendar arrives asynchronously and uiState is
     // still being constructed the first time buildLibraryItems runs (reading uiState then is a
@@ -210,11 +237,32 @@ class FilmsViewModel(
     // search) can't let an older, slower request clobber the newer results.
     private var searchJob: kotlinx.coroutines.Job? = null
 
+    /** In-flight job ленты «Обзора»: один за раз, повторные вызовы — no-op пока активен. */
+    private var overviewJob: kotlinx.coroutines.Job? = null
+
     // Throttle for refreshAfterPlayerClosed(): ON_RESUME fires several times while navigating,
     // and rebuilding the library re-serializes the whole profile blob.
     private var lastResumeRefreshMs = 0L
     private companion object {
         const val RESUME_REFRESH_THROTTLE_MS = 1_000L
+
+        /** Пауза между стартом кино- и аниме-веток Обзора — не упираемся в RPS обоих API. */
+        const val OVERVIEW_STAGGER_MS = 400L
+
+        /** Ступенчатая задержка перед запросами секций внутри ветки (лимит Shikimori: 5rps).
+         *  Важно: слип всегда ДО semaphore.withPermit, а не внутри — иначе сон занимает
+         *  пермит и сериализует всю ветку (хвост 2.8–3.5с держал 1 из 3 пермитов). */
+        const val OVERVIEW_REQUEST_GAP_MS = 250L
+
+        /** Добрасывающий проход 18+-вердиктов (до ~120 details) стартует с задержкой после
+         *  init, чтобы не отъедать 5 rps Shikimori у секций первого экрана Обзора. */
+        const val ADULT_VERDICT_DEFER_MS = 8_000L
+
+        /** «Новинки» кино: фильмы/сериалы начиная с этого года. */
+        const val FRESH_YEAR_FROM = 2024
+
+        /** Витрина сверху ленты: столько карточек без дублей каруселей. */
+        const val OVERVIEW_HERO_TAKE = 5
 
         /** Превью-клип hanime1 на 18+-страницах выключен (протухающий токен, чужие тайтлы);
          *  переключение обратно включает фетч + карточку без прочих правок. */
@@ -231,9 +279,14 @@ class FilmsViewModel(
         loadDiscoverFirstPage(uiState.discoverCategory)
         loadFilters()
         refreshShikimoriAuth()
-        ensureLibraryAdultVerdicts()
+        // Тяжёлый добрасывающий проход вердиктов — после первого экрана, не вместе со штормом init.
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(ADULT_VERDICT_DEFER_MS)
+            ensureLibraryAdultVerdicts()
+        }
         loadCalendar()
         loadTopics()
+        ensureOverviewLoaded()
         uiState = uiState.copy(searchHistory = userStateStore.getSearchHistory())
     }
 
@@ -276,11 +329,60 @@ class FilmsViewModel(
         loadSearchFirstPage(clean, instant = true)
     }
 
+    private fun persistFreshShikimoriTokens(
+        authState: hd.kinoshka.app.data.local.ShikimoriAuthState,
+        accessToken: String,
+        refreshToken: String?
+    ) {
+        shikimoriAuthStore?.saveSession(
+            token = accessToken,
+            refresh = refreshToken,
+            userId = authState.userId,
+            nickname = authState.nickname,
+            avatarUrl = authState.avatarUrl
+        )
+        // Хранилище само uiState не трогает: без этого следующая Shikimori-операция
+        // уходила бы со старым протухшим токеном.
+        uiState = uiState.copy(
+            shikimoriAuthState = authState.copy(accessToken = accessToken, refreshToken = refreshToken)
+        )
+    }
+
+    /**
+     * Сохраняет авторитетный список рейтов на диск для мгновенного первого кадра
+     * библиотеки (см. гидратацию в buildLibraryItems). Сериализация — на IO:
+     * на сотни рейтов с вложенным аниме это заметные миллисекунды для main.
+     */
+    private fun persistShikimoriRatesSnapshot(
+        userId: Int,
+        rates: List<hd.kinoshka.app.data.model.ShikimoriUserRate>
+    ) {
+        if (userId <= 0) return
+        snapshotUserId = userId
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                userStateStore.saveShikimoriRatesSnapshot(
+                    hd.kinoshka.app.data.local.ShikimoriRatesSnapshot(
+                        userId = userId,
+                        savedAtMs = System.currentTimeMillis(),
+                        rates = rates
+                    )
+                )
+            }
+        }
+    }
+
     fun refreshShikimoriAuth() {
         shikimoriAuthStore?.let { store ->
             val state = store.getAuthState()
             uiState = uiState.copy(shikimoriAuthState = state)
             if (state.isLoggedIn && state.userId > 0) {
+                // Смена аккаунта: подтянутый из снапшота чужой список гасим сразу,
+                // правильный приедет с фетчем ниже.
+                if (snapshotUserId != 0 && snapshotUserId != state.userId) {
+                    snapshotUserId = 0
+                    cachedShikimoriRates = emptyList()
+                }
                 viewModelScope.launch {
                     val ratesResult = animeRepository.getUserRates(state.userId)
                     // Если оба эндпоинта Shikimori упали — сохраняем последний известный список.
@@ -313,7 +415,10 @@ class FilmsViewModel(
                         } else rate
                     }
                     cachedShikimoriRates = ratesWithLocalCache
-                    uiState = uiState.copy(library = buildLibraryItems())
+                    persistShikimoriRatesSnapshot(state.userId, ratesWithLocalCache)
+                    // Тяжёлая пересборка (парсинг JSON-блобов) — вне main, иначе дроп кадров.
+                    val library = withContext(Dispatchers.Default) { buildLibraryItems() }
+                    uiState = uiState.copy(library = library)
 
                     // Fetch missing details from API in parallel
                     val missingDetailsRates = ratesWithLocalCache.filter { it.anime == null && it.targetId > 0 }
@@ -364,13 +469,18 @@ class FilmsViewModel(
                         }
                         deferreds.forEach { it.await() }
                         cachedShikimoriRates = updatedRates
-                        uiState = uiState.copy(library = buildLibraryItems())
+                        persistShikimoriRatesSnapshot(state.userId, updatedRates)
+                        val refreshedLibrary = withContext(Dispatchers.Default) { buildLibraryItems() }
+                        uiState = uiState.copy(library = refreshedLibrary)
                         ensureLibraryAdultVerdicts()
                     }
                 }
             } else {
                 cachedShikimoriRates = emptyList()
-                uiState = uiState.copy(library = buildLibraryItems())
+                viewModelScope.launch {
+                    val emptyLibrary = withContext(Dispatchers.Default) { buildLibraryItems() }
+                    uiState = uiState.copy(library = emptyLibrary)
+                }
                 ensureLibraryAdultVerdicts()
             }
         }
@@ -450,8 +560,10 @@ class FilmsViewModel(
                 if (savedInRound.get() == 0) break
             }
             if (totalSaved.get() > 0) {
+                // Уже на Dispatchers.IO: сборку делаем здесь, на Main — только публикацию.
+                val library = buildLibraryItems()
                 withContext(Dispatchers.Main) {
-                    uiState = uiState.copy(library = buildLibraryItems())
+                    uiState = uiState.copy(library = library)
                 }
             }
         }
@@ -475,6 +587,534 @@ class FilmsViewModel(
             uiState = uiState.copy(topics = items, topicsLoading = false)
         }
     }
+
+    // ============================ лента «Обзора» ============================
+
+    /** Жанровые карусели аниме: фиксированные id Shikimori (см. shikimoriGenres выше). */
+    private val overviewAnimeGenres = listOf(
+        "Экшен" to 1,
+        "Романтика" to 22,
+        "Исэкай" to 62,
+        "Повседневность" to 36,
+        "Спорт" to 30
+    )
+
+    /** Сезонные карусели: вычисляются от текущей даты (текущий сезон → прошлый →
+     *  текущий год → прошлый год). Сезон Shikimori отдаёт как есть: и fall_2026,
+     *  и год целиком (2026). */
+    private data class AnimeSeason(val title: String, val season: String, val order: String)
+
+    private fun overviewAnimeSeasons(): List<AnimeSeason> {
+        val current = seasonKey()
+        val prior = seasonKey(backSeasons = 1)
+        val year = currentYear()
+        fun seasonTitle(key: String): String {
+            val parts = key.split("_")
+            val ru = when (parts.getOrNull(0)) {
+                "winter" -> "Зима"
+                "spring" -> "Весна"
+                "summer" -> "Лето"
+                else -> "Осень"
+            }
+            return "$ru ${parts.getOrNull(1).orEmpty()}"
+        }
+        return listOf(
+            AnimeSeason(seasonTitle(current), current, "popularity"),
+            AnimeSeason(seasonTitle(prior), prior, "ranked"),
+            AnimeSeason(year.toString(), year.toString(), "ranked"),
+            AnimeSeason((year - 1).toString(), (year - 1).toString(), "ranked")
+        )
+    }
+
+    /** Кандидаты жанровых каруселей кино: сопоставляются с availableGenres по имени. */
+    private val overviewFilmGenreNames = listOf(
+        "Фантастика", "Боевик", "Комедия", "Драма", "Ужасы", "Триллер", "Детектив", "Мелодрама"
+    )
+
+    /**
+     * Лента «Обзора»: кино и аниме грузятся одновременно, посекционно.
+     * Падение одной секции не роняет остальные (ошибка видна только в [HomeUiState.overviewError]
+     * когда пусто вообще всё). Параллелизм ограничен семафором + стартовым стаггером —
+     * у KP лимит запросов в секунду. Повторный вызов при активной загрузке — no-op;
+     * догрузка жанровых секций кино — после приезда `availableGenres` из loadFilters.
+     */
+    /** Одноразовый тихий рефреш после дискового кэша: секции уже на экране. */
+    private var overviewCacheRefreshed = false
+
+    fun ensureOverviewLoaded() {
+        if (overviewJob?.isActive == true) return
+        // Жанровые карусели кино появляются только после справочника filters():
+        // если его не было на старте — перезагружаем кино-ветку при его приезде.
+        val needGenreRefill = uiState.overviewFilmSections.isNotEmpty() &&
+            uiState.overviewFilmSections.none { it.id.startsWith("film_genre_") } &&
+            uiState.availableGenres.isNotEmpty()
+        // Stale-while-revalidate: секции из дискового кэша уже на экране — обновляем их
+        // фоном без скелетона, один раз за сессию.
+        val silentRefresh = !overviewCacheRefreshed &&
+            (uiState.overviewFilmSections.isNotEmpty() || uiState.overviewAnimeSections.isNotEmpty())
+        val needFilms = uiState.overviewFilmSections.isEmpty() || needGenreRefill || silentRefresh
+        val needAnime = uiState.overviewAnimeSections.isEmpty() || silentRefresh
+        if (!needFilms && !needAnime) return
+        overviewJob = viewModelScope.launch {
+            if (!silentRefresh) uiState = uiState.copy(overviewLoading = true, overviewError = null)
+            val semaphore = Semaphore(3)
+            val filmGenres = uiState.availableGenres
+            val animeSeasons = overviewAnimeSeasons()
+            val currentSeason = animeSeasons.firstOrNull()?.season.orEmpty()
+            val priorSeason = animeSeasons.getOrNull(1)?.season.orEmpty()
+            val filmJob = if (needFilms) async(Dispatchers.IO) { loadFilmSections(semaphore, filmGenres) } else null
+            // Стаггер старта аниме-ветки: не упираемся в RPS-лимиты обоих API разом.
+            if (needAnime && needFilms) delay(OVERVIEW_STAGGER_MS)
+            val animeJob = if (needAnime) async(Dispatchers.IO) {
+                loadAnimeSections(semaphore, currentSeason, priorSeason, animeSeasons)
+            } else null
+            // Прогрессивная публикация: кино-ветка показывается, не дожидаясь аниме.
+            val films = awaitBranch(filmJob)
+            if (films != null) {
+                uiState = uiState.copy(overviewFilmSections = films.sections)
+            }
+            val anime = awaitBranch(animeJob)
+            if (anime != null) {
+                uiState = uiState.copy(overviewAnimeSections = anime.sections)
+            }
+            // Витрины: дубли каруселей вычитаем — карточки сверху не повторяют плакаты.
+            val filmSections = films?.sections ?: uiState.overviewFilmSections
+            val animeSections = anime?.sections ?: uiState.overviewAnimeSections
+            val filmIds = filmSections.flatMap { s -> s.items.map { it.kinopoiskId } }.toSet()
+            val animeIds = animeSections.flatMap { s -> s.items.map { it.kinopoiskId } }.toSet()
+            val filmHero = (films?.heroPool.orEmpty())
+                .filter { it.kinopoiskId !in filmIds }.take(OVERVIEW_HERO_TAKE)
+            val animeHero = (anime?.heroPool.orEmpty())
+                .filter { it.kinopoiskId !in animeIds }.take(OVERVIEW_HERO_TAKE)
+            uiState = uiState.copy(
+                overviewFilmHero = filmHero.ifEmpty { uiState.overviewFilmHero },
+                overviewAnimeHero = animeHero.ifEmpty { uiState.overviewAnimeHero },
+                overviewLoading = false,
+                overviewError = if (filmSections.isEmpty() && animeSections.isEmpty()) {
+                    "Не удалось загрузить подборки. Проверьте сеть."
+                } else null
+            )
+            // Кэшируем свежие ветки на диск: следующий холодный старт рисуется мгновенно.
+            if (films != null && filmSections.isNotEmpty()) {
+                userStateStore.saveOverviewCache("films", filmSections, filmHero)
+            }
+            if (anime != null && animeSections.isNotEmpty()) {
+                userStateStore.saveOverviewCache("anime", animeSections, animeHero)
+            }
+            overviewCacheRefreshed = true
+        }
+    }
+
+    /** Ожидание ветки без проглатывания отмены: CancellationException идёт дальше. */
+    private suspend fun <T> awaitBranch(job: kotlinx.coroutines.Deferred<T?>?): T? {
+        if (job == null) return null
+        return try {
+            job.await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            KLog.w("Overview", "branch failed: ${e.message}")
+            null
+        }
+    }
+
+    fun retryOverview() {
+        overviewJob?.cancel()
+        overviewJob = null
+        uiState = uiState.copy(
+            overviewFilmSections = emptyList(),
+            overviewAnimeSections = emptyList(),
+            overviewFilmHero = emptyList(),
+            overviewAnimeHero = emptyList()
+        )
+        ensureOverviewLoaded()
+    }
+
+    /**
+     * Повторный тап «Обзора» в навигации: гасим поиск и фильтры, возвращаем ленту секций.
+     * Подборки уже в стейте — пересобираем только старую плоскую сетку под ними.
+     */
+    fun resetDiscover() {
+        clearDiscoverFilters()
+        loadDiscoverFirstPage(uiState.discoverCategory)
+    }
+
+    /**
+     * Тихий сброс разделов Обзора без перезагрузки: открытие тайтла из сетки раздела
+     * чистит состояние просмотра, поэтому системный Назад из деталей приземляется
+     * на главную ленту секций, а не в покинутую сетку.
+     */
+    fun clearDiscoverFilters() {
+        searchJob?.cancel()
+        uiState = uiState.copy(
+            query = "",
+            isSearchResult = false,
+            isInstantSearch = false,
+            filterState = SearchFilterState(),
+            discoverCategory = DiscoverCategory.POPULAR,
+            discoverTitle = null
+        )
+    }
+
+    /**
+     * Детали открыты из отдельного маршрута (календарь, лента релизов): Назад должен
+     * вернуть на главную Обзора (pop до home), минуя промежуточный экран. Открытия из
+     * ленты/секций/поиска/библиотеки идут обычным pop — возвращают на место открытия.
+     */
+    private var detailsFromOverview = false
+
+    fun markDetailsFromOverview() {
+        detailsFromOverview = true
+    }
+
+    /** Однократное чтение флага (уход через жанр из деталей его тоже гасит). */
+    fun consumeDetailsFromOverview(): Boolean {
+        val v = detailsFromOverview
+        detailsFromOverview = false
+        return v
+    }
+
+    /**
+     * Поиск студии открыт из Новостей (поверх ленты): Назад из результатов должен
+     * вернуть на ленту, а не гасить поиск на месте. Маркер — заголовок поиска:
+     * любой другой поиск/раздел/сброс сам гасит совпадение, протухший флаг
+     * на чужие экраны не срабатывает. Чтение одноразовое.
+     */
+    private var searchFromFeedTitle: String? = null
+
+    fun markSearchFromFeed(title: String) {
+        searchFromFeedTitle = title
+    }
+
+    fun consumeSearchFromFeed(): Boolean {
+        val marked = searchFromFeedTitle
+        searchFromFeedTitle = null
+        return marked != null && marked == uiState.discoverTitle
+    }
+
+    /** Кнопка «Все» на секции: сводится к существующим механизмам discover/поиска. */
+    fun openOverviewSeeAll(target: OverviewSeeAll) {
+        when (target) {
+            is OverviewSeeAll.DiscoverCategoryTarget -> openDiscoverCategorySection(
+                target.category, title = target.category.title
+            )
+            OverviewSeeAll.FilmPopular -> {
+                userStateStore.setSavedContentType(ContentType.FILMS)
+                uiState = uiState.copy(
+                    tab = HomeTab.CATALOG,
+                    contentType = ContentType.FILMS,
+                    query = "",
+                    isSearchResult = false,
+                    isInstantSearch = false,
+                    filterState = SearchFilterState(),
+                    discoverCategory = DiscoverCategory.POPULAR,
+                    discoverTitle = "Сейчас смотрят"
+                )
+                loadDiscoverFirstPage(DiscoverCategory.POPULAR)
+            }
+            is OverviewSeeAll.FilmGenreTarget -> searchGenre(target.genreName, isAnime = false)
+            OverviewSeeAll.FilmFresh -> {
+                userStateStore.setSavedContentType(ContentType.FILMS)
+                uiState = uiState.copy(
+                    tab = HomeTab.CATALOG,
+                    contentType = ContentType.FILMS,
+                    query = "",
+                    filterState = SearchFilterState(selectedOrder = "YEAR", yearFrom = FRESH_YEAR_FROM),
+                    discoverTitle = "Новинки"
+                )
+                submitSearch()
+            }
+            is OverviewSeeAll.AnimeGenreTarget -> searchGenre(target.genreName, isAnime = true)
+            is OverviewSeeAll.AnimeKindTarget -> {
+                userStateStore.setSavedContentType(ContentType.ANIME)
+                uiState = uiState.copy(
+                    tab = HomeTab.CATALOG,
+                    contentType = ContentType.ANIME,
+                    query = "",
+                    filterState = SearchFilterState(animeKind = target.kind, animeOrder = "ranked"),
+                    discoverTitle = target.title
+                )
+                submitSearch()
+            }
+            OverviewSeeAll.AnimeOngoing -> {
+                userStateStore.setSavedContentType(ContentType.ANIME)
+                uiState = uiState.copy(
+                    tab = HomeTab.CATALOG,
+                    contentType = ContentType.ANIME,
+                    query = "",
+                    filterState = SearchFilterState(animeStatus = "ongoing", animeOrder = "popularity"),
+                    discoverTitle = "Онгоинги"
+                )
+                submitSearch()
+            }
+            OverviewSeeAll.AnimeOnAir -> {
+                userStateStore.setSavedContentType(ContentType.ANIME)
+                uiState = uiState.copy(
+                    tab = HomeTab.CATALOG,
+                    contentType = ContentType.ANIME,
+                    query = "",
+                    filterState = SearchFilterState(animeStatus = "ongoing", animeOrder = "ranked", animeScoreFrom = 7),
+                    discoverTitle = "Сейчас на экранах"
+                )
+                submitSearch()
+            }
+            is OverviewSeeAll.AnimeSeasonTarget -> {
+                userStateStore.setSavedContentType(ContentType.ANIME)
+                uiState = uiState.copy(
+                    tab = HomeTab.CATALOG,
+                    contentType = ContentType.ANIME,
+                    query = "",
+                    filterState = SearchFilterState(animeSeason = target.season, animeOrder = target.order),
+                    discoverTitle = target.title
+                )
+                submitSearch()
+            }
+            OverviewSeeAll.AnimeRanked -> {
+                userStateStore.setSavedContentType(ContentType.ANIME)
+                uiState = uiState.copy(
+                    tab = HomeTab.CATALOG,
+                    contentType = ContentType.ANIME,
+                    query = "",
+                    filterState = SearchFilterState(animeOrder = "ranked"),
+                    discoverTitle = "Топ по рейтингу"
+                )
+                submitSearch()
+            }
+            OverviewSeeAll.AnimePopular -> {
+                userStateStore.setSavedContentType(ContentType.ANIME)
+                uiState = uiState.copy(
+                    tab = HomeTab.CATALOG,
+                    contentType = ContentType.ANIME,
+                    query = "",
+                    filterState = SearchFilterState(animeOrder = "popularity"),
+                    discoverTitle = "Популярное аниме"
+                )
+                submitSearch()
+            }
+        }
+    }
+
+    /** Ветка Обзора: секции + сырой пул витрины (дубли каруселей вычитаются позже). */
+    private data class FilmBranch(
+        val sections: List<OverviewSection>,
+        val heroPool: List<FilmItem> = emptyList()
+    )
+
+    private data class AnimeBranch(
+        val sections: List<OverviewSection>,
+        val heroPool: List<FilmItem> = emptyList()
+    )
+
+    private suspend fun loadFilmSections(
+        semaphore: Semaphore,
+        genres: List<FilterItem>
+    ): FilmBranch = kotlinx.coroutines.coroutineScope {
+        val base = listOf(
+            async {
+                delay(OVERVIEW_REQUEST_GAP_MS)
+                semaphore.withPermit {
+                    runCatching { repository.popular("TOP_POPULAR_ALL", 1) }.getOrNull()?.let {
+                        OverviewSection("film_popular", "Сейчас смотрят", it.dedupe(), OverviewSeeAll.FilmPopular)
+                    }
+                }
+            },
+            async {
+                delay(OVERVIEW_REQUEST_GAP_MS * 2)
+                semaphore.withPermit {
+                    runCatching { repository.topMovies(1) }.getOrNull()?.let {
+                        OverviewSection("film_top250", "Топ-250 фильмов", it.dedupe(), OverviewSeeAll.DiscoverCategoryTarget(DiscoverCategory.TOP_250))
+                    }
+                }
+            },
+            async {
+                delay(OVERVIEW_REQUEST_GAP_MS * 3)
+                semaphore.withPermit {
+                    runCatching { repository.topShows(1) }.getOrNull()?.let {
+                        OverviewSection("film_series", "Топ сериалов", it.dedupe(), OverviewSeeAll.DiscoverCategoryTarget(DiscoverCategory.SERIES))
+                    }
+                }
+            },
+            async {
+                delay(OVERVIEW_REQUEST_GAP_MS * 4)
+                semaphore.withPermit {
+                    runCatching { repository.freshSince(FRESH_YEAR_FROM, 1) }.getOrNull()
+                        ?.dedupe()
+                        // Только вышедшее и с постером: поиск по году отдаёт и анонсы без обложек.
+                        ?.filter { !it.posterUrlPreview.isNullOrBlank() && (it.year ?: Int.MAX_VALUE) <= currentYear() }
+                        ?.sortedByDescending { it.year }
+                        ?.let {
+                            if (it.isEmpty()) null else OverviewSection("film_fresh", "Новинки", it, OverviewSeeAll.FilmFresh)
+                        }
+                }
+            }
+        )
+        val genreJobs = overviewFilmGenreNames.mapNotNull { name ->
+            val match = genres.firstOrNull { it.genre.equals(name, ignoreCase = true) } ?: return@mapNotNull null
+            async { filmGenreSection(semaphore, match, name) }
+        }
+        // Витрина «Обсуждаемое»: самое оценённое, 2 страницы — дубли каруселей
+        // вычитает вызывающий, витрина никогда не повторяет плакаты ниже.
+        val heroPoolJobs = listOf(1, 2).map { page ->
+            async {
+                delay(OVERVIEW_REQUEST_GAP_MS * (4 + page))
+                semaphore.withPermit {
+                    runCatching { repository.mostDiscussed(page) }.getOrNull()?.dedupe()
+                }
+            }
+        }
+        val sections = (base + genreJobs).mapNotNull { runCatching { it.await() }.getOrNull() }
+            .filter { it.items.isNotEmpty() }
+        val heroPool = heroPoolJobs.flatMap { runCatching { it.await() }.getOrNull().orEmpty() }
+            .dedupe()
+        FilmBranch(sections, heroPool)
+    }
+
+    private suspend fun filmGenreSection(
+        semaphore: Semaphore,
+        match: FilterItem,
+        name: String
+    ): OverviewSection? {
+        delay(OVERVIEW_REQUEST_GAP_MS * 5)
+        return semaphore.withPermit {
+            runCatching { repository.byGenre(match.id, 1) }.getOrNull()?.let {
+                val items = it.dedupe()
+                if (items.isEmpty()) null else OverviewSection(
+                    "film_genre_${match.id}", name,
+                    items, OverviewSeeAll.FilmGenreTarget(match.id, match.genre ?: name)
+                )
+            }
+        }
+    }
+
+    /**
+     * Догрузка только жанровых каруселей кино, когда справочник filters() приехал позже
+     * секций. Раньше здесь перезапускалась вся кино-ветка (до +10 лишних KP-запросов).
+     */
+    private fun refillFilmGenres(genres: List<FilterItem>) {
+        if (uiState.overviewFilmSections.isEmpty()) {
+            overviewJob = null
+            ensureOverviewLoaded()
+            return
+        }
+        if (uiState.overviewFilmSections.any { it.id.startsWith("film_genre_") }) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val genreSections = kotlinx.coroutines.coroutineScope {
+                overviewFilmGenreNames.mapNotNull { name ->
+                    val match = genres.firstOrNull { it.genre.equals(name, ignoreCase = true) }
+                        ?: return@mapNotNull null
+                    async { filmGenreSection(Semaphore(3), match, name) }
+                }.mapNotNull { runCatching { it.await() }.getOrNull() }
+            }.filter { it.items.isNotEmpty() }
+            if (genreSections.isNotEmpty()) {
+                val merged = uiState.overviewFilmSections + genreSections
+                uiState = uiState.copy(overviewFilmSections = merged)
+                userStateStore.saveOverviewCache("films", merged, uiState.overviewFilmHero)
+            }
+        }
+    }
+
+    private suspend fun loadAnimeSections(
+        semaphore: Semaphore,
+        currentSeason: String,
+        priorSeason: String,
+        seasons: List<AnimeSeason>
+    ): AnimeBranch =
+        kotlinx.coroutines.coroutineScope {
+            val base = listOf(
+                async {
+                    delay(OVERVIEW_REQUEST_GAP_MS)
+                    semaphore.withPermit {
+                        runCatching { animeRepository.ongoing(1) }.getOrNull()
+                            ?.map { it.toFilmItem() }?.dedupe()?.let {
+                                OverviewSection("anime_ongoing", "Онгоинги", it, OverviewSeeAll.AnimeOngoing)
+                            }
+                    }
+                },
+                async {
+                    delay(OVERVIEW_REQUEST_GAP_MS * 2)
+                    semaphore.withPermit {
+                        // «Сейчас на экранах» — формула главной Shikimori, не наша выдумка:
+                        // онгоинги текущего+прошлого сезонов с оценкой > 7.3.
+                        runCatching { animeRepository.nowOnScreens(currentSeason, priorSeason) }.getOrNull()
+                            ?.map { it.toFilmItem() }?.dedupe()?.let {
+                                if (it.isEmpty()) null else OverviewSection("anime_onair", "Сейчас на экранах", it, OverviewSeeAll.AnimeOnAir)
+                            }
+                    }
+                },
+                async {
+                    delay(OVERVIEW_REQUEST_GAP_MS * 3)
+                    semaphore.withPermit {
+                        runCatching { animeRepository.topRanked(1) }.getOrNull()
+                            ?.map { it.toFilmItem() }?.dedupe()?.let {
+                                OverviewSection("anime_ranked", "Топ по рейтингу", it, OverviewSeeAll.AnimeRanked)
+                            }
+                    }
+                },
+                async {
+                    delay(OVERVIEW_REQUEST_GAP_MS * 4)
+                    semaphore.withPermit {
+                        runCatching { animeRepository.popular(1) }.getOrNull()
+                            ?.map { it.toFilmItem() }?.dedupe()?.let {
+                                OverviewSection("anime_popular", "Популярное аниме", it, OverviewSeeAll.AnimePopular)
+                            }
+                    }
+                },
+                async {
+                    delay(OVERVIEW_REQUEST_GAP_MS * 5)
+                    semaphore.withPermit {
+                        runCatching { animeRepository.byKind("movie", 1) }.getOrNull()
+                            ?.map { it.toFilmItem() }?.dedupe()?.let {
+                                OverviewSection(
+                                    "anime_movies", "Полнометражные фильмы", it,
+                                    OverviewSeeAll.AnimeKindTarget("movie", "Полнометражные фильмы")
+                                )
+                            }
+                    }
+                }
+            )
+            // Сезоны Shikimori: анонсы без постеров выкидываем, иначе карусель в заглушках.
+            val seasonJobs = seasons.mapIndexed { index, s ->
+                async {
+                    delay(OVERVIEW_REQUEST_GAP_MS * (6 + index))
+                    semaphore.withPermit {
+                        runCatching { animeRepository.bySeason(s.season, s.order, page = 1) }.getOrNull()
+                            ?.filter { it.image?.isMissingPlaceholder != true }
+                            ?.map { it.toFilmItem() }?.dedupe()?.let {
+                                if (it.isEmpty()) null else OverviewSection(
+                                    "anime_season_${s.season}", s.title, it,
+                                    OverviewSeeAll.AnimeSeasonTarget(s.season, s.title, s.order)
+                                )
+                            }
+                    }
+                }
+            }
+            val genreJobs = overviewAnimeGenres.map { (name, id) ->
+                async {
+                    delay(OVERVIEW_REQUEST_GAP_MS * 5)
+                    semaphore.withPermit {
+                        runCatching { animeRepository.byGenreId(id, 1) }.getOrNull()
+                            ?.map { it.toFilmItem() }?.dedupe()?.let {
+                                if (it.isEmpty()) null else OverviewSection(
+                                    "anime_genre_$id", name, it, OverviewSeeAll.AnimeGenreTarget(id, name)
+                                )
+                            }
+                    }
+                }
+            }
+            // Витрина «Скоро выйдет»: анонсы такого пула нет ни в одной карусели.
+            val heroPoolJob = async {
+                delay(OVERVIEW_REQUEST_GAP_MS * 6)
+                semaphore.withPermit {
+                    runCatching { animeRepository.comingSoon(1) }.getOrNull()
+                        ?.filter { it.image?.isMissingPlaceholder != true }
+                        ?.map { it.toFilmItem() }?.dedupe().orEmpty()
+                }
+            }
+            val sections = (base + seasonJobs + genreJobs)
+                .mapNotNull { runCatching { it.await() }.getOrNull() }
+                .filter { it.items.isNotEmpty() }
+            AnimeBranch(sections, runCatching { heroPoolJob.await() }.getOrDefault(emptyList()))
+        }
 
     fun saveShikimoriToken(code: String) {
         viewModelScope.launch {
@@ -534,6 +1174,10 @@ class FilmsViewModel(
     fun logoutShikimori() {
         shikimoriAuthStore?.clearSession()
         cachedShikimoriRates = emptyList()
+        snapshotUserId = 0
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { userStateStore.clearShikimoriRatesSnapshot() }
+        }
         refreshShikimoriAuth()
     }
 
@@ -545,17 +1189,21 @@ class FilmsViewModel(
                         availableGenres = res.genres.filter { !it.genre.isNullOrBlank() },
                         availableCountries = res.countries.filter { !it.country.isNullOrBlank() }
                     )
+                    // Жанровые карусели кино зависят от справочника: если Обзор уже загрузился
+                    // без них — догружаем только жанры, а не всю ветку.
+                    if (uiState.overviewFilmSections.none { it.id.startsWith("film_genre_") }) {
+                        refillFilmGenres(res.genres.filter { !it.genre.isNullOrBlank() })
+                    }
                 }
         }
     }
 
     fun updateFilters(newFilters: SearchFilterState) {
-        uiState = uiState.copy(filterState = newFilters)
+        uiState = uiState.copy(filterState = newFilters, discoverTitle = null)
         submitSearch()
     }
 
-    fun searchGenre(genreName: String, isAnime: Boolean) {
-        if (isAnime) {
+    fun searchGenre(genreName: String, isAnime: Boolean, title: String? = null) {        if (isAnime) {
             userStateStore.setSavedContentType(ContentType.ANIME)
             val matchedGenre = shikimoriGenres.firstOrNull { it.genre.equals(genreName, ignoreCase = true) }
             // Жанра нет в статичном списке Shikimori (например, хентай-тег из каталога hanime) —
@@ -564,7 +1212,8 @@ class FilmsViewModel(
                 tab = HomeTab.CATALOG,
                 contentType = ContentType.ANIME,
                 query = if (matchedGenre == null) genreName else "",
-                filterState = SearchFilterState(animeGenreId = matchedGenre?.id)
+                filterState = SearchFilterState(animeGenreId = matchedGenre?.id),
+                discoverTitle = title ?: genreName
             )
         } else {
             userStateStore.setSavedContentType(ContentType.FILMS)
@@ -573,9 +1222,26 @@ class FilmsViewModel(
                 tab = HomeTab.CATALOG,
                 contentType = ContentType.FILMS,
                 query = if (matchedGenre == null) genreName else "",
-                filterState = SearchFilterState(selectedGenreId = matchedGenre?.id)
+                filterState = SearchFilterState(selectedGenreId = matchedGenre?.id),
+                discoverTitle = title ?: genreName
             )
         }
+        submitSearch()
+    }
+
+    /**
+     * Поиск аниме студии из ссылок /animes/studio/{id} в новостях:
+     * каталог аниме с фильтром студии, заголовок — её название.
+     */
+    fun searchStudio(studioId: Int, studioName: String) {
+        userStateStore.setSavedContentType(ContentType.ANIME)
+        uiState = uiState.copy(
+            tab = HomeTab.CATALOG,
+            contentType = ContentType.ANIME,
+            query = "",
+            filterState = SearchFilterState(animeStudioId = studioId),
+            discoverTitle = studioName
+        )
         submitSearch()
     }
 
@@ -611,17 +1277,37 @@ class FilmsViewModel(
             contentType = contentType,
             isSearchResult = false,
             query = "",
-            filterState = SearchFilterState()
+            filterState = SearchFilterState(),
+            discoverCategory = DiscoverCategory.POPULAR,
+            discoverTitle = null
         )
         loadDiscoverFirstPage(uiState.discoverCategory)
     }
 
     fun onDiscoverCategorySelected(category: DiscoverCategory) {
-        if (uiState.discoverCategory == category && !uiState.isSearchResult) return
+        if (uiState.discoverCategory == category && !uiState.isSearchResult && uiState.discoverTitle == null) return
         uiState = uiState.copy(
             discoverCategory = category,
             isSearchResult = false,
-            query = ""
+            query = "",
+            discoverTitle = null
+        )
+        loadDiscoverFirstPage(category)
+    }
+
+    /**
+     * Открытие категории из ленты Обзора (кнопка «Все»): в отличие от
+     * [onDiscoverCategorySelected] всегда перезагружает и ставит заголовок
+     * раздела — поэтому «Сейчас смотрят» (POPULAR) тоже открывается сеткой,
+     * а не считается главной лентой.
+     */
+    private fun openDiscoverCategorySection(category: DiscoverCategory, title: String) {
+        uiState = uiState.copy(
+            discoverCategory = category,
+            isSearchResult = false,
+            isInstantSearch = false,
+            query = "",
+            discoverTitle = title
         )
         loadDiscoverFirstPage(category)
     }
@@ -674,30 +1360,80 @@ class FilmsViewModel(
             // now and delete the server one (token-refresh retry mirrors the update path).
             if (details.kinopoiskId >= ANIME_ID_OFFSET) {
                 val shikimoriId = details.kinopoiskId - ANIME_ID_OFFSET
-                val rateId = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }?.id
-                cachedShikimoriRates = cachedShikimoriRates.filterNot { it.targetId == shikimoriId }
+                // Элемент библиотеки строится по anime.id с фолбэком на targetId
+                // (toLibraryUiItemWithCache), поэтому матчим рейт по обоим полям —
+                // иначе stale-запись остаётся в кэше и тайтл висит в разделе.
+                val rateId = cachedShikimoriRates.firstOrNull {
+                    it.targetId == shikimoriId || it.anime?.id == shikimoriId
+                }?.id
+                cachedShikimoriRates = cachedShikimoriRates.filterNot {
+                    it.targetId == shikimoriId || it.anime?.id == shikimoriId
+                }
                 val authState = uiState.shikimoriAuthState
-                if (rateId != null && authState.isLoggedIn && authState.accessToken != null) {
+                if (authState.isLoggedIn && authState.accessToken != null) {
                     viewModelScope.launch {
                         var token = authState.accessToken
-                        var success = animeRepository.deleteUserRate(token, rateId)
-                        if (!success && authState.refreshToken != null) {
+                        // rateId может быть неизвестен (кэш ещё не загружен): резолвим точечно
+                        // с сервера, иначе удаление молча считалось успехом и до Shikimori не доходило.
+                        var targetRateId = rateId
+                        var lookupFailed = false
+                        if (targetRateId == null && authState.userId > 0) {
+                            // Только резолвим id — кэш не трогаем: он уже оптимистично
+                            // отфильтрован выше, а пересборка библиотеки уже летит.
+                            // Любая запись сюда гонялась бы с ней и возвращала тайтл в раздел.
+                            val lookup = animeRepository.getUserRateForTarget(authState.userId, shikimoriId)
+                            lookupFailed = lookup.isFailure
+                            targetRateId = lookup.getOrNull()?.id
+                        }
+                        // Серверный рейт не найден, а его поиск не падал: удалять нечего — успех.
+                        // Поиск упал (сеть): успехом не считаем, иначе тайтл «воскреснет» при ресинке.
+                        val rateIdToDelete = targetRateId
+                        var success = if (rateIdToDelete != null) {
+                            animeRepository.deleteUserRate(token, rateIdToDelete)
+                        } else {
+                            // Серверный рейт не найден, а его поиск не падал: удалять нечего — успех.
+                            // Поиск упал (сеть): успехом не считаем, иначе тайтл «воскреснет» при ресинке.
+                            !lookupFailed && !(rateId == null && authState.userId <= 0)
+                        }
+                        if (!success && rateIdToDelete != null && authState.refreshToken != null) {
                             animeRepository.refreshToken(authState.refreshToken)?.let { fresh ->
-                                shikimoriAuthStore?.saveSession(
-                                    token = fresh.accessToken,
-                                    refresh = fresh.refreshToken,
-                                    userId = authState.userId,
-                                    nickname = authState.nickname,
-                                    avatarUrl = authState.avatarUrl
-                                )
+                                persistFreshShikimoriTokens(authState, fresh.accessToken, fresh.refreshToken)
                                 token = fresh.accessToken
-                                success = animeRepository.deleteUserRate(token, rateId)
+                                success = animeRepository.deleteUserRate(token, rateIdToDelete)
                             }
                         }
-                        KLog.d("ShikimoriSync", "Deleted rate id=$rateId for shikimoriId=$shikimoriId: success=$success")
+                        if (success) {
+                            // Удаление на сервере подтверждено: фиксируем в кэше и в текущем
+                            // списке раздела, затем подтверждаем полной пересборкой.
+                            cachedShikimoriRates = cachedShikimoriRates.filterNot {
+                                it.targetId == shikimoriId || it.anime?.id == shikimoriId
+                            }
+                            persistShikimoriRatesSnapshot(authState.userId, cachedShikimoriRates)
+                            libraryBaseCache = libraryBaseCache?.filterNot { it.kinopoiskId == details.kinopoiskId }
+                            uiState = uiState.copy(
+                                library = uiState.library.filterNot { it.kinopoiskId == details.kinopoiskId }
+                            )
+                            if (targetRateId != null) {
+                                KLog.d("ShikimoriSync", "Deleted rate id=$targetRateId for shikimoriId=$shikimoriId")
+                            } else {
+                                KLog.d("ShikimoriSync", "No server rate for shikimoriId=$shikimoriId, nothing to delete")
+                            }
+                            refreshLibraryAndAvatar()
+                        } else {
+                            // Сервер не удалил: молчаливый рассинхрон — причина «удалил, а оно
+                            // вернулось». Перечитываем серверную правду, чтобы библиотека не врала.
+                            KLog.e("ShikimoriSync", "Delete failed for rate id=$targetRateId, resyncing from server")
+                            refreshShikimoriAuth()
+                        }
                     }
                 }
             }
+            // Мгновенный отклик раздела для любого типа тайтла: полная пересборка
+            // парсит тяжёлые блобы (секунды) и едет асинхронно — без этого удаление
+            // «не пропадает в реальном времени». Пересборка ниже это подтвердит.
+            val removedKpId = details.kinopoiskId
+            libraryBaseCache = libraryBaseCache?.filterNot { it.kinopoiskId == removedKpId }
+            uiState = uiState.copy(library = uiState.library.filterNot { it.kinopoiskId == removedKpId })
             detailsState = detailsState.copy(userProfile = null, savingProfile = false)
             refreshLibraryAndAvatar()
             return
@@ -747,56 +1483,71 @@ class FilmsViewModel(
                     KLog.d("ShikimoriSync", "shikiStatus=$shikiStatus, existingRate=${cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }?.id}")
                     var token = authState.accessToken
                     val existingRate = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
-                    var success = false
+                    // Для аниме watchedSeasons в шите — это «Повторы», у Shikimori это rewatches.
+                    val rewatches = safeSeasons?.takeIf { it > 0 }
 
                     // Try with current token first
+                    var result: hd.kinoshka.app.data.model.ShikimoriUserRate? = null
                     if (existingRate != null) {
                         KLog.d("ShikimoriSync", "Updating existing rate id=${existingRate.id}")
-                        val result = animeRepository.updateUserRate(
+                        result = animeRepository.updateUserRate(
                             token = token,
                             rateId = existingRate.id,
                             status = shikiStatus,
                             episodes = safeEpisodes,
-                            score = safeRating
+                            score = safeRating,
+                            rewatches = rewatches
                         )
-                        success = result != null
                     } else {
                         KLog.d("ShikimoriSync", "Creating new rate for targetId=$shikimoriId")
-                        val result = animeRepository.createUserRate(
+                        result = animeRepository.createUserRate(
                             token = token,
                             userId = authState.userId,
                             targetId = shikimoriId,
                             status = shikiStatus,
                             episodes = safeEpisodes ?: 0,
-                            score = safeRating ?: 0
+                            score = safeRating ?: 0,
+                            rewatches = rewatches
                         )
-                        success = result != null
+                    }
+
+                    // Create при существующей серверной оценке даёт 422: подтягиваем свежие
+                    // рейты и повторяем как update, иначе прогресс «не сохраняется».
+                    if (result == null && existingRate == null && authState.userId > 0) {
+                        animeRepository.getUserRates(authState.userId).getOrNull()?.let { fresh ->
+                            cachedShikimoriRates = fresh
+                            fresh.firstOrNull { it.targetId == shikimoriId }?.let { serverRate ->
+                                KLog.d("ShikimoriSync", "Found server rate id=${serverRate.id} after create failed, updating")
+                                result = animeRepository.updateUserRate(
+                                    token = token,
+                                    rateId = serverRate.id,
+                                    status = shikiStatus,
+                                    episodes = safeEpisodes,
+                                    score = safeRating,
+                                    rewatches = rewatches
+                                )
+                            }
+                        }
                     }
 
                     // If failed with 401, try refreshing token
-                    if (!success && authState.refreshToken != null) {
+                    if (result == null && authState.refreshToken != null) {
                         KLog.d("ShikimoriSync", "Token expired, attempting refresh...")
                         val newTokenResponse = animeRepository.refreshToken(authState.refreshToken)
                         if (newTokenResponse != null) {
-                            // Save new tokens
-                            shikimoriAuthStore?.saveSession(
-                                token = newTokenResponse.accessToken,
-                                refresh = newTokenResponse.refreshToken,
-                                userId = authState.userId,
-                                nickname = authState.nickname,
-                                avatarUrl = authState.avatarUrl
-                            )
+                            persistFreshShikimoriTokens(authState, newTokenResponse.accessToken, newTokenResponse.refreshToken)
                             token = newTokenResponse.accessToken
                             KLog.d("ShikimoriSync", "Token refreshed, retrying...")
 
                             // Retry with new token
-                            if (existingRate != null) {
+                            result = if (existingRate != null) {
                                 animeRepository.updateUserRate(
                                     token = token,
                                     rateId = existingRate.id,
                                     status = shikiStatus,
                                     episodes = safeEpisodes,
-                                    score = safeRating
+                                    score = safeRating,
+                                    rewatches = rewatches
                                 )
                             } else {
                                 animeRepository.createUserRate(
@@ -805,12 +1556,28 @@ class FilmsViewModel(
                                     targetId = shikimoriId,
                                     status = shikiStatus,
                                     episodes = safeEpisodes ?: 0,
-                                    score = safeRating ?: 0
+                                    score = safeRating ?: 0,
+                                    rewatches = rewatches
                                 )
                             }
                         } else {
                             KLog.e("ShikimoriSync", "Failed to refresh token, user needs to re-login")
                         }
+                    }
+
+                    if (result != null) {
+                        // Раньше кэш оценок не обновлялся после успеха: библиотека строилась
+                        // из протухшего кэша, а следующий рефреш с сервера затирал локальный
+                        // прогресс. Вписываем серверный ответ сразу.
+                        val fresh = result
+                        val current = cachedShikimoriRates.toMutableList()
+                        val idx = current.indexOfFirst { it.targetId == shikimoriId }
+                        if (idx >= 0) current[idx] = fresh else current.add(fresh)
+                        cachedShikimoriRates = current
+                        refreshLibraryAndAvatar()
+                    } else {
+                        KLog.e("ShikimoriSync", "Sync failed for shikimoriId=$shikimoriId, resyncing from server")
+                        refreshShikimoriAuth()
                     }
                 }
             } else {
@@ -859,7 +1626,11 @@ class FilmsViewModel(
 
     fun setHentaiVisibleInLibrary(visible: Boolean) {
         userStateStore.setHentaiVisibleInLibrary(visible)
-        uiState = uiState.copy(showHentaiInLibrary = visible, library = buildLibraryItems())
+        uiState = uiState.copy(showHentaiInLibrary = visible)
+        viewModelScope.launch {
+            val library = withContext(Dispatchers.Default) { buildLibraryItems() }
+            uiState = uiState.copy(library = library)
+        }
         ensureLibraryAdultVerdicts()
     }
 
@@ -1144,6 +1915,15 @@ class FilmsViewModel(
     }
 
     /**
+     * Комментарии новостного поста для ленты (Shikimori /api/comments).
+     * Вызывает экран по раскрытию раздела, результат кэширует вызывающая сторона.
+     */
+    suspend fun loadTopicComments(topicId: Int): List<hd.kinoshka.app.data.model.ShikimoriComment> =
+        withContext(Dispatchers.IO) {
+            runCatching { animeRepository.topicComments(topicId) }.getOrDefault(emptyList())
+        }
+
+    /**
      * Трейлер для аниме: блок «Видео» Shikimori. Площадку выбирает pickTrailer:
      * Rutube (HLS сразу) или YouTube (извлечение при нажатии); vk/sibnet не подходят.
      */
@@ -1263,6 +2043,38 @@ class FilmsViewModel(
      */
     private fun List<FilmItem>.dedupe(): List<FilmItem> = distinctBy { it.kinopoiskId }
 
+    private fun currentYear(): Int =
+        java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+
+    /**
+     * Ключ сезона Shikimori (fall_2026) для даты: зима = 01–03, весна = 04–06,
+     * лето = 07–09, осень = 10–12. [backSeasons] — на сколько сезонов назад.
+     */
+    private fun seasonKey(backSeasons: Int = 0): String {
+        val cal = java.util.Calendar.getInstance()
+        var quarter = when (cal.get(java.util.Calendar.MONTH)) {
+            in 0..2 -> 0
+            in 3..5 -> 1
+            in 6..8 -> 2
+            else -> 3
+        }
+        var year = cal.get(java.util.Calendar.YEAR)
+        repeat(backSeasons) {
+            quarter--
+            if (quarter < 0) {
+                quarter = 3
+                year--
+            }
+        }
+        val name = when (quarter) {
+            0 -> "winter"
+            1 -> "spring"
+            2 -> "summer"
+            else -> "fall"
+        }
+        return "${name}_$year"
+    }
+
     private suspend fun fetchAnime(query: String?, page: Int): List<FilmItem> {
         val filters = uiState.filterState
         return animeRepository.search(
@@ -1271,8 +2083,10 @@ class FilmsViewModel(
             status = filters.animeStatus,
             rating = filters.animeRating,
             genreId = filters.animeGenreId,
+            studioId = filters.animeStudioId,
             order = filters.animeOrder,
             scoreFrom = filters.animeScoreFrom,
+            season = filters.animeSeason,
             page = page
         ).map { it.toFilmItem() }.dedupe()
     }
@@ -1503,8 +2317,15 @@ class FilmsViewModel(
     private fun buildInitialState(): HomeUiState {
         val preferences = userStateStore.getUserPreferences()
         val fallbackTileSize = preferences.tileSize
+        // Дисковый кэш Обзора: первый кадр сразу с контентом, без скелетона; сеть освежит фоном.
+        val cachedFilms = userStateStore.getOverviewCache("films")
+        val cachedAnime = userStateStore.getOverviewCache("anime")
         return HomeUiState(
             loading = true,
+            overviewFilmSections = cachedFilms.sections,
+            overviewAnimeSections = cachedAnime.sections,
+            overviewFilmHero = cachedFilms.hero,
+            overviewAnimeHero = cachedAnime.hero,
             library = buildLibraryItems(),
             profileAvatar = userStateStore.getProfileAvatar(),
             themeMode = preferences.themeMode,
@@ -1563,21 +2384,40 @@ class FilmsViewModel(
     }
 
     private fun refreshFromStore() {
-        val preferences = userStateStore.getUserPreferences()
-        val fallbackTileSize = preferences.tileSize
-        uiState = uiState.copy(
-            library = buildLibraryItems(),
-            profileAvatar = userStateStore.getProfileAvatar(),
-            themeMode = preferences.themeMode,
-            hideRussianContent = preferences.hideRussianContent,
-            discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
-            libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
-            showFpsCounter = preferences.showFpsCounter,
-            playbackSequence = preferences.playbackSequence
-        )
+        viewModelScope.launch {
+            val preferences = withContext(Dispatchers.Default) { userStateStore.getUserPreferences() }
+            val fallbackTileSize = preferences.tileSize
+            val library = withContext(Dispatchers.Default) { buildLibraryItems() }
+            val avatar = withContext(Dispatchers.Default) { userStateStore.getProfileAvatar() }
+            uiState = uiState.copy(
+                library = library,
+                profileAvatar = avatar,
+                themeMode = preferences.themeMode,
+                hideRussianContent = preferences.hideRussianContent,
+                discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
+                libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
+                showFpsCounter = preferences.showFpsCounter,
+                playbackSequence = preferences.playbackSequence
+            )
+        }
     }
 
     private fun buildLibraryItems(): List<LibraryUiItem> {
+        // Первый кадр библиотеки — из дискового снапшота рейтов: сеть с фетчем ещё
+        // в пути, а раздел должен показать аниме Shikimori сразу. Фоновая
+        // refreshShikimoriAuth() освежит данные следом.
+        if (!shikimoriRatesSnapshotHydrated) {
+            shikimoriRatesSnapshotHydrated = true
+            val currentUserId = shikimoriAuthStore?.getAuthState()?.userId ?: 0
+            if (currentUserId > 0) {
+                runCatching { userStateStore.getShikimoriRatesSnapshot() }.getOrNull()
+                    ?.takeIf { it.userId == currentUserId && it.rates.isNotEmpty() }
+                    ?.let {
+                        cachedShikimoriRates = it.rates
+                        snapshotUserId = it.userId
+                    }
+            }
+        }
         val historyRecords = userStateStore.getHistory()
         val profileMap = userStateStore.getProfiles()
             .associateBy { it.kinopoiskId }
@@ -1636,9 +2476,15 @@ class FilmsViewModel(
                     if (enriched.totalEpisodes == null && item.totalEpisodes != null) {
                         enriched = enriched.copy(totalEpisodes = item.totalEpisodes)
                     }
-                    // The local side had no opinion about this title (history-only entry): adopt the
-                    // server status/rating/note instead of leaving a synthetic WATCHING default.
-                    if (enriched.kinopoiskId in defaultedStatusIds && existing.status == UserFilmStatus.WATCHING) {
+                    // The local side had no opinion about this title: a history-only
+                    // entry carries a synthetic WATCHING default, a profile seeded by
+                    // addFromDetails (merely pressing «Watch») carries status null.
+                    // Adopt the server status/rating/note instead — otherwise a
+                    // Shikimori-list anime vanishes from every library tab the moment
+                    // it is watched (the seeded profile shadows the rate below).
+                    if ((enriched.kinopoiskId in defaultedStatusIds && existing.status == UserFilmStatus.WATCHING) ||
+                        existing.status == null
+                    ) {
                         enriched = enriched.copy(
                             status = item.status,
                             userRating = enriched.userRating ?: item.userRating,

@@ -4,6 +4,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -11,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import androidx.compose.ui.unit.dp
@@ -25,7 +27,6 @@ import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
 import hd.kinoshka.app.ui.screens.AnimeFeedScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.FilmsViewModel
-import hd.kinoshka.app.ui.screens.HomeScreen
 import hd.kinoshka.app.ui.screens.SettingsScreen
 import hd.kinoshka.app.ui.tv.TvSecondaryContainer
 import kotlinx.coroutines.launch
@@ -55,6 +56,10 @@ fun main(args: Array<String>) = application {
     val viewModel = remember { buildViewModel(repository, userStateStore) }
     val scope = rememberCoroutineScope()
     var screen by remember { mutableStateOf(initialScreen(args, repository)) }
+    // Куда возвращаться из деталей: открыто из Новостей — назад на ленту.
+    var detailsReturn by remember { mutableStateOf<Screen>(Screen.Home) }
+    // Скролл ленты: живёт выше переключения screen, уход в детали позицию не сносит.
+    val feedListState = remember { LazyListState() }
 
     fun openDetailsById(targetId: Int) {
         scope.launch {
@@ -66,58 +71,56 @@ fun main(args: Array<String>) = application {
         }
     }
 
-    // Стартуем достаточно широким окном, чтобы сразу попасть в TV-дизайн (ориентация landscape).
+    val windowState = rememberWindowState(width = 1440.dp, height = 900.dp)
     Window(
         onCloseRequest = ::exitApplication,
         title = MAIN_WINDOW_TITLE,
-        state = rememberWindowState(width = 1360.dp, height = 820.dp),
+        state = windowState,
     ) {
-        MaterialTheme(colorScheme = darkColorScheme()) {
+        // Lampa-тёмная палитра (#1D1F20) через Material3-токены: фон/поверхности нейтральные,
+        // текст белый/серый — как на скринах "Главная - TMDB".
+        val lampaDark = darkColorScheme(
+            background = androidx.compose.ui.graphics.Color(0xFF1D1F20),
+            surface = androidx.compose.ui.graphics.Color(0xFF1D1F20),
+            surfaceVariant = androidx.compose.ui.graphics.Color(0xFF242628),
+            surfaceContainer = androidx.compose.ui.graphics.Color(0xFF242628),
+            surfaceContainerHigh = androidx.compose.ui.graphics.Color(0xFF2A2C2D),
+            onBackground = androidx.compose.ui.graphics.Color.White,
+            onSurface = androidx.compose.ui.graphics.Color.White,
+            onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF9E9E9E),
+        )
+        MaterialTheme(colorScheme = lampaDark) {
             // Surface задаёт LocalContentColor (= onBackground): без него текст вне
             // карточек (заголовки секций и т.п.) получает чёрный по умолчанию и
             // исчезает на тёмном фоне.
             Surface(modifier = Modifier.fillMaxSize()) {
+                var drawerOpen by remember { mutableStateOf(false) }
                 when (val current = screen) {
-                is Screen.Home -> HomeScreen(
+                is Screen.Home -> PcLampaOverview(
                     state = viewModel.uiState,
-                    onQueryChange = viewModel::onQueryChange,
-                    onInstantSearch = viewModel::onSearchQueryChanged,
-                    onSubmitSearch = viewModel::submitSearch,
-                    onRetry = viewModel::retryHome,
-                    onTabSelected = viewModel::onTabSelected,
-                    onContentTypeSelected = viewModel::onContentTypeSelected,
-                    onOpenFilm = { film -> screen = Screen.Details(film) },
-                    onOpenHistoryFilm = { id ->
-                        // Из истории приходит только kp-Id — детали догружаем.
-                        scope.launch {
-                            runCatching { repository.details(id) }.onSuccess { d ->
-                                screen = Screen.Details(
-                                    FilmItem(
-                                        d.kinopoiskId, d.nameRu, d.nameOriginal,
-                                        d.posterUrlPreview, d.ratingKinopoisk, d.year
-                                    )
-                                )
-                            }
+                    onOpenFilm = { film ->
+                        detailsReturn = Screen.Home
+                        screen = Screen.Details(film)
+                    },
+                    drawerOpen = drawerOpen,
+                    onMenuToggle = { drawerOpen = !drawerOpen },
+                    isFullscreen = windowState.placement == WindowPlacement.Fullscreen,
+                    onBack = { screen = Screen.Home },
+                    onFullscreenToggle = {
+                        windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
+                            WindowPlacement.Floating
+                        } else {
+                            WindowPlacement.Fullscreen
                         }
                     },
-                    onDiscoverCategorySelected = viewModel::onDiscoverCategorySelected,
-                    onLoadMore = viewModel::loadMore,
-                    onRemoveFromHistory = viewModel::removeFromHistory,
-                    onOpenProfile = {},
                     onOpenSettings = { screen = Screen.Settings },
                     onOpenAbout = { screen = Screen.About },
-                    onOpenCalendar = { screen = Screen.Calendar },
                     onOpenFeed = { screen = Screen.Feed },
-                    onUpdateFilters = viewModel::updateFilters,
-                    onToggleFilterSheet = viewModel::setShowFilterSheet,
-                    onLibrarySortSelected = viewModel::setLibrarySortType,
-                    librarySortReversed = viewModel.uiState.librarySortReversed,
-                    onLibrarySortReversedChanged = viewModel::setLibrarySortReversed,
-                    onHentaiVisibilityChanged = viewModel::setHentaiVisibleInLibrary,
-                    onRemoveSearchHistory = viewModel::removeSearchQueryFromHistory,
-                    onClearSearchHistory = viewModel::clearSearchHistory,
-                    // Загрузки/Профиль/TikTok-лента на desktop отсутствуют — скрываем их входы.
-                    androidFeaturesAvailable = false
+                    onOpenCalendar = { screen = Screen.Calendar },
+                    onQueryChange = viewModel::onQueryChange,
+                    onSubmitSearch = viewModel::submitSearch,
+                    onRetry = viewModel::retryHome,
+                    onLoadMore = viewModel::loadMore,
                 )
                 is Screen.Details -> DetailsScreen(
                     filmId = current.film.kinopoiskId,
@@ -139,7 +142,7 @@ fun main(args: Array<String>) = application {
                             }
                         }
                     },
-                    onBack = { screen = Screen.Home },
+                    onBack = { screen = detailsReturn },
                     // Слоты скачивания/выбора источника — null; нативный плеер: общий
                     // DetailsScreen передаёт полный payload, mpv играет его на ПК.
                     onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
@@ -213,6 +216,7 @@ fun main(args: Array<String>) = application {
                         loading = viewModel.uiState.calendarLoading,
                         onBack = { screen = Screen.Home },
                         onOpenAnime = { targetId ->
+                            detailsReturn = Screen.Home
                             openDetailsById(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
                         }
                     )
@@ -223,8 +227,15 @@ fun main(args: Array<String>) = application {
                         loading = viewModel.uiState.topicsLoading,
                         onBack = { screen = Screen.Home },
                         onOpenAnime = { targetId ->
+                            detailsReturn = Screen.Feed
                             openDetailsById(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
-                        }
+                        },
+                        loadComments = viewModel::loadTopicComments,
+                        onOpenStudio = { studioId, studioName ->
+                            viewModel.searchStudio(studioId, studioName)
+                            screen = Screen.Home
+                        },
+                        listState = feedListState
                     )
                 }
             }

@@ -124,8 +124,7 @@ object MovieSeriesContextStore {
 object PendingMovieRequestStore {
     data class PendingMovieLaunch(
         val request: MoviePlaybackRequest,
-        val displayTitle: String,
-        val webFallbackUrl: String? = null
+        val displayTitle: String
     )
 
     private val launches = java.util.concurrent.ConcurrentHashMap<Int, PendingMovieLaunch>()

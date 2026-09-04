@@ -443,7 +443,8 @@ object DdbbStreamResolver {
      * Returns `(headers, qualities)` for the first recognized embed format, where headers must be
      * sent alongside every request to the returned URLs (some CDNs check the embed's own origin).
      */
-    internal fun extractFromEmbed(html: String, embedUrl: String): Pair<Map<String, String>, Map<String, String>>? {
+    // Public for unit tests (:app depends on :shared as a separate module, internal is invisible there).
+    fun extractFromEmbed(html: String, embedUrl: String): Pair<Map<String, String>, Map<String, String>>? {
         COLLAPS_HLS_REGEX.find(html)?.let { match ->
             val hls = match.groupValues[1].trim()
             if (hls.startsWith("http")) return emptyMap<String, String>() to mapOf("Auto" to hls)
@@ -465,7 +466,8 @@ object DdbbStreamResolver {
         return null
     }
 
-    internal fun decodeTurboConfig(blob: String): String? = findTurboWindow(blob)
+    // Public for unit tests (see extractFromEmbed above).
+    fun decodeTurboConfig(blob: String): String? = findTurboWindow(blob)
 
     /** True when a decoded window looks like a real player config (markers + plausible head). */
     private fun looksLikeTurboPayload(decoded: String?): Boolean =

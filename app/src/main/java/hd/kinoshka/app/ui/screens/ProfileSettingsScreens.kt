@@ -277,10 +277,12 @@ fun ProfileScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         // Локальная копия: avatarUrl объявлен в другом модуле (shared), smart cast невозможен.
+                        // Офлайн-копия: без интернета грузится файл, а не URL.
                         val shikiAvatar = shikimoriAuthState.avatarUrl
+                        val shikiAvatarModel = rememberShikimoriAvatarModel(shikiAvatar)
                         Box(contentAlignment = Alignment.BottomEnd) {
                             AvatarPreview(
-                                avatar = if (shikimoriAuthState.isLoggedIn && !shikiAvatar.isNullOrBlank()) shikiAvatar else avatar,
+                                avatar = if (shikimoriAuthState.isLoggedIn && shikiAvatarModel is String) shikiAvatarModel else avatar,
                                 onClick = { pickAvatar.launch(arrayOf("image/*")) }
                             )
                         }
@@ -395,7 +397,8 @@ fun ProfileScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             KinoshkaAsyncImage(
-                                model = shikimoriAuthState.avatarUrl,
+                                // Та же офлайн-копия, что в шапке: без интернета грузится файл.
+                                model = rememberShikimoriAvatarModel(shikimoriAuthState.avatarUrl),
                                 contentDescription = shikimoriAuthState.nickname,
                                 modifier = Modifier
                                     .size(52.dp)
@@ -1050,6 +1053,99 @@ private fun String.isCustomAvatarUri(): Boolean {
     return startsWith("content://") || startsWith("file://") || startsWith("http")
 }
 
+/** Сериализует докачку аватара: шапка и строка аккаунта дергают её одновременно. */
+private val shikimoriAvatarDownloadLock = Any()
+
+/**
+ * Локальная офлайн-копия аватара Shikimori (`filesDir/avatars/shikimori_<hash>.png`):
+ * без интернета Coil удалённый URL не грузит, а файл — грузит. Возвращает `file://`
+ * модель, если копия уже скачана, иначе исходный URL; докачка идёт в фоне при каждом
+ * показе. Хэш URL в имени: смена аватара на сайте не отдаёт stale-копию, соседи под
+ * другие URL чистятся.
+ */
+@Composable
+private fun rememberShikimoriAvatarModel(remoteUrl: String?): Any? {
+    val context = LocalContext.current
+    val targetName = remember(remoteUrl) {
+        remoteUrl?.takeIf { it.isNotBlank() }
+            ?.let { "shikimori_${it.hashCode().toUInt().toString(36)}.png" }
+    }
+    var localModel by remember(remoteUrl) {
+        mutableStateOf(
+            targetName?.let { name ->
+                runCatching {
+                    File(File(context.filesDir, "avatars"), name)
+                        .takeIf { it.exists() }?.toURI().toString()
+                }.getOrNull()
+            }
+        )
+    }
+    LaunchedEffect(remoteUrl) {
+        if (targetName == null || remoteUrl.isNullOrBlank()) return@LaunchedEffect
+        val fresh = withContext(Dispatchers.IO) {
+            runCatching {
+                val dir = File(context.filesDir, "avatars").apply { mkdirs() }
+                // Всё файловое — под локом: два показа (шапка + строка аккаунта)
+                // иначе чистят чужой tmp и пишут один файл параллельно.
+                synchronized(shikimoriAvatarDownloadLock) {
+                    dir.listFiles { f ->
+                        f.isFile && f.name.startsWith("shikimori_") &&
+                            (f.name.endsWith(".tmp") || (f.name.endsWith(".png") && f.name != targetName))
+                    }?.forEach { it.delete() }
+                    val target = File(dir, targetName)
+                    if (!target.exists()) {
+                        downloadToFile(remoteUrl, File(dir, "$targetName.tmp"), target)
+                    }
+                    target.takeIf { it.exists() }?.toURI().toString()
+                }
+            }.getOrNull()
+        }
+        if (fresh != null) localModel = fresh
+    }
+    return localModel ?: remoteUrl?.takeIf { it.isNotBlank() }
+}
+
+/** Скачивание по URL в [target] через временный файл, с ручным обходом редиректов. */
+private fun downloadToFile(url: String, tmp: File, target: File) {
+    var current = java.net.URL(url)
+    var redirects = 0
+    while (true) {
+        val conn = (current.openConnection() as java.net.HttpURLConnection).apply {
+            connectTimeout = 10_000
+            readTimeout = 15_000
+            instanceFollowRedirects = false
+            setRequestProperty("User-Agent", "KinoshkaApp")
+        }
+        try {
+            val code = conn.responseCode
+            if (code in 300..399) {
+                val location = conn.getHeaderField("Location")
+                    ?: throw java.io.IOException("redirect without Location")
+                if (redirects++ >= 5) throw java.io.IOException("too many redirects")
+                current = java.net.URL(current, location)
+                continue
+            }
+            if (code != java.net.HttpURLConnection.HTTP_OK) {
+                throw java.io.IOException("http $code")
+            }
+            conn.inputStream.use { input ->
+                tmp.outputStream().use { output -> input.copyTo(output) }
+            }
+        } finally {
+            conn.disconnect()
+        }
+        break
+    }
+    if (tmp.length() == 0L) {
+        tmp.delete()
+        throw java.io.IOException("empty body")
+    }
+    if (!tmp.renameTo(target)) {
+        tmp.copyTo(target, overwrite = true)
+        tmp.delete()
+    }
+}
+
 private fun loadBitmapFromUri(context: Context, uri: Uri): Bitmap? {
     return runCatching {
         val decoded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -1163,7 +1259,10 @@ private fun ShikimoriWebLoginDialog(
 ) {
     var isLoading by remember { mutableStateOf(true) }
     val clientId = hd.kinoshka.app.BuildConfig.SHIKIMORI_CLIENT_ID
-    val oauthUrl = "https://shikimori.io/oauth/authorize?client_id=$clientId&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code&scope="
+    // Без скоупа user_rates Shikimori отклоняет создание/обновление/удаление оценок (403):
+    // библиотека тогда только читалась, а любые правки «не сохранялись». Существующим
+    // пользователям нужен перелогин — токены со старым (пустым) скоупом права не получат.
+    val oauthUrl = "https://shikimori.io/oauth/authorize?client_id=$clientId&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code&scope=user_rates"
 
     Dialog(
         onDismissRequest = onDismiss,

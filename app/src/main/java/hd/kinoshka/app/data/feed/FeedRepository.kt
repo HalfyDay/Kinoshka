@@ -22,6 +22,9 @@ import kotlin.random.Random
  * Персонализация ПО РАЗДЕЛАМ: у фильмов, сериалов, мультиков, аниме и хентая свой
  * вектор вкуса и свои источники; голоса пишутся в вектор раздела тайтла.
  *
+ * Аниме-раздел дополнительно умеет жанровый срез каталога Шикимори (sheet жанров)
+ * и «Мне повезет» (случайная страница выдачи).
+ *
  *  - [refreshInterests] раз в 12ч дообогащает историю/библиотеку жанрами через details()
  *    и учит веса (статус + оценка) в InterestProfileStore; лайки/дизлайки корректируют их же.
  *  - Страницы строятся РОТАЦИЕЙ: топ-жанры профиля × порядки сортировки × окна годов,
@@ -168,30 +171,36 @@ class FeedRepository(
         when (chip) {
             // «Всё» — общий показ партий всех разделов, каждый со своим рейтингом.
             FeedChip.ALL -> allMergedPage(pageIndex, seedIds)
-            else -> withContext(Dispatchers.IO) {
-                val raw = runCatching { loadPage(chip, pageIndex) }.getOrElse { e ->
-                    Log.w(TAG, "page($chip,$pageIndex) failed: ${e.javaClass.simpleName}")
-                    emptyList()
-                }
-                val items = filterCandidates(raw)
+            // Аниме: жанровый срез каталога при выбранном жанре, иначе прежняя локальная система.
+            FeedChip.ANIME -> animePage(pageIndex, seedIds)
+            else -> standardPage(chip, pageIndex, seedIds)
+        }
 
-                // Похожие к недавнему — в первые две страницы, поверх основного пула.
-                if (pageIndex <= SEED_PAGES && seedIds.isNotEmpty()) {
-                    val existing = items.map { it.kinopoiskId }.toSet()
-                    val excluded = excludedIds()
-                    val seeds = runCatching { seedItems(seedIds) }.getOrDefault(emptyList())
-                        .asSequence()
-                        .filter { it.isShowable(java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)) }
-                        .filter { it.kinopoiskId !in excluded && it.kinopoiskId !in existing }
-                        .take(if (pageIndex == 1) SEEDED_COUNT else SEEDED_COUNT / 2)
-                        .toList()
-                        .withReason("сид по похожим к недавнему")
-                    // Франшизы сидов резервируются: основной пул не подсовывает их же сезоны.
-                    val reserved = seeds.mapNotNull { franchiseKeyOf(it.title) }.toSet()
-                    return@withContext seeds + rankBatch(chip, items, reserved)
-                }
-                rankBatch(chip, items)
+    /** Обычная страница раздела: сырая выдача + фильтры + сиды «похожих» + ранжирование. */
+    private suspend fun standardPage(chip: FeedChip, pageIndex: Int, seedIds: List<Int>): List<FeedItem> =
+        withContext(Dispatchers.IO) {
+            val raw = runCatching { loadPage(chip, pageIndex) }.getOrElse { e ->
+                Log.w(TAG, "page($chip,$pageIndex) failed: ${e.javaClass.simpleName}")
+                emptyList()
             }
+            val items = filterCandidates(raw)
+
+            // Похожие к недавнему — в первые две страницы, поверх основного пула.
+            if (pageIndex <= SEED_PAGES && seedIds.isNotEmpty()) {
+                val existing = items.map { it.kinopoiskId }.toSet()
+                val excluded = excludedIds()
+                val seeds = runCatching { seedItems(seedIds) }.getOrDefault(emptyList())
+                    .asSequence()
+                    .filter { it.isShowable(java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)) }
+                    .filter { it.kinopoiskId !in excluded && it.kinopoiskId !in existing }
+                    .take(if (pageIndex == 1) SEEDED_COUNT else SEEDED_COUNT / 2)
+                    .toList()
+                    .withReason("сид по похожим к недавнему")
+                // Франшизы сидов резервируются: основной пул не подсовывает их же сезоны.
+                val reserved = seeds.mapNotNull { franchiseKeyOf(it.title) }.toSet()
+                return@withContext seeds + rankBatch(chip, items, reserved)
+            }
+            rankBatch(chip, items)
         }
 
     /**
@@ -251,6 +260,12 @@ class FeedRepository(
         FeedChip.CARTOONS -> kpCartoonsPage(pageIndex)
         FeedChip.ANIME -> shikiRankedPage(pageIndex)
         else -> emptyList()
+    }
+
+    /** Аниме-страница: жанровый срез каталога при выбранном жанре, иначе локальная система. */
+    private suspend fun animePage(pageIndex: Int, seedIds: List<Int>): List<FeedItem> {
+        animeGenreId?.let { return shikiGenrePage(it, pageIndex) }
+        return standardPage(FeedChip.ANIME, pageIndex, seedIds)
     }
 
     /**
@@ -367,6 +382,26 @@ class FeedRepository(
         label: String,
         section: FeedChip
     ): List<FeedItem> {
+        // Ручной срез sheet жанров: фиксированный жанр СВОЕГО раздела, ротация
+        // порядка/годов/страны сохраняется.
+        kpGenreByChip[section]?.let { fixedId ->
+            val genreName = kpGenreName(fixedId, section) ?: return emptyList()
+            val order = ORDERS[slot % ORDERS.size]
+            val windows = orderedYearWindows()
+            val years = windows[(slot / ORDERS.size) % windows.size]
+            val topCountry = if (slot % 2 == 1) sampledPositiveCountry() else null
+            return kpSearchTyped(
+                order = order,
+                typeHint = type,
+                genreId = fixedId,
+                yearFrom = years.first,
+                yearTo = years.second,
+                page = slot + 1,
+                adult = false,
+                countryId = topCountry?.first
+            ).map { it.copy(sourceGenre = genreName.lowercase(), section = section) }
+                .withReason("$label · жанр $genreName · $order · ${years.first}–${years.second}")
+        }
         val genres = interestGenreIds()
         if (genres.isEmpty()) {
             // Даже справочник фильтров недоступен — популярное как последний рубеж.
@@ -416,6 +451,8 @@ class FeedRepository(
 
     /** Чипс «Мультики»: жанр «мультфильм» Кинопоиска — полнометражка и мульт-сериалы вместе. */
     private suspend fun kpCartoonsPage(pageIndex: Int): List<FeedItem> {
+        // Ручной срез sheet: жанр + обязательный «мультфильм» (проверка по details).
+        kpGenreByChip[FeedChip.CARTOONS]?.let { fixedId -> return kpCartoonsFilteredPage(fixedId, pageIndex) }
         val genreId = cartoonGenreId() ?: return emptyList()
         val slot = pageIndex - 1
         val order = ORDERS[slot % ORDERS.size]
@@ -431,6 +468,39 @@ class FeedRepository(
             adult = false
         ).withReason("Мультики · $order · ${years.first}–${years.second}")
             .map { it.copy(sourceGenre = "мультфильм", section = FeedChip.CARTOONS) }
+    }
+
+    /**
+     * Мультики в жанре sheet: KP не умеет два жанра в одном запросе, поэтому ищем
+     * по жанру среза и оставляем только мультфильмы (проверка жанров details;
+     * кэш FilmsRepository делает повторные проверки и валидацию бесплатными).
+     */
+    private suspend fun kpCartoonsFilteredPage(genreId: Int, pageIndex: Int): List<FeedItem> {
+        val genreName = kpGenreName(genreId, FeedChip.CARTOONS) ?: return emptyList()
+        val collected = mutableListOf<FeedItem>()
+        var apiPage = pageIndex
+        var attempts = 0
+        while (collected.size < CARTOON_GENRE_TAKE && attempts < 2) {
+            attempts++
+            val candidates = runCatching {
+                kpSearchTyped(
+                    order = "RATING", typeHint = null, genreId = genreId,
+                    yearFrom = 1990, yearTo = 2026, page = apiPage, adult = false
+                )
+            }.getOrDefault(emptyList())
+            if (candidates.isEmpty()) break
+            apiPage++
+            candidates.forEach { item ->
+                if (collected.size >= CARTOON_GENRE_TAKE) return@forEach
+                val isCartoon = runCatching { films.details(item.kinopoiskId) }
+                    .getOrNull()?.genres?.any { it.genre?.trim()?.lowercase() == "мультфильм" }
+                    ?: false
+                if (isCartoon) collected += item
+            }
+        }
+        return collected
+            .map { it.copy(sourceGenre = genreName.lowercase(), section = FeedChip.CARTOONS) }
+            .withReason("Мультики · жанр $genreName")
     }
 
     /**
@@ -455,7 +525,7 @@ class FeedRepository(
             // фильмов и сериалов схлопываются в один и тот же URL.
             val typeValue: String? = when (typeHint) {
                 null -> null
-                "MOVIE" -> KpTypeProbe.current()
+                "MOVIE" -> KpTypeProbe.current(interests)
                 else -> typeHint
             }
             try {
@@ -469,9 +539,11 @@ class FeedRepository(
                     page = page
                 ).map { it.toFeedItem(adult) }
             } catch (e: retrofit2.HttpException) {
+                // Несъеденный errorBody — кандидат в «resource failed to call close», закрываем.
+                runCatching { e.response()?.errorBody()?.close() }
                 if (e.code() == 400 && attempt < 3) {
                     Log.w(TAG, "kp search rejected type=${typeValue ?: "<none>"}, trying next candidate")
-                    KpTypeProbe.report400()
+                    KpTypeProbe.report400(interests)
                     attempt++
                     continue
                 }
@@ -482,12 +554,23 @@ class FeedRepository(
 
     private object KpTypeProbe {
         private val CANDIDATES = listOf<String?>("MOVIE", "FILM", null)
-        @Volatile private var index = 0
+        @Volatile private var index = -1
 
-        fun current(): String? = CANDIDATES[index]
+        fun current(store: InterestProfileStore): String? {
+            if (index < 0) {
+                index = store.kpTypeProbeIndex().coerceIn(CANDIDATES.indices)
+            }
+            return CANDIDATES[index]
+        }
 
-        fun report400() {
-            synchronized(this) { if (index < CANDIDATES.lastIndex) index++ }
+        fun report400(store: InterestProfileStore) {
+            synchronized(this) {
+                if (index < 0) index = store.kpTypeProbeIndex().coerceIn(CANDIDATES.indices)
+                if (index < CANDIDATES.lastIndex) {
+                    index++
+                    store.setKpTypeProbeIndex(index)
+                }
+            }
         }
     }
 
@@ -583,6 +666,97 @@ class FeedRepository(
             .map { it.toFeedItem(false) }
             .withReason("KP популярное")
 
+    // ============================ жанровые срезы ленты ============================
+
+    /** Фильтр жанра аниме-ленты (id справочника Шикимори), null = без фильтра. */
+    @Volatile var animeGenreId: Int? = null
+
+    /**
+     * Фильтры жанров KP-разделов (id справочника Кинопоиска) + подписи для меток.
+     * Строго по разделам: общий var на Фильмы/Сериалы/Мультики заставлял срез,
+     * выбранный в одном разделе, фильтровать и остальные — жанры «перетекали».
+     */
+    private val kpGenreByChip = java.util.concurrent.ConcurrentHashMap<FeedChip, Int>()
+    private val kpGenreTitleByChip = java.util.concurrent.ConcurrentHashMap<FeedChip, String>()
+
+    /** Фильтр хентай-ленты (локализованный тег каталога hanime), null = без фильтра. */
+    @Volatile var hentaiTag: String? = null
+
+    /**
+     * Выбор жанра раздела ленты: key — [GenreOption.key] из справочника раздела.
+     * ALL жанра не имеет (смесь источников с разными справочниками) — игнорируется.
+     */
+    fun setFeedGenre(chip: FeedChip, key: String?, title: String?) {
+        when (chip) {
+            FeedChip.ANIME -> animeGenreId = key?.toIntOrNull()
+            FeedChip.FILMS, FeedChip.SERIES, FeedChip.CARTOONS -> {
+                val id = key?.toIntOrNull()
+                if (id != null) kpGenreByChip[chip] = id else kpGenreByChip.remove(chip)
+                val name = title?.takeIf { key != null }
+                if (name != null) kpGenreTitleByChip[chip] = name else kpGenreTitleByChip.remove(chip)
+            }
+            FeedChip.HENTAI -> hentaiTag = key?.takeIf { it.isNotBlank() }
+            FeedChip.ALL -> Unit
+        }
+    }
+
+    /** Активный ключ жанра раздела для подсветки кнопки (null = фильтр снят). */
+    fun feedGenreKey(chip: FeedChip): String? = when (chip) {
+        FeedChip.ANIME -> animeGenreId?.toString()
+        FeedChip.FILMS, FeedChip.SERIES, FeedChip.CARTOONS -> kpGenreByChip[chip]?.toString()
+        FeedChip.HENTAI -> hentaiTag
+        FeedChip.ALL -> null
+    }
+
+    /** Справочник жанров KP для sheet: без аниме/мультфильма/взрослых (у них свои разделы). */
+    suspend fun kpGenreOptions(): List<GenreOption> = withContext(Dispatchers.IO) {
+        val filters = runCatching { films.filters() }.getOrNull() ?: return@withContext emptyList()
+        filters.genres.mapNotNull { g ->
+            val id = g.id
+            val name = g.genre?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val key = name.lowercase()
+            if (key == "аниме" || key == "мультфильм" || isAdultGenreKey(key)) return@mapNotNull null
+            GenreOption(key = id.toString(), title = name)
+        }
+    }
+
+    /** Справочник жанров Шикимори для sheet аниме-ленты. */
+    suspend fun animeGenreOptions(): List<GenreOption> = withContext(Dispatchers.IO) {
+        runCatching { anime.animeGenres() }.getOrDefault(emptyList()).map { g ->
+            GenreOption(key = g.id.toString(), title = g.russian?.takeIf { it.isNotBlank() } ?: g.name)
+        }
+    }
+
+    /** Теги хентай-каталога для sheet 18+-ленты. */
+    fun hentaiTagOptions(): List<GenreOption> =
+        hd.kinoshka.app.data.source.HentaiStreamResolver.allGenreTags()
+            .map { GenreOption(key = it, title = it) }
+
+    /** Имя KP-жанра для меток среза; null = справочник недоступен. */
+    private suspend fun kpGenreName(id: Int, chip: FeedChip): String? =
+        runCatching { films.filters() }.getOrNull()
+            ?.genres?.firstOrNull { it.id == id }?.genre?.trim()?.takeIf { it.isNotBlank() }
+            ?: kpGenreTitleByChip[chip]
+
+    /** Жанровый срез каталога Шикимори (sheet жанров): ranked score≥7, этти разрешён. */
+    private suspend fun shikiGenrePage(genreId: Int, pageIndex: Int): List<FeedItem> {
+        val loaded = anime.search(
+            order = "ranked",
+            scoreFrom = SHIKI_MIN_SCORE,
+            genreId = genreId,
+            censored = false,
+            page = pageIndex
+        )
+        return filterCandidates(
+            loaded.map { it.toFeedItem(adult = false) }
+                .ifEmpty {
+                    anime.search(order = "popularity", genreId = genreId, censored = false, page = pageIndex)
+                        .map { it.toFeedItem(adult = false) }
+                }
+        ).map { it.copy(section = FeedChip.ANIME) }
+            .withReason("Shikimori жанр · score≥$SHIKI_MIN_SCORE")
+    }
+
     /**
      * Shikimori ranked (качество вместо голой популярности). Обычная аниме-подача:
      * этти разрешён (censored=false), хентай отсекается каталогом на валидации.
@@ -606,6 +780,8 @@ class FeedRepository(
     }
 
     private suspend fun shikiHentaiPage(pageIndex: Int): List<FeedItem> {
+        // Ручной срез sheet: собираем тайтлы с тегом по нескольким страницам каталога.
+        hentaiTag?.let { tag -> return shikiHentaiTagPage(tag, pageIndex) }
         val genreId = resolveShikimoriGenre("hentai") ?: SHIKI_HENTAI_FALLBACK
         val loaded = anime.search(order = "ranked", genreId = genreId, censored = false, page = pageIndex)
         return loaded.map { it.toFeedItem(adult = true) }
@@ -623,6 +799,41 @@ class FeedRepository(
                 item.copy(tags = tags)
             }
             .withReason("Shikimori hentai")
+    }
+
+    /**
+     * Хентай с тегом sheet: каталог Шикимори по тегам hanime не ищет, поэтому
+     * листаем ranked-выдачу и оставляем совпадения (теги уже резолвятся на карточку).
+     */
+    private suspend fun shikiHentaiTagPage(tag: String, pageIndex: Int): List<FeedItem> {
+        val wanted = tag.trim().lowercase()
+        val matched = mutableListOf<FeedItem>()
+        var apiPage = pageIndex
+        var attempts = 0
+        while (matched.size < HENTAI_TAG_TAKE && attempts < HENTAI_TAG_PAGES) {
+            attempts++
+            val loaded = runCatching {
+                anime.search(
+                    order = if (attempts == 1) "ranked" else "popularity",
+                    genreId = resolveShikimoriGenre("hentai") ?: SHIKI_HENTAI_FALLBACK,
+                    censored = false,
+                    page = apiPage
+                )
+            }.getOrDefault(emptyList())
+            if (loaded.isEmpty()) break
+            apiPage++
+            loaded.map { it.toFeedItem(adult = true) }
+                .map { it.copy(sourceGenre = "хентай", section = FeedChip.HENTAI) }
+                .forEach { item ->
+                    if (matched.size >= HENTAI_TAG_TAKE) return@forEach
+                    val tags = runCatching {
+                        hd.kinoshka.app.data.source.HentaiStreamResolver.hentaiTags(item.originalTitle, item.title)
+                    }.getOrDefault(emptyList())
+                    val withTags = item.copy(tags = tags)
+                    if (tags.any { it.trim().lowercase() == wanted }) matched += withTags
+                }
+        }
+        return matched.withReason("Shikimori hentai · тег $tag")
     }
 
     /** «Похожие» для сидирования первых страниц: KP similars / Shikimori related по недавнему.
@@ -765,6 +976,10 @@ class FeedRepository(
         private const val SEED_PAGES = 2
         private const val TOP_GENRES = 4
         private const val SHIKI_MIN_SCORE = 7
+        /** Потолки добора жанровых срезов: мультики и хентай по тегу. */
+        private const val CARTOON_GENRE_TAKE = 20
+        private const val HENTAI_TAG_TAKE = 20
+        private const val HENTAI_TAG_PAGES = 4
 
         /** Массовые жанры-фолбэки, когда профиль интересов ещё пуст. */
         private val DEFAULT_GENRE_NAMES = setOf(

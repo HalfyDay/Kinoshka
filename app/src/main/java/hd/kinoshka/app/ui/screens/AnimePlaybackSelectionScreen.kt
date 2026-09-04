@@ -118,12 +118,7 @@ fun AnimePlaybackSelectionScreen(
         episodes: List<AnimeEpisode>,
         translations: List<FlatTranslation>,
         currentTranslationId: String
-    ) -> Unit,
-    /**
-     * Shown when nothing is found. Lets the caller offer an alternative playback path
-     * (e.g. open the WebView player for films that Kodik does not index).
-     */
-    onWebFallback: (() -> Unit)? = null
+    ) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -295,7 +290,7 @@ fun AnimePlaybackSelectionScreen(
     val allSourcesSettled = ANIME_PICKER_SOURCES.all { sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Failed }
     val isLoadingSources = sourceStates.values.any { it is SourceLoadState.Loading }
     val errorMessage = if (allSourcesSettled && !isLoadingSources && effectiveTranslations.isEmpty()) {
-        "Не удалось найти видео для этого аниме.\nДля 18+ тайтлов используйте веб-плеер."
+        "Не удалось найти видео для этого аниме."
     } else {
         null
     }
@@ -589,14 +584,6 @@ fun AnimePlaybackSelectionScreen(
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                                 ) {
                                     Text("Повторить поиск")
-                                }
-                                if (onWebFallback != null) {
-                                    OutlinedButton(onClick = {
-                                        onWebFallback.invoke()
-                                        onDismissRequest()
-                                    }) {
-                                        Text("Открыть в веб-плеере")
-                                    }
                                 }
                             }
                         }

@@ -330,7 +330,15 @@ object MovieNativeLauncher {
             }
         }.awaitAll().filterNotNull()
         val streams = ready.mapNotNull { it.second?.let { stream -> it.first.translationId to stream } }.toMap()
-        val rows = ready.map { it.first }
+        // Бейдж качества в плеере читает AnimeEpisode.maxQuality (как пикер озвучек):
+        // штампуем лучший рунг подготовленной лестницы в строки дорожек.
+        val rows = ready.map { (translation, stream) ->
+            val best = stream?.let { QUALITY_PREFERENCE_DESC.firstOrNull { rung -> it.qualities.containsKey(rung) } }
+            if (best == null) translation
+            else translation.copy(episodes = translation.episodes.map { ep ->
+                if (ep.maxQuality == null) ep.copy(maxQuality = best) else ep
+            })
+        }
         val initialRow = rows.firstOrNull { streams[it.translationId]?.url == launchStream.url }
         // CRITICAL: no prepared match → play the WINNER stream itself, never an arbitrary
         // prepared row. Falling back to the first prepared row started a stale cached Kodik

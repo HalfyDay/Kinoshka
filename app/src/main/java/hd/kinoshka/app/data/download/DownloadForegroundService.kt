@@ -126,6 +126,38 @@ object DownloadNotifications {
         }
     }
 
+    /**
+     * Отдельное завершающееся уведомление «Загрузка завершена: <название>».
+     * Не foreground-прогресс: постится один раз при переходе задачи в DONE
+     * (дедупликация — на стороне EpisodeDownloadManager через notifiedDone),
+     * тап открывает страницу «Загрузки» через EXTRA_OPEN_DOWNLOADS.
+     */
+    fun postCompleted(context: Context, key: String, title: String, episodeLabel: String) {
+        runCatching {
+            ensureChannel(context)
+            val contentIntent = PendingIntent.getActivity(
+                context,
+                key.hashCode(),
+                Intent(context, MainActivity::class.java)
+                    .putExtra(EXTRA_OPEN_DOWNLOADS, true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = Notification.Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setAutoCancel(true)
+                .setOngoing(false)
+                .setOnlyAlertOnce(false)
+                .setContentTitle("Загрузка завершена: $title")
+                .setContentText(episodeLabel)
+                .setContentIntent(contentIntent)
+                .setStyle(Notification.BigTextStyle().bigText(episodeLabel))
+                .build()
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(key.hashCode(), notification)
+        }
+    }
+
     fun build(context: Context, activeTasks: List<DownloadTaskState>): Notification {
         ensureChannel(context)
         val current = activeTasks.firstOrNull { it.phase == DownloadPhase.DOWNLOADING }

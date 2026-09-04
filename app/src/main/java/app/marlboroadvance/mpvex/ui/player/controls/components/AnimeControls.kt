@@ -39,6 +39,8 @@ import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.theme.controlColor
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.qualityBadgeLabel
+import hd.kinoshka.app.data.model.qualityRank
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
@@ -275,6 +277,8 @@ fun AnimeTranslationDropdown(
 ) {
     var showDialog by remember { mutableStateOf(false) }
     val currentTr = translations.find { it.translationId == currentTranslationId }
+    // Номер текущей серии для бейджа качества (та же логика, что в пикере озвучек).
+    val currentEpNum by viewModel.currentAnimeEpisodeNumber.collectAsState()
     var selectedSourceFilter by remember { mutableStateOf<AnimeSourceType?>(null) }
 
     // Global preference memory: dubs/sources the user launches rise to the top of the list.
@@ -457,6 +461,28 @@ fun AnimeTranslationDropdown(
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant
                                             )
+                                        }
+                                        // Бейдж качества — тот же источник, что в пикере озвучек:
+                                        // hint текущей серии, иначе максимум озвучки.
+                                        val badge = qualityBadgeLabel(
+                                            currentEpNum?.let { num ->
+                                                tr.episodes.firstOrNull { it.number == num }?.maxQuality
+                                            } ?: tr.episodes.maxByOrNull { qualityRank(it.maxQuality) }?.maxQuality
+                                        )
+                                        if (badge != null) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                                            ) {
+                                                Text(
+                                                    text = badge,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(8.dp))
                                         }
                                         if (isSelected) {
                                             Icon(

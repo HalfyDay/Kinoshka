@@ -2334,6 +2334,13 @@ object AnimeStreamResolver {
     // No torrent engine is bundled — this only resolves links, it does not download.
     // ============================================================
 
+    /** Маркер HEVC в текстовых полях раздачи (hevc/x265/h265/h.265, регистр не важен). */
+    internal fun hasHevcMarker(vararg texts: String?): Boolean {
+        val combined = texts.filterNotNull().joinToString(" ").lowercase()
+        return "hevc" in combined || "x265" in combined ||
+            "h265" in combined || "h.265" in combined
+    }
+
     data class TorrentLink(
         val quality: String,
         val size: String,
@@ -2348,7 +2355,9 @@ object AnimeStreamResolver {
         /** Дата залития («2024-01-02»). */
         val uploadedAt: String? = null,
         /** Каталог-источник раздачи («AniLiberty», «AniStar», «Rutor»). */
-        val source: String = "AniLiberty"
+        val source: String = "AniLiberty",
+        /** Видеокодек («HEVC»), если источник его сообщает; null — неизвестен. */
+        val codec: String? = null
     ) {
         /** Основная ссылка для отдачи в ОС: magnet предпочтительнее — живёт дольше .torrent. */
         val primaryUri: String? get() = magnet ?: torrentUrl
@@ -2488,6 +2497,15 @@ object AnimeStreamResolver {
 
                 if (magnet == null && torrentUrl == null) return@mapNotNull null
 
+                // Кодек явно полем отдают редко — ищем маркеры HEVC по всем текстовым
+                // полям раздачи (качество, описание, имя файла из metadata).
+                val metadataName = t.optJSONObject("metadata")?.optString("name")
+                val codec = if (hasHevcMarker(
+                        t.optString("codec"), rawQuality,
+                        t.optString("description"), metadataName
+                    )
+                ) "HEVC" else null
+
                 TorrentLink(
                     quality = quality,
                     size = size,
@@ -2568,7 +2586,8 @@ object AnimeStreamResolver {
                         magnet = magnet,
                         torrentUrl = fullTorrentUrl,
                         label = tTitle.takeIf { it.isNotBlank() },
-                        source = "Rutor"
+                        source = "Rutor",
+                        codec = if (hasHevcMarker(tTitle)) "HEVC" else null
                     )
                 )
             }

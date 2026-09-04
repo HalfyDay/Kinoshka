@@ -34,9 +34,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import hd.kinoshka.app.ui.tv.TvButton
+import hd.kinoshka.app.ui.tv.TvAnimatedBackdrop
 import hd.kinoshka.app.ui.tv.TvChip
-import hd.kinoshka.app.ui.tv.TvTheme
 import hd.kinoshka.app.ui.tv.rememberTvLayout
+import hd.kinoshka.app.ui.tv.rememberTvWindowSize
+import hd.kinoshka.app.ui.tv.TvWindowSize
 import hd.kinoshka.app.ui.tv.tvFocusable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -284,7 +286,6 @@ fun DetailsScreen(
         animeTitle: String,
         playbackSequence: PlaybackSequenceOption,
         onDismissRequest: () -> Unit,
-        onWebFallback: (() -> Unit)?,
         onStreamSelected: (
             stream: hd.kinoshka.app.data.model.AnimeMediaStream,
             episodeNumber: Int,
@@ -634,8 +635,7 @@ fun DetailsScreen(
                                 item.kinopoiskId,
                                 hd.kinoshka.app.data.model.PendingMovieRequestStore.PendingMovieLaunch(
                                     request = request,
-                                    displayTitle = filmTitle,
-                                    webFallbackUrl = item.toWatchUrl()
+                                    displayTitle = filmTitle
                                 )
                             )
                             onOpenNativePlayer.invoke(
@@ -749,8 +749,7 @@ fun DetailsScreen(
                                 item.kinopoiskId,
                                 item.nameRu ?: item.nameOriginal ?: "Аниме",
                                 playbackSequence,
-                                { activePlaybackSelection = false },
-                                { onOpenUrl(item.toWatchUrl()) }
+                                { activePlaybackSelection = false }
                             ) { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
                                 var normalizedUrl = stream.url
                                 if (normalizedUrl.startsWith("//")) {
@@ -1780,8 +1779,10 @@ fun UserProfileEditorSheet(
                 ) {
                     if (status != null) {
                         IconButton(
-                            onClick = { 
-                                status = null 
+                            onClick = {
+                                // Двухшаговое удаление: корзина только сбрасывает статус локально,
+                                // само удаление — по галочке. Иначе случайный тап стирал прогресс.
+                                status = null
                                 seasonsCount = 0
                                 episodesCount = 0
                             },
@@ -2488,19 +2489,20 @@ private fun TrailerCard(
                         .background(Color.Black.copy(alpha = 0.28f))
                 )
                 // Площадка трейлера недоступна из РФ без VPN (YouTube) — предупреждаем до тапа.
+                // Бейдж нейтральный (не красный) и справа, чтобы не спорить с Play-пилюлей.
                 if (trailer.needsVpn) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f),
                         modifier = Modifier
-                            .align(Alignment.TopStart)
+                            .align(Alignment.TopEnd)
                             .padding(8.dp)
                     ) {
                         Text(
                             text = "VPN",
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -2536,7 +2538,7 @@ private fun TrailerCard(
 }
 
 @Composable
-private fun ImagesViewerDialog(
+internal fun ImagesViewerDialog(
     images: List<FilmImageItem>,
     startIndex: Int,
     onDismiss: () -> Unit
@@ -4163,7 +4165,7 @@ private fun parseShikimoriBbCode(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CharacterDetailsSheet(
+internal fun CharacterDetailsSheet(
     characterId: Int,
     onOpenFilm: (Int) -> Unit,
     onDismiss: () -> Unit
@@ -4715,13 +4717,13 @@ private fun HentaiSourceScreen(
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
-                                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                                            color = MaterialTheme.colorScheme.surfaceContainerHighest
                                         ) {
                                             Text(
                                                 text = "VPN",
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                                 style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 fontWeight = FontWeight.Bold
                                             )
                                         }
@@ -5034,18 +5036,33 @@ private fun DetailsTvLayout(
         item.year?.let { add(it.toString()) }
         item.countries.mapNotNull { it.country }.takeIf { it.isNotEmpty() }?.let { add(it.joinToString(", ")) }
         item.filmLength?.takeIf { it > 0 }?.let { add("${it / 60} ч ${it % 60} мин") }
+        item.ratingAgeLimits?.let { add(it.replace("age", "") + "+") }
     }
-    Column(modifier = Modifier.fillMaxSize().background(TvTheme.Background)) {
-        // Верхняя строка: назад (не прокручивается).
-        Row(modifier = Modifier.fillMaxWidth().padding(start = 36.dp, end = 36.dp, top = 18.dp)) {
+    val cs = MaterialTheme.colorScheme
+    val windowSize = rememberTvWindowSize()
+    val hPad = when (windowSize) {
+        TvWindowSize.COMPACT -> 16.dp
+        TvWindowSize.MEDIUM -> 24.dp
+        TvWindowSize.EXPANDED -> 36.dp
+    }
+    // Lampa .full-start-new__left: 17em (272dp) на десктопе, на планшете — уже
+    val posterWidth = when (windowSize) {
+        TvWindowSize.COMPACT -> 160.dp
+        TvWindowSize.MEDIUM -> 200.dp
+        TvWindowSize.EXPANDED -> 256.dp
+    }
+    Box(modifier = Modifier.fillMaxSize().background(cs.background)) {
+        TvAnimatedBackdrop(imageUrl = posterUrl, modifier = Modifier.fillMaxSize())
+        Column(modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.fillMaxWidth().padding(start = hPad, end = hPad, top = 16.dp)) {
             Text(
                 text = "← Назад",
-                color = TvTheme.TextPrimary,
-                fontSize = 14.sp,
+                color = cs.onSurface,
+                style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier
-                    .tvFocusable(onClick = { onBack() }, shape = RoundedCornerShape(10.dp))
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(TvTheme.Surface)
+                    .tvFocusable(onClick = { onBack() }, shape = RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(cs.surfaceContainerHigh)
                     .padding(horizontal = 14.dp, vertical = 8.dp),
             )
         }
@@ -5053,86 +5070,62 @@ private fun DetailsTvLayout(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            contentPadding = PaddingValues(start = 36.dp, end = 36.dp, top = 18.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+            contentPadding = PaddingValues(start = hPad, end = hPad, top = 16.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
-            // Шапка: обложка слева, идентификация и действия — справа от неё.
             item(key = "header") {
-                Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-                    Box(
-                        modifier = Modifier
-                            .width(230.dp)
-                            .aspectRatio(2f / 3f)
-                            .tvFocusable(
-                                onClick = {
-                                    if (posterUrl != null) onPosterClick(posterUrl, Offset.Zero)
-                                },
-                                enabled = posterUrl != null,
-                            )
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(TvTheme.SurfaceHigh),
-                    ) {
-                        KinoshkaAsyncImage(
-                            model = posterUrl,
-                            contentDescription = item.nameRu ?: item.nameOriginal,
-                            modifier = Modifier.fillMaxSize(),
+                // Lampa .full-start-new__body: poster left 17em + right flex, на мобиле — poster hidden
+                // У нас: на планшет-портрете poster сверху, на expanded — слева
+                val isNarrow = windowSize == TvWindowSize.COMPACT
+                if (isNarrow) {
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .width(posterWidth)
+                                .aspectRatio(2f / 3f)
+                                .tvFocusable(
+                                    onClick = { if (posterUrl != null) onPosterClick(posterUrl, Offset.Zero) },
+                                    enabled = posterUrl != null,
+                                )
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(cs.surfaceContainerHigh),
+                        ) {
+                            KinoshkaAsyncImage(model = posterUrl, contentDescription = item.nameRu ?: item.nameOriginal, modifier = Modifier.fillMaxSize())
+                        }
+                        DetailsTvHeaderText(
+                            item = item, isAnime = isAnime, metaParts = metaParts,
+                            isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor, onOpenGenre = onOpenGenre
                         )
                     }
-                    Column(
-                        modifier = Modifier.weight(1f).padding(top = 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Text(
-                            text = item.nameRu ?: item.nameOriginal ?: "",
-                            color = TvTheme.TextPrimary,
-                            fontSize = 32.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        item.nameOriginal?.takeIf { it.isNotBlank() }?.let {
-                            Text(text = it, color = TvTheme.TextSecondary, fontSize = 16.sp)
-                        }
-                        val ratings = buildList {
-                            item.ratingKinopoisk?.let { add("КП %.1f".format(java.util.Locale.US, it)) }
-                            item.ratingImdb?.let { add("IMDb %.1f".format(java.util.Locale.US, it)) }
-                        }
-                        if (ratings.isNotEmpty()) {
-                            Text(
-                                text = ratings.joinToString("  •  "),
-                                color = TvTheme.Accent,
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.SemiBold,
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .width(posterWidth)
+                                .aspectRatio(2f / 3f)
+                                .tvFocusable(
+                                    onClick = {
+                                        if (posterUrl != null) onPosterClick(posterUrl, Offset.Zero)
+                                    },
+                                    enabled = posterUrl != null,
+                                )
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(cs.surfaceContainerHigh),
+                        ) {
+                            KinoshkaAsyncImage(
+                                model = posterUrl,
+                                contentDescription = item.nameRu ?: item.nameOriginal,
+                                modifier = Modifier.fillMaxSize(),
                             )
                         }
-                        if (metaParts.isNotEmpty()) {
-                            Text(
-                                text = metaParts.joinToString("  •  "),
-                                color = TvTheme.TextSecondary,
-                                fontSize = 15.sp,
+                        Column(
+                            modifier = Modifier.weight(1f).padding(top = 2.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            DetailsTvHeaderText(
+                                item = item, isAnime = isAnime, metaParts = metaParts,
+                                isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor, onOpenGenre = onOpenGenre
                             )
-                        }
-                        if (item.genres.isNotEmpty()) {
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                item.genres.mapNotNull { it.genre }.forEach { genreName ->
-                                    TvChip(
-                                        text = genreName,
-                                        selected = false,
-                                        onClick = { onOpenGenre?.invoke(genreName, isAnime) },
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            TvButton(
-                                text = "▶  Смотреть",
-                                primary = true,
-                                onClick = onWatch,
-                                enabled = isInteractive,
-                            )
-                            TvButton(text = "В список / статус", onClick = onOpenEditor)
                         }
                     }
                 }
@@ -5173,6 +5166,78 @@ private fun DetailsTvLayout(
                     MovieFullDetailsCard(item = item)
                 }
             }
+        }
+        }
+    }
+}
+
+@Composable
+private fun DetailsTvHeaderText(
+    item: FilmDetails,
+    isAnime: Boolean,
+    metaParts: List<String>,
+    isInteractive: Boolean,
+    onWatch: () -> Unit,
+    onOpenEditor: () -> Unit,
+    onOpenGenre: ((String, Boolean) -> Unit)?,
+) {
+    val cs = MaterialTheme.colorScheme
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            text = item.nameRu ?: item.nameOriginal ?: "",
+            color = cs.onBackground,
+            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        item.nameOriginal?.takeIf { it.isNotBlank() && it != item.nameRu }?.let {
+            Text(text = it, color = cs.onSurfaceVariant, style = MaterialTheme.typography.titleMedium)
+        }
+        // Lampa .full-start-new__rate-line: ratings большие, с иконками
+        val ratings = buildList {
+            item.ratingKinopoisk?.let { add("КП %.1f".format(java.util.Locale.US, it)) }
+            item.ratingImdb?.let { add("IMDb %.1f".format(java.util.Locale.US, it)) }
+            item.ratingImdb?.let { }
+        }
+        if (ratings.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                ratings.forEach { r ->
+                    Surface(shape = RoundedCornerShape(8.dp), color = cs.primaryContainer) {
+                        Text(
+                            text = r,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = cs.onPrimaryContainer,
+                        )
+                    }
+                }
+            }
+        }
+        if (metaParts.isNotEmpty()) {
+            Text(
+                text = metaParts.joinToString("  •  "),
+                color = cs.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        if (item.genres.isNotEmpty()) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item.genres.mapNotNull { it.genre }.forEach { genreName ->
+                    TvChip(
+                        text = genreName,
+                        selected = false,
+                        onClick = { onOpenGenre?.invoke(genreName, isAnime) },
+                    )
+                }
+            }
+        }
+        Spacer(androidx.compose.ui.Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            TvButton(text = "▶  Смотреть", primary = true, onClick = onWatch, enabled = isInteractive)
+            TvButton(text = "В список", onClick = onOpenEditor)
         }
     }
 }

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -35,12 +36,14 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -117,7 +120,6 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PauseCircle
@@ -134,6 +136,8 @@ import hd.kinoshka.app.data.model.ANIME_GENRE_NAME
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.outlined.List
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Feed
 import androidx.compose.material.icons.filled.MoreHoriz
@@ -154,8 +158,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
@@ -163,6 +169,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -303,8 +310,15 @@ fun HomeScreen(
     onToggleFilterSheet: (Boolean) -> Unit = {},
     onOpenCalendar: () -> Unit = {},
     onOpenFeed: () -> Unit = {},
+    // Тап по плитке новости в каруселе: открыть сам пост, а не всю ленту.
+    onOpenTopic: (Int) -> Unit = {},
     // Тестовый TikTok-фид рекомендаций: кнопка «Лента» в нижней пилюле после «Обзора»
     onOpenRecommendationsFeed: () -> Unit = {},
+    // Лента «Обзора»: ретрай подборок и кнопка «Все» на секции (см. OverviewModels).
+    onRetryOverview: () -> Unit = {},
+    onSeeAll: (OverviewSeeAll) -> Unit = {},
+    // Повторный тап «Обзора» в пилюле: сбросить поиск/фильтры, вернуть ленту секций.
+    onDiscoverReset: () -> Unit = {},
     // Глифы кнопок пилюли: Android (KinoApp) инъекцией возвращает кастомные
     // drawable-иконки (как до KMP M4), без инъекции (desktop) рисуются
     // material-фолбэки. Общий код не зависит от res-ID приложения.
@@ -397,13 +411,21 @@ fun HomeScreen(
             onInstantSearch(discoverQuery)
         }
     }
-    val isDiscoverSearchActive = section == MainSection.DISCOVER && discoverQuery.isNotEmpty()
+    // Любое состояние «внутри раздела» Обзора: текст поиска, результаты поиска,
+    // активные фильтры (жанр/сезон/топ через «Все»), открытая категория
+    // (Топ-250/Сериалы/Сейчас смотрят) или именованный раздел (discoverTitle).
+    // Назад отсюда — на главную ленту секций, а не на рабочий стол.
+    val isCategoryBrowse = state.contentType == ContentType.FILMS &&
+        (state.discoverCategory != DiscoverCategory.POPULAR || state.discoverTitle != null)
+    val isInsideDiscoverSection = section == MainSection.DISCOVER &&
+        (discoverQuery.isNotEmpty() || state.isSearchResult || state.filterState.isActive ||
+            isCategoryBrowse || state.discoverTitle != null)
     // Root screen: a single Back gesture must not kill the app. The first Back shows a hint and
     // arms a short confirm window; a second Back inside it exits. While a Discover search is
     // active this is disabled so Back closes the search instead (handler below).
     var lastBackExitAttemptAt by remember { mutableStateOf(0L) }
     val platformActions = rememberKinoPlatformActions()
-    KinoBackHandler(enabled = !isDiscoverSearchActive) {
+    KinoBackHandler(enabled = !isInsideDiscoverSection) {
         val now = System.currentTimeMillis()
         if (now - lastBackExitAttemptAt < ExitConfirmWindowMs) {
             platformActions.exitApp()
@@ -412,10 +434,10 @@ fun HomeScreen(
             platformActions.showToast("Повторите жест «Назад», чтобы закрыть приложение")
         }
     }
-    // System Back on an active Discover search: while the keyboard is still up the first Back
-    // must only hide it (drop field focus); the second Back closes the search and results
-    // (reload the discover feed) instead of exiting.
-    KinoBackHandler(enabled = isDiscoverSearchActive) {
+    // System Back внутри раздела Обзора: первый Back при поднятой клавиатуре только
+    // прячет её; следующий — гасит поиск/фильтры и возвращает ленту секций
+    // (onDiscoverReset), вместо выхода из приложения.
+    KinoBackHandler(enabled = isInsideDiscoverSection) {
         if (isSearchFocused) {
             isSearchFocused = false
             focusManager.clearFocus()
@@ -425,7 +447,7 @@ fun HomeScreen(
         focusManager.clearFocus()
         discoverQuery = ""
         onQueryChange("")
-        onDiscoverCategorySelected(state.discoverCategory)
+        onDiscoverReset()
     }
     var libraryTab by rememberSaveable { mutableStateOf(LibraryTab.WATCHING) }
     var libraryFilter by rememberSaveable { mutableStateOf(LibraryFilterType.ALL) }
@@ -435,6 +457,25 @@ fun HomeScreen(
     var libraryTopSignal by rememberSaveable { mutableStateOf(0) }
     var libraryResetCount by rememberSaveable { mutableStateOf(0) }
     var resetLibraryAfterFeed by rememberSaveable { mutableStateOf(false) }
+    // Скролл ленты «Обзора» по вкладкам Кино/Аниме: живёт на уровне экрана,
+    // поэтому уход в раздел («Все»), детали и смена вкладок позицию не сносят.
+    // Тот же приём, что libraryListStates/libraryGridStates ниже.
+    val overviewListStates = rememberSaveable(
+        saver = Saver(
+            save = { map ->
+                map.entries.sortedBy { it.key.ordinal }
+                    .map { it.value.firstVisibleItemIndex to it.value.firstVisibleItemScrollOffset }
+            },
+            restore = { saved ->
+                val restored = ContentType.entries.zip(saved) { ct, pos ->
+                    ct to LazyListState(pos.first, pos.second)
+                }.toMap()
+                ContentType.entries.associateWith { restored[it] ?: LazyListState() }
+            }
+        )
+    ) {
+        ContentType.entries.associateWith { LazyListState() }
+    }
     // Интенсивность вертикального скролла контента (0..1 по скорости) для физики
     // нижней пилюли: сетки сообщают сюда через колбэки. Горизонтальный свайп
     // вкладок и жесты без движения — не в счёт.
@@ -474,34 +515,80 @@ fun HomeScreen(
             state.items
         }
     }
+    // Заголовок открытого раздела Обзора: название секции («Все») или
+    // категория. Только для разделов — при обычном текстовом поиске через
+    // строку поиска шапки нет, поле ввода остаётся на месте.
+    val sectionHeader: String? = if (section == MainSection.DISCOVER) {
+        when {
+            state.discoverTitle != null -> state.discoverTitle
+            state.contentType == ContentType.FILMS && state.discoverCategory != DiscoverCategory.POPULAR ->
+                state.discoverCategory.title
+            else -> null
+        }
+    } else null
+    // В разделе шапка заменяет строку поиска, фильтр и переключатель
+    // Кино/Аниме. Пока набирается текст, поле ввода остаётся на месте.
+    val showSectionHeader = sectionHeader != null && !isSearchFocused
+    // Возврат из раздела на главную ленту секций: тот же сброс, что по Back.
+    val backToOverviewFeed: () -> Unit = {
+        isSearchFocused = false
+        focusManager.clearFocus()
+        discoverQuery = ""
+        onQueryChange("")
+        onDiscoverReset()
+    }
 
     // Переключение раздела нижней пилюли: сохраняем поисковый запрос текущего раздела
-    // и применяем прежнюю логику табов/категорий.
+    // и применяем прежнюю логику табов/категорий. Повторный тап по активному разделу
+    // ничего не пересоздаёт: Библиотека лишь едет к началу, Обзор гасит поиск только
+    // если он активен. Иначе каждый тап моргал полным ребилдом пейджера.
+    // Дебаунс переключения разделов: спам тапами Лента–Обзор–Библиотека плодил
+    // пересекающиеся транзишены и навигации, на слабых GPU это кончалось чёрным экраном.
+    var lastSectionSwitchMs by remember { mutableLongStateOf(0L) }
     val handleNav: (MainSection) -> Unit = { target ->
-        when (section) {
-            MainSection.LIBRARY -> libraryQuery = state.query
-            MainSection.DISCOVER -> discoverQuery = state.query
-            MainSection.MORE -> moreQuery = state.query
-        }
-        section = target
-        when (target) {
-            MainSection.LIBRARY -> {
-                libraryTab = LibraryTab.WATCHING
-                // Пересоздаём пейджер: сбрасывает вкладку и прокрутку даже при повторном
-                // тапе по «Библиотеке», когда handleNav вызывается уже из библиотеки.
-                libraryResetCount++
-                onQueryChange(libraryQuery)
-                onTabSelected(HomeTab.HISTORY)
+        if (target == section) {
+            when (target) {
+                MainSection.LIBRARY -> libraryTopSignal++
+                MainSection.DISCOVER -> {
+                    if (discoverQuery.isNotEmpty() || state.isSearchResult || state.filterState.isActive ||
+                        state.discoverCategory != DiscoverCategory.POPULAR || state.discoverTitle != null
+                    ) {
+                        discoverQuery = ""
+                        onQueryChange("")
+                        onDiscoverReset()
+                    }
+                }
+                MainSection.MORE -> Unit
             }
-            MainSection.DISCOVER -> {
-                onQueryChange(discoverQuery)
-                onTabSelected(HomeTab.CATALOG)
-                onDiscoverCategorySelected(DiscoverCategory.POPULAR)
-            }
-            MainSection.MORE -> {
-                moreQuery = ""
-                onQueryChange("")
-                onTabSelected(HomeTab.MORE)
+        } else {
+            val now = System.currentTimeMillis()
+            if (now - lastSectionSwitchMs >= 250) {
+                lastSectionSwitchMs = now
+                when (section) {
+                    MainSection.LIBRARY -> libraryQuery = state.query
+                    MainSection.DISCOVER -> discoverQuery = state.query
+                    MainSection.MORE -> moreQuery = state.query
+                }
+                section = target
+                when (target) {
+                    MainSection.LIBRARY -> {
+                        libraryTab = LibraryTab.WATCHING
+                        // Пересоздаём пейджер только при входе из другого раздела.
+                        libraryResetCount++
+                        onQueryChange(libraryQuery)
+                        onTabSelected(HomeTab.HISTORY)
+                    }
+                    MainSection.DISCOVER -> {
+                        onQueryChange(discoverQuery)
+                        onTabSelected(HomeTab.CATALOG)
+                        onDiscoverCategorySelected(DiscoverCategory.POPULAR)
+                    }
+                    MainSection.MORE -> {
+                        moreQuery = ""
+                        onQueryChange("")
+                        onTabSelected(HomeTab.MORE)
+                    }
+                }
             }
         }
     }
@@ -554,8 +641,14 @@ fun HomeScreen(
                         contentDescription = "Лента",
                         selected = false,
                         onClick = {
-                            resetLibraryAfterFeed = true
-                            onOpenRecommendationsFeed()
+                            // Та же защита от спама, что в handleNav: без неё очередь
+                            // navigate+pop+транзишены давала чёрный экран.
+                            val now = System.currentTimeMillis()
+                            if (now - lastSectionSwitchMs >= 250) {
+                                lastSectionSwitchMs = now
+                                resetLibraryAfterFeed = true
+                                onOpenRecommendationsFeed()
+                            }
                         },
                         glyph = { sel ->
                             val custom = feedGlyph
@@ -620,6 +713,13 @@ fun HomeScreen(
                             .fillMaxWidth()
                             .height(searchRowHeight)
                     ) {
+                        if (showSectionHeader && sectionHeader != null) {
+                            DiscoverSectionHeader(
+                                title = sectionHeader,
+                                onBack = backToOverviewFeed,
+                                modifier = Modifier.align(Alignment.Center)
+                            )
+                        } else {
                         SearchRow(
                             query = activeQuery,
                             avatar = state.profileAvatar,
@@ -671,6 +771,7 @@ fun HomeScreen(
                                 .fillMaxWidth()
                                 .alpha(searchRowAlpha)
                         )
+                        }
                     }
 
                     // Recent searches — overlay positioned right below the search bar
@@ -691,6 +792,45 @@ fun HomeScreen(
                                 initialPage = libraryTab.ordinal,
                                 pageCount = { LibraryTab.entries.size }
                             )
+                            // Скролл каждой вкладки живёт выше пейджера: HorizontalPager выкидывает
+                            // страницы вне вьюпорта из композиции. Обычный remember здесь не
+                            // выживает даже уход на details/{id}: NavHost снимает весь home с
+                            // композиции, и переживает это только rememberSaveable. Сносятся
+                            // состояния только явным ресетом раздела (libraryResetCount в key).
+                            val libraryListStates = rememberSaveable(
+                                saver = Saver(
+                                    save = { map ->
+                                        map.entries.sortedBy { it.key.ordinal }
+                                            .map { it.value.firstVisibleItemIndex to it.value.firstVisibleItemScrollOffset }
+                                    },
+                                    restore = { saved ->
+                                        // Несовпадение размера (обновление с другим набором вкладок) —
+                                        // недостающее добиваем свежими состояниями, а не крашем в getValue.
+                                        val restored = LibraryTab.entries.zip(saved) { tab, pos ->
+                                            tab to LazyListState(pos.first, pos.second)
+                                        }.toMap()
+                                        LibraryTab.entries.associateWith { restored[it] ?: LazyListState() }
+                                    }
+                                )
+                            ) {
+                                LibraryTab.entries.associateWith { LazyListState() }
+                            }
+                            val libraryGridStates = rememberSaveable(
+                                saver = Saver(
+                                    save = { map ->
+                                        map.entries.sortedBy { it.key.ordinal }
+                                            .map { it.value.firstVisibleItemIndex to it.value.firstVisibleItemScrollOffset }
+                                    },
+                                    restore = { saved ->
+                                        val restored = LibraryTab.entries.zip(saved) { tab, pos ->
+                                            tab to LazyGridState(pos.first, pos.second)
+                                        }.toMap()
+                                        LibraryTab.entries.associateWith { restored[it] ?: LazyGridState() }
+                                    }
+                                )
+                            ) {
+                                LibraryTab.entries.associateWith { LazyGridState() }
+                            }
 
                             LaunchedEffect(pagerState.settledPage) {
                                 libraryTab = LibraryTab.entries[pagerState.settledPage]
@@ -728,6 +868,8 @@ fun HomeScreen(
                                         onOpenFilmEditor = onOpenFilmEditor,
                                         onRemoveFromHistory = onRemoveFromHistory,
                                         metrics = libraryMetrics,
+                                        listState = libraryListStates.getValue(pageTab),
+                                        gridState = libraryGridStates.getValue(pageTab),
                                         scrollToTopSignal = libraryTopSignal,
                                         onScrollActivity = {
                                             contentScrollIntensity = it
@@ -762,6 +904,17 @@ fun HomeScreen(
                                     onLoadMore = onLoadMore,
                                     onOpenCalendar = onOpenCalendar,
                                     onOpenFeed = onOpenFeed,
+                                    onOpenTopic = onOpenTopic,
+                                    overviewSections = if (targetContentType == ContentType.ANIME) {
+                                        state.overviewAnimeSections
+                                    } else {
+                                        state.overviewFilmSections
+                                    },
+                                    overviewLoading = state.overviewLoading,
+                                    overviewError = state.overviewError,
+                                    onRetryOverview = onRetryOverview,
+                                    onSeeAll = onSeeAll,
+                                    feedListState = overviewListStates.getValue(targetContentType),
                                     onScrollActivity = {
                                         contentScrollIntensity = it
                                         // Скролл контента гасит фокус поиска и клавиатуру.
@@ -1303,12 +1456,12 @@ private fun LibraryPageGrid(
     onOpenFilmEditor: (ProgressEditorSeed) -> Unit = {},
     onRemoveFromHistory: (Int) -> Unit,
     metrics: GridMetrics,
+    listState: LazyListState,
+    gridState: LazyGridState,
     scrollToTopSignal: Int = 0,
     onScrollActivity: (Float) -> Unit = {}
 ) {
     var pendingDeleteId by remember { mutableIntStateOf(0) }
-    val listState = rememberLazyListState()
-    val gridState = rememberLazyGridState()
     // Интенсивность скролла по фактическому смещению активной сетки.
     val activeIndex = if (metrics.columns == 1) listState.firstVisibleItemIndex else gridState.firstVisibleItemIndex
     val activeOffset = if (metrics.columns == 1) listState.firstVisibleItemScrollOffset else gridState.firstVisibleItemScrollOffset
@@ -1319,8 +1472,15 @@ private fun LibraryPageGrid(
     )
     // Клик по вкладке или смена сортировки: список всегда показываем с начала. Lazy-контейнер
     // с ключами иначе «якорится» за первым видимым элементом и остаётся на старой позиции.
+    // Первый запуск эффекта (вход в раздел / возврат из деталей) пропускаем: иначе
+    // восстановленная из saveable позиция тут же сбрасывалась бы в 0.
+    var topSignalArmed by remember { mutableStateOf(false) }
     LaunchedEffect(scrollToTopSignal) {
-        if (metrics.columns == 1) listState.scrollToItem(0) else gridState.scrollToItem(0)
+        if (topSignalArmed) {
+            if (metrics.columns == 1) listState.scrollToItem(0) else gridState.scrollToItem(0)
+        } else {
+            topSignalArmed = true
+        }
     }
 
     if (items.isEmpty()) {
@@ -1468,6 +1628,15 @@ private fun DiscoverContent(
     onLoadMore: () -> Unit,
     onOpenCalendar: () -> Unit,
     onOpenFeed: () -> Unit,
+    onOpenTopic: (Int) -> Unit = {},
+    overviewSections: List<OverviewSection> = emptyList(),
+    overviewLoading: Boolean = false,
+    overviewError: String? = null,
+    onRetryOverview: () -> Unit = {},
+    onSeeAll: (OverviewSeeAll) -> Unit = {},
+    // Скролл ленты сверху (из HomeScreen): пережить уход в раздел обязано,
+    // поэтому состояние хранится выше, а не внутри ленты.
+    feedListState: LazyListState,
     onScrollActivity: (Float) -> Unit = {}
 ) {
     // Local profile snapshots for the quick progress editor: matched from the library list
@@ -1475,8 +1644,69 @@ private fun DiscoverContent(
     val libraryById = remember(state.library) {
         state.library.associateBy { it.kinopoiskId }
     }
-    val listState = rememberLazyListState()
-    val gridState = rememberLazyGridState()
+    // Режим поиска/фильтров — старая плоская сетка; иначе лента секций-каруселей.
+    // Отдельно: полноэкранная сетка категории кино (Топ-250/Сериалы через «Все»,
+    // а также «Сейчас смотрят» с discoverTitle) — её тоже нельзя подменять лентой.
+    // Категорий у аниме нет, там флаг категории игнорируется, но именованный
+    // раздел (discoverTitle) сетку показывает всегда.
+    val isSearchMode = state.isSearchResult || state.query.isNotBlank() || state.filterState.isActive
+    val isCategoryBrowse = state.contentType == ContentType.FILMS &&
+        (state.discoverCategory != DiscoverCategory.POPULAR || state.discoverTitle != null)
+    val isNamedSection = state.discoverTitle != null
+    // Витрина аниме: «Продолжить просмотр» из библиотеки (дубли каруселей
+    // вычитаем, как в VM для «Скоро выйдет»); нечего продолжать — фолбэк
+    // на «Скоро выйдет». У кино витрина без изменений («Обсуждаемое»).
+    val animeHero: Pair<List<FilmItem>, String> = remember(
+        state.library, state.overviewAnimeSections, state.overviewAnimeHero
+    ) {
+        val exclude = state.overviewAnimeSections.flatMapTo(mutableSetOf()) { s ->
+            s.items.map { it.kinopoiskId }
+        }
+        val watching = state.library
+            .filter {
+                (it.status == UserFilmStatus.WATCHING || it.status == UserFilmStatus.REWATCHING) &&
+                    it.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET &&
+                    it.kinopoiskId !in exclude
+            }
+            .sortedByDescending { it.viewedAtMillis ?: 0L }
+            .take(5)
+            .map { it.toHeroFilmItem() }
+        if (watching.isNotEmpty()) watching to "Продолжить просмотр"
+        else state.overviewAnimeHero to "Скоро выйдет"
+    }
+    if (!isSearchMode && !isCategoryBrowse && !isNamedSection && (overviewSections.isNotEmpty() || overviewLoading || overviewError != null)) {
+        OverviewFeed(
+            state = state,
+            sections = overviewSections,
+            listState = feedListState,
+            loading = overviewLoading,
+            error = overviewError,
+            metrics = metrics,
+            statusByFilmId = statusByFilmId,
+            progressByFilmId = progressByFilmId,
+            libraryById = libraryById,
+            onRetryOverview = onRetryOverview,
+            onSeeAll = onSeeAll,
+            onOpenFilm = onOpenFilm,
+            onOpenFilmEditor = onOpenFilmEditor,
+            onOpenCalendar = onOpenCalendar,
+            onOpenFeed = onOpenFeed,
+            onOpenTopic = onOpenTopic,
+            onScrollActivity = onScrollActivity,
+            heroItems = if (state.contentType == ContentType.ANIME) {
+                animeHero.first
+            } else {
+                state.overviewFilmHero
+            },
+            heroTitle = if (state.contentType == ContentType.ANIME) animeHero.second else "Обсуждаемое"
+        )
+        return
+    }
+    // Скролл сеток разделов/поиска переживает уход в детали (NavHost снимает home с
+    // композиции — выживает только rememberSaveable). Ключ — контекст сетки.
+    val gridKeyQuery = state.query.trim()
+    val listState = rememberSaveable(state.contentType, state.discoverCategory, gridKeyQuery, state.filterState, state.discoverTitle, saver = LazyListState.Saver) { LazyListState() }
+    val gridState = rememberSaveable(state.contentType, state.discoverCategory, gridKeyQuery, state.filterState, state.discoverTitle, saver = LazyGridState.Saver) { LazyGridState() }
     // Интенсивность скролла по фактическому смещению активной сетки.
     val activeIndex = if (metrics.columns == 1) listState.firstVisibleItemIndex else gridState.firstVisibleItemIndex
     val activeOffset = if (metrics.columns == 1) listState.firstVisibleItemScrollOffset else gridState.firstVisibleItemScrollOffset
@@ -1485,6 +1715,10 @@ private fun DiscoverContent(
         positionOffset = activeOffset,
         onIntensity = onScrollActivity
     )
+    // Сетка раздела/поиска. Шапка с названием живёт в верхней панели
+    // (вместо строки поиска), здесь только контент.
+    Column(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
     when {
         state.loading -> {
             if (metrics.columns == 1) {
@@ -1511,11 +1745,8 @@ private fun DiscoverContent(
                     contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    if (state.contentType == ContentType.ANIME) {
-                        item(key = "anime_header_buttons") {
-                            AnimeHeaderButtonsRow(onOpenCalendar = onOpenCalendar, onOpenFeed = onOpenFeed)
-                        }
-                    }
+                    // Кнопки Календарь/Лента живут только на главной Обзора (OverviewFeed),
+                    // в сетках разделов их нет.
                     itemsIndexed(
                         items = sourceItems,
                         key = { _, film -> film.kinopoiskId },
@@ -1553,11 +1784,8 @@ private fun DiscoverContent(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                if (state.contentType == ContentType.ANIME) {
-                    item(span = { GridItemSpan(maxLineSpan) }, key = "anime_header_buttons") {
-                        AnimeHeaderButtonsRow(onOpenCalendar = onOpenCalendar, onOpenFeed = onOpenFeed)
-                    }
-                }
+                // Кнопки Календарь/Лента живут только на главной Обзора (OverviewFeed),
+                // в сетках разделов их нет.
                 gridItemsIndexed(
                     items = sourceItems,
                     key = { _, film -> film.kinopoiskId },
@@ -1587,87 +1815,500 @@ private fun DiscoverContent(
             }
         }
     }
+    }
 }
 
+}
+
+/** Заголовок открытого раздела Обзора: кнопка назад + название + счётчик. */
 @Composable
-private fun AnimeHeaderButtonsRow(
-    onOpenCalendar: () -> Unit,
-    onOpenFeed: () -> Unit
+private fun DiscoverSectionHeader(
+    title: String,
+    onBack: () -> Unit = {},
+    modifier: Modifier = Modifier
 ) {
     Row(
-        modifier = Modifier
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
             .fillMaxWidth()
-            .padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(bottom = 8.dp)
     ) {
-        AnimeHeaderButton(
-            icon = Icons.Filled.CalendarMonth,
-            iconBadge = MaterialTheme.colorScheme.primaryContainer,
-            iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
-            label = "Календарь релизов",
-            onClick = onOpenCalendar,
-            modifier = Modifier.weight(1f)
-        )
-        AnimeHeaderButton(
-            icon = Icons.Filled.Feed,
-            iconBadge = MaterialTheme.colorScheme.tertiaryContainer,
-            iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
-            label = "Лента релизов",
-            onClick = onOpenFeed,
+        IconButton(onClick = onBack) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Назад к обзору"
+            )
+        }
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
     }
 }
 
-/** Кнопка-раздел в стиле карточек ленты: общий фон + цветной бейдж с иконкой. */
+/**
+ * Лента «Обзора»: вертикальный скролл секций-каруселей с постерами.
+ * Кино и аниме идут отдельными вкладками ([state.contentType]), но структура одна:
+ * жанры-чипы, подборки, а для аниме — календарь онгоингов и новости Shikimori.
+ */
 @Composable
-private fun AnimeHeaderButton(
-    icon: ImageVector,
-    iconBadge: Color,
-    iconTint: Color,
-    label: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+private fun OverviewFeed(
+    state: HomeUiState,
+    sections: List<OverviewSection>,
+    loading: Boolean,
+    error: String?,
+    metrics: GridMetrics,
+    statusByFilmId: Map<Int, UserFilmStatus>,
+    progressByFilmId: Map<Int, WatchProgressUi>,
+    libraryById: Map<Int, LibraryUiItem>,
+    onRetryOverview: () -> Unit,
+    onSeeAll: (OverviewSeeAll) -> Unit,
+    onOpenFilm: (FilmItem) -> Unit,
+    onOpenFilmEditor: (ProgressEditorSeed) -> Unit,
+    onOpenCalendar: () -> Unit,
+    onOpenFeed: () -> Unit,
+    onOpenTopic: (Int) -> Unit = {},
+    // Скролл ленты сверху (из HomeScreen, по вкладкам Кино/Аниме): уход
+    // в раздел, детали и смена вкладок позицию не сносят.
+    listState: LazyListState,
+    onScrollActivity: (Float) -> Unit = {},
+    // Витрина сверху: широкие карточки без дублей каруселей (пусто — не показываем).
+    heroItems: List<FilmItem> = emptyList(),
+    heroTitle: String = ""
 ) {
-    Surface(
-        modifier = modifier
-            .height(56.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 10.dp)
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = iconBadge,
-                modifier = Modifier.size(34.dp)
+    ScrollIntensityEffect(
+        positionIndex = listState.firstVisibleItemIndex,
+        positionOffset = listState.firstVisibleItemScrollOffset,
+        onIntensity = onScrollActivity
+    )
+    val isAnime = state.contentType == ContentType.ANIME
+    when {
+        // Скелетона нет сознательно: первый кадр — сразу из дискового кэша, фоном тихий
+        // рефреш. Пустой экран показываем только в самом первом запуске без кэша — тихий
+        // пустой бокс вместо мигающего шиммера.
+        loading && sections.isEmpty() && error == null -> {
+            Spacer(modifier = Modifier.fillMaxSize())
+        }
+        sections.isEmpty() -> {
+            ErrorCard(message = error ?: "Не удалось загрузить подборки.", onRetry = onRetryOverview)
+        }
+        else -> {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = iconTint,
-                        modifier = Modifier.size(18.dp)
+                if (isAnime && state.topics.isNotEmpty()) {
+                    item(key = "news_hero") {
+                        OverviewNewsHeroRow(
+                            topics = state.topics.take(5),
+                            onOpenFeed = onOpenFeed,
+                            onOpenTopic = onOpenTopic
+                        )
+                    }
+                } else if (heroItems.isNotEmpty() && heroTitle.isNotBlank()) {
+                    item(key = "hero") {
+                        OverviewHeroRow(
+                            title = heroTitle,
+                            items = heroItems,
+                            onOpenFilm = onOpenFilm
+                        )
+                    }
+                }
+                if (isAnime && state.calendarItems.isNotEmpty()) {
+                    item(key = "calendar_row") {
+                        OverviewCalendarRow(
+                            items = state.calendarItems,
+                            onOpenFilm = onOpenFilm,
+                            onOpenCalendar = onOpenCalendar
+                        )
+                    }
+                }
+                item(key = "genre_chips") {
+                    OverviewGenreChips(
+                        state = state,
+                        onSeeAll = onSeeAll
                     )
                 }
+                sections.forEach { section ->
+                    item(key = "section_${section.id}") {
+                        OverviewSectionRow(
+                            section = section,
+                            compactText = metrics.columns >= 3,
+                            statusByFilmId = statusByFilmId,
+                            progressByFilmId = progressByFilmId,
+                            libraryById = libraryById,
+                            onSeeAll = onSeeAll,
+                            onOpenFilm = onOpenFilm,
+                            onOpenFilmEditor = onOpenFilmEditor
+                        )
+                    }
+                }
             }
-            Spacer(modifier = Modifier.width(10.dp))
+        }
+    }
+}
+
+/** Чипы жанров: кино — из справочника KP, аниме — из статичного списка Shikimori. */
+@Composable
+private fun OverviewGenreChips(
+    state: HomeUiState,
+    onSeeAll: (OverviewSeeAll) -> Unit
+) {
+    val isAnime = state.contentType == ContentType.ANIME
+    val filmGenres = remember(state.availableGenres) { state.availableGenres.take(12) }
+    if (!isAnime && filmGenres.isEmpty()) return
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(horizontal = 2.dp)
+    ) {
+        if (isAnime) {
+            items(shikimoriGenres, key = { "anime_genre_${it.id}" }) { genre ->
+                OverviewGenreChip(
+                    label = genre.genre ?: "",
+                    onClick = { onSeeAll(OverviewSeeAll.AnimeGenreTarget(genre.id, genre.genre ?: "")) }
+                )
+            }
+        } else {
+            items(filmGenres, key = { "film_genre_${it.id}" }) { genre ->
+                OverviewGenreChip(
+                    label = genre.genre ?: "",
+                    onClick = { onSeeAll(OverviewSeeAll.FilmGenreTarget(genre.id, genre.genre ?: "")) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Кнопка жанра без рамки: тональная пилюля темнее фона, поэтому не сливается,
+ * но и не обведена контуром как FilterChip.
+ */
+@Composable
+private fun OverviewGenreChip(
+    label: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
+        )
+    }
+}
+
+/**
+ * Витрина сверху ленты: широкие горизонтальные карточки с картинкой (как на сайтах).
+ * Контент витрины НЕ дублирует карусели: кино — самое обсуждаемое за вычетом
+ * id каруселей, аниме — анонсы, которых нет ни в одной карусели.
+ */
+@Composable
+private fun OverviewHeroRow(
+    title: String,
+    items: List<FilmItem>,
+    onOpenFilm: (FilmItem) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 2.dp)
+        )
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(horizontal = 2.dp)
+        ) {
+            items(items.take(5), key = { "hero_${it.kinopoiskId}" }) { film ->
+                val metaText = remember(film.year, film.ratingKinopoisk) {
+                    listOfNotNull(
+                        film.year?.toString(),
+                        film.ratingKinopoisk?.let { "★ %.1f".format(java.util.Locale.US, it) }
+                    ).joinToString(" • ")
+                }
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .width(300.dp)
+                        .height(172.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable { onOpenFilm(film) }
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        KinoshkaAsyncImage(
+                            model = film.posterUrlPreview,
+                            contentDescription = film.nameRu,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        0f to Color.Transparent,
+                                        0.55f to Color.Black.copy(alpha = 0.45f),
+                                        1f to Color.Black.copy(alpha = 0.88f)
+                                    )
+                                )
+                        )
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.Bottom),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(14.dp)
+                        ) {
+                            Text(
+                                text = film.nameRu ?: film.nameOriginal ?: "Без названия",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 2,
+                                minLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (metaText.isNotBlank()) {
+                                Text(
+                                    text = metaText,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White.copy(alpha = 0.8f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Витрина «Новости» в стиле hero: широкие карточки с постером связанного
+ * тайтла. Тап по плитке — сам пост, «Все» — на страницу новостей.
+ */
+@Composable
+private fun OverviewNewsHeroRow(
+    topics: List<hd.kinoshka.app.data.model.ShikimoriTopic>,
+    onOpenFeed: () -> Unit,
+    onOpenTopic: (Int) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 2.dp)
+        ) {
             Text(
-                text = label,
-                style = MaterialTheme.typography.titleSmall,
+                text = "Новости",
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            SectionArrowButton(onClick = onOpenFeed)
+        }
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(horizontal = 2.dp)
+        ) {
+            items(topics, key = { "newshero_${it.id}" }) { topic ->
+                val linked = topic.linked
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .width(300.dp)
+                        .height(172.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable { onOpenTopic(topic.id) }
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        if (linked != null) {
+                            // Лёгкий блюр фона карточки (края прикрыты апскейлом —
+                            // blur тянет прозрачность за границы обрезанной картинки).
+                            KinoshkaAsyncImage(
+                                model = linked.posterUrl,
+                                contentDescription = linked.displayTitle,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { scaleX = 1.08f; scaleY = 1.08f }
+                                    .blur(3.dp)
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        0f to Color.Transparent,
+                                        0.55f to Color.Black.copy(alpha = 0.45f),
+                                        1f to Color.Black.copy(alpha = 0.88f)
+                                    )
+                                )
+                        )
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.Bottom),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(14.dp)
+                        ) {
+                            Text(
+                                text = topic.topicTitle?.takeIf { it.isNotBlank() } ?: "Новость",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Карусель календаря онгоингов: те же карточки, что на странице календаря
+ * (постер + бейджи эпизода и времени). Заголовок и «Все» — на страницу календаря.
+ */
+@Composable
+private fun OverviewCalendarRow(
+    items: List<hd.kinoshka.app.data.model.ShikimoriCalendarItem>,
+    onOpenFilm: (FilmItem) -> Unit,
+    onOpenCalendar: () -> Unit
+) {
+    // API отдаёт и уже вышедшие эпизоды — у них остатка нет и бейдж падал
+    // на точное время. В карусели только будущее, ближайшее — первым.
+    // Пустое будущее (сбой часов) — отсортированное как было, секция не прячется.
+    val upcoming = remember(items) {
+        val now = System.currentTimeMillis()
+        val withTime = items.mapNotNull { item ->
+            calendarEpisodeTimeMs(item.nextEpisodeAt)?.let { item to it }
+        }.sortedBy { it.second }
+        val future = withTime.filter { it.second > now }.map { it.first }
+        (if (future.isNotEmpty()) future else withTime.map { it.first }.ifEmpty { items }).take(12)
+    }
+    if (upcoming.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 2.dp)
+        ) {
+            Text(
+                text = "Календарь",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            SectionArrowButton(onClick = onOpenCalendar)
+        }
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(horizontal = 2.dp)
+        ) {
+            items(upcoming, key = { "cal_${it.anime?.id}_${it.nextEpisode}" }) { item ->
+                val anime = item.anime ?: return@items
+                HorizontalCalendarCard(
+                    item = item,
+                    onClick = { onOpenFilm(anime.toFilmItem()) },
+                    showRemainingTime = true
+                )
+            }
+        }
+    }
+}
+
+/** Стрелка «открыть раздел» вместо кнопки «Все» в шапках секций Обзора. */
+@Composable
+private fun SectionArrowButton(onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = "Открыть раздел",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** Одна карусель: заголовок + стрелка + горизонтальный ряд плакатиков 2:3. */
+@Composable
+private fun OverviewSectionRow(
+    section: OverviewSection,
+    compactText: Boolean,
+    statusByFilmId: Map<Int, UserFilmStatus>,
+    progressByFilmId: Map<Int, WatchProgressUi>,
+    libraryById: Map<Int, LibraryUiItem>,
+    onSeeAll: (OverviewSeeAll) -> Unit,
+    onOpenFilm: (FilmItem) -> Unit,
+    onOpenFilmEditor: (ProgressEditorSeed) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 2.dp)
+        ) {
+            Text(
+                text = section.title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (section.seeAll != null) {
+                SectionArrowButton(onClick = { onSeeAll(section.seeAll) })
+            }
+        }
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(horizontal = 2.dp)
+        ) {
+            items(
+                items = section.items,
+                key = { "${section.id}_${it.kinopoiskId}" },
+                contentType = { "overview_poster" }
+            ) { film ->
+                Box(modifier = Modifier.width(132.dp)) {
+                    DiscoverGridCard(
+                        film = film,
+                        compactText = compactText,
+                        status = statusByFilmId[film.kinopoiskId],
+                        watchProgress = progressByFilmId[film.kinopoiskId],
+                        onOpenFilm = onOpenFilm,
+                        fixedTitleLines = true,
+                        onLongPress = {
+                            onOpenFilmEditor(film.toProgressEditorSeed(libraryById[film.kinopoiskId]?.toEditorProfile()))
+                        }
+                    )
+                }
+            }
         }
     }
 }
@@ -1775,7 +2416,10 @@ private fun DiscoverGridCard(
     status: UserFilmStatus?,
     watchProgress: WatchProgressUi?,
     onOpenFilm: (FilmItem) -> Unit,
-    onLongPress: () -> Unit = {}
+    onLongPress: () -> Unit = {},
+    // Карусели Обзора: резервируем 2 строки под название всегда, иначе карточки
+    // с 1-строчным названием ниже ростом и весь ряд ниже «прыгает».
+    fixedTitleLines: Boolean = false
 ) {
     val titleText = remember(film.nameRu, film.nameOriginal) {
         film.nameRu ?: film.nameOriginal ?: "Без названия"
@@ -1834,11 +2478,13 @@ private fun DiscoverGridCard(
                 text = titleText,
                 style = if (compactText) MaterialTheme.typography.bodySmall else MaterialTheme.typography.titleSmall,
                 maxLines = 2,
+                minLines = if (fixedTitleLines) 2 else 1,
                 overflow = TextOverflow.Ellipsis
             )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 if (metaText.isNotBlank()) {
                     Text(
@@ -1846,7 +2492,10 @@ private fun DiscoverGridCard(
                         style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        // Без weight длинная мета («ТВ • 10/24 эп.») вытесняла чип
+                        // рейтинга за край плитки.
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                 }
                 RatingChip(rating = film.ratingKinopoisk, isAnime = isAnime)
@@ -1934,7 +2583,8 @@ private fun LibraryGridCard(
             )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 if (metaText.isNotBlank()) {
                     Text(
@@ -1942,7 +2592,8 @@ private fun LibraryGridCard(
                         style = if (compactText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                 }
                 RatingChip(rating = ratingValue, isAnime = isAnime)
@@ -2172,7 +2823,8 @@ private fun RatingChip(
         Text(
             text = "%.1f".format(Locale.US, r),
             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onSurface
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1
         )
     }
 }
@@ -2198,6 +2850,16 @@ internal fun LibraryUiItem.libraryMetaParts(): List<String> {
 /** «KP 8.1» / «★ 8.1» / «8.1» → 8.1 — для RatingChip, как у плиток Обзора. */
 internal fun LibraryUiItem.libraryRating(): Double? =
     ratingText?.replace("KP", "")?.replace("★", "")?.trim()?.toDoubleOrNull()
+
+/** Карточка витрины «Продолжить просмотр» из записи библиотеки: только витринные поля. */
+internal fun LibraryUiItem.toHeroFilmItem(): FilmItem = FilmItem(
+    kinopoiskId = kinopoiskId,
+    nameRu = title,
+    nameOriginal = null,
+    posterUrlPreview = posterUrl,
+    ratingKinopoisk = libraryRating(),
+    year = subtitle?.toIntOrNull()
+)
 
 internal fun LibraryUiItem.toWatchProgressUi(): WatchProgressUi? {
     if (type != "TV_SERIES" && type != "ANIME") return null

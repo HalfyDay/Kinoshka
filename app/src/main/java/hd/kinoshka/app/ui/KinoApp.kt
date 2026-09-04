@@ -62,10 +62,12 @@ import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.data.update.AppUpdateManager
 import hd.kinoshka.app.data.update.AppRelease
 import hd.kinoshka.app.ui.screens.DownloadsScreen
+import hd.kinoshka.app.ui.screens.DiscoverCategory
 import hd.kinoshka.app.data.update.UpdateCheckResult
 import hd.kinoshka.app.ui.screens.AboutScreen
 import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
 import hd.kinoshka.app.ui.screens.AnimeFeedScreen
+import hd.kinoshka.app.ui.screens.AnimeTopicScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.HentaiDownloadButton
 import hd.kinoshka.app.ui.screens.TitleDownloadSheet
@@ -434,7 +436,12 @@ fun KinoApp() {
                                 onRetry = vm::retryHome,
                                 onTabSelected = vm::onTabSelected,
                                 onContentTypeSelected = vm::onContentTypeSelected,
-                                onOpenFilm = { film -> navController.navigate(detailsRoute(film.kinopoiskId)) },
+                                onOpenFilm = { film ->
+                                    // Открываем тайтл прямо из места нажатия (лента, сетка раздела,
+                                    // поиск): без чистки фильтров и без прыжка на главную Обзора.
+                                    // Назад обычным pop возвращает в тот же раздел на то же место.
+                                    navController.navigate(detailsRoute(film.kinopoiskId))
+                                },
                                 onOpenHistoryFilm = { id -> navController.navigate(detailsRoute(id)) },
                                 // Long-press: instant local progress editor, no navigation.
                                 onOpenFilmEditor = { seed -> progressEditorSeed = seed },
@@ -449,7 +456,25 @@ fun KinoApp() {
                                 onToggleFilterSheet = vm::setShowFilterSheet,
                                 onOpenCalendar = { navController.navigate("anime_calendar") },
                                 onOpenFeed = { navController.navigate("anime_feed") },
-                                onOpenRecommendationsFeed = { navController.navigate("recommendations_feed") },
+                                onOpenTopic = { topicId -> navController.navigate("anime_topic/$topicId") },
+                                onOpenRecommendationsFeed = {
+                                    // Без launchSingleTop спам тапами по «Ленте» складывал в бэкстек
+                                    // N копий тяжёлого фида с плеерами — чёрный экран на телефонах.
+                                    navController.navigate("recommendations_feed") {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                onRetryOverview = vm::retryOverview,
+                                onSeeAll = vm::openOverviewSeeAll,
+                                onDiscoverReset = {
+                                    // Поиск студии поверх Новостей: Назад из результатов —
+                                    // на ленту (pop второй home-записи), а не сброс на месте.
+                                    if (vm.consumeSearchFromFeed()) {
+                                        navController.popBackStack()
+                                    } else {
+                                        vm.resetDiscover()
+                                    }
+                                },
                                 // Кастомные иконки пилюли (как до KMP M4);
                                 // общий HomeScreen без инъекции рисует material-фолбэк на desktop.
                                 feedGlyph = { sel ->
@@ -565,7 +590,14 @@ fun KinoApp() {
                                 fadeOut(animationSpec = tween(160))
                             }
                         ) {
-                            TvAdaptiveSecondary { DownloadsScreen(onBack = { navController.popBackStack() }) }
+                            TvAdaptiveSecondary {
+                                DownloadsScreen(
+                                    onBack = { navController.popBackStack() },
+                                    // Запись загрузок остаётся в стеке: Назад из деталей
+                                    // возвращается сюда обычным pop.
+                                    onOpenTitle = { id -> navController.navigate(detailsRoute(id)) }
+                                )
+                            }
                         }
                         composable(
                             route = "anime_calendar",
@@ -579,7 +611,13 @@ fun KinoApp() {
                                     calendarItems = vm.uiState.calendarItems,
                                     loading = vm.uiState.calendarLoading,
                                     onBack = { navController.popBackStack() },
-                                    onOpenAnime = { targetId -> navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)) }
+                                    onOpenAnime = { targetId ->
+                                        // Тайтл из Календаря/Ленты релизов: Назад должен
+                                        // вернуть на главную Обзора, а не в этот экран.
+                                        vm.clearDiscoverFilters()
+                                        vm.markDetailsFromOverview()
+                                        navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET))
+                                    }
                                 )
                             }
                         }
@@ -595,7 +633,87 @@ fun KinoApp() {
                                     topics = vm.uiState.topics,
                                     loading = vm.uiState.topicsLoading,
                                     onBack = { navController.popBackStack() },
-                                    onOpenAnime = { targetId -> navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)) }
+                                    onOpenAnime = { targetId ->
+                                        // Тайтл из Новостей: запись ленты остаётся в стеке,
+                                        // Назад обычным pop возвращает на неё с прокруткой.
+                                        navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET))
+                                    },
+                                    loadComments = vm::loadTopicComments,
+                                    onOpenStudio = { studioId, studioName ->
+                                        // Каталог студии — второй home поверх ленты: Назад из
+                                        // результатов возвращается на Новости (onDiscoverReset выше).
+                                        vm.searchStudio(studioId, studioName)
+                                        vm.markSearchFromFeed(studioName)
+                                        navController.navigate("home")
+                                    },
+                                    // Видео из постов играет нативный плеер, как трейлеры
+                                    // тайтлов (YouTube-поток извлекается здесь же).
+                                    onPlayVideoStream = { streamUrl, headers, title ->
+                                        activeNativePlayerArgs = NativePlayerArgs(
+                                            streamUrl,
+                                            headers,
+                                            emptyMap(),
+                                            title,
+                                            1,
+                                            "Видео",
+                                            0,
+                                            0,
+                                            "Видео",
+                                            emptyList(),
+                                            emptyList(),
+                                            "",
+                                            null,
+                                            NativePlaybackMode.ANIME
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                        composable(
+                            route = "anime_topic/{topicId}",
+                            arguments = listOf(navArgument("topicId") { type = NavType.IntType }),
+                            enterTransition = { fadeIn(animationSpec = tween(140)) },
+                            exitTransition = { fadeOut(animationSpec = tween(120)) },
+                            popEnterTransition = { fadeIn(animationSpec = tween(140)) },
+                            popExitTransition = { fadeOut(animationSpec = tween(120)) }
+                        ) { backStackEntry ->
+                            val topicId = backStackEntry.arguments?.getInt("topicId") ?: 0
+                            TvAdaptiveSecondary {
+                                AnimeTopicScreen(
+                                    topic = vm.uiState.topics.find { it.id == topicId },
+                                    onBack = { navController.popBackStack() },
+                                    onOpenAnime = { targetId ->
+                                        // Тайтл из поста: Назад возвращает в пост, затем на ленту.
+                                        navController.navigate(detailsRoute(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET))
+                                    },
+                                    loadComments = vm::loadTopicComments,
+                                    onOpenStudio = { studioId, studioName ->
+                                        // Каталог студии поверх поста: Назад — в пост,
+                                        // затем на ленту (onDiscoverReset выше).
+                                        vm.searchStudio(studioId, studioName)
+                                        vm.markSearchFromFeed(studioName)
+                                        navController.navigate("home")
+                                    },
+                                    // Видео из постов играет нативный плеер, как трейлеры
+                                    // тайтлов (YouTube-поток извлекается здесь же).
+                                    onPlayVideoStream = { streamUrl, headers, title ->
+                                        activeNativePlayerArgs = NativePlayerArgs(
+                                            streamUrl,
+                                            headers,
+                                            emptyMap(),
+                                            title,
+                                            1,
+                                            "Видео",
+                                            0,
+                                            0,
+                                            "Видео",
+                                            emptyList(),
+                                            emptyList(),
+                                            "",
+                                            null,
+                                            NativePlaybackMode.ANIME
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -606,6 +724,11 @@ fun KinoApp() {
                             popEnterTransition = { fadeIn(animationSpec = tween(160)) },
                             popExitTransition = { fadeOut(animationSpec = tween(120)) }
                         ) {
+                            // Уход с ленты гасит её фоновые джобы (сеть/декод), иначе они
+                            // продолжают долбить под входную анимацию home — чёрный экран.
+                            androidx.compose.runtime.DisposableEffect(Unit) {
+                                onDispose { feedVm.onScreenClosed() }
+                            }
                             RecommendationFeedScreen(
                                 state = feedVm.uiState,
                                 onOpened = { feedVm.onScreenOpened() },
@@ -616,6 +739,8 @@ fun KinoApp() {
                                 onItemShown = feedVm::onItemShown,
                                 onOpenDetails = { id -> navController.navigate(detailsRoute(id)) },
                                 onToggleSound = feedVm::toggleSound,
+                                onSelectGenre = feedVm::selectFeedGenre,
+                                onSurprise = feedVm::surpriseMe,
                                 onSelectHomeSection = { tab ->
                                     vm.onTabSelected(tab)
                                     navController.popBackStack()
@@ -657,9 +782,19 @@ fun KinoApp() {
                                 onSaveUserProfile = vm::saveUserProfile,
                                 onOpenUrl = { rawUrl -> navController.navigate("web?url=${Uri.encode(rawUrl)}") },
                                 onOpenFilm = { targetId -> navController.navigate(detailsRoute(targetId)) },
-                                onBack = { navController.popBackStack() },
+                                onBack = {
+                                    // Детали из контекста Обзора: возвращаемся сразу на home,
+                                    // минуя промежуточные экраны (сетка раздела, календарь,
+                                    // лента релизов). Остальные входы — обычный pop.
+                                    if (vm.consumeDetailsFromOverview()) {
+                                        navController.popBackStack("home", false)
+                                    } else {
+                                        navController.popBackStack()
+                                    }
+                                },
                                 onOpenGenre = { genreName, isAnime ->
                                     vm.searchGenre(genreName, isAnime)
+                                    vm.consumeDetailsFromOverview()
                                     navController.popBackStack("home", false)
                                 },
                                  onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
@@ -682,14 +817,13 @@ fun KinoApp() {
                                 // Платформенные слоты DetailsScreen: скачивание и выбор источника
                                 // живут в app (Android-механика), сам экран теперь общий.
                                 userStateStore = UserStateStore(LocalContext.current),
-                                animeSelectionScreen = { shikimoriId, kinopoiskId, animeTitle, sequence, onDismissRequest, onWebFallback, onStreamSelected ->
+                                animeSelectionScreen = { shikimoriId, kinopoiskId, animeTitle, sequence, onDismissRequest, onStreamSelected ->
                                     AnimePlaybackSelectionScreen(
                                         shikimoriId = shikimoriId,
                                         kinopoiskId = kinopoiskId,
                                         animeTitle = animeTitle,
                                         playbackSequence = sequence,
                                         onDismissRequest = onDismissRequest,
-                                        onWebFallback = onWebFallback,
                                         onStreamSelected = onStreamSelected
                                     )
                                 },

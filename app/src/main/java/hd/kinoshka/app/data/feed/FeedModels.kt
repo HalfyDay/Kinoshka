@@ -134,6 +134,11 @@ sealed interface FeedClipState {
 
 fun isAnimeId(id: Int): Boolean = id >= ANIME_ID_OFFSET
 
+/**
+ * Пункт sheet жанров ленты. key — id жанра справочника (KP/Shikimori) или
+ * локализованный тег хентай-каталога; интерпретация зависит от раздела.
+ */
+data class GenreOption(val key: String, val title: String)
 fun animeShikimoriId(feedItemId: Int): Int? =
     if (isAnimeId(feedItemId)) feedItemId - ANIME_ID_OFFSET else null
 

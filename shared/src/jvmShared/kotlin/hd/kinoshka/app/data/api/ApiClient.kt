@@ -17,6 +17,19 @@ object ApiClient {
     private var shikimoriApiInstance: ShikimoriApi? = null
     private const val API_CACHE_MAX_AGE_SECONDS = 3L * 24L * 60L * 60L
 
+    /**
+     * Выключатель HTTP-логов (OkHttp BASIC пишет каждую строку запроса/ответа в logcat —
+     * десятки INFO-строк на сессию). Дефолт true, приложение гасит в релизе из
+     * KinoApplication.onCreate (BuildConfig.DEBUG). Читается один раз при построении
+     * клиентов-синглтонов, которые создаются уже после onCreate.
+     */
+    @Volatile
+    var httpLoggingEnabled: Boolean = true
+
+    private fun loggingInterceptor() = HttpLoggingInterceptor().apply {
+        level = if (httpLoggingEnabled) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
+    }
+
     private fun authInterceptor(apiKey: String) = Interceptor { chain ->
         val request = chain.request().newBuilder()
             .addHeader("X-API-KEY", apiKey)
@@ -134,9 +147,7 @@ object ApiClient {
             .addInterceptor(authInterceptor(apiKey))
             .addInterceptor(rateLimitRetryInterceptor)
             .addNetworkInterceptor(responseCacheInterceptor)
-            .addInterceptor(HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BASIC
-            })
+            .addInterceptor(loggingInterceptor())
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(25, TimeUnit.SECONDS)
             .build()
@@ -149,15 +160,62 @@ object ApiClient {
             .create(KinopoiskApi::class.java)
     }
 
+    /**
+     * GET-пути Shikimori, которые безопасно кэшировать на диск (публичный каталог).
+     * Пользовательские данные (rates, whoami) и oauth — только сеть, иначе повторный
+     * старт показывал бы чужие/протухшие списки. Без этих заголовков OkHttp-выдача
+     * Shikimori не кэшировалась вообще — каждый рестарт бил ~16 запросами заново.
+     */
+    private fun shikimoriCacheMaxAge(path: String): Long? {
+        val p = path.trimStart('/')
+        return when {
+            p.startsWith("api/animes") || p == "api/genres" -> 24L * 60L * 60L
+            p == "api/calendar" || p == "api/topics" -> 15L * 60L
+            p.startsWith("api/characters") -> 24L * 60L * 60L
+            else -> null
+        }
+    }
+
     private fun buildShikimoriApi(cacheDir: File): ShikimoriApi {
         val cacheSizeBytes = 50L * 1024L * 1024L
         val cache = Cache(cacheDir.resolve("http_shikimori_cache"), cacheSizeBytes)
 
+        val shikimoriCacheInterceptor = Interceptor { chain ->
+            val request = chain.request()
+            if (!request.method.equals("GET", ignoreCase = true)) {
+                return@Interceptor chain.proceed(request)
+            }
+            val maxAge = shikimoriCacheMaxAge(request.url.encodedPath) ?: return@Interceptor chain.proceed(request)
+            val cachedRequest: Request = request.newBuilder()
+                .header("Cache-Control", "public, max-age=$maxAge")
+                .build()
+            chain.proceed(cachedRequest)
+        }
+
+        val shikimoriCacheResponseInterceptor = Interceptor { chain ->
+            val request = chain.request()
+            val response = chain.proceed(request)
+            val maxAge = if (request.method.equals("GET", ignoreCase = true)) {
+                shikimoriCacheMaxAge(request.url.encodedPath)
+            } else null
+            if (maxAge != null) {
+                response.newBuilder()
+                    .header("Cache-Control", "public, max-age=$maxAge")
+                    .removeHeader("Pragma")
+                    .build()
+            } else {
+                response
+            }
+        }
+
         val client: OkHttpClient = OkHttpClient.Builder()
             .cache(cache)
             .addInterceptor(shikimoriHeaderInterceptor)
+            .addInterceptor(shikimoriCacheInterceptor)
             .addInterceptor(shikimoriFallbackInterceptor)
             .addInterceptor(rateLimitRetryInterceptor)
+            .addNetworkInterceptor(shikimoriCacheResponseInterceptor)
+            .addInterceptor(loggingInterceptor())
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
             .build()

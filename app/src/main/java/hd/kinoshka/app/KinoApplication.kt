@@ -19,6 +19,10 @@ class KinoApplication : Application(), ImageLoaderFactory {
         // чтобы ловить даже сбои ранней инициализации.
         hd.kinoshka.app.data.diagnostics.AppDiagnostics.init(this)
 
+        // HTTP-логи OkHttp (каждая строка запроса/ответа в logcat) — только в дебаге.
+        // Должны выставиться до первого построения ApiClient-синглтонов.
+        hd.kinoshka.app.data.api.ApiClient.httpLoggingEnabled = BuildConfig.DEBUG
+
         // Initialize Koin for mpvEx
         startKoin {
             androidContext(this@KinoApplication)
