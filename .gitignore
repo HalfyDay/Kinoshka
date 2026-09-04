@@ -38,3 +38,4 @@ local.properties
 # IDE-артефакты модуля desktopApp
 /desktopApp/bin/
 .tmp_decode_token.py
+/.tmp-screens/
