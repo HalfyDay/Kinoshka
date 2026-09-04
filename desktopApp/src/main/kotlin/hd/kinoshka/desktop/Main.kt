@@ -226,6 +226,13 @@ fun main(args: Array<String>) = application {
 }
 
 private fun initialScreen(args: Array<String>, repository: FilmsRepository): Screen {
+    // Дебаг-прогон конкретного экрана: KINO_SCREEN=settings|about|calendar|feed (или первым аргументом).
+    when (flag(args)) {
+        "settings" -> return Screen.Settings
+        "about" -> return Screen.About
+        "calendar" -> return Screen.Calendar
+        "feed" -> return Screen.Feed
+    }
     if (flag(args) == "player") {
         // Для проверки реального потока нужен ВЫШЕДШИЙ фильм: у анонсов (год >= текущего)
         // Kodik ещё ничего не индексировал — резолвер честно вернёт NO_MATCHING_RESULTS.
