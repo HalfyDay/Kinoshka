@@ -2,6 +2,9 @@ package hd.kinoshka.desktop
 
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,7 +73,11 @@ fun main(args: Array<String>) = application {
         state = rememberWindowState(width = 1360.dp, height = 820.dp),
     ) {
         MaterialTheme(colorScheme = darkColorScheme()) {
-            when (val current = screen) {
+            // Surface задаёт LocalContentColor (= onBackground): без него текст вне
+            // карточек (заголовки секций и т.п.) получает чёрный по умолчанию и
+            // исчезает на тёмном фоне.
+            Surface(modifier = Modifier.fillMaxSize()) {
+                when (val current = screen) {
                 is Screen.Home -> HomeScreen(
                     state = viewModel.uiState,
                     onQueryChange = viewModel::onQueryChange,
@@ -220,6 +227,7 @@ fun main(args: Array<String>) = application {
                         }
                     )
                 }
+            }
             }
         }
     }
