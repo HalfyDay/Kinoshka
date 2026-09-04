@@ -5013,6 +5013,7 @@ private fun HentaiEpisodeRow(
  * теле DetailsScreen — сюда приходят только готовые колбэки.
  */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun DetailsTvLayout(
     item: FilmDetails,
     state: DetailsUiState,
@@ -5034,114 +5035,112 @@ private fun DetailsTvLayout(
         item.countries.mapNotNull { it.country }.takeIf { it.isNotEmpty() }?.let { add(it.joinToString(", ")) }
         item.filmLength?.takeIf { it > 0 }?.let { add("${it / 60} ч ${it % 60} мин") }
     }
-    Row(modifier = Modifier.fillMaxSize().background(TvTheme.Background)) {
-        // Левая панель: постер + идентификация + действия.
-        Column(
-            modifier = Modifier
-                .width(400.dp)
-                .fillMaxHeight()
-                .verticalScroll(rememberScrollState())
-                .padding(start = 36.dp, end = 20.dp, top = 20.dp, bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "← Назад",
-                    color = TvTheme.TextPrimary,
-                    fontSize = 14.sp,
-                    modifier = Modifier
-                        .tvFocusable(onClick = { onBack() }, shape = RoundedCornerShape(10.dp))
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(TvTheme.Surface)
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .width(280.dp)
-                    .aspectRatio(2f / 3f)
-                    .tvFocusable(
-                        onClick = {
-                            if (posterUrl != null) onPosterClick(posterUrl, Offset.Zero)
-                        },
-                        enabled = posterUrl != null,
-                    )
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(TvTheme.SurfaceHigh),
-            ) {
-                KinoshkaAsyncImage(
-                    model = posterUrl,
-                    contentDescription = item.nameRu ?: item.nameOriginal,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
+    Column(modifier = Modifier.fillMaxSize().background(TvTheme.Background)) {
+        // Верхняя строка: назад (не прокручивается).
+        Row(modifier = Modifier.fillMaxWidth().padding(start = 36.dp, end = 36.dp, top = 18.dp)) {
             Text(
-                text = item.nameRu ?: item.nameOriginal ?: "",
+                text = "← Назад",
                 color = TvTheme.TextPrimary,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                modifier = Modifier
+                    .tvFocusable(onClick = { onBack() }, shape = RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(TvTheme.Surface)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
             )
-            item.nameOriginal?.takeIf { it.isNotBlank() }?.let {
-                Text(text = it, color = TvTheme.TextSecondary, fontSize = 15.sp)
-            }
-            val ratings = buildList {
-                item.ratingKinopoisk?.let { add("КП %.1f".format(java.util.Locale.US, it)) }
-                item.ratingImdb?.let { add("IMDb %.1f".format(java.util.Locale.US, it)) }
-            }
-            if (ratings.isNotEmpty()) {
-                Text(
-                    text = ratings.joinToString("  •  "),
-                    color = TvTheme.Accent,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            if (metaParts.isNotEmpty()) {
-                Text(
-                    text = metaParts.joinToString("  •  "),
-                    color = TvTheme.TextSecondary,
-                    fontSize = 14.sp,
-                )
-            }
-            if (item.genres.isNotEmpty()) {
-                // Жанры: обёртка по строкам (TvChip фиксированной логики), клик — переход в жанр.
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    item.genres.mapNotNull { it.genre }.chunked(3).forEach { rowGenres ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            rowGenres.forEach { genreName ->
-                                TvChip(
-                                    text = genreName,
-                                    selected = false,
-                                    onClick = { onOpenGenre?.invoke(genreName, isAnime) },
-                                )
+        }
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(start = 36.dp, end = 36.dp, top = 18.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
+        ) {
+            // Шапка: обложка слева, идентификация и действия — справа от неё.
+            item(key = "header") {
+                Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .width(230.dp)
+                            .aspectRatio(2f / 3f)
+                            .tvFocusable(
+                                onClick = {
+                                    if (posterUrl != null) onPosterClick(posterUrl, Offset.Zero)
+                                },
+                                enabled = posterUrl != null,
+                            )
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(TvTheme.SurfaceHigh),
+                    ) {
+                        KinoshkaAsyncImage(
+                            model = posterUrl,
+                            contentDescription = item.nameRu ?: item.nameOriginal,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    Column(
+                        modifier = Modifier.weight(1f).padding(top = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = item.nameRu ?: item.nameOriginal ?: "",
+                            color = TvTheme.TextPrimary,
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        item.nameOriginal?.takeIf { it.isNotBlank() }?.let {
+                            Text(text = it, color = TvTheme.TextSecondary, fontSize = 16.sp)
+                        }
+                        val ratings = buildList {
+                            item.ratingKinopoisk?.let { add("КП %.1f".format(java.util.Locale.US, it)) }
+                            item.ratingImdb?.let { add("IMDb %.1f".format(java.util.Locale.US, it)) }
+                        }
+                        if (ratings.isNotEmpty()) {
+                            Text(
+                                text = ratings.joinToString("  •  "),
+                                color = TvTheme.Accent,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        if (metaParts.isNotEmpty()) {
+                            Text(
+                                text = metaParts.joinToString("  •  "),
+                                color = TvTheme.TextSecondary,
+                                fontSize = 15.sp,
+                            )
+                        }
+                        if (item.genres.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                item.genres.mapNotNull { it.genre }.forEach { genreName ->
+                                    TvChip(
+                                        text = genreName,
+                                        selected = false,
+                                        onClick = { onOpenGenre?.invoke(genreName, isAnime) },
+                                    )
+                                }
                             }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            TvButton(
+                                text = "▶  Смотреть",
+                                primary = true,
+                                onClick = onWatch,
+                                enabled = isInteractive,
+                            )
+                            TvButton(text = "В список / статус", onClick = onOpenEditor)
                         }
                     }
                 }
             }
-            Spacer(Modifier.height(4.dp))
-            TvButton(
-                text = "▶  Смотреть",
-                primary = true,
-                onClick = onWatch,
-                enabled = isInteractive,
-            )
-            TvButton(text = "В список / статус", onClick = onOpenEditor)
-        }
-        // Правая панель: контент.
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight(),
-            contentPadding = PaddingValues(start = 4.dp, end = 36.dp, top = 20.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
-        ) {
             val description = item.description ?: item.shortDescription
             if (!description.isNullOrBlank()) {
                 item(key = "description") {
-                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        MovieExpandableDescription(description = description)
-                    }
+                    MovieExpandableDescription(description = description)
                 }
             }
             item(key = "images") {
@@ -5155,9 +5154,7 @@ private fun DetailsTvLayout(
             }
             if (state.seasons.isNotEmpty()) {
                 item(key = "seasons") {
-                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        SeasonsCard(state.seasons)
-                    }
+                    SeasonsCard(state.seasons)
                 }
             }
             if (state.relations.isNotEmpty()) {
@@ -5170,12 +5167,10 @@ private fun DetailsTvLayout(
                 }
             }
             item(key = "details") {
-                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    if (isAnime) {
-                        AnimeFullDetailsCard(anime = state.animeDetails, item = item)
-                    } else {
-                        MovieFullDetailsCard(item = item)
-                    }
+                if (isAnime) {
+                    AnimeFullDetailsCard(anime = state.animeDetails, item = item)
+                } else {
+                    MovieFullDetailsCard(item = item)
                 }
             }
         }
