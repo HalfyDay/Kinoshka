@@ -24,9 +24,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -160,6 +161,7 @@ fun DownloadsScreen(
                         },
                         progress = task.progressPercent?.let { it / 100f }
                             .takeIf { task.phase == DownloadPhase.DOWNLOADING },
+                        downloading = task.phase == DownloadPhase.DOWNLOADING,
                         failed = task.phase == DownloadPhase.FAILED,
                         onCancel = { EpisodeDownloadManager.cancel(task.key) },
                         onRetry = { EpisodeDownloadManager.retry(task.key) }
@@ -174,7 +176,7 @@ fun DownloadsScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Icon(
-                            Icons.Default.DownloadDone,
+                            Icons.Rounded.DownloadDone,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.size(56.dp)
@@ -342,19 +344,45 @@ private fun ActiveDownloadRow(
     title: String,
     subtitle: String,
     progress: Float?,
+    downloading: Boolean,
     failed: Boolean,
     onCancel: () -> Unit,
     onRetry: () -> Unit
 ) {
+    // Та же карточка, что у скачанной серии: круг play слева, тексты, действия
+    // справа; прогресс — тонкой полосой снизу. Отличие только в иконке круга
+    // (загрузка вместо play) и цвете подложки прогресса.
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 3.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (downloading && progress == null) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    } else {
+                        Icon(
+                            Icons.Rounded.Download,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = title,
@@ -381,6 +409,7 @@ private fun ActiveDownloadRow(
                 }
             }
             if (progress != null) {
+                Spacer(modifier = Modifier.height(6.dp))
                 LinearProgressIndicator(
                     progress = { progress },
                     modifier = Modifier.fillMaxWidth().height(4.dp)

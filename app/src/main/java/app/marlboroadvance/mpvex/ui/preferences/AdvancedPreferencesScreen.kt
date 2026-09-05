@@ -98,7 +98,7 @@ object AdvancedPreferencesScreen : Screen {
               onFailure = { error ->
                 Toast.makeText(
                   context,
-                  "Export failed: ${error.message}",
+                  "Ошибка экспорта: ${error.message}",
                   Toast.LENGTH_LONG,
                 ).show()
               },
@@ -122,7 +122,7 @@ object AdvancedPreferencesScreen : Screen {
               onFailure = { error ->
                 Toast.makeText(
                   context,
-                  "Import failed: ${error.message}",
+                  "Ошибка импорта: ${error.message}",
                   Toast.LENGTH_LONG,
                 ).show()
               },
@@ -135,7 +135,7 @@ object AdvancedPreferencesScreen : Screen {
     if (showExportDialog && exportStats != null) {
       AlertDialog(
         onDismissRequest = { showExportDialog = false },
-        title = { Text("Export Complete") },
+        title = { Text("Экспорт завершён") },
         text = {
           Column(
             modifier = Modifier
@@ -143,13 +143,13 @@ object AdvancedPreferencesScreen : Screen {
               .verticalScroll(rememberScrollState()),
           ) {
             Text(
-              "Successfully exported ${exportStats?.totalExported} items!\n\n"
+              "Экспортировано элементов: ${exportStats?.totalExported}!\n\n"
             )
           }
         },
         confirmButton = {
           TextButton(onClick = { showExportDialog = false }) {
-            Text("OK")
+            Text("ОК")
           }
         },
       )
@@ -159,18 +159,18 @@ object AdvancedPreferencesScreen : Screen {
     if (showImportDialog && importStats != null) {
       AlertDialog(
         onDismissRequest = { showImportDialog = false },
-        title = { Text("Import Complete") },
+        title = { Text("Импорт завершён") },
         text = {
           Text(
             "Successfully imported: ${importStats?.imported}\n" +
               "Failed: ${importStats?.failed}\n" +
               "Version: ${importStats?.version}\n\n" +
-              "Please restart the app for all changes to take effect.",
+              "Перезапустите приложение, чтобы изменения вступили в силу.",
           )
         },
         confirmButton = {
           TextButton(onClick = { showImportDialog = false }) {
-            Text("OK")
+            Text("ОК")
           }
         },
       )
@@ -232,7 +232,7 @@ object AdvancedPreferencesScreen : Screen {
                     tree.createFile("application/octet-stream", "mpv.conf")
                   }
                   withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "MPV directory ready ✓", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Папка mpv готова ✓", Toast.LENGTH_SHORT).show()
                   }
                 }
               }.onFailure { e ->
@@ -248,16 +248,16 @@ object AdvancedPreferencesScreen : Screen {
         ) {
           // Backup & Restore Section
           item {
-            PreferenceSectionHeader(title = "Backup & Restore")
+            PreferenceSectionHeader(title = "Резервные копии")
           }
           
           item {
             PreferenceCard {
               Preference(
-                title = { Text(text = "Export Settings") },
+                title = { Text(text = stringResource(R.string.pref_export_settings_title)) },
                 summary = { 
                   Text(
-                    text = "Export settings to an XML file",
+                    text = stringResource(R.string.pref_export_settings_summary),
                     color = MaterialTheme.colorScheme.outline,
                   ) 
                 },
@@ -276,10 +276,10 @@ object AdvancedPreferencesScreen : Screen {
               PreferenceDivider()
               
               Preference(
-                title = { Text(text = "Import Settings") },
+                title = { Text(text = stringResource(R.string.pref_import_settings_title)) },
                 summary = { 
                   Text(
-                    text = "Import settings from an XML file",
+                    text = stringResource(R.string.pref_import_settings_summary),
                     color = MaterialTheme.colorScheme.outline,
                   ) 
                 },
@@ -299,7 +299,7 @@ object AdvancedPreferencesScreen : Screen {
           
           // MPV Configuration Section
           item {
-            PreferenceSectionHeader(title = "MPV Configuration")
+            PreferenceSectionHeader(title = "Конфигурация mpv")
           }
           
           item {
@@ -400,7 +400,7 @@ object AdvancedPreferencesScreen : Screen {
                     )
                   } else {
                     Text(
-                      "Tap to edit configuration",
+                      "Нажмите, чтобы редактировать",
                       color = MaterialTheme.colorScheme.outline,
                     )
                   }
@@ -423,7 +423,7 @@ object AdvancedPreferencesScreen : Screen {
                     )
                   } else {
                     Text(
-                      "Tap to edit configuration",
+                      "Нажмите, чтобы редактировать",
                       color = MaterialTheme.colorScheme.outline,
                     )
                   }
@@ -438,7 +438,7 @@ object AdvancedPreferencesScreen : Screen {
           // Scripts Section
           // History Section
           item {
-            PreferenceSectionHeader(title = "History")
+            PreferenceSectionHeader(title = "История")
           }
           
           item {
@@ -491,7 +491,7 @@ object AdvancedPreferencesScreen : Screen {
                           Toast
                             .makeText(
                               context,
-                              "Failed to clear: ${error.message}",
+                              "Не удалось очистить: ${error.message}",
                               Toast.LENGTH_LONG,
                             ).show()
                         }
@@ -506,7 +506,7 @@ object AdvancedPreferencesScreen : Screen {
           
           // Cache Section
           item {
-            PreferenceSectionHeader(title = "Cache")
+            PreferenceSectionHeader(title = "Кэш")
           }
           
           item {
@@ -516,10 +516,10 @@ object AdvancedPreferencesScreen : Screen {
               val thumbnailRepository = koinInject<ThumbnailRepository>()
               
               Preference(
-                title = { Text(text = "Clear config cache") },
+                title = { Text(text = stringResource(R.string.pref_clear_config_cache_title)) },
                 summary = { 
                   Text(
-                    text = "Clear the cached mpv.conf settings",
+                    text = stringResource(R.string.pref_clear_config_cache_summary),
                     color = MaterialTheme.colorScheme.outline,
                   ) 
                 },
@@ -534,7 +534,7 @@ object AdvancedPreferencesScreen : Screen {
                       Toast
                         .makeText(
                           context,
-                          "Config cache cleared",
+                          "Кэш конфигурации очищен",
                           Toast.LENGTH_SHORT,
                         ).show()
                     }
@@ -545,10 +545,10 @@ object AdvancedPreferencesScreen : Screen {
               PreferenceDivider()
 
               Preference(
-                title = { Text(text = "Clear thumbnail cache") },
+                title = { Text(text = stringResource(R.string.pref_clear_thumbnail_cache_title)) },
                 summary = {
                   Text(
-                    text = "Delete all cached video thumbnails (will regenerate as you browse folders)",
+                    text = stringResource(R.string.pref_clear_thumbnail_cache_summary),
                     color = MaterialTheme.colorScheme.outline,
                   )
                 },
@@ -557,8 +557,8 @@ object AdvancedPreferencesScreen : Screen {
 
               if (isClearThumbsConfirmShown) {
                 ConfirmDialog(
-                  title = "Clear thumbnail cache?",
-                  subtitle = "This will delete cached thumbnails from storage and memory.",
+                  title = "Очистить кэш миниатюр?",
+                  subtitle = "Кэшированные миниатюры будут удалены из хранилища и памяти.",
                   onConfirm = {
                     scope.launch(Dispatchers.IO) {
                       runCatching {
@@ -566,12 +566,12 @@ object AdvancedPreferencesScreen : Screen {
                       }.onSuccess {
                         withContext(Dispatchers.Main) {
                           isClearThumbsConfirmShown = false
-                          Toast.makeText(context, "Thumbnail cache cleared", Toast.LENGTH_SHORT).show()
+                          Toast.makeText(context, "Кэш миниатюр очищен", Toast.LENGTH_SHORT).show()
                         }
                       }.onFailure { error ->
                         withContext(Dispatchers.Main) {
                           isClearThumbsConfirmShown = false
-                          Toast.makeText(context, "Failed to clear: ${error.message}", Toast.LENGTH_LONG).show()
+                          Toast.makeText(context, "Не удалось очистить: ${error.message}", Toast.LENGTH_LONG).show()
                         }
                       }
                     }
@@ -586,7 +586,7 @@ object AdvancedPreferencesScreen : Screen {
                 title = { Text(text = stringResource(id = R.string.pref_advanced_clear_fonts_cache)) },
                 summary = { 
                   Text(
-                    text = "Remove all cached subtitle fonts",
+                    text = "Удалить все кэшированные шрифты субтитров",
                     color = MaterialTheme.colorScheme.outline,
                   ) 
                 },
@@ -621,7 +621,7 @@ object AdvancedPreferencesScreen : Screen {
           
           // Logging Section
           item {
-            PreferenceSectionHeader(title = "Logging")
+            PreferenceSectionHeader(title = "Логи")
           }
           
           item {

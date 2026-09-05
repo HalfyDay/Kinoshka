@@ -70,7 +70,9 @@ fun SettingsScreen(
     onDiscoverTileSizeSelected: (FilmTileSize) -> Unit,
     onLibraryTileSizeSelected: (FilmTileSize) -> Unit,
     onShowFpsCounterChanged: (Boolean) -> Unit,
-    showDebugSettings: Boolean = false
+    showDebugSettings: Boolean = false,
+    // Настройки плеера mpvEx есть только на Android: их UI живёт в app-модуле, desktop-плеер их не читает.
+    onOpenPlayerSettings: (() -> Unit)? = null
 ) {
     var showThemePicker by remember { mutableStateOf(false) }
     var showDiscoverTileSizePicker by remember { mutableStateOf(false) }
@@ -125,6 +127,13 @@ fun SettingsScreen(
                         value = selectedPlayerMode.displayName,
                         onClick = { showPlayerModePicker = true }
                     )
+                    if (onOpenPlayerSettings != null) {
+                        SettingsSelectRow(
+                            title = "Настройки плеера mpvEx",
+                            value = "Скорость, жесты, субтитры, декодер, сброс",
+                            onClick = onOpenPlayerSettings
+                        )
+                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),

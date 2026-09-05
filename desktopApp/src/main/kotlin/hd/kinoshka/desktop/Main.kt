@@ -1,16 +1,15 @@
 package hd.kinoshka.desktop
 
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
@@ -28,7 +27,9 @@ import hd.kinoshka.app.ui.screens.AnimeFeedScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.FilmsViewModel
 import hd.kinoshka.app.ui.screens.SettingsScreen
+import hd.kinoshka.app.ui.tv.LocalKeyboardNavigation
 import hd.kinoshka.app.ui.tv.TvSecondaryContainer
+import hd.kinoshka.app.ui.tv.inputModeTracker
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Properties
@@ -37,7 +38,7 @@ import java.util.Properties
 const val MAIN_WINDOW_TITLE = "Kino Desktop"
 
 /** Версия desktop-сборки для экрана «О приложении». */
-const val DESKTOP_VERSION = "desktop (TV UI)"
+const val DESKTOP_VERSION = "desktop"
 
 sealed interface Screen {
     data object Home : Screen
@@ -45,21 +46,28 @@ sealed interface Screen {
     data object About : Screen
     data object Calendar : Screen
     data object Feed : Screen
+    data object Profile : Screen
+    data object Downloads : Screen
     data class Details(val film: FilmItem) : Screen
-    data class Player(val args: PlayerLaunchArgs) : Screen
 }
 
 fun main(args: Array<String>) = application {
     val repository = remember { buildRepository() }
-    // Общий FilmsViewModel (shared): тот же экран, что и на телефоне.
+    // Общий FilmsViewModel (shared): та же модель состояния, что и на телефоне.
     val userStateStore = remember { UserStateStoreBase(KinoPrefs.createDefault()) }
     val viewModel = remember { buildViewModel(repository, userStateStore) }
     val scope = rememberCoroutineScope()
-    var screen by remember { mutableStateOf(initialScreen(args, repository)) }
+    val (initial, initialPlayer) = remember { initialScreenAndPlayer(args, repository) }
+    var screen by remember { mutableStateOf(initial) }
+    // Плеер открывается ПОВЕРХ текущего экрана в собственном окне: главное окно
+    // сохраняет состояние (детали/главную) и показывается снова после закрытия.
+    var playerArgs by remember { mutableStateOf(initialPlayer) }
     // Куда возвращаться из деталей: открыто из Новостей — назад на ленту.
     var detailsReturn by remember { mutableStateOf<Screen>(Screen.Home) }
     // Скролл ленты: живёт выше переключения screen, уход в детали позицию не сносит.
     val feedListState = remember { LazyListState() }
+    // Рамка фокуса только для клавиатуры/пульта: стрелки включают режим, мышь гасит.
+    val keyboardNavigation = remember { mutableStateOf(false) }
 
     fun openDetailsById(targetId: Int) {
         scope.launch {
@@ -77,180 +85,203 @@ fun main(args: Array<String>) = application {
         title = MAIN_WINDOW_TITLE,
         state = windowState,
     ) {
-        // Lampa-тёмная палитра (#1D1F20) через Material3-токены: фон/поверхности нейтральные,
-        // текст белый/серый — как на скринах "Главная - TMDB".
-        val lampaDark = darkColorScheme(
-            background = androidx.compose.ui.graphics.Color(0xFF1D1F20),
-            surface = androidx.compose.ui.graphics.Color(0xFF1D1F20),
-            surfaceVariant = androidx.compose.ui.graphics.Color(0xFF242628),
-            surfaceContainer = androidx.compose.ui.graphics.Color(0xFF242628),
-            surfaceContainerHigh = androidx.compose.ui.graphics.Color(0xFF2A2C2D),
-            onBackground = androidx.compose.ui.graphics.Color.White,
-            onSurface = androidx.compose.ui.graphics.Color.White,
-            onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF9E9E9E),
-        )
-        MaterialTheme(colorScheme = lampaDark) {
+        KinoDesktopTheme(themeMode = viewModel.uiState.themeMode) {
             // Surface задаёт LocalContentColor (= onBackground): без него текст вне
-            // карточек (заголовки секций и т.п.) получает чёрный по умолчанию и
-            // исчезает на тёмном фоне.
-            Surface(modifier = Modifier.fillMaxSize()) {
-                var drawerOpen by remember { mutableStateOf(false) }
-                when (val current = screen) {
-                is Screen.Home -> PcLampaOverview(
-                    state = viewModel.uiState,
-                    onOpenFilm = { film ->
-                        detailsReturn = Screen.Home
-                        screen = Screen.Details(film)
-                    },
-                    drawerOpen = drawerOpen,
-                    onMenuToggle = { drawerOpen = !drawerOpen },
-                    isFullscreen = windowState.placement == WindowPlacement.Fullscreen,
-                    onBack = { screen = Screen.Home },
-                    onFullscreenToggle = {
-                        windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
-                            WindowPlacement.Floating
-                        } else {
-                            WindowPlacement.Fullscreen
-                        }
-                    },
-                    onOpenSettings = { screen = Screen.Settings },
-                    onOpenAbout = { screen = Screen.About },
-                    onOpenFeed = { screen = Screen.Feed },
-                    onOpenCalendar = { screen = Screen.Calendar },
-                    onQueryChange = viewModel::onQueryChange,
-                    onSubmitSearch = viewModel::submitSearch,
-                    onRetry = viewModel::retryHome,
-                    onLoadMore = viewModel::loadMore,
-                )
-                is Screen.Details -> DetailsScreen(
-                    filmId = current.film.kinopoiskId,
-                    state = viewModel.detailsState,
-                    load = viewModel::loadDetails,
-                    onWatch = viewModel::onWatch,
-                    onSaveUserProfile = viewModel::saveUserProfile,
-                    onOpenUrl = ::openInBrowser,
-                    onOpenFilm = { targetId ->
-                        // Детали догружаются по kp-Id, экран сам подтянет данные.
-                        scope.launch {
-                            runCatching { repository.details(targetId) }.onSuccess { d ->
-                                screen = Screen.Details(
-                                    FilmItem(
-                                        d.kinopoiskId, d.nameRu, d.nameOriginal,
-                                        d.posterUrlPreview, d.ratingKinopoisk, d.year
-                                    )
-                                )
-                            }
-                        }
-                    },
-                    onBack = { screen = detailsReturn },
-                    // Слоты скачивания/выбора источника — null; нативный плеер: общий
-                    // DetailsScreen передаёт полный payload, mpv играет его на ПК.
-                    onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
-                        screen = Screen.Player(
-                            PlayerLaunchArgs(
-                                streamUrl = streamUrl,
-                                headers = headers,
-                                qualities = qualities,
-                                title = title,
-                                episodeNumber = epNum,
-                                shikimoriId = shikimoriId,
-                                kinopoiskId = kinopoiskId,
-                                sourceType = srcType,
-                                episodes = episodes,
-                                translations = translations,
-                                currentTranslationId = trId,
-                                seriesContext = seriesContext
-                            )
+            // карточек получает чёрный по умолчанию и исчезает на тёмном фоне.
+            CompositionLocalProvider(LocalKeyboardNavigation provides keyboardNavigation.value) {
+                Surface(modifier = Modifier.fillMaxSize().inputModeTracker(keyboardNavigation)) {
+                    // KINO_DRAWER=1 — дебаг: боковое меню сразу открыто (скриншот-проверка).
+                    var drawerOpen by remember { mutableStateOf(System.getenv("KINO_DRAWER") == "1") }
+                    when (val current = screen) {
+                        is Screen.Home -> PcLampaOverview(
+                            state = viewModel.uiState,
+                            onOpenFilm = { film ->
+                                detailsReturn = Screen.Home
+                                screen = Screen.Details(film)
+                            },
+                            onOpenHistoryFilm = { targetId ->
+                                detailsReturn = Screen.Home
+                                openDetailsById(targetId)
+                            },
+                            drawerOpen = drawerOpen,
+                            onMenuToggle = { drawerOpen = !drawerOpen },
+                            isFullscreen = windowState.placement == WindowPlacement.Fullscreen,
+                            onBack = { screen = Screen.Home },
+                            onFullscreenToggle = {
+                                windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
+                                    WindowPlacement.Floating
+                                } else {
+                                    WindowPlacement.Fullscreen
+                                }
+                            },
+                            onOpenSettings = { screen = Screen.Settings },
+                            onOpenAbout = { screen = Screen.About },
+                            onOpenFeed = { screen = Screen.Feed },
+                            onOpenCalendar = { screen = Screen.Calendar },
+                            onOpenDownloads = { screen = Screen.Downloads },
+                            onOpenProfile = { screen = Screen.Profile },
+                            onQueryChange = viewModel::onQueryChange,
+                            onSubmitSearch = viewModel::submitSearch,
+                            onContentTypeSelected = viewModel::onContentTypeSelected,
+                            onDiscoverCategorySelected = viewModel::onDiscoverCategorySelected,
+                            onDiscoverReset = viewModel::resetDiscover,
+                            onSearchGenre = { name, isAnime, title -> viewModel.searchGenre(name, isAnime, title) },
+                            onRetry = viewModel::retryHome,
+                            onLoadMore = viewModel::loadMore,
+                            onOpenFilmEditor = {},
+                            onRemoveFromHistory = viewModel::removeFromHistory,
+                            onUpdateFilters = viewModel::updateFilters,
+                            onToggleFilterSheet = viewModel::setShowFilterSheet,
+                            onOpenTopic = { screen = Screen.Feed },
+                            onRetryOverview = viewModel::retryOverview,
+                            onSeeAll = viewModel::openOverviewSeeAll,
                         )
-                    },
-                    userStateStore = userStateStore
-                )
-                is Screen.Player -> PlayerScreen(
-                    args = current.args,
-                    userStateStore = userStateStore,
-                    onBack = {
-                        screen = if (current.args.kinopoiskId > 0) {
-                            Screen.Details(
-                                FilmItem(current.args.kinopoiskId, current.args.title, null, null, null, null)
+                        is Screen.Details -> DetailsScreen(
+                            filmId = current.film.kinopoiskId,
+                            state = viewModel.detailsState,
+                            load = viewModel::loadDetails,
+                            onWatch = viewModel::onWatch,
+                            onSaveUserProfile = viewModel::saveUserProfile,
+                            onOpenUrl = ::openInBrowser,
+                            onOpenFilm = { targetId ->
+                                // Детали догружаются по kp-Id, экран сам подтянет данные.
+                                scope.launch {
+                                    runCatching { repository.details(targetId) }.onSuccess { d ->
+                                        screen = Screen.Details(
+                                            FilmItem(
+                                                d.kinopoiskId, d.nameRu, d.nameOriginal,
+                                                d.posterUrlPreview, d.ratingKinopoisk, d.year
+                                            )
+                                        )
+                                    }
+                                }
+                            },
+                            onBack = { screen = detailsReturn },
+                            // Слоты скачивания/выбора источника — null; нативный плеер: общий
+                            // DetailsScreen передаёт полный payload, mpv играет его на ПК.
+                            onOpenNativePlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
+                                playerArgs = PlayerLaunchArgs(
+                                    streamUrl = streamUrl,
+                                    headers = headers,
+                                    qualities = qualities,
+                                    title = title,
+                                    episodeNumber = epNum,
+                                    shikimoriId = shikimoriId,
+                                    kinopoiskId = kinopoiskId,
+                                    sourceType = srcType,
+                                    episodes = episodes,
+                                    translations = translations,
+                                    currentTranslationId = trId,
+                                    seriesContext = seriesContext
+                                )
+                            },
+                            userStateStore = userStateStore
+                        )
+                        is Screen.Settings -> TvSecondaryContainer {
+                            SettingsScreen(
+                                onBack = { screen = Screen.Home },
+                                selectedThemeMode = viewModel.uiState.themeMode,
+                                hideRussianContent = viewModel.uiState.hideRussianContent,
+                                selectedDiscoverTileSize = viewModel.uiState.discoverTileSize,
+                                selectedLibraryTileSize = viewModel.uiState.libraryTileSize,
+                                selectedShowFpsCounter = viewModel.uiState.showFpsCounter,
+                                selectedPlaybackSequence = viewModel.uiState.playbackSequence,
+                                onPlaybackSequenceSelected = viewModel::setPlaybackSequence,
+                                selectedPlayerMode = viewModel.uiState.playerMode,
+                                onPlayerModeSelected = viewModel::setPlayerMode,
+                                onThemeModeSelected = viewModel::setThemeMode,
+                                onHideRussianChanged = viewModel::setHideRussianContent,
+                                onDiscoverTileSizeSelected = viewModel::setDiscoverTileSize,
+                                onLibraryTileSizeSelected = viewModel::setLibraryTileSize,
+                                onShowFpsCounterChanged = viewModel::setShowFpsCounter,
+                                showDebugSettings = false
                             )
-                        } else {
-                            Screen.Home
                         }
-                    },
-                )
-                is Screen.Settings -> TvSecondaryContainer {
-                    SettingsScreen(
-                        onBack = { screen = Screen.Home },
-                        selectedThemeMode = viewModel.uiState.themeMode,
-                        hideRussianContent = viewModel.uiState.hideRussianContent,
-                        selectedDiscoverTileSize = viewModel.uiState.discoverTileSize,
-                        selectedLibraryTileSize = viewModel.uiState.libraryTileSize,
-                        selectedShowFpsCounter = viewModel.uiState.showFpsCounter,
-                        selectedPlaybackSequence = viewModel.uiState.playbackSequence,
-                        onPlaybackSequenceSelected = viewModel::setPlaybackSequence,
-                        selectedPlayerMode = viewModel.uiState.playerMode,
-                        onPlayerModeSelected = viewModel::setPlayerMode,
-                        onThemeModeSelected = viewModel::setThemeMode,
-                        onHideRussianChanged = viewModel::setHideRussianContent,
-                        onDiscoverTileSizeSelected = viewModel::setDiscoverTileSize,
-                        onLibraryTileSizeSelected = viewModel::setLibraryTileSize,
-                        onShowFpsCounterChanged = viewModel::setShowFpsCounter,
-                        showDebugSettings = false
-                    )
-                }
-                is Screen.About -> TvSecondaryContainer {
-                    AboutScreen(
-                        onBack = { screen = Screen.Home },
-                        updateStatusText = "Проверка обновлений — в мобильной версии",
-                        isUpdateCheckRunning = false,
-                        onCheckUpdates = {},
-                        onOpenGithub = { openInBrowser("https://github.com/HalfyDay/Kinoshka") },
-                        onOpenTelegram = { openInBrowser("https://t.me/Kinoshka_HalfDay") },
-                        onOpenShikimori = { openInBrowser("https://shikimori.io") },
-                        appVersion = DESKTOP_VERSION
-                    )
-                }
-                is Screen.Calendar -> TvSecondaryContainer {
-                    AnimeCalendarScreen(
-                        calendarItems = viewModel.uiState.calendarItems,
-                        loading = viewModel.uiState.calendarLoading,
-                        onBack = { screen = Screen.Home },
-                        onOpenAnime = { targetId ->
-                            detailsReturn = Screen.Home
-                            openDetailsById(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
+                        is Screen.About -> TvSecondaryContainer {
+                            AboutScreen(
+                                onBack = { screen = Screen.Home },
+                                updateStatusText = "Проверка обновлений — в мобильной версии",
+                                isUpdateCheckRunning = false,
+                                onCheckUpdates = {},
+                                onOpenGithub = { openInBrowser("https://github.com/HalfyDay/Kinoshka") },
+                                onOpenTelegram = { openInBrowser("https://t.me/Kinoshka_HalfDay") },
+                                onOpenShikimori = { openInBrowser("https://shikimori.io") },
+                                appVersion = DESKTOP_VERSION
+                            )
                         }
-                    )
+                        is Screen.Calendar -> TvSecondaryContainer {
+                            AnimeCalendarScreen(
+                                calendarItems = viewModel.uiState.calendarItems,
+                                loading = viewModel.uiState.calendarLoading,
+                                onBack = { screen = Screen.Home },
+                                onOpenAnime = { targetId ->
+                                    detailsReturn = Screen.Home
+                                    openDetailsById(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
+                                }
+                            )
+                        }
+                        is Screen.Feed -> TvSecondaryContainer {
+                            AnimeFeedScreen(
+                                topics = viewModel.uiState.topics,
+                                loading = viewModel.uiState.topicsLoading,
+                                onBack = { screen = Screen.Home },
+                                onOpenAnime = { targetId ->
+                                    detailsReturn = Screen.Feed
+                                    openDetailsById(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
+                                },
+                                loadComments = viewModel::loadTopicComments,
+                                onOpenStudio = { studioId, studioName ->
+                                    viewModel.searchStudio(studioId, studioName)
+                                    screen = Screen.Home
+                                },
+                                listState = feedListState
+                            )
+                        }
+                        is Screen.Profile -> TvSecondaryContainer {
+                            ProfileScreen(
+                                avatar = viewModel.uiState.profileAvatar,
+                                shikimoriAuthState = viewModel.uiState.shikimoriAuthState,
+                                library = viewModel.uiState.library,
+                                onBack = { screen = Screen.Home },
+                                onExportLibrary = { viewModel.exportLibraryJson() },
+                                onImportLibrary = { raw -> viewModel.importLibraryJson(raw) },
+                                onOpenSettings = { screen = Screen.Settings },
+                                onOpenAbout = { screen = Screen.About },
+                            )
+                        }
+                        is Screen.Downloads -> TvSecondaryContainer {
+                            DownloadsScreen(onBack = { screen = Screen.Home })
+                        }
+                    }
                 }
-                is Screen.Feed -> TvSecondaryContainer {
-                    AnimeFeedScreen(
-                        topics = viewModel.uiState.topics,
-                        loading = viewModel.uiState.topicsLoading,
-                        onBack = { screen = Screen.Home },
-                        onOpenAnime = { targetId ->
-                            detailsReturn = Screen.Feed
-                            openDetailsById(targetId + hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
-                        },
-                        loadComments = viewModel::loadTopicComments,
-                        onOpenStudio = { studioId, studioName ->
-                            viewModel.searchStudio(studioId, studioName)
-                            screen = Screen.Home
-                        },
-                        listState = feedListState
-                    )
-                }
-            }
             }
         }
     }
+
+    // Окно плеера mpvEx-стиля: полноэкранное, поверх главного окна.
+    playerArgs?.let { args ->
+        PlayerWindow(
+            args = args,
+            userStateStore = userStateStore,
+            onClose = {
+                playerArgs = null
+                viewModel.refreshAfterPlayerClosed()
+            },
+        )
+    }
 }
 
-private fun initialScreen(args: Array<String>, repository: FilmsRepository): Screen {
-    // Дебаг-прогон конкретного экрана: KINO_SCREEN=settings|about|calendar|feed (или первым аргументом).
+/** Стартовый экран + плеер дебаг-запуска (KINO_SCREEN=player). */
+private fun initialScreenAndPlayer(args: Array<String>, repository: FilmsRepository): Pair<Screen, PlayerLaunchArgs?> {
+    // Дебаг-прогон конкретного экрана: KINO_SCREEN=settings|about|calendar|feed|profile|downloads
+    // (или первым аргументом).
     when (flag(args)) {
-        "settings" -> return Screen.Settings
-        "about" -> return Screen.About
-        "calendar" -> return Screen.Calendar
-        "feed" -> return Screen.Feed
+        "settings" -> return Screen.Settings to null
+        "about" -> return Screen.About to null
+        "calendar" -> return Screen.Calendar to null
+        "feed" -> return Screen.Feed to null
+        "profile" -> return Screen.Profile to null
+        "downloads" -> return Screen.Downloads to null
     }
     if (flag(args) == "player") {
         // Для проверки реального потока нужен ВЫШЕДШИЙ фильм: у анонсов (год >= текущего)
@@ -264,8 +295,7 @@ private fun initialScreen(args: Array<String>, repository: FilmsRepository): Scr
         } else {
             System.getenv("KINO_KP_ID")?.trim()?.toIntOrNull()?.let { kpId ->
                 popular.firstOrNull { it.kinopoiskId == kpId } ?: runCatching {
-                    kotlinx.coroutines.runBlocking {
-                        val d = repository.details(kpId)
+                    kotlinx.coroutines.runBlocking { repository.details(kpId) }.let { d ->
                         FilmItem(d.kinopoiskId, d.nameRu, d.nameOriginal, d.posterUrlPreview, d.ratingKinopoisk, d.year)
                     }
                 }.getOrNull()
@@ -273,23 +303,39 @@ private fun initialScreen(args: Array<String>, repository: FilmsRepository): Scr
         }
         println("Kino: выбранный фильм = ${picked?.nameRu} (kp=${picked?.kinopoiskId}, ${picked?.year})")
         val film = picked ?: FilmItem(0, "Демо", null, null, null, null)
-        // С реальным kp-id играем через полный PENDING-резолв (гонка Kodik↔ddbb), без — демо-клип.
-        return Screen.Player(
+        val playerArgs = if (film.kinopoiskId > 0) {
+            // Полный запрос резолва: детали дают год/imdb/оригинальное название — без них
+            // identity-матч каталога Kodik не работает (NO_MATCHING_RESULTS).
+            val details = runCatching {
+                kotlinx.coroutines.runBlocking { repository.details(film.kinopoiskId) }
+            }.getOrNull()
             PlayerLaunchArgs(
                 streamUrl = "",
-                title = film.nameRu ?: film.nameOriginal ?: "Демо",
+                title = details?.nameRu ?: film.nameRu ?: film.nameOriginal ?: "Демо",
                 kinopoiskId = film.kinopoiskId,
-                sourceType = if (film.kinopoiskId > 0) "PENDING" else "DEMO"
+                sourceType = "PENDING",
+                imdbId = details?.imdbId,
+                year = details?.year ?: details?.startYear ?: film.year,
+                nameEn = details?.nameEn,
+                originalTitle = details?.nameOriginal,
+                seriesKind = details?.serial == true,
             )
-        )
+        } else {
+            PlayerLaunchArgs(
+                streamUrl = "",
+                title = film.nameRu ?: "Демо",
+                sourceType = "DEMO"
+            )
+        }
+        return Screen.Home to playerArgs
     }
     if (flag(args) == "details") {
         val first = runCatching {
             kotlinx.coroutines.runBlocking { repository.popular(page = 1) }
         }.getOrNull()?.firstOrNull()
-        if (first != null) return Screen.Details(first)
+        if (first != null) return Screen.Details(first) to null
     }
-    return Screen.Home
+    return Screen.Home to null
 }
 
 private fun flag(args: Array<String>): String =

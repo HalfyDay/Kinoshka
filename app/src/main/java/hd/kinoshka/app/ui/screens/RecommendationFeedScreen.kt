@@ -112,7 +112,11 @@ fun RecommendationFeedScreen(
     onLoadLiked: () -> List<hd.kinoshka.app.data.feed.LikedTitle>,
     onRemoveLiked: (hd.kinoshka.app.data.feed.LikedTitle) -> Unit,
     onSelectGenre: (String?) -> Unit,
-    onSurprise: () -> Unit
+    onSurprise: () -> Unit,
+    // Секция внутри HomeScreen: общая пилюля уже есть выше — свою не рисуем,
+    // интенсивность скролла отдаём ей наружу для физики.
+    showNavPill: Boolean = true,
+    onScrollIntensity: (Float) -> Unit = {}
 ) {
     // Первый показ за сессию: обогащение интересов + визард вкусов.
     LaunchedEffect(Unit) { onOpened() }
@@ -121,11 +125,11 @@ fun RecommendationFeedScreen(
     var showGenres by remember { mutableStateOf(false) }
     // Свайп карточек оживляет нижнюю пилюлю силой пролистывания.
     var feedScrollIntensity by remember { mutableStateOf(0f) }
-    // Вход на экран отдельным маршрутом: пилюля создаётся заново уже с выбранной
-    // «Лентой» — без этого флага переезд blob нечем анимировать. Стартуем с невыбранной
-    // и поднимаем флаг первым кадром: круг выделения visibly переезжает на «Ленту».
-    var feedEntered by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { feedEntered = true }
+    // Отдельный маршрут со своей пилюлей, но выбор — глобальный: на этом экране
+    // активна «Лента» с первого кадра. Раньше стартовали с невыбранной и поднимали
+    // флаг первым кадром — круг выделения при КАЖДОМ входе видимо переезжал
+    // с «Библиотеки» (indexOfFirst{selected} пуст → coerceAtLeast(0)), с какой бы
+    // вкладки ни пришли. Такого переезда быть не должно: маршрут уже сменился.
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         when {
@@ -141,7 +145,10 @@ fun RecommendationFeedScreen(
                 onToggleSound = onToggleSound,
                 onResetSeen = onResetSeen,
                 onShareDiagnostics = onShareDiagnostics,
-                onPagerScrolling = { feedScrollIntensity = it }
+                onPagerScrolling = {
+                    feedScrollIntensity = it
+                    onScrollIntensity(it)
+                }
             )
         }
 
@@ -176,7 +183,9 @@ fun RecommendationFeedScreen(
             )
         }
 
-        // Плавающая навигация — ТОТ ЖЕ общий компонент, что и на главном экране.
+        // Плавающая навигация — только отдельным маршрутом (TV). Секция внутри
+        // HomeScreen пользуется его общей пилюлей, своя поверх не нужна.
+        if (showNavPill) {
         BottomNavPill(
             items = listOf(
                 NavPillItem(
@@ -211,7 +220,7 @@ fun RecommendationFeedScreen(
                 ),
                 NavPillItem(
                     contentDescription = "Лента",
-                    selected = feedEntered,
+                    selected = true,
                     onClick = { },
                     glyph = { sel ->
                         Icon(
@@ -244,6 +253,7 @@ fun RecommendationFeedScreen(
             scrollIntensity = feedScrollIntensity,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+        }
 
         // Полноценная страница «Мои лайки»: разделы как в рекомендациях, сетка постеров.
         if (showLiked) {

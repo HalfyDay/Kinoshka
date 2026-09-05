@@ -17,6 +17,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material3.*
 import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.runtime.*
@@ -169,18 +171,13 @@ fun AnimePlaybackSelectionScreen(
         allTranslations + offlineTranslations
     }
 
-    // Скачивание из пикера: кнопка на озвучке качает все её серии, кнопка на серии — одну.
+    // Скачивание из пикера: кнопка на серии качает одну; кнопка на озвучке —
+    // всю озвучку, но при «Сначала серии» серия уже выбрана и качается только она.
     fun downloadedCountFor(tr: FlatTranslation): Int = tr.episodes.count { ep ->
         EpisodeDownloadManager.findLibraryEntry(offlineKey(itemKey, tr.source.name, tr.translationId, ep.number)) != null
     }
     fun activeCountFor(tr: FlatTranslation): Int = downloadTasks.values.count {
         it.itemKey == itemKey && it.translationId == tr.translationId && it.phase != DownloadPhase.FAILED
-    }
-    fun downloadTranslationAll(tr: FlatTranslation) {
-        context.tryRequestNotificationPermission()
-        EpisodeDownloadManager.enqueueAll(
-            DownloadBridges.animeRequests(shikimoriId, kinopoiskId, animeTitle, tr)
-        )
     }
     fun downloadSingleEpisode(episode: AnimeEpisode, tr: FlatTranslation) {
         context.tryRequestNotificationPermission()
@@ -199,6 +196,18 @@ fun AnimePlaybackSelectionScreen(
                 }
             )
         )
+    }
+    fun downloadTranslationAll(tr: FlatTranslation) {
+        context.tryRequestNotificationPermission()
+        // «Сначала серии»: серия уже выбрана — качаем только её, а не всю озвучку.
+        val only = selectedEpisode?.let { sel -> tr.episodes.firstOrNull { it.number == sel.number } }
+        if (only != null) {
+            downloadSingleEpisode(only, tr)
+        } else {
+            EpisodeDownloadManager.enqueueAll(
+                DownloadBridges.animeRequests(shikimoriId, kinopoiskId, animeTitle, tr)
+            )
+        }
     }
 
     fun startSource(source: AnimeSourceType) {
@@ -1054,7 +1063,7 @@ private fun SelectTranslationStep(
                                 when {
                                     allDownloaded -> {
                                         Icon(
-                                            imageVector = Icons.Default.DownloadDone,
+                                            imageVector = Icons.Rounded.DownloadDone,
                                             contentDescription = "Вся озвучка скачана",
                                             tint = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.size(18.dp)
@@ -1086,7 +1095,7 @@ private fun SelectTranslationStep(
                                             modifier = Modifier.size(30.dp)
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Default.Download,
+                                                imageVector = Icons.Rounded.Download,
                                                 contentDescription = "Скачать все серии озвучки",
                                                 tint = MaterialTheme.colorScheme.primary,
                                                 modifier = Modifier.size(18.dp)
@@ -1438,7 +1447,7 @@ private fun SelectEpisodeStep(
                             when {
                                 isEpisodeDownloaded(ep.number) -> {
                                     Icon(
-                                        imageVector = Icons.Default.DownloadDone,
+                                        imageVector = Icons.Rounded.DownloadDone,
                                         contentDescription = "Скачано",
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(18.dp)
@@ -1477,7 +1486,7 @@ private fun SelectEpisodeStep(
                                         modifier = Modifier.size(30.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.Download,
+                                            imageVector = Icons.Rounded.Download,
                                             contentDescription = "Скачать серию",
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.size(17.dp)
@@ -1489,7 +1498,7 @@ private fun SelectEpisodeStep(
                             // Общий список серий (озвучка не выбрана): серия скачана хотя бы
                             // в одной озвучке — помечаем, local-first сыграет её офлайн.
                             Icon(
-                                imageVector = Icons.Default.DownloadDone,
+                                imageVector = Icons.Rounded.DownloadDone,
                                 contentDescription = "Скачано (доступно офлайн)",
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(17.dp)

@@ -277,8 +277,11 @@ fun ProfileScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         // Локальная копия: avatarUrl объявлен в другом модуле (shared), smart cast невозможен.
-                        // Офлайн-копия: без интернета грузится файл, а не URL.
+                        // Офлайн-копия: без интернета грузится файл, а не URL. Запасной источник —
+                        // profileAvatar, куда логин зеркалит шики-аватар (только http; content:// —
+                        // уже пользовательская аватарка, её не подменяем).
                         val shikiAvatar = shikimoriAuthState.avatarUrl
+                            ?: avatar.takeIf { it.startsWith("http") }
                         val shikiAvatarModel = rememberShikimoriAvatarModel(shikiAvatar)
                         Box(contentAlignment = Alignment.BottomEnd) {
                             AvatarPreview(
@@ -1050,8 +1053,12 @@ private fun buildActivityBars(library: List<LibraryUiItem>): List<Pair<String, I
 }
 
 private fun String.isCustomAvatarUri(): Boolean {
-    return startsWith("content://") || startsWith("file://") || startsWith("http")
+    // file: без //.toURI() — File.toURI() на Android даёт «file:/…» с одним слешем.
+    return startsWith("content://") || startsWith("file:") || startsWith("http")
 }
+
+/** file://-модель для Coil: всегда с //, в отличие от File.toURI() («file:/…»). */
+private fun avatarFileModel(file: File): String = "file://" + file.absolutePath
 
 /** Сериализует докачку аватара: шапка и строка аккаунта дергают её одновременно. */
 private val shikimoriAvatarDownloadLock = Any()
@@ -1075,7 +1082,7 @@ private fun rememberShikimoriAvatarModel(remoteUrl: String?): Any? {
             targetName?.let { name ->
                 runCatching {
                     File(File(context.filesDir, "avatars"), name)
-                        .takeIf { it.exists() }?.toURI().toString()
+                        .takeIf { it.exists() }?.let(::avatarFileModel)
                 }.getOrNull()
             }
         )
@@ -1096,7 +1103,7 @@ private fun rememberShikimoriAvatarModel(remoteUrl: String?): Any? {
                     if (!target.exists()) {
                         downloadToFile(remoteUrl, File(dir, "$targetName.tmp"), target)
                     }
-                    target.takeIf { it.exists() }?.toURI().toString()
+                    target.takeIf { it.exists() }?.let(::avatarFileModel)
                 }
             }.getOrNull()
         }

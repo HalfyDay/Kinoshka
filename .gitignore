@@ -39,3 +39,4 @@ local.properties
 /desktopApp/bin/
 .tmp_decode_token.py
 /.tmp-screens/
+shared/graphify-out/

@@ -77,7 +77,12 @@ data class LibraryUiItem(
     // ongoing series; the badge shows when episodesAired > watchedEpisodes. nextEpisodeAt = ISO
     // UTC of the next scheduled episode (for "airs soon"). Null for films / unavailable.
     val episodesAired: Int? = null,
-    val nextEpisodeAt: String? = null
+    val nextEpisodeAt: String? = null,
+    // Shikimori metadata for grouping/stats (anime): raw kind ("tv"/"movie"/"ova"/"ona"/"special"),
+    // release status ("anons"/"ongoing"/"released") and release year. Null for films / no cache.
+    val animeKind: String? = null,
+    val releaseStatus: String? = null,
+    val releaseYear: Int? = null
 )
 
 data class SearchFilterState(
@@ -151,6 +156,8 @@ data class HomeUiState(
     val hideRussianContent: Boolean = false,
     val showHentaiInLibrary: Boolean = true,
     val librarySortReversed: Boolean = false,
+    val librarySortType: hd.kinoshka.app.data.local.LibrarySortType = hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED,
+    val libraryGroupType: hd.kinoshka.app.data.local.LibraryGroupType = hd.kinoshka.app.data.local.LibraryGroupType.NONE,
     val discoverTileSize: FilmTileSize = FilmTileSize.MEDIUM,
     val libraryTileSize: FilmTileSize = FilmTileSize.MEDIUM,
     val showFpsCounter: Boolean = false,
@@ -458,6 +465,7 @@ class FilmsViewModel(
                                                 kind = details.kind,
                                                 score = details.score,
                                                 status = details.status,
+                                                year = details.airedOn?.take(4)?.toIntOrNull(),
                                                 isAdult = isAdultAnime(details)
                                             )
                                         )
@@ -547,6 +555,7 @@ class FilmsViewModel(
                                     kind = details.kind,
                                     score = details.score,
                                     status = details.status,
+                                    year = details.airedOn?.take(4)?.toIntOrNull(),
                                     isAdult = isAdultAnime(details)
                                 )
                             )
@@ -1613,12 +1622,18 @@ class FilmsViewModel(
 
     fun setLibrarySortType(sortType: hd.kinoshka.app.data.local.LibrarySortType) {
         userStateStore.setLibrarySortType(sortType)
-        uiState = uiState.copy(library = resortLibrary())
+        uiState = uiState.copy(librarySortType = sortType, library = resortLibrary())
     }
 
     fun setLibrarySortReversed(reversed: Boolean) {
         userStateStore.setLibrarySortReversed(reversed)
         uiState = uiState.copy(librarySortReversed = reversed, library = resortLibrary())
+    }
+
+    /** Группировка не влияет на порядок внутри групп — пересортировка не нужна. */
+    fun setLibraryGroupType(group: hd.kinoshka.app.data.local.LibraryGroupType) {
+        userStateStore.setLibraryGroupType(group)
+        uiState = uiState.copy(libraryGroupType = group)
     }
 
     private fun resortLibrary(): List<LibraryUiItem> =
@@ -2335,6 +2350,8 @@ class FilmsViewModel(
             showFpsCounter = preferences.showFpsCounter,
             showHentaiInLibrary = userStateStore.isHentaiVisibleInLibrary(),
             librarySortReversed = userStateStore.isLibrarySortReversed(),
+            librarySortType = userStateStore.getLibrarySortType(),
+            libraryGroupType = userStateStore.getLibraryGroupType(),
             contentType = preferences.contentType,
             playbackSequence = preferences.playbackSequence,
             playerMode = preferences.playerMode
@@ -2519,6 +2536,22 @@ class FilmsViewModel(
             }
         }
 
+        // Группировка/статистика библиотеки: тайтлы, построенные из истории/профилей (без
+        // встроенного anime у рейта), добирают kind/status/год из дискового кэша Shikimori.
+        if (localAnimeCache.isNotEmpty()) {
+            for (i in result.indices) {
+                val existing = result[i]
+                if (existing.kinopoiskId < hd.kinoshka.app.data.model.ANIME_ID_OFFSET) continue
+                if (existing.animeKind != null && existing.releaseStatus != null && existing.releaseYear != null) continue
+                val cached = localAnimeCache[existing.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET] ?: continue
+                result[i] = existing.copy(
+                    animeKind = existing.animeKind ?: cached.kind,
+                    releaseStatus = existing.releaseStatus ?: cached.status,
+                    releaseYear = existing.releaseYear ?: cached.year
+                )
+            }
+        }
+
         // Переключатель «Показывать хентай»: выкл — прячем 18+ аниме. Вердикт Shikimori
         // (жанр «хентай»/рейтинг rx из кэша деталей) приоритетнее; пока флага нет —
         // синхронная проверка по каталогу hanime.
@@ -2684,7 +2717,10 @@ private fun hd.kinoshka.app.data.model.ShikimoriUserRate.toLibraryUiItemWithCach
         totalSeasons = null,
         totalEpisodes = appEpisodes,
         updatedAt = rateTime,
-        episodesAired = appEpisodesAired
+        episodesAired = appEpisodesAired,
+        animeKind = animeItem?.kind ?: cachedInfo?.kind,
+        releaseStatus = animeItem?.status ?: cachedInfo?.status,
+        releaseYear = animeItem?.airedOn?.take(4)?.toIntOrNull() ?: cachedInfo?.year
     )
 }
 

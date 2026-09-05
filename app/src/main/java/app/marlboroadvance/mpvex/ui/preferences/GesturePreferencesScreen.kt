@@ -113,7 +113,7 @@ object GesturePreferencesScreen : Screen {
             values = predefinedValues + listOf(-1),
             valueToText = { value ->
               if (value == -1) {
-                AnnotatedString("Custom")
+                AnnotatedString("Своё")
               } else {
                 AnnotatedString("${value}s")
               }
@@ -122,7 +122,7 @@ object GesturePreferencesScreen : Screen {
             summary = {
               Text(
                 text = if (isCustomValue) {
-                  "Custom (${doubleTapSeekDuration}s)"
+                  "Своё (${doubleTapSeekDuration} с)"
                 } else {
                   "${doubleTapSeekDuration}s"
                 },
@@ -140,13 +140,13 @@ object GesturePreferencesScreen : Screen {
               text = {
                 Column {
                   Text(
-                    text = "Enter custom seek duration in seconds (1-120)",
+                    text = "Своя длительность перемотки в секундах (1-120)",
                     modifier = Modifier.padding(bottom = 8.dp),
                   )
                   OutlinedTextField(
                     value = customSeekValue,
                     onValueChange = { customSeekValue = it },
-                    label = { Text("Seconds") },
+                    label = { Text("Секунды") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
@@ -182,10 +182,10 @@ object GesturePreferencesScreen : Screen {
             onValueChange = { preferences.doubleTapSeekAreaWidth.set(it) },
             values = seekAreaValues,
             valueToText = { AnnotatedString("${it}%") },
-            title = { Text(text = "Double Tap Seek Area Width") },
+            title = { Text(text = stringResource(R.string.pref_double_tap_seek_area_width_title)) },
             summary = {
               Text(
-                text = "Current: ${doubleTapSeekAreaWidth}%",
+                text = "Сейчас: ${doubleTapSeekAreaWidth}%",
                 color = MaterialTheme.colorScheme.outline,
               )
             },

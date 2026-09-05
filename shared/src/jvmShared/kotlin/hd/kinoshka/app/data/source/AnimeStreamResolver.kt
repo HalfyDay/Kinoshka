@@ -44,9 +44,11 @@ object AnimeStreamResolver {
         "77b567ec164db6ca9162d2f3dc4948c3"
     )
 
+    // Живые API-домены Kodik (сент. 2026): kodikapi.com, kodik.info, kodik.cc, aniqit.com
+    // и kodi.my NXDOMAIN глобально — каждый мёртвый домен сжигал до ~18 c на DoH-фоллбеки
+    // перед системным DNS (UnknownHostException) в каждом поиске.
     private val KODIK_API_BASES = listOf(
-        "https://kodik-api.com",
-        "https://kodikapi.com"
+        "https://kodik-api.com"
     )
 
     private val ANILIBERTY_API = listOf(
@@ -1530,12 +1532,11 @@ object AnimeStreamResolver {
 
     private suspend fun fetchKodikFromFindPlayer(idType: String, id: Int): JSONObject? = withContext(Dispatchers.IO) {
         // Site domains serve a real player page (this is also the only path that works for 18+
-        // titles, which the public API refuses to index). The kodikapi.com/kodik-api.com variants
-        // answer find-player with a token error and never worked — dropped.
+        // titles, which the public API refuses to index). kodik.info/aniqit.com/kodik.cc are
+        // NXDOMAIN globally (hosts moved) — kodikplayer.com/w.kdkonl.com are the live ones.
         val mirrors = listOf(
-            "https://kodik.info/find-player?$idType=$id",
-            "https://aniqit.com/find-player?$idType=$id",
-            "https://kodik.cc/find-player?$idType=$id"
+            "https://kodikplayer.com/find-player?$idType=$id",
+            "https://w.kdkonl.com/find-player?$idType=$id"
         )
         for (url in mirrors) {
             val html = get(url, referer = "https://shikimori.one/") ?: continue

@@ -145,8 +145,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.ui.graphics.vector.VectorPainter
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.filled.PlayArrow
@@ -4415,7 +4414,7 @@ private fun DetailsTopBar(
                         onClick = { showTorrentSheet = true }
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Download,
+                            imageVector = Icons.Rounded.Download,
                             contentDescription = "Скачать",
                             tint = MaterialTheme.colorScheme.onSurface
                         )

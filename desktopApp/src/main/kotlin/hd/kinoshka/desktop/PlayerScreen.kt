@@ -1,62 +1,132 @@
 package hd.kinoshka.desktop
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.awt.SwingPanel
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import hd.kinoshka.app.data.model.MovieContentKind
-import hd.kinoshka.app.data.model.MoviePlaybackRequest
-import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
-import hd.kinoshka.app.data.model.FlatTranslation
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPosition
+import androidx.compose.ui.window.WindowState
+import hd.kinoshka.app.data.local.AppThemeMode
+import hd.kinoshka.app.data.local.UserStateStoreBase
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.source.KodikMovieParser
+import hd.kinoshka.app.data.model.MovieContentKind
+import hd.kinoshka.app.data.model.MoviePlaybackRequest
+import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
-import hd.kinoshka.app.data.local.UserStateStoreBase
+import hd.kinoshka.app.data.model.PendingMovieRequestStore
 import hd.kinoshka.app.data.playback.MovieNativeLauncher
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.player.desktop.MpvPlayer
+import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.awt.Canvas
-import java.awt.event.KeyEvent
-import java.awt.Color as AwtColor
+import java.awt.Dialog
+import java.awt.Rectangle
+import java.awt.Toolkit
+import kotlin.math.roundToInt
 
 private const val DEMO_URL =
     "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4"
 
 /** Порог реального просмотра до коммита в библиотеку/историю — как в Android-плеере. */
 private const val MIN_WATCH_SECONDS_FOR_LIBRARY = 300
+
+/** Заголовок окна плеера (по нему ищется HWND для z-порядка окна видео). */
+const val PLAYER_WINDOW_TITLE = "Kino Player"
+
+/** Заголовок отдельного окна, в которое рендерит mpv; живёт ПОД окном плеера. */
+private const val VIDEO_WINDOW_TITLE = "KinoVideoSurface"
+
+/** Задержка автоскрытия контролов — как playerTimeToDisappear mpvEx по умолчанию. */
+private const val CONTROLS_HIDE_DELAY_MS = 3500L
+
+/** Шаг перемотки стрелками — как в mpvEx. */
+private const val SEEK_STEP_SECONDS = 10.0
 
 /** Payload запуска воспроизведения — зеркально onOpenNativePlayer общего DetailsScreen. */
 data class PlayerLaunchArgs(
@@ -72,12 +142,119 @@ data class PlayerLaunchArgs(
     val translations: List<FlatTranslation> = emptyList(),
     val currentTranslationId: String = "",
     val seriesContext: MovieSeriesPlaybackContext? = null,
+    // Полнота запроса резолва: на Android их кладёт в PendingMovieRequestStore общий
+    // DetailsScreen; для дебаг-запуска плеера напрямую (KINO_SCREEN=player) их же
+    // заполняет Main из repository.details.
+    val imdbId: String? = null,
+    val year: Int? = null,
+    val nameEn: String? = null,
+    val originalTitle: String? = null,
+    val seriesKind: Boolean = false,
 )
 
 private data class LoadCommand(val url: String, val headers: Map<String, String> = emptyMap())
 
 /** Пункт dropdown'а серий: key — AnimeEpisode.number либо MovieEpisodeRef.playerEpisodeKey. */
 private data class EpisodeChoice(val key: Int, val label: String)
+
+private data class DropdownOption(val id: String, val label: String)
+
+/**
+ * Полноэкранное окно плеера в стиле mpvEx: безрамочное, прозрачное, с оверлей-контролами.
+ * Видео рендерит mpv в отдельное окно, положенное ПОД это окно — поэтому Compose-контролы
+ * остаются кликабельными поверх видео (SwingPanel такой режим не даёт).
+ */
+@Composable
+fun PlayerWindow(
+    args: PlayerLaunchArgs,
+    userStateStore: UserStateStoreBase?,
+    onClose: () -> Unit,
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val screen = remember { Toolkit.getDefaultToolkit().screenSize }
+    val widthDp = with(density) { screen.width.toFloat().toDp() }
+    val heightDp = with(density) { screen.height.toFloat().toDp() }
+    val state = remember(widthDp, heightDp) {
+        WindowState(width = widthDp, height = heightDp, position = WindowPosition(0.dp, 0.dp))
+    }
+    Window(
+        onCloseRequest = onClose,
+        title = PLAYER_WINDOW_TITLE,
+        state = state,
+        undecorated = true,
+        transparent = true,
+        resizable = false,
+    ) {
+        KinoDesktopTheme(themeMode = AppThemeMode.DARK) {
+            PlayerScreen(args = args, userStateStore = userStateStore, onBack = onClose)
+        }
+    }
+}
+
+/**
+ * Отдельное AWT-окно под окном плеера, в которое mpv пишет картинку (wid).
+ * Каждую секунду переподтверждает z-порядок (видео ниже окна плеера) и геометрию.
+ */
+@Composable
+private fun VideoBehindSurface(
+    onPlayer: (MpvPlayer) -> Unit,
+    onError: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    DisposableEffect(Unit) {
+        val screen = Toolkit.getDefaultToolkit().screenSize
+        // Диалог без рамки с уникальным заголовком: FindWindow находит его HWND,
+        // при этом диалог не появляется в панели задач и не забирает фокус.
+        val videoWindow = Dialog(null as Dialog?, VIDEO_WINDOW_TITLE)
+        videoWindow.isUndecorated = true
+        videoWindow.focusableWindowState = false
+        videoWindow.background = java.awt.Color.BLACK
+        videoWindow.bounds = Rectangle(0, 0, screen.width, screen.height)
+        videoWindow.isVisible = true
+
+        var player: MpvPlayer? = null
+        val attachJob = scope.launch(Dispatchers.IO) {
+            var hwnd: Long? = null
+            var waited = 0
+            while (hwnd == null && waited < 50) {
+                hwnd = Win32.findWindowHwnd(VIDEO_WINDOW_TITLE)
+                if (hwnd == null) {
+                    delay(100)
+                    waited++
+                }
+            }
+            val handle = hwnd ?: run {
+                withContext(Dispatchers.Main) { onError("Окно видео не найдено") }
+                return@launch
+            }
+            println("MPV: video window hwnd=$handle")
+            try {
+                val created = MpvPlayer.create(handle)
+                player = created
+                withContext(Dispatchers.Main) { onPlayer(created) }
+            } catch (t: Throwable) {
+                withContext(Dispatchers.Main) { onError(t.message ?: "не удалось запустить mpv") }
+            }
+        }
+        val syncJob = scope.launch(Dispatchers.IO) {
+            while (true) {
+                val playerHwnd = Win32.findWindowHwnd(PLAYER_WINDOW_TITLE)
+                val videoHwnd = Win32.findWindowHwnd(VIDEO_WINDOW_TITLE)
+                if (playerHwnd != null && videoHwnd != null) {
+                    Win32.moveWindow(videoHwnd, 0, 0, screen.width, screen.height)
+                    Win32.setZOrderBelow(videoHwnd, playerHwnd)
+                }
+                delay(1000)
+            }
+        }
+        onDispose {
+            attachJob.cancel()
+            syncJob.cancel()
+            runCatching { player?.close() }
+            videoWindow.dispose()
+        }
+    }
+}
 
 @Composable
 fun PlayerScreen(
@@ -90,6 +267,8 @@ fun PlayerScreen(
     var loadedKey by remember { mutableStateOf<String?>(null) }
     var attachError by remember { mutableStateOf<String?>(null) }
     var resolveError by remember { mutableStateOf<String?>(null) }
+    var resolving by remember { mutableStateOf(false) }
+    var resolveRetry by remember { mutableStateOf(0) }
     var paused by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0.0) }
     var duration by remember { mutableStateOf(0.0) }
@@ -103,8 +282,36 @@ fun PlayerScreen(
     var resumeAt by remember { mutableStateOf(0.0) }
     var volume by remember { mutableStateOf(100) }
     var muted by remember { mutableStateOf(false) }
+    var speed by remember { mutableStateOf(1f) }
+    // mpvEx-контролы: оверлей с автоскрытием, меню, перемотка.
+    var controlsVisible by remember { mutableStateOf(true) }
+    var lastInteractionMs by remember { mutableStateOf(0L) }
+    var isSeeking by remember { mutableStateOf(false) }
+    var anyMenuOpen by remember { mutableStateOf(false) }
+    var volumePopupOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val attachGuard = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val focusRequester = remember { FocusRequester() }
+
+    fun poke() {
+        lastInteractionMs = System.currentTimeMillis()
+        controlsVisible = true
+    }
+
+    // Автоскрытие контролов: как в mpvEx — при паузе и открытых меню не прячем.
+    LaunchedEffect(controlsVisible, paused, isSeeking, anyMenuOpen, volumePopupOpen, lastInteractionMs) {
+        if (controlsVisible && paused == false && !isSeeking && !anyMenuOpen && !volumePopupOpen) {
+            delay(CONTROLS_HIDE_DELAY_MS)
+            controlsVisible = false
+        }
+    }
+
+    // Фокус окна плеера: клавиатура (пробел/стрелки/M/Esc) приходит в корень контента.
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (runCatching { focusRequester.requestFocus() }.isSuccess) break
+            delay(100)
+        }
+    }
 
     fun scheduleLoad(url: String, headers: Map<String, String>, resume: Boolean) {
         if (resume && duration > 1.0) resumeAt = position
@@ -142,8 +349,6 @@ fun PlayerScreen(
 
     fun recordDubChoice(title: String) {
         val store = userStateStore ?: return
-        // Читатели (rememberedDubId, ранжирование dropdown'а) сравнивают ключом splitDubTrack,
-        // поэтому и пишем свёрнутый ключ — иначе «Original»/субтитровые треки не восстановятся.
         val dubKey = MovieNativeLauncher.splitDubTrack(title).first
         store.recordDubUsage(dubKey)
         dubMediaKey?.let { store.recordTitleDubUsage(it, dubKey) }
@@ -240,9 +445,41 @@ fun PlayerScreen(
         }
     }
 
+    fun togglePause() {
+        scope.launch(Dispatchers.IO) { player?.let { paused = it.togglePause() } }
+    }
+
+    fun seekBy(delta: Double) {
+        scope.launch(Dispatchers.IO) {
+            val current = player ?: return@launch
+            val target = (current.positionSeconds() ?: 0.0) + delta
+            current.seekTo(target)
+            position = target
+        }
+    }
+
+    fun changeVolume(delta: Int) {
+        volume = (volume + delta).coerceIn(0, 130)
+        if (muted) {
+            muted = false
+            scope.launch(Dispatchers.IO) { player?.setMuted(false) }
+        }
+        val v = volume
+        scope.launch(Dispatchers.IO) { player?.setVolume(v) }
+    }
+
+    fun toggleMute() {
+        val next = !muted
+        muted = next
+        scope.launch(Dispatchers.IO) { player?.setMuted(next) }
+    }
+
     // Стартовый поток: прямой (anime/quality-only/трейлер/серия контекста), демо-клип,
     // либо PENDING — полный резолв гонкой Kodik↔ddbb (общий MovieNativeLauncher).
-    LaunchedEffect(args.title, args.kinopoiskId, args.sourceType) {
+    // Полный request берём из PendingMovieRequestStore (его кладёт общий DetailsScreen —
+    // год/imdb/оригинальное название нужны для identity-матча каталога), иначе собираем
+    // из аргументов.
+    LaunchedEffect(args.title, args.kinopoiskId, args.sourceType, resolveRetry) {
         when {
             args.sourceType == "DEMO" -> pending = LoadCommand(DEMO_URL)
             args.streamUrl.isNotBlank() -> {
@@ -257,15 +494,20 @@ fun PlayerScreen(
                 pending = LoadCommand(args.streamUrl, args.headers)
             }
             args.sourceType == "PENDING" -> withContext(Dispatchers.IO) {
-                println("MPV: PENDING resolve kp=${args.kinopoiskId}")
+                resolving = true
+                resolveError = null
+                println("MPV: PENDING resolve kp=${args.kinopoiskId} (retry=$resolveRetry)")
+                val stored = PendingMovieRequestStore.get(args.kinopoiskId)
+                val request = stored?.request ?: MoviePlaybackRequest(
+                    kinopoiskId = args.kinopoiskId.takeIf { it > 0 },
+                    imdbId = KodikMovieParser.normalizeImdb(args.imdbId),
+                    titles = listOfNotNull(args.title, args.nameEn, args.originalTitle)
+                        .map(String::trim).filter(String::isNotEmpty),
+                    year = args.year,
+                    kind = if (args.seriesKind) MovieContentKind.SERIES else MovieContentKind.MOVIE,
+                )
                 when (val payload = MovieNativeLauncher.resolve(
-                    MoviePlaybackRequest(
-                        kinopoiskId = args.kinopoiskId,
-                        imdbId = null,
-                        titles = listOf(args.title),
-                        year = null,
-                        kind = MovieContentKind.MOVIE,
-                    ),
+                    request,
                     profile = null,
                     stateStore = userStateStore
                 )) {
@@ -291,30 +533,9 @@ fun PlayerScreen(
                         resolveError = "Поток недоступен: ${payload.reason}"
                     }
                 }
+                resolving = false
             }
             else -> resolveError = "Нет потока для воспроизведения"
-        }
-    }
-
-    // Привязка mpv: опрашиваем HWND канваса до его появления — тяжеловесный AWT-канвас
-    // создаётся асинхронно после первого кадра Compose, поэтому ждём именно HWND.
-    LaunchedEffect(Unit) {
-        if (!attachGuard.compareAndSet(false, true)) return@LaunchedEffect
-        launch(Dispatchers.IO) {
-            try {
-                var hwnd: Long? = null
-                repeat(150) {
-                    hwnd = Win32.findChildCanvasHwnd(MAIN_WINDOW_TITLE)
-                    if (hwnd != null) return@repeat
-                    delay(100)
-                }
-                val handle = hwnd ?: error("HWND канваса не найден")
-                println("MPV: hwnd=$handle")
-                player = MpvPlayer.create(handle)
-            } catch (t: Throwable) {
-                attachGuard.set(false)
-                attachError = t.message ?: "не удалось запустить mpv"
-            }
         }
     }
 
@@ -406,246 +627,567 @@ fun PlayerScreen(
     }
 
     DisposableEffect(Unit) {
-        onDispose {
-            flushPlaybackPosition()
-            player?.close()
+        onDispose { flushPlaybackPosition() }
+    }
+
+    // mpv привязывается к окну видео из VideoBehindSurface ниже.
+
+    val keyboardHandler: (KeyEvent) -> Boolean = { event ->
+        if (event.type != KeyEventType.KeyDown) {
+            false
+        } else {
+            when (event.key) {
+                Key.Spacebar -> { poke(); togglePause(); true }
+                Key.DirectionLeft -> { poke(); seekBy(-SEEK_STEP_SECONDS); true }
+                Key.DirectionRight -> { poke(); seekBy(SEEK_STEP_SECONDS); true }
+                Key.DirectionUp -> { poke(); changeVolume(10); true }
+                Key.DirectionDown -> { poke(); changeVolume(-10); true }
+                Key.M -> { poke(); toggleMute(); true }
+                Key.Escape -> { onBack(); true }
+                else -> false
+            }
         }
     }
 
-    Column(Modifier.fillMaxSize().background(Color.Black)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                "← Назад",
-                color = Color(0xFF9F9FA8),
-                fontSize = 14.sp,
-                modifier = Modifier
-                    .background(Color(0xFF1C1C22), MaterialTheme.shapes.small)
-                    .clickable(onClick = onBack)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-            )
-            Text(
-                args.title,
-                color = Color.White,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                modifier = Modifier.weight(1f),
-            )
-            if (translations.size > 1) {
-                var menuOpen by remember { mutableStateOf(false) }
-                Box {
-                    TextButton(onClick = { menuOpen = true }) {
-                        Text(
-                            text = "Озвучка: " + (
-                                translations.firstOrNull { it.translationId == currentTranslationId }?.title
-                                    ?: translations.firstOrNull()?.title
-                                    ?: "по умолчанию"
-                                ),
-                            color = Color(0xFFB9B9C0),
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                        )
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // Пока mpv не подключён (или упал) — фон чёрный; с живым видео окно
+            // прозрачное: картинка приходит из окна, положенного под это.
+            .background(if (player == null || attachError != null) Color.Black else Color.Transparent)
+            .focusRequester(focusRequester)
+            .focusable()
+            .onPreviewKeyEvent(keyboardHandler)
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = {
+                    controlsVisible = !controlsVisible
+                    lastInteractionMs = System.currentTimeMillis()
+                })
+            }
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type == PointerEventType.Move) poke()
                     }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        translations.forEach { translation ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        translation.title,
-                                        color = if (translation.translationId == currentTranslationId) {
-                                            Color(0xFF8AB4F8)
-                                        } else {
-                                            Color.White
-                                        },
-                                    )
-                                },
-                                onClick = {
-                                    menuOpen = false
-                                    switchTranslation(translation)
-                                },
+                }
+            },
+    ) {
+        // resolveRetry пересоздаёт поверхность видео: «Повторить» после ошибки attach.
+        key(resolveRetry) {
+            VideoBehindSurface(onPlayer = { player = it }, onError = { attachError = it })
+        }
+
+        val error = attachError ?: resolveError
+        if (error != null) {
+            // mpvEx pendingOverlay: тёмный фон, причина, «Повторить»/«Назад».
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.65f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(horizontal = 40.dp),
+                ) {
+                    Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(44.dp))
+                    Text("Не удалось открыть поток", style = MaterialTheme.typography.titleMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, color = Color.White)
+                    Text(error, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f), textAlign = TextAlign.Center)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clip(RoundedCornerShape(50)).clickable {
+                                // Перезапуск: пересоздаёт поверхность видео (attach-ошибка)
+                                // и повторяет PENDING-резолв.
+                                attachError = null
+                                resolveError = null
+                                resolveRetry++
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(Icons.Filled.Refresh, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Text("Повторить", color = Color.White, fontSize = 13.sp)
+                            }
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = Color.White.copy(alpha = 0.12f),
+                            modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onBack() },
+                        ) {
+                            Text(
+                                "Назад",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
                             )
                         }
                     }
                 }
             }
-            if (episodeChoices.isNotEmpty()) {
-                var epMenuOpen by remember { mutableStateOf(false) }
-                Box {
-                    TextButton(onClick = { epMenuOpen = true }) {
-                        Text(
-                            text = "Серия: " + (
-                                episodeChoices.firstOrNull { it.key == currentEpisodeKey }?.label
-                                    ?: currentEpisodeKey.toString()
-                                ),
-                            color = Color(0xFFB9B9C0),
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                        )
-                    }
-                    DropdownMenu(expanded = epMenuOpen, onDismissRequest = { epMenuOpen = false }) {
-                        episodeChoices.forEach { choice ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        choice.label,
-                                        color = if (choice.key == currentEpisodeKey) Color(0xFF8AB4F8) else Color.White,
-                                    )
-                                },
-                                onClick = {
-                                    epMenuOpen = false
-                                    switchEpisode(choice)
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-            if (qualities.size > 1) {
-                var qualityMenuOpen by remember { mutableStateOf(false) }
-                Box {
-                    TextButton(onClick = { qualityMenuOpen = true }) {
-                        Text(
-                            text = "Качество: ${currentQuality ?: "Auto"}",
-                            color = Color(0xFFB9B9C0),
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                        )
-                    }
-                    DropdownMenu(expanded = qualityMenuOpen, onDismissRequest = { qualityMenuOpen = false }) {
-                        qualities.keys.forEach { name ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        name,
-                                        color = if (name == currentQuality) Color(0xFF8AB4F8) else Color.White,
-                                    )
-                                },
-                                onClick = {
-                                    qualityMenuOpen = false
-                                    switchQuality(name)
-                                },
-                            )
-                        }
-                    }
-                }
+        } else if (resolving) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                KinoLoadingIndicator(color = MaterialTheme.colorScheme.primary)
             }
         }
 
-        Box(Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
-            SwingPanel(
-                background = Color.Black,
-                modifier = Modifier.fillMaxSize(),
-                factory = {
-                    Canvas().apply {
-                        background = AwtColor.BLACK
-                        // Клавиатура плеера (пробел/стрелки/M) приходит на AWT-канвас: у mpv
-                        // input-default-bindings=no, свои биндинги вешаем здесь.
-                        isFocusable = true
-                        addKeyListener(object : java.awt.event.KeyAdapter() {
-                            override fun keyPressed(e: java.awt.event.KeyEvent) {
-                                val current = player ?: return
-                                when (e.keyCode) {
-                                    KeyEvent.VK_SPACE -> scope.launch(Dispatchers.IO) {
-                                        paused = current.togglePause()
-                                    }
-                                    KeyEvent.VK_LEFT, KeyEvent.VK_RIGHT -> {
-                                        val delta =
-                                            if (e.keyCode == KeyEvent.VK_LEFT) -10.0 else 10.0
-                                        scope.launch(Dispatchers.IO) {
-                                            val target = (current.positionSeconds() ?: 0.0) + delta
-                                            current.seekTo(target)
-                                            position = target
-                                        }
-                                    }
-                                    KeyEvent.VK_UP, KeyEvent.VK_DOWN -> {
-                                        volume = (volume +
-                                            if (e.keyCode == KeyEvent.VK_UP) 10 else -10)
-                                            .coerceIn(0, 130)
-                                        if (muted) {
-                                            muted = false
-                                            scope.launch(Dispatchers.IO) { current.setMuted(false) }
-                                        }
-                                        val v = volume
-                                        scope.launch(Dispatchers.IO) { current.setVolume(v) }
-                                    }
-                                    KeyEvent.VK_M -> {
-                                        val next = !muted
-                                        muted = next
-                                        scope.launch(Dispatchers.IO) { current.setMuted(next) }
+        // Оверлей контролов в стиле mpvEx.
+        AnimatedVisibility(
+            visible = controlsVisible && error == null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.8f),
+                            0.35f to Color.Transparent,
+                            0.55f to Color.Transparent,
+                            1f to Color.Black.copy(alpha = 0.85f),
+                        )
+                    ),
+            ) {
+                // Верхняя строка: назад, серии, озвучки, название | скорость.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    PlayerIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Назад", onClick = onBack)
+                    if (episodeChoices.isNotEmpty()) {
+                        PlayerDropdownPill(
+                            prefix = null,
+                            options = episodeChoices.map { DropdownOption(it.key.toString(), it.label) },
+                            selectedId = currentEpisodeKey.toString(),
+                            onOpenChange = { anyMenuOpen = it },
+                            onSelect = { id -> episodeChoices.firstOrNull { it.key.toString() == id }?.let(::switchEpisode) },
+                        )
+                    }
+                    if (translations.size > 1) {
+                        PlayerDropdownPill(
+                            prefix = null,
+                            options = translations.map { DropdownOption(it.translationId, it.title) },
+                            selectedId = currentTranslationId.ifEmpty { translations.firstOrNull()?.translationId },
+                            onOpenChange = { anyMenuOpen = it },
+                            onSelect = { id ->
+                                translations.firstOrNull { it.translationId == id }?.let(::switchTranslation)
+                            },
+                        )
+                    }
+                    PlayerTitlePill(title = args.title)
+                    Spacer(Modifier.weight(1f))
+                    PlayerDropdownPill(
+                        prefix = null,
+                        options = SPEED_OPTIONS.map { DropdownOption(it.toString(), "%.2fx".format(it)) },
+                        selectedId = speed.toString(),
+                        onOpenChange = { anyMenuOpen = it },
+                        onSelect = { id ->
+                            val next = id.toFloatOrNull() ?: 1f
+                            speed = next
+                            scope.launch(Dispatchers.IO) { player?.setSpeed(next) }
+                        },
+                    )
+                }
+
+                // Центр: пауза/плей + пред./след. серия (как в mpvEx — только с сериями).
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                        val episodeIdx = episodeChoices.indexOfFirst { it.key == currentEpisodeKey }
+                        val episodeNav = episodeChoices.size > 1
+                        val canPrev = episodeNav && episodeIdx > 0
+                        val canNext = episodeNav && episodeIdx < episodeChoices.lastIndex
+                        PlayerRoundButton(
+                            icon = Icons.Filled.SkipPrevious,
+                            contentDescription = "Предыдущая серия",
+                            size = 56.dp,
+                            enabled = canPrev,
+                            onClick = { if (canPrev) switchEpisode(episodeChoices[episodeIdx - 1]) },
+                        )
+                        PlayerRoundButton(
+                            icon = if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                            contentDescription = if (paused) "Играть" else "Пауза",
+                            size = 64.dp,
+                            enabled = true,
+                            onClick = ::togglePause,
+                        )
+                        PlayerRoundButton(
+                            icon = Icons.Filled.SkipNext,
+                            contentDescription = "Следующая серия",
+                            size = 56.dp,
+                            enabled = canNext,
+                            onClick = { if (canNext) switchEpisode(episodeChoices[episodeIdx + 1]) },
+                        )
+                    }
+                }
+
+                // Низ: ряд кнопок над полосой прогресса с таймерами (SeekbarWithTimers).
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        PlayerIconButton(
+                            if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                            if (paused) "Играть" else "Пауза",
+                            onClick = ::togglePause,
+                        )
+                        Box {
+                            PlayerIconButton(
+                                if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                                "Звук",
+                                onClick = { volumePopupOpen = !volumePopupOpen },
+                            )
+                            if (volumePopupOpen) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF1C1C22).copy(alpha = 0.95f),
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .padding(bottom = 52.dp),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    ) {
+                                        androidx.compose.material3.Slider(
+                                            value = volume / 130f,
+                                            onValueChange = {
+                                                volume = (it * 130).toInt()
+                                                if (muted) {
+                                                    muted = false
+                                                    scope.launch(Dispatchers.IO) { player?.setMuted(false) }
+                                                }
+                                                val v = volume
+                                                scope.launch(Dispatchers.IO) { player?.setVolume(v) }
+                                            },
+                                            valueRange = 0f..1f,
+                                            modifier = Modifier.width(160.dp),
+                                        )
+                                        Text("$volume%", color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                                     }
                                 }
                             }
-                        })
+                        }
+                        PlayerIconButton(
+                            if (muted) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                            if (muted) "Включить звук" else "Без звука",
+                            onClick = ::toggleMute,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        if (qualities.keys.size > 1) {
+                            PlayerDropdownPill(
+                                prefix = null,
+                                options = qualities.keys.map { DropdownOption(it, it) },
+                                selectedId = currentQuality,
+                                onOpenChange = { anyMenuOpen = it },
+                                onSelect = { id -> switchQuality(id) },
+                            )
+                        }
                     }
-                },
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = formatTime(if (isSeeking) seekPreviewPosition else position),
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                        PlayerSeekbar(
+                            position = (if (isSeeking) seekPreviewPosition else position).toFloat(),
+                            duration = duration.toFloat().coerceAtLeast(0.1f),
+                            onSeekStart = {
+                                isSeeking = true
+                                if (!paused) scope.launch(Dispatchers.IO) { player?.setPaused(true) }
+                            },
+                            onSeek = { target ->
+                                seekPreviewPosition = target.toDouble()
+                                lastInteractionMs = System.currentTimeMillis()
+                            },
+                            onSeekEnd = { target ->
+                                scope.launch(Dispatchers.IO) {
+                                    player?.seekTo(target.toDouble())
+                                    if (!paused) player?.setPaused(false)
+                                }
+                                position = target.toDouble()
+                                isSeeking = false
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "-${formatTime((duration - if (isSeeking) seekPreviewPosition else position).coerceAtLeast(0.0))}",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private val SPEED_OPTIONS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 3f)
+
+/** Целевая позиция во время перетаскивания полосы (отображается вместо текущей). */
+private var seekPreviewPosition by mutableStateOf(0.0)
+
+/** Круглая кнопка контролов mpvEx: Surface CircleShape surfaceContainer 0.55, иконка 20dp. */
+@Composable
+private fun PlayerIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .size(45.dp)
+            .clip(CircleShape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = ripple(bounded = true),
+                onClick = onClick,
+            ),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+        contentColor = Color.White,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+    ) {
+        Icon(imageVector = icon, contentDescription = contentDescription, tint = Color.White, modifier = Modifier.padding(12.dp).size(20.dp))
+    }
+}
+
+/** Центральная круглая кнопка (play/pause/prev/next) — mpvEx размеры 56/64dp. */
+@Composable
+private fun PlayerRoundButton(
+    icon: ImageVector,
+    contentDescription: String,
+    size: androidx.compose.ui.unit.Dp,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .clickable(
+                enabled = enabled,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = ripple(bounded = true),
+                onClick = onClick,
+            ),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+        contentColor = Color.White,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = if (enabled) Color.White else Color.White.copy(alpha = 0.38f),
+            modifier = Modifier.fillMaxSize().padding(size / 4f),
+        )
+    }
+}
+
+/** Пилюля названия в стиле mpvEx: monospace, полупрозрачный фон. */
+@Composable
+private fun PlayerTitlePill(title: String) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+        contentColor = Color.White,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+        modifier = Modifier.height(45.dp).widthIn(max = 320.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+        ) {
+            Text(
+                text = title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace,
+                color = Color.White,
             )
-            (attachError ?: resolveError)?.let { message ->
+        }
+    }
+}
+
+/** Dropdown-пилюля mpvEx (серии/озвучки/качество/скорость): полупрозрачная, monospace. */
+@Composable
+private fun PlayerDropdownPill(
+    prefix: String?,
+    options: List<DropdownOption>,
+    selectedId: String?,
+    onOpenChange: (Boolean) -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    if (options.isEmpty()) return
+    var open by remember { mutableStateOf(false) }
+    LaunchedEffect(open) { onOpenChange(open) }
+    DisposableEffect(Unit) { onDispose { onOpenChange(false) } }
+    val selected = options.firstOrNull { it.id == selectedId }
+    Box {
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+            contentColor = Color.White,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+            modifier = Modifier
+                .height(45.dp)
+                .clip(RoundedCornerShape(50))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = ripple(bounded = true),
+                    onClick = { open = !open },
+                ),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                modifier = Modifier.padding(horizontal = 12.dp),
+            ) {
+                if (prefix != null) {
+                    Text(prefix, color = Color.White.copy(alpha = 0.65f), fontSize = 12.sp, maxLines = 1)
+                }
                 Text(
-                    message,
-                    color = Color(0xFFFF7B72),
-                    fontSize = 13.sp,
-                    modifier = Modifier.align(Alignment.Center).padding(16.dp),
+                    text = selected?.label ?: options.first().label,
+                    color = if (selected == null) Color.White.copy(alpha = 0.85f) else Color.White,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
                 )
             }
         }
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Button(onClick = {
-                scope.launch(Dispatchers.IO) { player?.let { paused = it.togglePause() } }
-            }) {
-                Text(if (paused) "▶" else "⏸")
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            option.label,
+                            color = if (option.id == selectedId) MaterialTheme.colorScheme.primary else Color.White,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                        )
+                    },
+                    onClick = {
+                        open = false
+                        onSelect(option.id)
+                    },
+                )
             }
-            TextButton(onClick = {
-                val next = !muted
-                muted = next
-                scope.launch(Dispatchers.IO) { player?.setMuted(next) }
-            }) {
-                Text(if (muted) "🔇" else "🔊")
-            }
-            Slider(
-                value = volume / 130f,
-                onValueChange = {
-                    volume = (it * 130).toInt()
-                    if (muted) {
-                        muted = false
-                        scope.launch(Dispatchers.IO) { player?.setMuted(false) }
-                    }
-                    val v = volume
-                    scope.launch(Dispatchers.IO) { player?.setVolume(v) }
-                },
-                valueRange = 0f..1f,
-                modifier = Modifier.width(110.dp),
-            )
-            Slider(
-                value = position.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(0.1f)),
-                onValueChange = { position = it.toDouble() },
-                onValueChangeFinished = {
-                    scope.launch(Dispatchers.IO) { player?.seekTo(position) }
-                },
-                valueRange = 0f..duration.toFloat().coerceAtLeast(0.1f),
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                "${formatTime(position)} / ${formatTime(duration)}",
-                color = Color(0xFF9F9FA8),
-                fontSize = 12.sp,
-            )
         }
+    }
+}
+
+/** Полоса прогресса mpvEx: тонкий трек, круглая ручка, драг с паузой и возвратом. */
+@Composable
+private fun PlayerSeekbar(
+    position: Float,
+    duration: Float,
+    onSeekStart: () -> Unit,
+    onSeek: (Float) -> Unit,
+    onSeekEnd: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val cs = MaterialTheme.colorScheme
+    var dragTarget by remember { mutableStateOf<Float?>(null) }
+    var trackWidthPx by remember { mutableStateOf(0f) }
+    val progress = ((dragTarget ?: position) / duration).coerceIn(0f, 1f)
+    Box(
+        modifier = modifier
+            .height(26.dp)
+            .onSizeChanged { trackWidthPx = it.width.toFloat() }
+            .pointerInput(duration) {
+                detectTapGestures(
+                    onTap = { offset ->
+                        val ratio = (offset.x / trackWidthPx.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                        onSeekStart()
+                        onSeek(ratio * duration)
+                        onSeekEnd(ratio * duration)
+                    }
+                )
+            }
+            .pointerInput(duration) {
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        onSeekStart()
+                        dragTarget = (offset.x / trackWidthPx.coerceAtLeast(1f)).coerceIn(0f, 1f) * duration
+                    },
+                    onDragEnd = {
+                        dragTarget?.let(onSeekEnd)
+                        dragTarget = null
+                    },
+                    onDragCancel = { dragTarget = null },
+                ) { change, _ ->
+                    val ratio = (change.position.x / trackWidthPx.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                    dragTarget = ratio * duration
+                    onSeek(ratio * duration)
+                    change.consume()
+                }
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(5.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(Color.White.copy(alpha = 0.28f)),
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(progress)
+                .height(5.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(cs.primary),
+        )
+        Box(
+            modifier = Modifier
+                .offset { IntOffset((progress * trackWidthPx).roundToInt() - 7, 0) }
+                .size(13.dp)
+                .clip(CircleShape)
+                .background(cs.primary),
+        )
     }
 }
 
 private fun formatTime(seconds: Double): String {
     if (seconds <= 0.0 || seconds.isNaN()) return "0:00"
     val total = seconds.toLong()
-    val m = total / 60
+    val h = total / 3600
+    val m = (total % 3600) / 60
     val s = total % 60
-    return "$m:${s.toString().padStart(2, '0')}"
+    return if (h > 0) {
+        "$h:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}"
+    } else {
+        "$m:${s.toString().padStart(2, '0')}"
+    }
 }

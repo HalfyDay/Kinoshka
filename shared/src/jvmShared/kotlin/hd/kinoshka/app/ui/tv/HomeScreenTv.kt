@@ -22,10 +22,10 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Feed
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -739,7 +739,7 @@ private fun MoreTvContent(
             if (androidFeaturesAvailable) {
                 add(
                     listOf(
-                        Triple("Загрузки", "Скачанные серии и очередь", Icons.Filled.CloudDownload) to onOpenDownloads,
+                        Triple("Загрузки", "Скачанные серии и очередь", Icons.Rounded.Download) to onOpenDownloads,
                         Triple("Профиль", "Аккаунты, облако и статистика", Icons.Filled.Person) to onOpenProfile,
                     )
                 )
