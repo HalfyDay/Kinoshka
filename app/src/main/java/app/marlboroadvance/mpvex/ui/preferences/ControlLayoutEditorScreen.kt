@@ -147,10 +147,10 @@ data class ControlLayoutEditorScreen(
     val title =
       remember(region) {
         when (region) {
-          ControlRegion.TOP_RIGHT -> "Edit Top Right"
-          ControlRegion.BOTTOM_RIGHT -> "Edit Bottom Right"
-          ControlRegion.BOTTOM_LEFT -> "Edit Bottom Left"
-          ControlRegion.PORTRAIT_BOTTOM -> "Edit Portrait Bottom"
+          ControlRegion.TOP_RIGHT -> "Верхние правые: редактирование"
+          ControlRegion.BOTTOM_RIGHT -> "Нижние правые: редактирование"
+          ControlRegion.BOTTOM_LEFT -> "Нижние левые: редактирование"
+          ControlRegion.PORTRAIT_BOTTOM -> "Нижние в портретном: редактирование"
         }
       }
 
@@ -158,8 +158,8 @@ data class ControlLayoutEditorScreen(
 
     if (showResetDialog) {
       ConfirmDialog(
-        title = "Reset to default?",
-        subtitle = "This will reset the controls in this region to their default configuration.",
+        title = "Сбросить к стандартной?",
+        subtitle = "Кнопки в этой области вернутся к стандартной раскладке.",
         onConfirm = {
           prefToEdit.delete()
           selectedButtons = prefToEdit
@@ -187,12 +187,12 @@ data class ControlLayoutEditorScreen(
           title = { Text(text = title) },
           navigationIcon = {
             IconButton(onClick = backstack::removeLastOrNull) {
-              Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
+              Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Назад")
             }
           },
           actions = {
             IconButton(onClick = { showResetDialog = true }) {
-              Icon(Icons.Outlined.Restore, contentDescription = "Reset to default")
+              Icon(Icons.Outlined.Restore, contentDescription = "Сбросить к стандартной")
             }
           },
         )
@@ -228,7 +228,7 @@ data class ControlLayoutEditorScreen(
             // --- 1. Header & Active Selected Zone ---
             item(span = { GridItemSpan(maxLineSpan) }) {
               androidx.compose.material3.Text(
-                      text = "Long press to reorder items. Tap the '-' icon to remove them.",
+                      text = "Долгое нажатие — изменить порядок. Кнопка «−» — убрать элемент.",
                       style = MaterialTheme.typography.bodySmall,
                       color = MaterialTheme.colorScheme.onSurfaceVariant,
                       modifier = Modifier.padding(bottom = 12.dp, start = 4.dp)
@@ -263,13 +263,13 @@ data class ControlLayoutEditorScreen(
                                  tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                              )
                              androidx.compose.material3.Text(
-                                  text = "Drop zone is empty",
+                                  text = "Область пуста",
                                   style = MaterialTheme.typography.bodyMedium,
                                   fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
                                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                              )
                              androidx.compose.material3.Text(
-                                  text = "Tap buttons from the 'Available Palette' below",
+                                  text = "Добавьте кнопки из палитры ниже",
                                   style = MaterialTheme.typography.labelSmall,
                                   color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                              )
@@ -363,7 +363,7 @@ data class ControlLayoutEditorScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 androidx.compose.material3.Text(
-                                    text = "All available buttons are in use.",
+                                    text = "Все доступные кнопки уже добавлены.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -407,7 +407,7 @@ private fun IconsLegend() {
         ) {
             // Header
             Text(
-                text = "Icons Legend",
+                text = "Обозначения значков",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,

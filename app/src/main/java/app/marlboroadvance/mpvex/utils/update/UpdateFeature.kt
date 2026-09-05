@@ -14,8 +14,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -409,7 +409,7 @@ fun UpdateDialog(
         onDismissRequest = onDismiss,
         icon = {
             Icon(
-                imageVector = if (actionLabel == "Install") Icons.Filled.SystemUpdate else Icons.Filled.CloudDownload,
+                imageVector = if (actionLabel == "Install") Icons.Filled.SystemUpdate else Icons.Rounded.CloudDownload,
                 contentDescription = null,
                 modifier = Modifier.size(24.dp)
             )

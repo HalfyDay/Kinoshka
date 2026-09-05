@@ -57,11 +57,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
@@ -75,6 +77,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -112,6 +122,45 @@ object TvTheme {
 private val TvCardShape = RoundedCornerShape(16.dp)
 private val TvChipShape = RoundedCornerShape(12.dp)
 private val TvPillShape = RoundedCornerShape(24.dp)
+
+/**
+ * Режим навигации вокруг фокуса: рамка выделения рисуется только когда интерфейс
+ * управляют клавиатурой/пультом (стрелки, D-pad). По умолчанию true — ТВ-пульт
+ * не оставляет указателя, и рамка на ТВ ведёт себя как раньше.
+ */
+val LocalKeyboardNavigation = staticCompositionLocalOf { true }
+
+/** Клавиши, переводящие интерфейс в режим клавиатурной навигации. */
+private val KeyboardNavigationKeys = setOf(
+    Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp, Key.DirectionDown,
+    Key.DirectionCenter, Key.PageUp, Key.PageDown, Key.Tab, Key.MoveHome, Key.MoveEnd,
+)
+
+/**
+ * Трекер режима навигации на корне окна: навигационные клавиши включают
+ * клавиатурный режим, любое событие мыши/тача возвращает мышиный. Состояние
+ * должен предоставлять вызывающий ([remember { mutableStateOf(true) }]) —
+ * оно же уходит в CompositionLocalProvider(LocalKeyboardNavigation).
+ */
+fun Modifier.inputModeTracker(keyboardMode: MutableState<Boolean>): Modifier = composed {
+    onPreviewKeyEvent { event ->
+        if (event.type == KeyEventType.KeyDown && event.key in KeyboardNavigationKeys) {
+            keyboardMode.value = true
+        }
+        false
+    }.pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent()
+                val isPointer = event.type == PointerEventType.Move ||
+                    event.type == PointerEventType.Press ||
+                    event.type == PointerEventType.Release ||
+                    event.type == PointerEventType.Scroll
+                if (isPointer && keyboardMode.value) keyboardMode.value = false
+            }
+        }
+    }
+}
 
 /**
  * Фокус-поведение для D-pad/стрелок/мыши — единое для ТВ, десктопа и планшета.
@@ -164,8 +213,11 @@ fun Modifier.tvFocusable(
     }
     val scaleX by animateFloatAsState(targetValue = targetScaleX, animationSpec = squashSpring, label = "tvSquashX")
     val scaleY by animateFloatAsState(targetValue = targetScaleY, animationSpec = squashSpring, label = "tvSquashY")
+    // Рамка — признак клавиатурной/D-pad навигации: ховер мыши даёт фокус (блюр-фон,
+    // squash), но не рисует рамку, пока пользователь не взял стрелки или пульт.
+    val keyboardNavigation = LocalKeyboardNavigation.current
     val borderColor by animateColorAsState(
-        targetValue = if (focused) focusBorder ?: Color.Transparent else Color.Transparent,
+        targetValue = if (focused && keyboardNavigation) focusBorder ?: Color.Transparent else Color.Transparent,
         animationSpec = tween(durationMillis = 150),
         label = "tvFocusBorder",
     )
@@ -193,7 +245,7 @@ fun Modifier.tvFocusable(
         .hoverable(interaction, enabled = enabled)
         .then(if (bringIntoViewOnFocus) Modifier.bringIntoViewRequester(bringIntoView) else Modifier)
         .then(
-            if (focused && focusBorder != null) Modifier.border(3.dp, borderColor, shape)
+            if (focused && keyboardNavigation && focusBorder != null) Modifier.border(3.dp, borderColor, shape)
             else Modifier
         )
         .clickable(

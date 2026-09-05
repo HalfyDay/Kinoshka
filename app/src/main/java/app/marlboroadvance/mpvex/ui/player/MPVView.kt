@@ -53,6 +53,12 @@ class ShaderPerformanceMonitor(
     frameDropCount = dropCount
     lastFrameDropCheck = now
 
+    // With Anime4K OFF the drops cannot come from shaders — a seek alone spikes mpv's
+    // cumulative drop counters, and without this gate every seek showed the
+    // "Шейдеры перегружают устройство" toast to users who never enabled shaders.
+    // Checked after the interval gate so the pref read stays off the per-tick hot path.
+    if (decoderPreferences.anime4kMode.get() == "OFF") return
+
     if (dropsPerSec <= DROPS_PER_SEC_THRESHOLD) {
       consecutiveBadIntervals = 0
       return

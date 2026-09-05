@@ -109,6 +109,11 @@ class MpvPlayer private constructor(
 
     fun seekTo(seconds: Double) = setProperty("time-pos", seconds.toString())
 
+    /** Скорость воспроизведения (1.0 = обычная), как speed-меню mpvEx. */
+    fun setSpeed(speed: Float) = setProperty("speed", speed.toString())
+
+    fun speed(): Float = getProperty("speed")?.toFloatOrNull() ?: 1f
+
     fun setVolume(percent: Int) = setProperty("volume", percent.coerceIn(0, 130).toString())
 
     fun setMuted(muted: Boolean) = setProperty("mute", if (muted) "yes" else "no")

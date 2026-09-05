@@ -24,13 +24,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -79,8 +80,11 @@ import hd.kinoshka.app.ui.screens.FeedViewModelFactory
 import hd.kinoshka.app.ui.screens.FilmsViewModel
 import hd.kinoshka.app.ui.screens.FilmsViewModelFactory
 import hd.kinoshka.app.ui.screens.HomeScreen
+import hd.kinoshka.app.ui.screens.HomeTab
+import hd.kinoshka.app.ui.screens.MainSection
 import hd.kinoshka.app.ui.screens.InAppWebScreen
 import hd.kinoshka.app.ui.screens.MpvExPlayerScreen
+import hd.kinoshka.app.ui.screens.MpvExPreferencesHost
 import hd.kinoshka.app.ui.screens.ProfileScreen
 import hd.kinoshka.app.ui.screens.RecommendationFeedScreen
 import hd.kinoshka.app.ui.screens.SettingsScreen
@@ -384,6 +388,8 @@ fun KinoApp() {
                 UserStateStore(appContext)
             )
         )
+        // Интенсивность свайпов ленты для физики общей пилюли (слот ниже).
+        var feedIntensity by remember { mutableFloatStateOf(0f) }
 
         // The native player (its own Activity) writes watch progress straight into
         // SharedPreferences. Re-read it whenever the app comes back to the foreground so the
@@ -426,7 +432,9 @@ fun KinoApp() {
                             var progressEditorSeed by remember { mutableStateOf<ProgressEditorSeed?>(null) }
                             // Состояние шита поднято: бэкдроп гаснет по targetValue (старт hide),
                             // а не по onDismiss (конец анимации) — уход строго вместе с шитом.
-                            val progressSheetState = rememberModalBottomSheetState()
+                            val progressSheetState = rememberBottomSheetState(
+                                initialValue = SheetValue.Hidden
+                            )
 
                             HomeScreen(
                                 state = vm.uiState,
@@ -458,12 +466,58 @@ fun KinoApp() {
                                 onOpenFeed = { navController.navigate("anime_feed") },
                                 onOpenTopic = { topicId -> navController.navigate("anime_topic/$topicId") },
                                 onOpenRecommendationsFeed = {
-                                    // Без launchSingleTop спам тапами по «Ленте» складывал в бэкстек
-                                    // N копий тяжёлого фида с плеерами — чёрный экран на телефонах.
+                                    // Только TV-раскладка: телефон показывает ленту
+                                    // секцией через feedContent ниже, без навигации.
                                     navController.navigate("recommendations_feed") {
                                         launchSingleTop = true
                                     }
                                 },
+                                // Лента рекомендаций — 4-я секция в том же окружении:
+                                // одна пилюля, один дебаунс, круг переезжает общей
+                                // анимацией с какой бы секции ни пришли. Отдельный
+                                // маршрут остался только для TV (см. ниже).
+                                feedContent = { select ->
+                                    // Жизненный цикл как у маршрута: уход из секции
+                                    // гасит фоновые джобы ленты.
+                                    androidx.compose.runtime.DisposableEffect(Unit) {
+                                        onDispose { feedVm.onScreenClosed() }
+                                    }
+                                    RecommendationFeedScreen(
+                                        state = feedVm.uiState,
+                                        onOpened = { feedVm.onScreenOpened() },
+                                        onChipSelected = feedVm::selectChip,
+                                        onLoadMore = feedVm::loadMore,
+                                        onToggleExpanded = feedVm::toggleExpanded,
+                                        onReact = feedVm::react,
+                                        onItemShown = feedVm::onItemShown,
+                                        onOpenDetails = { id -> navController.navigate(detailsRoute(id)) },
+                                        onToggleSound = feedVm::toggleSound,
+                                        onSelectGenre = feedVm::selectFeedGenre,
+                                        onSurprise = feedVm::surpriseMe,
+                                        showNavPill = false,
+                                        onScrollIntensity = { feedIntensity = it },
+                                        onSelectHomeSection = { tab ->
+                                            select(
+                                                when (tab) {
+                                                    HomeTab.HISTORY -> MainSection.LIBRARY
+                                                    HomeTab.CATALOG -> MainSection.DISCOVER
+                                                    HomeTab.MORE -> MainSection.MORE
+                                                }
+                                            )
+                                        },
+                                        onAdultGateConfirm = feedVm::confirmAdultGate,
+                                        onAdultGateDismiss = feedVm::dismissAdultGate,
+                                        onSaveTastes = feedVm::saveTastes,
+                                        onSkipTastes = feedVm::skipTastes,
+                                        onResetSeen = feedVm::resetSeenAndRestart,
+                                        onShareDiagnostics = { feedVm.shareDiagnostics() },
+                                        onLoadTastes = feedVm::tasteSnapshot,
+                                        onLoadLiked = feedVm::likedTitles,
+                                        onRemoveLiked = feedVm::removeLikedEntry,
+                                        onPlan = { item -> feedVm.planForLater(item) { vm.refreshAfterPlayerClosed() } }
+                                    )
+                                },
+                                feedIntensity = feedIntensity,
                                 onRetryOverview = vm::retryOverview,
                                 onSeeAll = vm::openOverviewSeeAll,
                                 onDiscoverReset = {
@@ -518,8 +572,11 @@ fun KinoApp() {
                                     )
                                 },
                                 onLibrarySortSelected = vm::setLibrarySortType,
+                                librarySortType = vm.uiState.librarySortType,
                                 librarySortReversed = vm.uiState.librarySortReversed,
                                 onLibrarySortReversedChanged = vm::setLibrarySortReversed,
+                                libraryGroupType = vm.uiState.libraryGroupType,
+                                onLibraryGroupSelected = vm::setLibraryGroupType,
                                 onHentaiVisibilityChanged = vm::setHentaiVisibleInLibrary,
                                 onRemoveSearchHistory = vm::removeSearchQueryFromHistory,
                                 onClearSearchHistory = vm::clearSearchHistory
@@ -718,6 +775,8 @@ fun KinoApp() {
                             }
                         }
                         composable(
+                            // Только TV-раскладка: телефон показывает ленту секцией
+                            // HomeScreen через feedContent (общая пилюля и дебаунс).
                             route = "recommendations_feed",
                             enterTransition = { fadeIn(animationSpec = tween(160)) },
                             exitTransition = { fadeOut(animationSpec = tween(120)) },
@@ -903,7 +962,8 @@ fun KinoApp() {
                                     onDiscoverTileSizeSelected = vm::setDiscoverTileSize,
                                     onLibraryTileSizeSelected = vm::setLibraryTileSize,
                                     onShowFpsCounterChanged = vm::setShowFpsCounter,
-                                    showDebugSettings = BuildConfig.DEBUG
+                                    showDebugSettings = BuildConfig.DEBUG,
+                                    onOpenPlayerSettings = { navController.navigate("player_settings") }
                                 )
                             }
                         }
@@ -937,6 +997,25 @@ fun KinoApp() {
                                         context.findActivity()?.let { AppDiagnostics.shareReport(it) }
                                     }
                                 )
+                            }
+                        }
+                        composable(
+                            route = "player_settings",
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
+                        ) {
+                            TvAdaptiveSecondary {
+                                MpvExPreferencesHost(onExit = { navController.popBackStack() })
                             }
                         }
                         composable(

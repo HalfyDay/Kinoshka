@@ -153,6 +153,8 @@ data class ShikimoriAnimeCache(    val shikimoriId: Int,
     val kind: String?,
     val score: String?,
     val status: String?,
+    /** Год выхода (из aired_on): группировка библиотеки по году. Старые кэши — null. */
+    val year: Int? = null,
     // Хентай-флаг по жанру/рейтингу Shikimori (вычисляется при дозагрузке деталей оценок).
     // Boolean?, а не Boolean: Gson не применяет Kotlin-дефолты — в старых кэшах поле
     // отсутствует и десериализуется как null.
@@ -181,6 +183,15 @@ enum class LibrarySortType(val label: String) {
     ALPHABETICAL("По алфавиту"),
     RATING("По рейтингу"),
     RELEASE_DATE("По дате выхода")
+}
+
+/** Группировка библиотеки по общим признакам: внутри групп сохраняется выбранная сортировка. */
+enum class LibraryGroupType(val label: String) {
+    NONE("Без группировки"),
+    TYPE("По типу"),
+    RELEASE_STATUS("По статусу"),
+    YEAR("По году"),
+    SCORE("По оценке")
 }
 
 private const val MAX_PROFILES = 5000
@@ -308,6 +319,17 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
     fun setLibrarySortType(sortType: LibrarySortType) {
         prefs.putString(librarySortKey, sortType.name).apply()
+    }
+
+    private val libraryGroupTypeKey = "library_group_type"
+
+    /** Группировка библиотеки по общим признакам (поверх выбранной сортировки). */
+    fun getLibraryGroupType(): LibraryGroupType {
+        return readEnum(libraryGroupTypeKey, LibraryGroupType.NONE)
+    }
+
+    fun setLibraryGroupType(group: LibraryGroupType) {
+        prefs.putString(libraryGroupTypeKey, group.name).apply()
     }
 
     /** «Обратный порядок» переворачивает естественное направление выбранной сортировки. */

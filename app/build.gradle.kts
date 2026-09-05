@@ -181,6 +181,9 @@ dependencies {
 
     // Unit tests
     testImplementation("junit:junit:4.13.2")
+    // Real org.json instead of the mockable Android stub: resolvers parse JSON responses
+    // (ddbb/kinobox player lists) and their tests assert on the parsed output.
+    testImplementation("org.json:json:20240303")
 
     // Navigation3 for mpvEx
     implementation("androidx.navigation3:navigation3-runtime:1.1.3")

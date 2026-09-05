@@ -8,6 +8,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -313,7 +314,7 @@ fun WyzieSubtitleRow(
                 }
             }
             IconButton(onClick = onDownload) {
-                Icon(imageVector = Icons.Default.Download, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Icon(imageVector = Icons.Rounded.Download, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             }
         }
     }

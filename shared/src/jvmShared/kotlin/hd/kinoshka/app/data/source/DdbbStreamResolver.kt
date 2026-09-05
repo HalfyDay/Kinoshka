@@ -2,7 +2,14 @@ package hd.kinoshka.app.data.source
 
 import hd.kinoshka.app.util.log.KLog
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -62,6 +69,62 @@ object DdbbStreamResolver {
     private val HARVESTABLE_TYPES = setOf("alloha", "veoveo", "collaps", "turbo")
 
     /**
+     * Cached entry point: the details screen prefetches on open and the Watch button resolves
+     * again on press — without this memo the same embed would be downloaded+decoded twice.
+     * Short TTL keeps expiring CDN tokens from outliving their validity.
+     */
+    private val resolveCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<DdbbStream>>()
+    private const val RESOLVE_CACHE_TTL_MS = 3 * 60_000L
+
+    /** Application-scoped executor for shared resolves. The details prefetch and the Watch-button
+     * resolve overlap by seconds, and a duplicate full resolve re-downloads the same ~1MB turbo
+     * embed over the same pipe (live log: 7.8s + 15.1s for one page — half the startup wait).
+     * Late callers join the running job instead; the job's lifetime is decoupled from any single
+     * caller, so one cancelled screen cannot kill the download another caller is awaiting. */
+    private val resolveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inFlightResolves = java.util.concurrent.ConcurrentHashMap<Int, Deferred<DdbbStream?>>()
+
+    suspend fun resolveMovieStream(kinopoiskId: Int): DdbbStream? = withContext(Dispatchers.IO) {
+        if (kinopoiskId <= 0) return@withContext null
+        resolveCache[kinopoiskId]?.let { entry ->
+            if (System.currentTimeMillis() - entry.timestamp < RESOLVE_CACHE_TTL_MS) return@withContext entry.data
+            resolveCache.remove(kinopoiskId)
+        }
+        while (true) {
+            val running = inFlightResolves[kinopoiskId]
+            if (running != null && running.isActive) {
+                try {
+                    return@withContext running.await()
+                } catch (e: CancellationException) {
+                    // The shared job was cancelled under us (evictResolveCache on a dead-stream
+                    // retry): re-run the loop and start our own resolve — unless the cancellation
+                    // came from THIS caller going away, which must keep propagating.
+                    currentCoroutineContext().ensureActive()
+                }
+            }
+            val job = resolveScope.async {
+                // The result is cached inside the job, not by the joining caller: the first
+                // caller can be cancelled mid-await without losing the finished work.
+                resolveMovieStreamInternal(kinopoiskId).also { resolved ->
+                    if (resolved != null) {
+                        resolveCache[kinopoiskId] = CacheEntry(resolved, System.currentTimeMillis())
+                    }
+                }
+            }
+            if (inFlightResolves.putIfAbsent(kinopoiskId, job) == null) {
+                try {
+                    return@withContext job.await()
+                } finally {
+                    inFlightResolves.remove(kinopoiskId, job)
+                }
+            }
+            job.cancel()
+        }
+        // The loop above only exits via return/exception; this keeps the lambda's type explicit.
+        return@withContext null
+    }
+
+    /**
      * Walks the ddbb player list for [kinopoiskId] and returns the first successfully extracted
      * stream, or null when every source fails / the aggregator has nothing.
      *
@@ -69,27 +132,6 @@ object DdbbStreamResolver {
      * streams hide behind JS bootstrapping or region checks (alloha/veoveo), or whose tokens
      * expire too fast to survive the round-trip (collaps).
      */
-    private val resolveCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<DdbbStream>>()
-    private const val RESOLVE_CACHE_TTL_MS = 3 * 60_000L
-
-    /**
-     * Cached entry point: the details screen prefetches on open and the Watch button resolves
-     * again on press — without this memo the same embed would be downloaded+decoded twice.
-     * Short TTL keeps expiring CDN tokens from outliving their validity.
-     */
-    suspend fun resolveMovieStream(kinopoiskId: Int): DdbbStream? = withContext(Dispatchers.IO) {
-        if (kinopoiskId <= 0) return@withContext null
-        resolveCache[kinopoiskId]?.let { entry ->
-            if (System.currentTimeMillis() - entry.timestamp < RESOLVE_CACHE_TTL_MS) return@withContext entry.data
-            resolveCache.remove(kinopoiskId)
-        }
-        val resolved = resolveMovieStreamInternal(kinopoiskId)
-        if (resolved != null) {
-            resolveCache[kinopoiskId] = CacheEntry(resolved, System.currentTimeMillis())
-        }
-        resolved
-    }
-
     private suspend fun resolveMovieStreamInternal(kinopoiskId: Int): DdbbStream? = withContext(Dispatchers.IO) {
         if (kinopoiskId <= 0) return@withContext null
         val players = fetchPlayers(kinopoiskId)
@@ -193,12 +235,35 @@ object DdbbStreamResolver {
                 KLog.w(TAG, "$lowerType: no stream extracted")
             }
         }
+
+        // ddbb produced nothing usable: fall through to the standalone webmaster sources
+        // (VideoCDN API, Collaps embed, Voidboost/Rezka embed) — same DdbbStream output
+        // contract, so the race and the player stay untouched. The chain gets its own
+        // budget: the ddbb deadline above may already be spent by slow ddbb attempts.
+        val fallbackDeadline = System.currentTimeMillis() + FALLBACK_DEADLINE_MS
+        WebmasterStreamSources.resolveVideoCdn(kinopoiskId, fallbackDeadline)?.let {
+            KLog.i(TAG, "fallback winner: videocdn for kp=$kinopoiskId")
+            return@withContext it
+        }
+        WebmasterStreamSources.resolveCollaps(kinopoiskId, fallbackDeadline)?.let {
+            KLog.i(TAG, "fallback winner: collaps for kp=$kinopoiskId")
+            return@withContext it
+        }
+        WebmasterStreamSources.resolveVoidboost(kinopoiskId, fallbackDeadline)?.let {
+            KLog.i(TAG, "fallback winner: voidboost for kp=$kinopoiskId")
+            return@withContext it
+        }
         null
     }
 
     private const val HARVEST_TIMEOUT_MS = 15_000L
 
     private const val RESOLVE_DEADLINE_MS = 20_000L
+
+    /** Own budget of the webmaster fallback chain (VideoCDN/Collaps/Voidboost) after ddbb
+     *  produced nothing — independent of [RESOLVE_DEADLINE_MS], which ddbb's slow attempts
+     *  may already have burned by the time the chain starts. */
+    private const val FALLBACK_DEADLINE_MS = 12_000L
 
     /** Bounded probe budget: worst case (every candidate dead) adds ~2-3s to startup. */
     private const val LAUNCH_PROBE_MAX_ATTEMPTS = 8
@@ -302,7 +367,9 @@ object DdbbStreamResolver {
     private val turboCatalogs = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<TurboCatalog>>()
     private const val TURBO_CATALOG_TTL_MS = 30 * 60_000L
 
-    private fun registerTurboCatalog(
+    // internal: WebmasterStreamSources (fallback chain) registers its own catalogs here so the
+    // player's quality menus and the movie dropdown see new-source rows like turbo's.
+    internal fun registerTurboCatalog(
         kinopoiskId: Int,
         headers: Map<String, String>,
         parse: TurboSerialParse,
@@ -345,6 +412,9 @@ object DdbbStreamResolver {
             // The turbo catalog's ladders/voiceover links share the same dated CDN tokens —
             // serving them to a retry just re-hands the expired urls.
             turboCatalogs.remove(kinopoiskId)
+            // A still-running shared resolve would hand its in-progress result to the retry via
+            // the join path — cancel it so the next resolve starts fresh.
+            inFlightResolves.remove(kinopoiskId)?.cancel()
         }
     }
 
@@ -377,6 +447,14 @@ object DdbbStreamResolver {
             if (System.currentTimeMillis() - entry.timestamp < playersCacheTtlMs) return entry.data
             playersCache.remove(kinopoiskId)
         }
+        val result = fetchDdbbPlayers(kinopoiskId)
+        if (result.isNotEmpty()) {
+            playersCache[kinopoiskId] = CacheEntry(result, System.currentTimeMillis())
+        }
+        return result
+    }
+
+    private fun fetchDdbbPlayers(kinopoiskId: Int): List<Pair<String, String>> {
         // Three quick attempts beat two slow ones: the host intermittently drops connects for
         // a few seconds at a time, so an extra try usually lands (live-verified on Rick&Morty).
         for (attempt in 0..2) {
@@ -402,9 +480,7 @@ object DdbbStreamResolver {
                         result += type to url
                     }
                     if (result.isNotEmpty()) {
-                        val sorted = result.sortedBy { typeRank(it.first) }
-                        playersCache[kinopoiskId] = CacheEntry(sorted, System.currentTimeMillis())
-                        return sorted
+                        return result.sortedBy { typeRank(it.first) }
                     }
                 }
             }.onFailure { KLog.w(TAG, "players api attempt $attempt failed", it) }

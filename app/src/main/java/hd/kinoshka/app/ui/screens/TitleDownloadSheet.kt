@@ -22,8 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -31,6 +29,8 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -353,7 +353,7 @@ private fun TorrentRow(
                 link.torrentUrl?.let { url ->
                     IconButton(onClick = { onOpen(url) }, modifier = Modifier.size(34.dp)) {
                         Icon(
-                            imageVector = Icons.Default.Download,
+                            imageVector = Icons.Rounded.Download,
                             contentDescription = "Скачать .torrent",
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp)
@@ -537,7 +537,7 @@ private fun AnimeOfflineSection(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            Icons.Default.DownloadDone,
+                            Icons.Rounded.DownloadDone,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp)
@@ -707,7 +707,7 @@ private fun VoiceoverDownloadRow(
                 } else {
                     IconButton(onClick = onDownloadAll, modifier = Modifier.size(38.dp)) {
                         Icon(
-                            Icons.Default.Download,
+                            Icons.Rounded.Download,
                             contentDescription = "Скачать все серии",
                             tint = MaterialTheme.colorScheme.primary
                         )
@@ -782,7 +782,7 @@ private fun EpisodeDownloadMiniRow(
         )
         when {
             downloaded -> Icon(
-                Icons.Default.DownloadDone,
+                Icons.Rounded.DownloadDone,
                 contentDescription = "Скачано",
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(22.dp)
@@ -809,7 +809,7 @@ private fun EpisodeDownloadMiniRow(
             }
             else -> IconButton(onClick = onDownload, modifier = Modifier.size(40.dp)) {
                 Icon(
-                    Icons.Default.Download,
+                    Icons.Rounded.Download,
                     contentDescription = "Скачать серию",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(21.dp)
@@ -1075,7 +1075,7 @@ private fun SeriesVoiceoverRow(
                 } else {
                     IconButton(onClick = onDownloadAll, modifier = Modifier.size(38.dp)) {
                         Icon(
-                            Icons.Default.Download,
+                            Icons.Rounded.Download,
                             contentDescription = "Скачать все серии",
                             tint = MaterialTheme.colorScheme.primary
                         )
@@ -1160,7 +1160,7 @@ private fun MovieVoiceoverRow(
             }
             when {
                 downloaded -> Icon(
-                    Icons.Default.DownloadDone,
+                    Icons.Rounded.DownloadDone,
                     contentDescription = "Скачано",
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp)
@@ -1172,7 +1172,7 @@ private fun MovieVoiceoverRow(
                     Icon(Icons.Default.Close, contentDescription = "Отменить", modifier = Modifier.size(18.dp))
                 }
                 else -> IconButton(onClick = onDownload, modifier = Modifier.size(38.dp)) {
-                    Icon(Icons.Default.Download, contentDescription = "Скачать", tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Rounded.Download, contentDescription = "Скачать", tint = MaterialTheme.colorScheme.primary)
                 }
             }
         }

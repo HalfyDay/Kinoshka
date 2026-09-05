@@ -28,4 +28,32 @@ internal object Win32 {
         User32.INSTANCE.EnumChildWindows(parent, proc, null)
         return found[0]?.let { Pointer.nativeValue(it.pointer) }
     }
+
+    /** HWND окна верхнего уровня по точному заголовку (точки входа плеера и окна видео). */
+    fun findWindowHwnd(title: String): Long? {
+        val hwnd: HWND = User32.INSTANCE.FindWindow(null, title) ?: return null
+        return Pointer.nativeValue(hwnd.pointer)
+    }
+
+    private fun hwndOf(peer: Long): HWND = HWND(Pointer.createConstant(peer))
+
+    /** Поставить hwnd непосредственно ПОД insertBelowHwnd по z-порядку (видео под окном UI). */
+    fun setZOrderBelow(hwnd: Long, insertBelowHwnd: Long) {
+        User32.INSTANCE.SetWindowPos(
+            hwndOf(hwnd),
+            hwndOf(insertBelowHwnd),
+            0, 0, 0, 0,
+            WinUser.SWP_NOMOVE or WinUser.SWP_NOSIZE or WinUser.SWP_NOACTIVATE,
+        )
+    }
+
+    /** Геометрия окна без активации (синхронизация окна видео с окном плеера). */
+    fun moveWindow(hwnd: Long, x: Int, y: Int, width: Int, height: Int) {
+        User32.INSTANCE.SetWindowPos(
+            hwndOf(hwnd),
+            null,
+            x, y, width, height,
+            WinUser.SWP_NOZORDER or WinUser.SWP_NOACTIVATE,
+        )
+    }
 }

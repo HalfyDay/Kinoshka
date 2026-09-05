@@ -3,9 +3,9 @@ package hd.kinoshka.app.ui.screens
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -49,7 +49,7 @@ internal fun HentaiDownloadButton(
     val downloaded = library.any { it.key == key }
     when {
         downloaded -> Icon(
-            imageVector = Icons.Default.DownloadDone,
+            imageVector = Icons.Rounded.DownloadDone,
             contentDescription = "Скачано",
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(20.dp)
@@ -96,7 +96,7 @@ internal fun HentaiDownloadButton(
             modifier = Modifier.size(32.dp)
         ) {
             Icon(
-                imageVector = Icons.Default.Download,
+                imageVector = Icons.Rounded.Download,
                 contentDescription = "Скачать серию",
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(19.dp)
