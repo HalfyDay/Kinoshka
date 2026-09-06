@@ -2,25 +2,27 @@
 
 Фильмы, сериалы и аниме в одном приложении: каталог, библиотека, подробности о тайтлах и удобный просмотр.
 
+<p align="center">Telegram-канал: <a href="https://t.me/Kinoshka_HalfDay">t.me/Kinoshka_HalfDay</a> — новые версии и обсуждение</p>
+
 ## Каталог
 
-**Фильмы:** обсуждаемое, что смотрят сейчас, топ-250, подборки по жанрам. Поиск, фильтры, случайный выбор и карточки с годом и рейтингом.
+**Фильмы:** обсуждаемое, «Сейчас смотрят», топ-250, подборки по жанрам. Поиск, фильтры, случайный выбор и карточки с годом и рейтингом.
 
-<img src="screenshots/02-home-films.jpg" width="270" />
+<p align="center"><img src="screenshots/02-home-films.jpg" width="270" /></p>
 
 **Аниме:** новости, календарь выхода эпизодов с обратным отсчётом, онгоинги и подборки по жанрам.
 
-<img src="screenshots/01-home-anime.jpg" width="270" />
+<p align="center"><img src="screenshots/01-home-anime.jpg" width="270" /></p>
 
 **Быстрый выбор:** листайте рекомендации и сразу переходите к просмотру.
 
-<img src="screenshots/04-discovery.jpg" width="270" />
+<p align="center"><img src="screenshots/04-discovery.jpg" width="270" /></p>
 
 ## Карточка тайтла
 
 Всё важное в одном месте: рейтинг, год, жанры, описание, кадры, трейлер, сезоны и эпизоды, персонажи и похожее.
 
-<img src="screenshots/06-details-serial.jpg" width="270" /> <img src="screenshots/07-details-anime.jpg" width="270" />
+<p align="center"><img src="screenshots/06-details-serial.jpg" width="270" /> <img src="screenshots/07-details-anime.jpg" width="270" /></p>
 
 Для онгоингов видно, сколько эпизодов уже вышло и когда выйдет следующий.
 
@@ -30,13 +32,13 @@
 
 Бейджи вроде «+3 эп.» подскажут, что вышли новые серии.
 
-<img src="screenshots/03-library.jpg" width="270" />
+<p align="center"><img src="screenshots/03-library.jpg" width="270" /></p>
 
 ## Просмотр
 
 Плеер с выбором серии, озвучки и качества вплоть до 1080p. Для сериалов и аниме легко переключаться между эпизодами прямо во время просмотра.
 
-<img src="screenshots/08-player.jpg" width="800" />
+<p align="center"><img src="screenshots/08-player.jpg" width="800" /></p>
 
 ## Ещё
 
@@ -44,7 +46,7 @@
 - **Профиль** — аватарка и статистика активности
 - **Настройки** — тёмная и AMOLED-тема, фильтры, резервная копия библиотеки (импорт/экспорт)
 
-<img src="screenshots/05-more.jpg" width="270" />
+<p align="center"><img src="screenshots/05-more.jpg" width="270" /></p>
 
 ## Установка
 
