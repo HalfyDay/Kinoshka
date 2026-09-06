@@ -215,7 +215,7 @@ private const val DUB_MARK_TTL_MS = 30L * 24 * 60 * 60 * 1000
 private fun dubMarkIsFresh(lastUsedAt: Long, now: Long = System.currentTimeMillis()): Boolean =
     lastUsedAt > 0L && now - lastUsedAt <= DUB_MARK_TTL_MS
 
-private fun UserFilmProfile.isCurated(): Boolean =
+internal fun UserFilmProfile.isCurated(): Boolean =
     status != null || userRating != null || !note.isNullOrBlank() ||
         (watchedEpisodes ?: 0) > 0 || (watchedSeasons ?: 0) > 0
 
@@ -561,8 +561,14 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
      * Seeds/refreshes the library profile from details metadata WITHOUT touching history.
      * Merely pressing "Watch" must not surface the title in any library folder — it becomes
      * visible only after real playback is committed ([commitRealPlayback]).
+     *
+     * [seed] carries the effective profile (e.g. rebuilt from the Shikimori rate) for titles
+     * whose local profile is missing or a statusless husk: without it the stored profile would
+     * shadow the server-side status/rating/progress everywhere the profile is read directly.
+     * The `updatedAt` of an existing profile is preserved — pressing "Watch" is not a user
+     * edit, and bumping it floated the title to the top of the DATE_ADDED library sort.
      */
-    fun addFromDetails(item: FilmDetails) = synchronized(BLOB_LOCK) {
+    fun addFromDetails(item: FilmDetails, seed: UserFilmProfile? = null) = synchronized(BLOB_LOCK) {
         val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
         val subtitle = item.year?.toString()
         val rating = item.ratingKinopoisk?.let { "KP %.1f".format(Locale.US, it) }
@@ -578,15 +584,17 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 ratingText = rating,
                 type = item.type,
                 isRussian = isRussian,
-                status = existing?.status,
-                userRating = existing?.userRating,
-                note = existing?.note,
-                watchedSeasons = existing?.watchedSeasons,
-                watchedEpisodes = existing?.watchedEpisodes,
-                totalEpisodesInSeason = existing?.totalEpisodesInSeason,
-                totalSeasons = existing?.totalSeasons,
-                totalEpisodes = existing?.totalEpisodes,
-                updatedAt = System.currentTimeMillis()
+                status = existing?.status ?: seed?.status,
+                userRating = existing?.userRating ?: seed?.userRating,
+                note = existing?.note ?: seed?.note,
+                watchedSeasons = existing?.watchedSeasons ?: seed?.watchedSeasons,
+                watchedEpisodes = existing?.watchedEpisodes ?: seed?.watchedEpisodes,
+                totalEpisodesInSeason = existing?.totalEpisodesInSeason ?: seed?.totalEpisodesInSeason,
+                totalSeasons = existing?.totalSeasons ?: seed?.totalSeasons,
+                totalEpisodes = existing?.totalEpisodes ?: seed?.totalEpisodes,
+                updatedAt = existing?.updatedAt
+                    ?: seed?.updatedAt?.takeIf { it > 0 }
+                    ?: System.currentTimeMillis()
             )
         )
     }

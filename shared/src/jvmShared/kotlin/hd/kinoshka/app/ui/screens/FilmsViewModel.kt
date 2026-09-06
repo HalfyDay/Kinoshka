@@ -11,6 +11,7 @@ import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
 import hd.kinoshka.app.data.local.HistoryRecord
 import hd.kinoshka.app.data.local.UserFilmProfile
+import hd.kinoshka.app.data.local.isCurated
 import hd.kinoshka.app.data.local.UserFilmStatus
 import hd.kinoshka.app.data.local.ShikimoriAuthProvider
 import hd.kinoshka.app.data.local.UserStateStoreBase
@@ -1345,7 +1346,12 @@ class FilmsViewModel(
     }
 
     fun onWatch(details: FilmDetails) {
-        userStateStore.addFromDetails(details)
+        // For anime, seed the stored profile with the rate-backed profile: otherwise pressing
+        // "Watch" persists a statusless husk that shadows the Shikimori rate in the
+        // «Прогресс просмотра» editor, and the husk's updatedAt bump floated the title to
+        // the top of the «По дате добавления» sort. In-memory only — no extra prefs parsing.
+        val seed = rateProfileForFilm(details.kinopoiskId)
+        userStateStore.addFromDetails(details, seed)
         refreshLibraryAndAvatar()
     }
 
@@ -2605,42 +2611,50 @@ class FilmsViewModel(
 
     private fun getUserProfileForFilm(id: Int): UserFilmProfile? {
         val local = userStateStore.getProfile(id)
-        if (local != null) return local
-        if (id >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
-            val rawAnimeId = id - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
-            val rate = cachedShikimoriRates.firstOrNull { 
-                it.targetId == rawAnimeId || it.anime?.id == rawAnimeId 
-            }
-            if (rate != null) {
-                val filmStatus = when (rate.status.lowercase()) {
-                    "watching" -> UserFilmStatus.WATCHING
-                    "planned" -> UserFilmStatus.PLANNED
-                    "completed" -> UserFilmStatus.COMPLETED
-                    "rewatching" -> UserFilmStatus.REWATCHING
-                    "on_hold" -> UserFilmStatus.ON_HOLD
-                    "dropped" -> UserFilmStatus.DROPPED
-                    else -> UserFilmStatus.WATCHING
-                }
-                return UserFilmProfile(
-                    kinopoiskId = id,
-                    title = rate.anime?.displayTitle ?: "Аниме #$rawAnimeId",
-                    subtitle = rate.anime?.name,
-                    posterUrl = rate.anime?.posterUrl,
-                    ratingText = rate.anime?.score ?: if (rate.score > 0) rate.score.toString() else null,
-                    type = "ANIME",
-                    status = filmStatus,
-                    userRating = if (rate.score > 0) rate.score else null,
-                    note = rate.text,
-                    watchedSeasons = null,
-                    watchedEpisodes = if (rate.episodes > 0) rate.episodes else null,
-                    totalEpisodesInSeason = null,
-                    totalSeasons = null,
-                    totalEpisodes = rate.anime?.episodes,
-                    updatedAt = rate.getUpdatedEpochMillis()
-                )
-            }
+        // A status/progress-free "Watch"-seed husk (not curated) must not shadow the
+        // Shikimori rate: for such titles the rate is what actually holds the user's
+        // status, and the husk made the status vanish from the «Прогресс просмотра» editor.
+        if (local != null && local.isCurated()) return local
+        return rateProfileForFilm(id)
+    }
+
+    /**
+     * Rate-backed profile for an anime id (>= ANIME_ID_OFFSET), built purely from the
+     * in-memory rate cache — no prefs parsing. Used for the «Прогресс просмотра» fallback
+     * and as the [UserStateStoreBase.addFromDetails] seed when pressing «Смотреть».
+     */
+    private fun rateProfileForFilm(id: Int): UserFilmProfile? {
+        if (id < hd.kinoshka.app.data.model.ANIME_ID_OFFSET) return null
+        val rawAnimeId = id - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+        val rate = cachedShikimoriRates.firstOrNull {
+            it.targetId == rawAnimeId || it.anime?.id == rawAnimeId
+        } ?: return null
+        val filmStatus = when (rate.status.lowercase()) {
+            "watching" -> UserFilmStatus.WATCHING
+            "planned" -> UserFilmStatus.PLANNED
+            "completed" -> UserFilmStatus.COMPLETED
+            "rewatching" -> UserFilmStatus.REWATCHING
+            "on_hold" -> UserFilmStatus.ON_HOLD
+            "dropped" -> UserFilmStatus.DROPPED
+            else -> UserFilmStatus.WATCHING
         }
-        return null
+        return UserFilmProfile(
+            kinopoiskId = id,
+            title = rate.anime?.displayTitle ?: "Аниме #$rawAnimeId",
+            subtitle = rate.anime?.name,
+            posterUrl = rate.anime?.posterUrl,
+            ratingText = rate.anime?.score ?: if (rate.score > 0) rate.score.toString() else null,
+            type = "ANIME",
+            status = filmStatus,
+            userRating = if (rate.score > 0) rate.score else null,
+            note = rate.text,
+            watchedSeasons = null,
+            watchedEpisodes = if (rate.episodes > 0) rate.episodes else null,
+            totalEpisodesInSeason = null,
+            totalSeasons = null,
+            totalEpisodes = rate.anime?.episodes,
+            updatedAt = rate.getUpdatedEpochMillis()
+        )
     }
 }
 
