@@ -22,7 +22,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.Feed
+import androidx.compose.material.icons.automirrored.filled.Feed
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.rounded.Download
@@ -545,7 +545,7 @@ private fun DiscoverTvBody(
                 TvMenuCard(
                     title = "Новости",
                     subtitle = "Новости аниме от Shikimori",
-                    icon = Icons.Filled.Feed,
+                    icon = Icons.AutoMirrored.Filled.Feed,
                     onClick = onOpenFeed,
                 )
             }

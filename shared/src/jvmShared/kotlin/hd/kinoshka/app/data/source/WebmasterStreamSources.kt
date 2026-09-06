@@ -12,8 +12,8 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
- * Standalone "webmaster" sources used as fallbacks when the ddbb aggregator has nothing for a
- * title — the same APIs the free-TV web-app ecosystem (Lampa & co) calls:
+ * Standalone "webmaster" sources resolved CONCURRENTLY with the ddbb aggregator — the same
+ * APIs the free-TV web-app ecosystem (Lampa & co) calls:
  *
  *  - VideoCDN — a JSON API (svetacdn/cdnmovies domains wrap one backend) whose per-translation
  *    quality ladders hide in the title's embed page under `id="files"`.
@@ -22,9 +22,9 @@ import java.util.concurrent.TimeUnit
  *  - Voidboost — the Rezka backend: an embed with per-voice tokens; each voice/episode needs
  *    one iframe fetch whose `file` blob is junk-salted base64.
  *
- * All three are looked up by kinopoisk id and return [DdbbStreamResolver.DdbbStream]-shaped
- * results, so they join the existing direct-source pipeline (race, voiceover dropdown, quality
- * menus) without any player-side changes.
+ * All three are looked up by kinopoisk id and return [DdbbStreamResolver.SourceParse] results,
+ * which DdbbStreamResolver merges with the ddbb parses into ONE catalog — the voiceover
+ * dropdown then lists dubs of every source, and any source can win playback.
  */
 object WebmasterStreamSources {
     private const val TAG = "WebmasterStreamSources"
@@ -39,9 +39,22 @@ object WebmasterStreamSources {
         Triple("https://cdnmovies.net/api/short/", "token", "02d56099082ad5ad586d7fe4e2493dd9")
     )
 
+    /** Per-host cookie jar: voidboost's embed 301s once and 403s the cookieless retry — the jar
+     *  carries the set-cookie across fetchHtmlTracked's manual redirect hops. */
+    private val cookieJar = object : okhttp3.CookieJar {
+        private val store = java.util.concurrent.ConcurrentHashMap<String, List<okhttp3.Cookie>>()
+        override fun saveFromResponse(url: okhttp3.HttpUrl, cookies: List<okhttp3.Cookie>) {
+            if (cookies.isNotEmpty()) store[url.host] = cookies
+        }
+        override fun loadForRequest(url: okhttp3.HttpUrl): List<okhttp3.Cookie> = store[url.host].orEmpty()
+    }
+
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .dns(hd.kinoshka.app.utils.DohFallbackDns)
+            .proxySelector(StreamProxySelector())
+            .proxyAuthenticator(StreamProxyConfig.okHttpProxyAuthenticator())
+            .cookieJar(cookieJar)
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .build()
@@ -67,14 +80,70 @@ object WebmasterStreamSources {
         else -> ""
     }
 
-    private fun fetchHtml(url: String, referer: String?): String? = runCatching {
-        val builder = Request.Builder().url(url).addHeader("User-Agent", USER_AGENT)
-        referer?.let { builder.addHeader("Referer", it) }
-        httpClient.newCall(builder.build()).execute().use { response ->
-            if (!response.isSuccessful) return@runCatching null
-            response.body.string().takeIf { it.isNotEmpty() }
+    /** OkHttp's auto-follow dies on the live mirrors: voidboost.net 302s its embed to a cleartext
+     *  http:// host, which the network security policy refuses (UnknownServiceException). Redirects
+     *  are followed manually instead — every hop lands in the log and http:// targets are upgraded
+     *  to https://. */
+    private val redirectlessClient: OkHttpClient by lazy {
+        httpClient.newBuilder().followRedirects(false).build()
+    }
+
+    private fun buildGet(url: String, referer: String?): Request =
+        Request.Builder().url(url).addHeader("User-Agent", USER_AGENT)
+            // Bare-UA requests get refused by the WAFs in front of these hosts; the Accept /
+            // Accept-Language pair is what Lampa's browser context sends implicitly.
+            .addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .addHeader("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+            .apply { referer?.let { addHeader("Referer", it) } }
+            .build()
+
+    /** Public for unit tests: relative Location resolution + forced cleartext-to-https upgrade. */
+    fun redirectTargetUrl(from: String, location: String): String? =
+        runCatching { java.net.URI(from).resolve(location) }.getOrNull()
+            ?.toString()
+            ?.let { if (it.startsWith("http://")) "https://${it.removePrefix("http://")}" else it }
+
+    private fun fetchHtml(url: String, referer: String?): String? = fetchHtmlTracked(url, referer)?.second
+
+    /** Returns (final post-redirect URL, html). Callers that build follow-up paths against the
+     *  serving host (voidboost ladder iframes) need the final URL, not the requested one. */
+    private fun fetchHtmlTracked(url: String, referer: String?, depth: Int = 0): Pair<String, String>? {
+        val host = runCatching { java.net.URI(url).host }.getOrNull() ?: url.take(60)
+        return try {
+            redirectlessClient.newCall(buildGet(url, referer)).execute().use { response ->
+                when {
+                    response.isRedirect -> {
+                        val location = response.header("Location")
+                        when {
+                            location.isNullOrEmpty() ->
+                                KLog.w(TAG, "fetch $host: HTTP ${response.code} redirect without Location")
+                            depth >= 3 ->
+                                KLog.w(TAG, "fetch $host: redirect chain longer than 3 hops")
+                            else -> {
+                                val target = redirectTargetUrl(url, location)
+                                if (target == null) {
+                                    KLog.w(TAG, "fetch $host: unparsable redirect Location $location")
+                                } else {
+                                    KLog.i(TAG, "fetch $host: HTTP ${response.code} -> " +
+                                        (runCatching { java.net.URI(target).host }.getOrNull() ?: target))
+                                    return fetchHtmlTracked(target, referer, depth + 1)
+                                }
+                            }
+                        }
+                        null
+                    }
+                    !response.isSuccessful -> {
+                        KLog.w(TAG, "fetch $host: HTTP ${response.code}")
+                        null
+                    }
+                    else -> response.body.string().takeIf { it.isNotEmpty() }?.let { url to it }
+                }
+            }
+        } catch (e: Exception) {
+            KLog.w(TAG, "fetch $host: ${e.javaClass.simpleName}: ${e.message?.take(140)}")
+            null
         }
-    }.getOrNull()
+    }
 
     private val NUMERIC_ENTITY_REGEX = Regex("&#(\\d+);")
 
@@ -96,24 +165,34 @@ object WebmasterStreamSources {
      */
     data class VideocdnFiles(val perTranslation: Map<String, Map<String?, Map<String, String>>>)
 
-    suspend fun resolveVideoCdn(kinopoiskId: Int, deadlineMs: Long): DdbbStreamResolver.DdbbStream? =
+    internal suspend fun resolveVideoCdn(kinopoiskId: Int): DdbbStreamResolver.SourceParse? =
         withContext(Dispatchers.IO) {
-            if (kinopoiskId <= 0 || System.currentTimeMillis() >= deadlineMs) return@withContext null
+            if (kinopoiskId <= 0) return@withContext null
             for ((base, param, token) in VIDEOCDN_APIS) {
-                if (System.currentTimeMillis() >= deadlineMs) return@withContext null
                 // Kind is unknown at this layer (the resolver interface carries only the id),
                 // so both endpoints are queried — two cheap JSON calls.
                 val row = videocdnRow(base, param, token, "movies", kinopoiskId)
                     ?: videocdnRow(base, param, token, "tv", kinopoiskId)
-                    ?: continue
+                if (row == null) continue
                 val iframeSrc = row.optString("iframe_src").trim()
                 if (iframeSrc.isEmpty()) continue
                 val embedUrl = normalizeProtocolUrl(iframeSrc)
-                val embedHtml = fetchHtml(embedUrl, embedOrigin(embedUrl)) ?: continue
+                val embedHtml = fetchHtml(embedUrl, embedOrigin(embedUrl))
+                if (embedHtml == null) {
+                    KLog.w(TAG, "videocdn: embed fetch failed for kp=$kinopoiskId")
+                    continue
+                }
                 val filesValue = VIDEOCDN_FILES_REGEX.find(embedHtml.replace("\n", ""))
-                    ?.groupValues?.get(1) ?: continue
+                    ?.groupValues?.get(1)
+                if (filesValue == null) {
+                    KLog.w(TAG, "videocdn: files payload not found in embed for kp=$kinopoiskId")
+                    continue
+                }
                 val files = parseVideocdnFiles(filesValue)
-                if (files.perTranslation.isEmpty()) continue
+                if (files.perTranslation.isEmpty()) {
+                    KLog.w(TAG, "videocdn: files payload empty for kp=$kinopoiskId")
+                    continue
+                }
 
                 val headers = mapOf("User-Agent" to USER_AGENT)
                 val tracks = mutableListOf<DdbbEpisodeTrack>()
@@ -145,29 +224,26 @@ object WebmasterStreamSources {
                 }
                 if (voiceRows.isEmpty() && tracks.isEmpty()) continue
 
-                DdbbStreamResolver.registerTurboCatalog(
-                    kinopoiskId, headers,
-                    DdbbStreamResolver.TurboSerialParse(tracks, ladders),
-                    voiceRows.map { it.key to it.value }
-                )
                 val defaultUrl = voiceRows.values.firstOrNull()
                     ?: tracks.firstOrNull()?.playerUrl
                     ?: continue
                 KLog.i(TAG, "videocdn: ${voiceRows.size} dub rows, ${tracks.size} episode tracks for kp=$kinopoiskId")
-                return@withContext DdbbStreamResolver.DdbbStream(
+                return@withContext DdbbStreamResolver.SourceParse(
+                    sourceName = "VideoCDN",
                     url = defaultUrl,
                     headers = headers,
                     qualities = ladders[defaultUrl] ?: mapOf("Auto" to defaultUrl),
-                    sourceName = "VideoCDN",
-                    translations = voiceRows.map { it.key to it.value },
-                    episodeTracks = tracks
+                    voiceRows = voiceRows.map { it.key to it.value },
+                    tracks = tracks,
+                    ladders = ladders
                 )
             }
             null
         }
 
     /** One API row for [kinopoiskId]; an id query is authoritative, a row carrying a DIFFERENT
-     *  kinopoisk id is a fuzzy-backend stray and is rejected. */
+     *  kinopoisk id is a fuzzy-backend stray and is rejected. Every null path logs its reason —
+     *  fetch failures are logged by [fetchHtml] itself. */
     private fun videocdnRow(
         base: String,
         param: String,
@@ -175,17 +251,39 @@ object WebmasterStreamSources {
         type: String,
         kinopoiskId: Int,
     ): org.json.JSONObject? {
-        val url = "${base.trimEnd('/')}/$type?$param=$token&kinopoisk_id=$kinopoiskId"
+        // field=global mirrors Lampa's query shape; the backend ignores unknown extras.
+        val url = "${base.trimEnd('/')}/$type?$param=$token&kinopoisk_id=$kinopoiskId&field=global"
         val body = fetchHtml(url, referer = null) ?: return null
-        val root = runCatching { org.json.JSONObject(body) }.getOrNull() ?: return null
-        val arr = root.optJSONArray("data") ?: root.optJSONArray("result") ?: return null
-        for (i in 0 until arr.length()) {
-            val row = arr.optJSONObject(i) ?: continue
+        val root = runCatching { org.json.JSONObject(body) }.getOrNull() ?: run {
+            KLog.w(TAG, "videocdn: non-JSON api response from $base$type (waf page?)")
+            return null
+        }
+        val rows = videocdnRows(root)
+        if (rows.isEmpty()) {
+            KLog.w(TAG, "videocdn: empty data on $base$type for kp=$kinopoiskId " +
+                "(keys=${root.keys().asSequence().take(6).toList()})")
+            return null
+        }
+        for (row in rows) {
             val rowKp = row.optInt("kinopoisk_id")
             if (rowKp > 0 && rowKp != kinopoiskId) continue
             if (row.optString("iframe_src").trim().isNotEmpty()) return row
         }
+        KLog.w(TAG, "videocdn: ${rows.size} row(s) on $base$type, none matched kp=$kinopoiskId " +
+            "(first row kp=${rows.first().optInt("kinopoisk_id")}, imdb=${rows.first().optString("imdb_id")})")
         return null
+    }
+
+    /** Public for unit tests: `data` arrives as an array (svetacdn) or an id-keyed object
+     *  (cdnmovies short — Lampa converts it with `for key in json.data` the same way). */
+    fun videocdnRows(root: org.json.JSONObject): List<org.json.JSONObject> {
+        root.optJSONArray("data")?.let { arr ->
+            return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+        }
+        root.optJSONObject("data")?.let { obj ->
+            return obj.keys().asSequence().mapNotNull { obj.optJSONObject(it) }.toList()
+        }
+        return emptyList()
     }
 
     fun parseVideocdnFiles(filesValue: String): VideocdnFiles {
@@ -329,16 +427,26 @@ object WebmasterStreamSources {
         val movieAudio: List<String>
     )
 
-    private val MAKEPLAYER_NONGREEDY = Regex("""makePlayer\s*\((\{.*?\})\)\s*;""", RegexOption.DOT_MATCHES_ALL)
-    private val MAKEPLAYER_GREEDY = Regex("""makePlayer\s*\((\{.*\})\)\s*;""", RegexOption.DOT_MATCHES_ALL)
+    private val MAKEPLAYER_ARG_REGEX = Regex("""seasons\s*:\s*\[""")
 
-    suspend fun resolveCollaps(kinopoiskId: Int, deadlineMs: Long): DdbbStreamResolver.DdbbStream? =
+    internal suspend fun resolveCollaps(kinopoiskId: Int): DdbbStreamResolver.SourceParse? =
         withContext(Dispatchers.IO) {
-            if (kinopoiskId <= 0 || System.currentTimeMillis() >= deadlineMs) return@withContext null
+            if (kinopoiskId <= 0) return@withContext null
             val embedUrl = "https://api.delivembd.ws/embed/kp/$kinopoiskId"
             val headers = mapOf("Referer" to "https://api.delivembd.ws/", "User-Agent" to USER_AGENT)
-            val html = fetchHtml(embedUrl, "https://api.delivembd.ws/") ?: return@withContext null
-            val parse = parseCollapsMakePlayer(html) ?: return@withContext null
+            val html = fetchHtml(embedUrl, "https://api.delivembd.ws/")
+            if (html == null) {
+                KLog.w(TAG, "collaps: embed fetch failed for kp=$kinopoiskId")
+                return@withContext null
+            }
+            val parse = parseCollapsMakePlayer(html)
+            if (parse == null) {
+                // The embed answers but carries no makePlayer(): geo-fence / WAF page / "not found" —
+                // the page head usually says which, so keep it in the log.
+                KLog.w(TAG, "collaps: makePlayer config not found for kp=$kinopoiskId; page head: " +
+                    html.take(240).replace(Regex("\\s+"), " "))
+                return@withContext null
+            }
 
             val tracks = mutableListOf<DdbbEpisodeTrack>()
             val ladders = LinkedHashMap<String, Map<String, String>>()
@@ -357,45 +465,44 @@ object WebmasterStreamSources {
             }
             val voiceRows = if (tracks.isEmpty() && parse.movieHls != null) {
                 listOf(
-                    (parse.movieAudio.firstOrNull()?.takeIf(String::isNotEmpty) ?: "Collaps") to parse.movieHls!!
+                    (parse.movieAudio.firstOrNull()?.takeIf(String::isNotEmpty) ?: "Collaps") to parse.movieHls
                 )
             } else emptyList()
             if (tracks.isEmpty() && voiceRows.isEmpty()) return@withContext null
 
-            DdbbStreamResolver.registerTurboCatalog(
-                kinopoiskId, headers,
-                DdbbStreamResolver.TurboSerialParse(tracks, ladders), voiceRows
-            )
             val defaultUrl = voiceRows.firstOrNull()?.second
                 ?: tracks.firstOrNull()?.playerUrl
                 ?: return@withContext null
             KLog.i(TAG, "collaps: ${tracks.size} episode tracks, movie=${parse.movieHls != null} for kp=$kinopoiskId")
-            DdbbStreamResolver.DdbbStream(
+            DdbbStreamResolver.SourceParse(
+                sourceName = "Collaps",
                 url = defaultUrl,
                 headers = headers,
                 qualities = ladders[defaultUrl] ?: mapOf("Auto" to defaultUrl),
-                sourceName = "Collaps",
-                translations = voiceRows,
-                episodeTracks = tracks
+                voiceRows = voiceRows,
+                tracks = tracks,
+                ladders = ladders
             )
         }
 
     /**
-     * Parses the embed's `makePlayer({...});` JS object literal. The literal carries unquoted
-     * keys, which org.json's lenient tokenizer accepts as-is; a non-greedy brace capture runs
-     * first and a greedy one covers configs containing nested `});`-looking text.
+     * Parses the embed's `makePlayer({...});` config. The 2026 embed wraps the data in raw JS
+     * (tracker `function(){...}` values, `30 * 1000` arithmetic), so the whole argument never
+     * parses as JSON any more — the brace-balanced argument is captured first and only the
+     * data-bearing subtrees (`seasons:[...]`, movie `source:{...}`) are parsed individually.
+     * Both remain lenient-JSON: unquoted keys and single-quoted strings are accepted.
      */
     fun parseCollapsMakePlayer(html: String): CollapsParse? {
         val flat = html.replace("\n", "")
-        val root = sequenceOf(MAKEPLAYER_NONGREEDY, MAKEPLAYER_GREEDY)
-            .mapNotNull { it.find(flat)?.groupValues?.get(1) }
-            .firstNotNullOfOrNull { runCatching { org.json.JSONObject(it) }.getOrNull() }
-            ?: return null
+        val arg = makePlayerArg(flat) ?: return null
+        val seasonsArr = MAKEPLAYER_ARG_REGEX.find(arg)
+            ?.let { m -> balancedSpan(arg, m.range.last, '[', ']') }
+            ?.let { text -> runCatching { org.json.JSONArray(text) }.getOrNull() }
 
         val seasons = mutableListOf<CollapsSeason>()
-        root.optJSONObject("playlist")?.optJSONArray("seasons")?.let { seasonsArr ->
-            for (i in 0 until seasonsArr.length()) {
-                val s = seasonsArr.optJSONObject(i) ?: continue
+        seasonsArr?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val s = arr.optJSONObject(i) ?: continue
                 val episodes = mutableListOf<CollapsEpisode>()
                 s.optJSONArray("episodes")?.let { epsArr ->
                     for (j in 0 until epsArr.length()) {
@@ -413,10 +520,47 @@ object WebmasterStreamSources {
                 if (episodes.isNotEmpty()) seasons += CollapsSeason(s.optInt("season"), episodes)
             }
         }
-        val source = root.optJSONObject("source")
+        val source = Regex("""source\s*:\s*\{""").find(arg)
+            ?.let { m -> balancedSpan(arg, m.range.last, '{', '}') }
+            ?.let { text -> runCatching { org.json.JSONObject(text) }.getOrNull() }
         val movieHls = source?.optString("hls")?.trim()?.takeIf { it.startsWith("http") }
         if (seasons.isEmpty() && movieHls == null) return null
         return CollapsParse(seasons, movieHls, source?.let { audioNames(it) } ?: emptyList())
+    }
+
+    /** The `makePlayer({...})` call's argument — the config call, not the `function makePlayer(opts)`
+     *  definition the same page carries (that one's argument is not a brace literal). */
+    private fun makePlayerArg(flat: String): String? {
+        val start = flat.indexOf("makePlayer({")
+        if (start < 0) return null
+        return balancedSpan(flat, start + "makePlayer(".length, '{', '}')
+    }
+
+    /** The substring from the bracket at [start] to its matching pair — string- and escape-aware
+     *  (quotes may contain braces), null when unbalanced or the char at [start] is not [open]. */
+    private fun balancedSpan(s: String, start: Int, open: Char, close: Char): String? {
+        if (s.getOrNull(start) != open) return null
+        var depth = 0
+        var quote: Char? = null
+        var i = start
+        while (i < s.length) {
+            val c = s[i]
+            if (quote != null) {
+                when {
+                    c == '\\' -> i += 1
+                    c == quote -> quote = null
+                }
+            } else when {
+                c == '\'' || c == '"' -> quote = c
+                c == open -> depth += 1
+                c == close -> {
+                    depth -= 1
+                    if (depth == 0) return s.substring(start, i + 1)
+                }
+            }
+            i += 1
+        }
+        return null
     }
 
     private fun audioNames(obj: org.json.JSONObject): List<String> =
@@ -441,13 +585,32 @@ object WebmasterStreamSources {
 
     private val VOIDBOOST_FILE_REGEX = Regex("""file': '(.*?)'""", RegexOption.DOT_MATCHES_ALL)
 
-    suspend fun resolveVoidboost(kinopoiskId: Int, deadlineMs: Long): DdbbStreamResolver.DdbbStream? =
+    // voidboost.cc (legacy gidonline-era domain) has no A record any more (verified 2026-09);
+    // voidboost.net answers and 302s to the current host, which fetchHtmlTracked follows. The
+    // resolve runs detached from the launch, so a dead mirror costs nothing user-visible.
+    private val VOIDBOOST_BASES = listOf("https://voidboost.net")
+
+    internal suspend fun resolveVoidboost(kinopoiskId: Int): DdbbStreamResolver.SourceParse? =
         withContext(Dispatchers.IO) {
-            if (kinopoiskId <= 0 || System.currentTimeMillis() >= deadlineMs) return@withContext null
-            val html = fetchHtml("https://voidboost.net/embed/$kinopoiskId?s=1", "https://voidboost.net/")
-                ?: return@withContext null
+            if (kinopoiskId <= 0) return@withContext null
+            val fetched = VOIDBOOST_BASES.firstNotNullOfOrNull { base ->
+                fetchHtmlTracked("$base/embed/$kinopoiskId?s=1", "$base/")
+            }
+            if (fetched == null) {
+                KLog.w(TAG, "voidboost: embed fetch failed for kp=$kinopoiskId")
+                return@withContext null
+            }
+            // Ladder iframes must go to the host that actually served the embed — redirects move it.
+            val (_, html) = fetched
+            val base = embedOrigin(fetched.first)?.trimEnd('/') ?: run {
+                KLog.w(TAG, "voidboost: unparsable embed host for kp=$kinopoiskId")
+                return@withContext null
+            }
             val embed = parseVoidboostEmbed(html)
-            if (embed.voices.isEmpty()) return@withContext null
+            if (embed.voices.isEmpty()) {
+                KLog.w(TAG, "voidboost: no voice tokens for kp=$kinopoiskId")
+                return@withContext null
+            }
             val headers = mapOf("Referer" to "https://voidboost.net/", "User-Agent" to USER_AGENT)
 
             val tracks = mutableListOf<DdbbEpisodeTrack>()
@@ -459,8 +622,7 @@ object WebmasterStreamSources {
                 val voices = embed.voices.take(VOIDBOOST_MAX_VOICES)
                 val results = coroutineScope {
                     voices.map { voice -> async {
-                        if (System.currentTimeMillis() >= deadlineMs) return@async null
-                        val ladder = fetchVoidboostLadder("movie/${voice.token}/iframe?h=gidonline.io")
+                        val ladder = fetchVoidboostLadder(base, "movie/${voice.token}/iframe?h=gidonline.io")
                             ?: return@async null
                         val best = bestOfLadder(ladder) ?: return@async null
                         Triple(voice, best.second, ladder)
@@ -478,8 +640,7 @@ object WebmasterStreamSources {
                 val episodes = embed.episodes.take(VOIDBOOST_MAX_EPISODES)
                 val results = coroutineScope {
                     episodes.map { ep -> async {
-                        if (System.currentTimeMillis() >= deadlineMs) return@async null
-                        val ladder = fetchVoidboostLadder("serial/${voice.token}/iframe?s=$season&e=${ep.number}&h=gidonline.io")
+                        val ladder = fetchVoidboostLadder(base, "serial/${voice.token}/iframe?s=$season&e=${ep.number}&h=gidonline.io")
                             ?: return@async null
                         val best = bestOfLadder(ladder) ?: return@async null
                         Triple(ep, best.second, ladder)
@@ -499,27 +660,23 @@ object WebmasterStreamSources {
             }
             if (voiceRows.isEmpty() && tracks.isEmpty()) return@withContext null
 
-            DdbbStreamResolver.registerTurboCatalog(
-                kinopoiskId, headers,
-                DdbbStreamResolver.TurboSerialParse(tracks, ladders),
-                voiceRows.map { it.key to it.value }
-            )
             val defaultUrl = voiceRows.values.firstOrNull()
                 ?: tracks.firstOrNull()?.playerUrl
                 ?: return@withContext null
             KLog.i(TAG, "voidboost: ${voiceRows.size} dub rows, ${tracks.size} episode tracks for kp=$kinopoiskId")
-            DdbbStreamResolver.DdbbStream(
+            DdbbStreamResolver.SourceParse(
+                sourceName = "Voidboost",
                 url = defaultUrl,
                 headers = headers,
                 qualities = ladders[defaultUrl] ?: mapOf("Auto" to defaultUrl),
-                sourceName = "Voidboost",
-                translations = voiceRows.map { it.key to it.value },
-                episodeTracks = tracks
+                voiceRows = voiceRows.map { it.key to it.value },
+                tracks = tracks,
+                ladders = ladders
             )
         }
 
-    private fun fetchVoidboostLadder(path: String): Map<String, String>? {
-        val html = fetchHtml("https://voidboost.net/$path", "https://voidboost.net/") ?: return null
+    private fun fetchVoidboostLadder(base: String, path: String): Map<String, String>? {
+        val html = fetchHtml("$base/$path", "$base/") ?: return null
         val raw = VOIDBOOST_FILE_REGEX.find(html.replace("\n", ""))?.groupValues?.get(1) ?: return null
         return parseVoidboostQualityChunks(decodeVoidboostFile(raw)).ifEmpty { null }
     }

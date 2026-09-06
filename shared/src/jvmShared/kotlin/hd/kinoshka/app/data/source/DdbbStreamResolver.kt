@@ -8,17 +8,23 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
- * Extracts direct playable streams from video-source embed pages served by the ddbb aggregator
- * (the same sources the web player uses), so the native mpvEx player can play movies Kodik does
- * not carry.
+ * Extracts direct playable streams from video-source embed pages — the ddbb aggregator's
+ * embeds (Turbo/Collaps/Alloha/Veoveo) PLUS the standalone webmaster sources (VideoCDN,
+ * Collaps, Voidboost, see [WebmasterStreamSources]) — so the native mpvEx player can play
+ * movies Kodik does not carry. All sources resolve concurrently and their dub rows, episode
+ * tracks and quality ladders merge into one catalog.
  *
  * Supported embed formats (detected by page content, not by host — domains rotate constantly):
  *  - Collaps/VenomPlayer style: the embed HTML contains `hls: "<master.m3u8>"`.
@@ -84,7 +90,15 @@ object DdbbStreamResolver {
     private val resolveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlightResolves = java.util.concurrent.ConcurrentHashMap<Int, Deferred<DdbbStream?>>()
 
-    suspend fun resolveMovieStream(kinopoiskId: Int): DdbbStream? = withContext(Dispatchers.IO) {
+    /**
+     * [onLateSources] fires when sources still in flight finish after the winner returned:
+     * the merged catalog (winner + late sources) re-registers, refreshes the 3-min cache and
+     * lets the caller refresh its dropdown without a relaunch.
+     */
+    suspend fun resolveMovieStream(
+        kinopoiskId: Int,
+        onLateSources: ((DdbbStream) -> Unit)? = null,
+    ): DdbbStream? = withContext(Dispatchers.IO) {
         if (kinopoiskId <= 0) return@withContext null
         resolveCache[kinopoiskId]?.let { entry ->
             if (System.currentTimeMillis() - entry.timestamp < RESOLVE_CACHE_TTL_MS) return@withContext entry.data
@@ -105,7 +119,7 @@ object DdbbStreamResolver {
             val job = resolveScope.async {
                 // The result is cached inside the job, not by the joining caller: the first
                 // caller can be cancelled mid-await without losing the finished work.
-                resolveMovieStreamInternal(kinopoiskId).also { resolved ->
+                resolveMovieStreamInternal(kinopoiskId, onLateSources).also { resolved ->
                     if (resolved != null) {
                         resolveCache[kinopoiskId] = CacheEntry(resolved, System.currentTimeMillis())
                     }
@@ -125,149 +139,336 @@ object DdbbStreamResolver {
     }
 
     /**
-     * Walks the ddbb player list for [kinopoiskId] and returns the first successfully extracted
-     * stream, or null when every source fails / the aggregator has nothing.
-     *
-     * Per source: cheap HTML regex first, then a headless-WebView harvest for sources whose
-     * streams hide behind JS bootstrapping or region checks (alloha/veoveo), or whose tokens
-     * expire too fast to survive the round-trip (collaps).
+     * One direct source's parse result, before the cross-source merge: the default stream +
+     * its ladder, the dub rows (title → best-quality url), structured episode tracks, per-url
+     * quality ladders and the headers its urls must be played with. Public for unit tests.
      */
-    private suspend fun resolveMovieStreamInternal(kinopoiskId: Int): DdbbStream? = withContext(Dispatchers.IO) {
+    data class SourceParse(
+        val sourceName: String,
+        val url: String,
+        val headers: Map<String, String>,
+        val qualities: Map<String, String>,
+        val voiceRows: List<Pair<String, String>> = emptyList(),
+        val tracks: List<hd.kinoshka.app.data.model.DdbbEpisodeTrack> = emptyList(),
+        val ladders: Map<String, Map<String, String>> = emptyMap(),
+        val headersByUrl: Map<String, Map<String, String>> = emptyMap()
+    )
+
+    /** Playback priority across direct sources: turbo's multi-dub catalog first, then the
+     *  webmaster API trio, then ddbb's single-stream embeds. Public for unit tests. */
+    fun sourceRank(sourceName: String): Int = when {
+        sourceName.equals("turbo", ignoreCase = true) -> 0
+        sourceName.equals("videocdn", ignoreCase = true) -> 1
+        sourceName.equals("collaps", ignoreCase = true) -> 2
+        sourceName.equals("voidboost", ignoreCase = true) -> 3
+        else -> 4
+    }
+
+    /**
+     * Resolves [kinopoiskId] across ALL direct sources CONCURRENTLY — ddbb's embeds (Turbo,
+     * Collaps, Alloha, Veoveo) and the webmaster trio (VideoCDN, Collaps, Voidboost).
+     *
+     * PLAYBACK RETURNS AS SOON AS ONE SOURCE'S URL ANSWERS A PROBE (one attempt per arriving
+     * parse; the shared probe budget guards dead sources). Sources still in flight run on the
+     * detached [resolveScope] and merge into the catalog late — blocking the launch on the
+     * slowest source was the 23s-startup regression (live log kp=685246: turbo ready at 16s,
+     * resolve waited for the failing webmaster trio until the deadline killed a fully-parsed
+     * winner).
+     */
+    private suspend fun resolveMovieStreamInternal(
+        kinopoiskId: Int,
+        onLateSources: ((DdbbStream) -> Unit)?,
+    ): DdbbStream? = withContext(Dispatchers.IO) {
         if (kinopoiskId <= 0) return@withContext null
         val players = fetchPlayers(kinopoiskId)
         KLog.i(TAG, "ddbb offered ${players.size} sources for kp=$kinopoiskId: ${players.map { it.first }}")
-        // Hard budget: the movie race starts playback from the winner as soon as one source
-        // succeeds, but a title where every source stalls must not hold the Watch button for
-        // minutes — a single WebView harvest alone can burn HARVEST_TIMEOUT_MS.
         val deadline = System.currentTimeMillis() + RESOLVE_DEADLINE_MS
-        var harvestAttempted = false
-        players.forEach { (type, iframeUrl) ->
-            if (System.currentTimeMillis() >= deadline) {
-                KLog.w(TAG, "resolveMovieStream deadline hit, giving up before ${type.lowercase()}")
-                return@forEach
-            }
-            val lowerType = type.lowercase()
 
-            val html = fetchHtml(iframeUrl)
-            if (html != null) {
-                extractFromEmbed(html, iframeUrl)?.let { (headers, qualities) ->
-                    if (qualities.isNotEmpty()) {
-                        val bestKey = qualityPreference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
-                        KLog.i(TAG, "$lowerType: extracted ${qualities.size} qualities, using $bestKey")
-                        // extractTurboTracks must receive the obfuscated config blob, not the whole
-                        // embed page: findTurboWindow scans a short base64 prefix, and feeding it the
-                        // full HTML made the window search fail → voiceover list silently empty.
-                        val turboBlob = if (lowerType == "turbo") TURBO_BLOB_REGEX.find(html)?.groupValues?.get(1) else null
-                        // Single decode feeds both consumers: flat dub rows for the movie
-                        // dropdown and structured dub×episode rows for series playback.
-                        val turboEntries = turboBlob?.let { extractTurboEntries(it) }.orEmpty()
-                        val translations = voiceoverRowsFromEntries(turboEntries)
-                            .ifEmpty { cachedVoiceoverRows(kinopoiskId).orEmpty() }
-                        val serialParse = buildSerialParse(turboEntries)
-                        // Per-dub ladders keyed by best url — movies included. Without them the
-                        // player's quality menu dies on the first voiceover switch (the catalog
-                        // used to carry ladders for SERIES entries only).
-                        val perDubLadders = buildLadders(turboEntries)
-                        if (serialParse.tracks.isNotEmpty() || translations.isNotEmpty()) {
-                            registerTurboCatalog(kinopoiskId, headers, serialParse.copy(ladders = perDubLadders), translations)
-                        }
-                        if (serialParse.tracks.isNotEmpty()) {
-                            KLog.i(TAG, "$lowerType: structured serial catalog: " +
-                                "${serialParse.tracks.map { it.dubTitle }.distinct().size} dubs, " +
-                                "${serialParse.tracks.map { it.seasonNumber to it.episodeNumber }.distinct().size} episodes")
-                        }
-                        // The launch stream must be ONE dub's ladder, not a whole-blob scan:
-                        // collectFileFieldQualities keeps the FIRST url seen per quality label,
-                        // so with several dubs the "720p" entry could belong to a DIFFERENT
-                        // voiceover than the selected one — switching quality silently swapped
-                        // the audio track. Default dub = first row of the merged list.
-                        val defaultDubUrl = translations.firstOrNull()?.second
-                        val defaultLadder = defaultDubUrl?.let { perDubLadders[it] }
-                        // Corrupted base64 phase windows hand out urls that look valid but 404
-                        // (live log kp=5457758: fresh token, instant HTTP 404). The winner is
-                        // probed; on failure the search walks DOWN the ladder and ACROSS the
-                        // other dubs until something actually answers.
-                        val chosen = pickPlayableLaunch(
-                            defaultUrl = defaultDubUrl ?: qualities.getValue(bestKey),
-                            defaultLadder = defaultLadder ?: qualities,
-                            candidateLadders = perDubLadders,
-                            headers = headers
-                        )
-                        val chosenLadder = linkedMapOf<String, String>().apply {
-                            directLadderPreference.forEach { q -> chosen.ladder[q]?.let { put(q, it) } }
-                            chosen.ladder.forEach { (q, u) -> if (!containsKey(q)) put(q, u) }
-                        }
-                        return@withContext DdbbStream(
-                            url = chosen.url,
-                            headers = headers,
-                            qualities = chosenLadder,
-                            sourceName = type.replaceFirstChar { it.uppercase() },
-                            translations = translations,
-                            episodeTracks = serialParse.tracks
-                        )
-                    }
+        val pending = mutableListOf<Deferred<SourceParse?>>()
+        for ((type, iframeUrl) in players) {
+            pending += resolveScope.async {
+                val html = fetchHtml(iframeUrl)
+                if (html == null) {
+                    KLog.w(TAG, "${type.lowercase()}: embed fetch failed")
+                    return@async null
                 }
+                parseDdbbSource(kinopoiskId, type, iframeUrl, html)
             }
+        }
+        pending += resolveScope.async {
+            runCatching { WebmasterStreamSources.resolveVideoCdn(kinopoiskId) }
+                .onFailure { KLog.w(TAG, "videocdn: resolve failed", it) }
+                .getOrNull()
+        }
+        pending += resolveScope.async {
+            runCatching { WebmasterStreamSources.resolveCollaps(kinopoiskId) }
+                .onFailure { KLog.w(TAG, "collaps: resolve failed", it) }
+                .getOrNull()
+        }
+        pending += resolveScope.async {
+            runCatching { WebmasterStreamSources.resolveVoidboost(kinopoiskId) }
+                .onFailure { KLog.w(TAG, "voidboost: resolve failed", it) }
+                .getOrNull()
+        }
 
-            if (lowerType in HARVESTABLE_TYPES && html != null && !harvestAttempted) {
-                // One harvest attempt per resolve: serial headless-WebView runs over every
-                // remaining source multiply latency without materially raising hit-rate.
-                harvestAttempted = true
-                KLog.i(TAG, "$lowerType: direct extraction failed, harvesting embed in a headless browser…")
-                DdbbHarvestBridge.harvest(
-                    embedUrl = iframeUrl,
-                    pageReferer = "https://ddbb.lol/",
-                    timeoutMs = HARVEST_TIMEOUT_MS,
-                )?.let { harvested ->
-                    val referer = harvested.referer
-                        ?: runCatching { java.net.URI(iframeUrl) }.getOrNull()?.let { "${it.scheme}://${it.host}/" }
-                        ?: "https://ddbb.lol/"
-                    KLog.i(TAG, "$lowerType: harvested ${harvested.url.take(100)}")
-                    return@withContext DdbbStream(
-                        url = harvested.url,
-                        headers = mapOf("Referer" to referer, "User-Agent" to USER_AGENT),
-                        qualities = linkedMapOf("Auto" to harvested.url),
-                        sourceName = type.replaceFirstChar { it.uppercase() }
+        val parses = ArrayList<SourceParse>()
+        val budget = intArrayOf(LAUNCH_PROBE_MAX_ATTEMPTS)
+        var early: DdbbStream? = null
+        while (pending.isNotEmpty() && early == null) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0) break
+            val outcome = withTimeoutOrNull(remaining) {
+                select<Pair<Deferred<SourceParse?>, SourceParse?>> {
+                    for (deferred in pending) deferred.onAwait { deferred to it }
+                }
+            } ?: break
+            val (done, parse) = outcome
+            pending.remove(done)
+            if (parse == null) continue
+            parses += parse
+            parses.sortBy { sourceRank(it.sourceName) }
+            if (budget[0] > 0) {
+                budget[0] -= 1
+                if (validateDirectUrl(parse.url, parse.headers)) {
+                    KLog.i(TAG, "launch probe OK: ${parse.url.take(90)}")
+                    early = buildStream(
+                        kinopoiskId, parse, parses.toList(),
+                        LaunchChoice(parse.url, parse.qualities.ifEmpty { mapOf("Auto" to parse.url) }, verified = true),
                     )
+                } else {
+                    KLog.w(TAG, "launch probe dead: ${parse.url.take(90)}")
                 }
-                KLog.w(TAG, "$lowerType: harvest found nothing")
-            } else {
-                KLog.w(TAG, "$lowerType: no stream extracted")
             }
         }
 
-        // ddbb produced nothing usable: fall through to the standalone webmaster sources
-        // (VideoCDN API, Collaps embed, Voidboost/Rezka embed) — same DdbbStream output
-        // contract, so the race and the player stay untouched. The chain gets its own
-        // budget: the ddbb deadline above may already be spent by slow ddbb attempts.
-        val fallbackDeadline = System.currentTimeMillis() + FALLBACK_DEADLINE_MS
-        WebmasterStreamSources.resolveVideoCdn(kinopoiskId, fallbackDeadline)?.let {
-            KLog.i(TAG, "fallback winner: videocdn for kp=$kinopoiskId")
-            return@withContext it
+        if (early == null) {
+            if (parses.isEmpty()) {
+                // Nothing parsed from any source: one headless-WebView harvest for sources
+                // whose streams hide behind JS bootstrapping or region checks.
+                harvestDdbbSource(players, deadline)?.let { harvested ->
+                    parses += harvested
+                    parses.sortBy { sourceRank(it.sourceName) }
+                }
+            }
+            parses.minByOrNull { sourceRank(it.sourceName) }?.let { winner ->
+                // Everything parsed, nothing verified: walk the priority winner's ladders/dubs
+                // while budget and deadline remain, otherwise play it unverified — a full walk
+                // must never end in "resolve failed" while a parsed stream exists.
+                val choice = if (System.currentTimeMillis() < deadline && budget[0] > 0) {
+                    pickPlayableLaunch(
+                        defaultUrl = winner.url,
+                        defaultLadder = winner.qualities.ifEmpty { mapOf("Auto" to winner.url) },
+                        candidateLadders = winner.ladders,
+                        headers = winner.headers,
+                        budget = budget,
+                    )
+                } else {
+                    LaunchChoice(winner.url, winner.qualities.ifEmpty { mapOf("Auto" to winner.url) }, verified = false)
+                }
+                early = buildStream(kinopoiskId, winner, parses.toList(), choice)
+            }
         }
-        WebmasterStreamSources.resolveCollaps(kinopoiskId, fallbackDeadline)?.let {
-            KLog.i(TAG, "fallback winner: collaps for kp=$kinopoiskId")
-            return@withContext it
+
+        if (pending.isNotEmpty()) {
+            // Late continuation: the sources still in flight (or abandoned at the deadline)
+            // merge into the catalog when they finish, refresh the cache and notify.
+            val earlyParses = parses.toList()
+            resolveScope.launch {
+                val late = pending.awaitAll().filterNotNull()
+                if (late.isEmpty()) return@launch
+                // A dead-stream retry evicts the cache; don't resurface stale entries after it.
+                if (resolveCache[kinopoiskId] == null) return@launch
+                buildMergedStream(kinopoiskId, earlyParses + late)?.let { merged ->
+                    resolveCache[kinopoiskId] = CacheEntry(merged, System.currentTimeMillis())
+                    KLog.i(TAG, "late sources merged for kp=$kinopoiskId: +${late.map { it.sourceName }}, " +
+                        "dubs=${merged.translations.size}, tracks=${merged.episodeTracks.size}")
+                    onLateSources?.invoke(merged)
+                }
+            }
         }
-        WebmasterStreamSources.resolveVoidboost(kinopoiskId, fallbackDeadline)?.let {
-            KLog.i(TAG, "fallback winner: voidboost for kp=$kinopoiskId")
-            return@withContext it
+        early
+    }
+
+    /**
+     * Extraction of ONE ddbb embed into a [SourceParse] — no network probing and no catalog
+     * registration here: all sources race first, the merged catalog is registered once.
+     */
+    private fun parseDdbbSource(kinopoiskId: Int, type: String, iframeUrl: String, html: String): SourceParse? {
+        val lowerType = type.lowercase()
+        val (headers, qualities) = extractFromEmbed(html, iframeUrl) ?: return null
+        if (qualities.isEmpty()) return null
+        // extractTurboTracks must receive the obfuscated config blob, not the whole embed page:
+        // findTurboWindow scans a short base64 prefix, and feeding it the full HTML made the
+        // window search fail → voiceover list silently empty.
+        val turboBlob = if (lowerType == "turbo") TURBO_BLOB_REGEX.find(html)?.groupValues?.get(1) else null
+        // Single decode feeds both consumers: flat dub rows for the movie dropdown and
+        // structured dub×episode rows for series playback.
+        val turboEntries = turboBlob?.let { extractTurboEntries(it) }.orEmpty()
+        val translations = voiceoverRowsFromEntries(turboEntries)
+            .ifEmpty { cachedVoiceoverRows(kinopoiskId).orEmpty() }
+        val serialParse = buildSerialParse(turboEntries)
+        val perDubLadders = buildLadders(turboEntries)
+        if (serialParse.tracks.isEmpty() && translations.isEmpty()) {
+            KLog.w(TAG, "$lowerType: no stream extracted")
+            return null
         }
-        null
+        if (serialParse.tracks.isNotEmpty()) {
+            KLog.i(TAG, "$lowerType: structured serial catalog: " +
+                "${serialParse.tracks.map { it.dubTitle }.distinct().size} dubs, " +
+                "${serialParse.tracks.map { it.seasonNumber to it.episodeNumber }.distinct().size} episodes")
+        }
+        // The launch stream must be ONE dub's ladder, not a whole-blob scan (see buildLadders).
+        val defaultDubUrl = translations.firstOrNull()?.second
+        val defaultUrl = defaultDubUrl
+            ?: qualities.getValue(qualityPreference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first())
+        KLog.i(TAG, "$lowerType: extracted ${qualities.size} qualities, using ${defaultLadderLabel(defaultUrl, perDubLadders, qualities)}")
+        return SourceParse(
+            sourceName = type.replaceFirstChar { it.uppercase() },
+            url = defaultUrl,
+            headers = headers,
+            qualities = defaultDubUrl?.let { perDubLadders[it] } ?: qualities,
+            voiceRows = translations,
+            tracks = serialParse.tracks,
+            ladders = perDubLadders
+        )
+    }
+
+    private fun defaultLadderLabel(url: String, perDubLadders: Map<String, Map<String, String>>, embedQualities: Map<String, String>): String =
+        perDubLadders[url]?.keys?.joinToString("/") ?: embedQualities.keys.firstOrNull() ?: "Auto"
+
+    /** One headless-WebView harvest of the highest-ranked harvestable ddbb embed. */
+    private suspend fun harvestDdbbSource(players: List<Pair<String, String>>, deadline: Long): SourceParse? {
+        if (System.currentTimeMillis() >= deadline) return null
+        val (type, iframeUrl) = players.firstOrNull { it.first.lowercase() in HARVESTABLE_TYPES } ?: return null
+        KLog.i(TAG, "${type.lowercase()}: direct extraction failed, harvesting embed in a headless browser…")
+        val harvested = DdbbHarvestBridge.harvest(
+            embedUrl = iframeUrl,
+            pageReferer = "https://ddbb.lol/",
+            timeoutMs = HARVEST_TIMEOUT_MS,
+        ) ?: run {
+            KLog.w(TAG, "${type.lowercase()}: harvest found nothing")
+            return null
+        }
+        val referer = harvested.referer
+            ?: runCatching { java.net.URI(iframeUrl) }.getOrNull()?.let { "${it.scheme}://${it.host}/" }
+            ?: "https://ddbb.lol/"
+        KLog.i(TAG, "${type.lowercase()}: harvested ${harvested.url.take(100)}")
+        return SourceParse(
+            sourceName = type.replaceFirstChar { it.uppercase() },
+            url = harvested.url,
+            headers = mapOf("Referer" to referer, "User-Agent" to USER_AGENT),
+            qualities = linkedMapOf("Auto" to harvested.url)
+        )
+    }
+
+    /** Registers and builds the stream for an already-parsed set of sources (no probing). */
+    private fun buildMergedStream(kinopoiskId: Int, parses: List<SourceParse>): DdbbStream? {
+        if (parses.isEmpty()) return null
+        val ordered = parses.sortedBy { sourceRank(it.sourceName) }
+        val merged = mergeSourceParses(ordered)
+        if (merged.voiceRows.isEmpty() && merged.tracks.isEmpty()) return null
+        registerTurboCatalog(
+            kinopoiskId,
+            merged.headers,
+            TurboSerialParse(merged.tracks, merged.ladders),
+            merged.voiceRows,
+            merged.headersByUrl
+        )
+        return DdbbStream(
+            url = merged.url,
+            headers = merged.headers,
+            qualities = merged.qualities,
+            sourceName = merged.sourceName,
+            translations = merged.voiceRows,
+            episodeTracks = merged.tracks
+        )
+    }
+
+    private suspend fun buildStream(
+        kinopoiskId: Int,
+        winner: SourceParse,
+        parses: List<SourceParse>,
+        choice: LaunchChoice,
+    ): DdbbStream {
+        // mergeSourceParses keeps the FIRST parse's stream/headers — the verified winner must
+        // lead even when a higher-rank parse is already in the list.
+        val ordered = listOf(winner) + parses.filter { it !== winner }
+        val merged = mergeSourceParses(ordered)
+        if (merged.voiceRows.isNotEmpty() || merged.tracks.isNotEmpty()) {
+            registerTurboCatalog(
+                kinopoiskId,
+                winner.headers,
+                TurboSerialParse(merged.tracks, merged.ladders),
+                merged.voiceRows,
+                merged.headersByUrl
+            )
+        }
+        val chosenLadder = linkedMapOf<String, String>().apply {
+            directLadderPreference.forEach { q -> choice.ladder[q]?.let { put(q, it) } }
+            choice.ladder.forEach { (q, u) -> if (!containsKey(q)) put(q, u) }
+        }
+        KLog.i(TAG, "direct catalog merged: winner=${winner.sourceName}, dubs=${merged.voiceRows.size}, " +
+            "tracks=${merged.tracks.size}, ladders=${merged.ladders.size}, sources=${parses.map { it.sourceName }}")
+        hd.kinoshka.app.data.diagnostics.SharedDiag.event(
+            "direct sources: winner=${winner.sourceName}, dubs=${merged.voiceRows.size}, tracks=${merged.tracks.size} (${parses.joinToString { it.sourceName }})"
+        )
+        return DdbbStream(
+            url = choice.url,
+            headers = winner.headers,
+            qualities = chosenLadder,
+            sourceName = winner.sourceName,
+            translations = merged.voiceRows,
+            episodeTracks = merged.tracks
+        )
+    }
+
+    /**
+     * Unions [parses] into one catalog-shaped parse: the FIRST entry (the priority winner)
+     * keeps its stream/headers, every source contributes its dub rows, episode tracks, quality
+     * ladders and per-url playback headers. Public for unit tests.
+     */
+    fun mergeSourceParses(parses: List<SourceParse>): SourceParse {
+        if (parses.size <= 1) return parses.firstOrNull() ?: SourceParse("none", "", emptyMap(), emptyMap())
+        val winner = parses.first()
+        val tracks = LinkedHashMap<Triple<String, Int, Int>, hd.kinoshka.app.data.model.DdbbEpisodeTrack>()
+        val ladders = LinkedHashMap<String, Map<String, String>>()
+        val voiceRows = LinkedHashMap<String, String>()
+        val headersByUrl = LinkedHashMap<String, Map<String, String>>()
+        for (parse in parses) {
+            for (track in parse.tracks) {
+                tracks.putIfAbsent(Triple(track.dubId, track.seasonNumber, track.episodeNumber), track)
+            }
+            for ((url, ladder) in parse.ladders) ladders.putIfAbsent(url, ladder)
+            for ((title, url) in parse.voiceRows) voiceRows.putIfAbsent(title, url)
+            // Headers are per-source (turbo needs its embed Referer, videocdn needs none):
+            // index every url the source can serve so the player picks the right ones per stream.
+            val urls = buildSet {
+                add(parse.url)
+                addAll(parse.qualities.values)
+                addAll(parse.voiceRows.map { it.second })
+                addAll(parse.tracks.map { it.playerUrl })
+                addAll(parse.ladders.keys)
+                parse.ladders.values.forEach { addAll(it.values) }
+            }
+            for (url in urls) if (url.isNotBlank()) headersByUrl.putIfAbsent(url, parse.headers)
+        }
+        return winner.copy(
+            voiceRows = voiceRows.map { it.key to it.value },
+            tracks = tracks.values.toList(),
+            ladders = ladders,
+            headersByUrl = headersByUrl
+        )
     }
 
     private const val HARVEST_TIMEOUT_MS = 15_000L
 
     private const val RESOLVE_DEADLINE_MS = 20_000L
 
-    /** Own budget of the webmaster fallback chain (VideoCDN/Collaps/Voidboost) after ddbb
-     *  produced nothing — independent of [RESOLVE_DEADLINE_MS], which ddbb's slow attempts
-     *  may already have burned by the time the chain starts. */
-    private const val FALLBACK_DEADLINE_MS = 12_000L
-
-    /** Bounded probe budget: worst case (every candidate dead) adds ~2-3s to startup. */
+    /** Bounded probe budget: worst case (every candidate dead) adds a few seconds to startup. */
     private const val LAUNCH_PROBE_MAX_ATTEMPTS = 8
-    private const val LAUNCH_PROBE_TIMEOUT_MS = 2_500L
+    // 2.5s cut live winners: the turbo CDN answered >2.5s on two cold probes and 0.9s once warm
+    // (Rick and Morty, 13s startup) — the extra headroom turns that triple probe into one.
+    private const val LAUNCH_PROBE_TIMEOUT_MS = 4_000L
 
     /**
      * 2-byte Range GET against a direct CDN url with the playback headers. Returns true on any
@@ -301,20 +502,23 @@ object DdbbStreamResolver {
     /** Cheap local ranking mirroring [directLadderPreference] without re-encoding entries. */
     private val probeQualityOrder = QUALITY_PREFERENCE_DESC.filter { it != "1440p" }
 
-    private data class LaunchChoice(val url: String, val ladder: Map<String, String>)
+    private data class LaunchChoice(val url: String, val ladder: Map<String, String>, val verified: Boolean)
 
     /**
      * Chooses the START stream by probing candidates in priority order:
      * 1) preferred default url (+ its ladder rungs top-down),
      * 2) every other dub's ladder rungs top-down.
      * The first candidate that answers HTTP<400 wins; the returned ladder stays the FULL
-     * winner's ladder so quality switching keeps every rung visible.
+     * winner's ladder so quality switching keeps every rung visible. [budget] is a shared
+     * one-element probe counter ([LAUNCH_PROBE_MAX_ATTEMPTS]) spent across every candidate
+     * source of the resolve, so a dead first source cannot multiply the probe cost.
      */
     private suspend fun pickPlayableLaunch(
         defaultUrl: String,
         defaultLadder: Map<String, String>,
         candidateLadders: Map<String, Map<String, String>>,
         headers: Map<String, String>,
+        budget: IntArray,
     ): LaunchChoice = withContext(Dispatchers.IO) {
         var attempts = 0
         // Default first: its own best-rung preference then walk down; identity handled via
@@ -324,18 +528,21 @@ object DdbbStreamResolver {
         for ((bestUrl, ladder) in candidateLadders) {
             if (!ordered.containsKey(bestUrl)) ordered[bestUrl] = ladder
         }
-        if (!ordered.containsKey(defaultUrl)) return@withContext LaunchChoice(defaultUrl, defaultLadder)
+        if (!ordered.containsKey(defaultUrl) || budget[0] <= 0) {
+            return@withContext LaunchChoice(defaultUrl, defaultLadder, verified = false)
+        }
 
         for ((base, ladder) in ordered) {
-            if (attempts >= LAUNCH_PROBE_MAX_ATTEMPTS) break
+            if (budget[0] <= 0) break
             // Probe top-down through this dub's rungs, falling back to the base itself.
             val candidates = (probeQualityOrder.mapNotNull { q -> ladder[q] } + base).distinct()
             for (url in candidates) {
-                if (attempts >= LAUNCH_PROBE_MAX_ATTEMPTS) break
+                if (budget[0] <= 0) break
+                budget[0] -= 1
                 attempts += 1
                 if (validateDirectUrl(url, headers)) {
                     KLog.i(TAG, "launch probe OK after $attempts attempt(s): ${url.take(90)}")
-                    return@withContext LaunchChoice(url, ladder)
+                    return@withContext LaunchChoice(url, ladder, verified = true)
                 }
                 KLog.w(TAG, "launch probe dead ($attempts): ${url.take(90)}")
             }
@@ -343,7 +550,7 @@ object DdbbStreamResolver {
         // Everything dead (or budget spent): hand back the original default and let the
         // player's tracked retry handle it — probing cannot block playback entirely.
         KLog.w(TAG, "launch probe exhausted ($attempts attempts), using default url")
-        LaunchChoice(defaultUrl, defaultLadder)
+        LaunchChoice(defaultUrl, defaultLadder, verified = false)
     }
 
     // --- Session caches -------------------------------------------------------------------
@@ -361,24 +568,27 @@ object DdbbStreamResolver {
         /** bestUrl -> (quality -> url) for the player's on-demand quality menu. */
         val ladders: Map<String, Map<String, String>>,
         /** Movie-path dub rows (cleaned title -> best-quality url) of this parse. */
-        val voiceovers: List<Pair<String, String>> = emptyList()
+        val voiceovers: List<Pair<String, String>> = emptyList(),
+        /** url -> playback headers of the source serving it (merged multi-source catalogs). */
+        val headersByUrl: Map<String, Map<String, String>> = emptyMap()
     )
 
     private val turboCatalogs = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<TurboCatalog>>()
     private const val TURBO_CATALOG_TTL_MS = 30 * 60_000L
 
-    // internal: WebmasterStreamSources (fallback chain) registers its own catalogs here so the
+    // internal: WebmasterStreamSources registers its own catalogs here so the
     // player's quality menus and the movie dropdown see new-source rows like turbo's.
     internal fun registerTurboCatalog(
         kinopoiskId: Int,
         headers: Map<String, String>,
         parse: TurboSerialParse,
         voiceovers: List<Pair<String, String>> = emptyList(),
+        headersByUrl: Map<String, Map<String, String>> = emptyMap(),
     ) {
         if (kinopoiskId <= 0) return
         if (parse.tracks.isEmpty() && voiceovers.isEmpty()) return
         turboCatalogs[kinopoiskId] = CacheEntry(
-            TurboCatalog(headers, parse.tracks, parse.ladders, voiceovers),
+            TurboCatalog(headers, parse.tracks, parse.ladders, voiceovers, headersByUrl),
             System.currentTimeMillis()
         )
     }
@@ -436,6 +646,19 @@ object DdbbStreamResolver {
             ?.takeIf { System.currentTimeMillis() - it.timestamp < TURBO_CATALOG_TTL_MS }
             ?.data?.headers
             .orEmpty()
+
+    /**
+     * Headers for ONE direct url of the cached catalog for [kinopoiskId]: the merged catalog
+     * can carry dubs from several providers whose urls need different headers (turbo requires
+     * its embed's Referer, VideoCDN needs none), so the lookup is per-url with the winner's
+     * headers as fallback.
+     */
+    fun directHeaders(kinopoiskId: Int, url: String): Map<String, String> {
+        val entry = turboCatalogs[kinopoiskId]
+            ?.takeIf { System.currentTimeMillis() - it.timestamp < TURBO_CATALOG_TTL_MS }
+            ?: return emptyMap()
+        return entry.data.headersByUrl[url] ?: entry.data.headers
+    }
 
     // Best-first: the resolver's default pick doubles as the player's "Auto" quality, and Auto
     // means "start at the best variant, step down if the network can't sustain it" (the player

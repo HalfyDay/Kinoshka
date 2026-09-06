@@ -652,6 +652,22 @@ object AnimeStreamResolver {
         return stream
     }
 
+    /**
+     * Сбрасывает кэш резолва одной серии (resolveStream + HLS-кэш Kodik): авто-retry плеера
+     * не должен переигрывать мёртвую ссылку из кэша — живой кейс: подписанный okcdn-url,
+     * отвечавший 400, лечится только свежим резолвом с новой подписью.
+     */
+    fun evictEpisodeResolveCache(
+        shikimoriId: Int,
+        animeTitle: String,
+        sourceType: AnimeSourceType,
+        translationId: String,
+        episodeNumber: Int
+    ) {
+        resolveStreamCache.remove("$shikimoriId:$animeTitle:${sourceType.name}:$translationId:$episodeNumber")
+        if (sourceType == AnimeSourceType.KODIK) kodikHlsCache.clear()
+    }
+
     private suspend fun resolveStreamInternal(
         shikimoriId: Int,
         animeTitle: String,

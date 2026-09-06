@@ -137,6 +137,8 @@ object HentaiStreamResolver {
         OkHttpClient.Builder()
             .dns(hd.kinoshka.app.utils.DohFallbackDns)
             .cookieJar(cookieJar)
+            .proxySelector(StreamProxySelector())
+            .proxyAuthenticator(StreamProxyConfig.okHttpProxyAuthenticator())
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
@@ -149,6 +151,8 @@ object HentaiStreamResolver {
     private val oppaiClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .cookieJar(cookieJar)
+            .proxySelector(StreamProxySelector())
+            .proxyAuthenticator(StreamProxyConfig.okHttpProxyAuthenticator())
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)

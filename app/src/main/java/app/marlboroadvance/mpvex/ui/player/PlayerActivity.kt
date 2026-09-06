@@ -79,6 +79,7 @@ import hd.kinoshka.app.data.diagnostics.AppDiagnostics
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.MovieStreamResolver
+import hd.kinoshka.app.data.source.ShikimoriVideoApi
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.Json
@@ -1176,6 +1177,10 @@ class PlayerActivity :
     // video-add идёт мимо этой функции прямым MPVLib.command.
     pendingSeamlessQualityUrl = null
     if (mpvCoreDead) reinitMpvCore()
+    // Заблокированные источники (вебмастер-трио, хентай, googlevideo) идут через пользовательский
+    // прокси; "" сбрасывает прокси предыдущего потока — turbo/kodik всегда напрямую.
+    val loadUrl = args.firstOrNull { it.startsWith("http") }
+    MPVLib.setPropertyString("http-proxy", hd.kinoshka.app.data.source.StreamProxyConfig.mpvProxyFor(loadUrl ?: ""))
     AppDiagnostics.event("loadfile: ${args.firstOrNull()?.take(160) ?: "?"}")
     MPVLib.command("loadfile", *args)
   }
@@ -1455,23 +1460,37 @@ class PlayerActivity :
         val userStateStore = UserStateStore(this)
         val prefQuality = userStateStore.getPreferredQuality()
 
-        beginStreamLoadIndicator()
-        viewModel.setAnimeData(episodes, translations, epNum, trId, viewModel.animeQualities.value, viewModel.currentAnimeQualityId.value)
-
-        lifecycleScope.launch(Dispatchers.IO) {
-          // Local-first: скачанная серия играет из офлайн-библиотеки без сети и резолва.
-          val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
-            .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
-            ?.toAnimeMediaStream()
-            ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
-          withContext(Dispatchers.Main) {
-            if (stream != null) {
-              applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
-            } else {
-              finishStreamLoadIndicator()
+        fun resolveAndApply() {
+          lifecycleScope.launch(Dispatchers.IO) {
+            // Local-first: скачанная серия играет из офлайн-библиотеки без сети и резолва.
+            val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
+              .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
+              ?.toAnimeMediaStream()
+              ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+            withContext(Dispatchers.Main) {
+              if (stream != null) {
+                applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
+              } else {
+                finishStreamLoadIndicator()
+              }
             }
           }
         }
+
+        // Tracked load: если mpv признаёт ссылку мёртвой (END_FILE reason=error), авто-retry
+        // резолвит серию заново БЕЗ кэшей — переигранный из кэша подписанный url (okcdn 400
+        // на второй серии) иначе не вылечить.
+        beginTrackedStreamLoad(retry = {
+          AnimeStreamResolver.evictEpisodeResolveCache(shikimoriId, animeTitle, srcType, trId, epNum)
+          if (srcType == AnimeSourceType.SHIKIMORI) {
+            episodes.firstOrNull { it.number == epNum }?.link
+              ?.takeIf { it.isNotBlank() }
+              ?.let { ShikimoriVideoApi.evictResolveCache(it) }
+          }
+          resolveAndApply()
+        })
+        viewModel.setAnimeData(episodes, translations, epNum, trId, viewModel.animeQualities.value, viewModel.currentAnimeQualityId.value)
+        resolveAndApply()
       }
 
       viewModel.onAnimeTranslationSelected = translationSelected@{ trId ->
@@ -1488,23 +1507,34 @@ class PlayerActivity :
         val userStateStore = UserStateStore(this)
         val prefQuality = userStateStore.getPreferredQuality()
 
-        beginStreamLoadIndicator()
-        viewModel.setAnimeData(episodes, translations, epNum, trId, viewModel.animeQualities.value, viewModel.currentAnimeQualityId.value)
-
-        lifecycleScope.launch(Dispatchers.IO) {
-          // Local-first: скачанная серия играет из офлайн-библиотеки без сети и резолва.
-          val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
-            .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
-            ?.toAnimeMediaStream()
-            ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
-          withContext(Dispatchers.Main) {
-            if (stream != null) {
-              applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
-            } else {
-              finishStreamLoadIndicator()
+        fun resolveAndApply() {
+          lifecycleScope.launch(Dispatchers.IO) {
+            // Local-first: скачанная серия играет из офлайн-библиотеки без сети и резолва.
+            val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
+              .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
+              ?.toAnimeMediaStream()
+              ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+            withContext(Dispatchers.Main) {
+              if (stream != null) {
+                applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
+              } else {
+                finishStreamLoadIndicator()
+              }
             }
           }
         }
+
+        // Tracked load с эвикцией кэшей на retry — как у переключения серии (Shikimori:
+        // озвучка сменилась, vkId той же серии другой, честнее сбросить весь кэш резолва).
+        beginTrackedStreamLoad(retry = {
+          AnimeStreamResolver.evictEpisodeResolveCache(shikimoriId, animeTitle, srcType, trId, epNum)
+          if (srcType == AnimeSourceType.SHIKIMORI) {
+            ShikimoriVideoApi.evictResolveCache(null)
+          }
+          resolveAndApply()
+        })
+        viewModel.setAnimeData(episodes, translations, epNum, trId, viewModel.animeQualities.value, viewModel.currentAnimeQualityId.value)
+        resolveAndApply()
       }
 
       viewModel.onAnimeQualitySelected = qualitySelected@{ qId ->
@@ -1863,6 +1893,36 @@ class PlayerActivity :
   }
 
   /**
+   * Late webmaster sources for a DIRECT series: the launcher rebuilt the context around the
+   * episode actually playing and refreshed the store — swap it in and re-render the dub list.
+   * The playing stream and highlight stay untouched; rows only ever JOIN (the shrink guard
+   * keeps a partial late batch from emptying the dropdown).
+   */
+  private fun refreshSeriesVoiceoverRows() {
+    val current = movieSeriesContext ?: return
+    if (!current.isDirectSource) return
+    val fresh = hd.kinoshka.app.data.model.MovieSeriesContextStore.get(current.kinopoiskId) ?: return
+    if (fresh.candidates.size <= current.candidates.size) return
+    movieSeriesContext = fresh
+    viewModel.setAnimeData(
+      fresh.episodes.map { episode ->
+        AnimeEpisode(
+          number = episode.playerEpisodeKey,
+          title = episode.title?.takeIf(String::isNotBlank),
+          link = episode.playerUrl,
+          season = episode.seasonNumber
+        )
+      },
+      seriesTranslationsFor(fresh, fresh.currentEpisode),
+      viewModel.currentAnimeEpisodeNumber.value,
+      viewModel.currentAnimeTranslationId.value,
+      viewModel.animeQualities.value,
+      viewModel.currentAnimeQualityId.value
+    )
+    Log.i(TAG, "Late series merge: +${fresh.candidates.size - current.candidates.size} dubs joined the dropdown")
+  }
+
+  /**
    * Default dub of a movie: the title's own favorite (last dub the user enabled for it), else the
    * global memory favorite, else the merged list's head — deterministic instead of "whatever won
    * this race".
@@ -2008,7 +2068,8 @@ class PlayerActivity :
         // The callback fires on the launcher's IO scope — hop to the main thread for state.
         lifecycleScope.launch(Dispatchers.Main) {
           if (isFinishing || isDestroyed) return@launch
-          refreshQomVoiceoverRows(merged)
+          if (effectiveNativePlaybackMode == NativePlaybackMode.MOVIE_SERIES) refreshSeriesVoiceoverRows()
+          else refreshQomVoiceoverRows(merged)
         }
       }
       Log.i(TAG, "PENDING_MOVIE resolve done in ${System.currentTimeMillis() - resolveStartMs}ms (${payload.javaClass.simpleName})")
@@ -2116,10 +2177,11 @@ class PlayerActivity :
               }
             }
             // applyMovieSeriesStream issues loadfile itself; the overlay clears on FILE_LOADED.
-            beginTrackedStreamLoad(retry = {
-              launch.request.kinopoiskId?.takeIf { it > 0 }?.let { DdbbStreamResolver.evictResolveCache(it) }
-              applyMovieSeriesStream(payload.stream, payload.context, UserStateStore(this@PlayerActivity).getPreferredQuality())
-            })
+            // The auto-retry escalates to a FULL fresh resolve, never a replay of this payload:
+            // turbo tokens are minted per-network, so after a VPN toggle (or plain expiry) every
+            // url in the captured catalog dies with the same 404 while a re-resolve recovers
+            // (live log kp=460586: memo-hit tokens from another network → 3×404 → error card).
+            beginTrackedStreamLoad(retry = { retryPendingResolve(launch, isRetry = true) })
             applyMovieSeriesStream(seriesStream, seriesContext, UserStateStore(this@PlayerActivity).getPreferredQuality(), seriesTrId)
           }
           is MovieNativeLauncher.NativeLaunchPayload.Failed -> {
@@ -2477,7 +2539,9 @@ class PlayerActivity :
       val url = ref.playerUrl
       if (url.isBlank()) continue
       val qualities = LinkedHashMap(DdbbStreamResolver.directQualities(context.kinopoiskId, url).orEmpty())
-      val headers = context.directHeaders.ifEmpty { DdbbStreamResolver.directHeaders(context.kinopoiskId) }
+      // Per-url headers: a merged direct catalog carries dubs from several providers whose
+      // urls need different headers (turbo requires its embed's Referer, VideoCDN none).
+      val headers = DdbbStreamResolver.directHeaders(context.kinopoiskId, url).ifEmpty { context.directHeaders }
       val stream = AnimeMediaStream(
         url = url,
         qualities = qualities,
@@ -2723,7 +2787,16 @@ class PlayerActivity :
       ?: getMediaIdentifierFromUri(Uri.parse(url), fileName)
     MPVLib.setPropertyString("media-title", fileName)
     applyAnimeTransportOptions(sourceType == AnimeSourceType.ANILIBERTY)
-    applyHttpHeaders(stream.headers)
+    // Launch path (setHttpHeadersFromExtras) auto-ставит Referer с origin'а URL; переключение
+    // серии/озвучки должно вести себя так же, иначе хосты, проверяющие Referer, падают на
+    // второй серии: ep1 играла с Referer, ep2 с того же CDN — с очищенными заголовками.
+    val autoReferer = HttpUtils.extractRefererDomain(Uri.parse(url))
+    val streamHeaders = when {
+      autoReferer == null -> stream.headers
+      stream.headers.keys.any { it.equals("Referer", ignoreCase = true) } -> stream.headers
+      else -> stream.headers + ("Referer" to autoReferer)
+    }
+    applyHttpHeaders(streamHeaders)
     viewModel.setAnimeData(
       episodes,
       translations,

@@ -41,7 +41,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -82,11 +81,11 @@ enum class SelectionStep {
 fun AnimePlaybackSelectionSheet(
     shikimoriId: Int,
     animeTitle: String,
-    playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
+    playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.EPISODES_FIRST,
     onDismissRequest: () -> Unit,
     onStreamSelected: (stream: AnimeMediaStream, episodeNumber: Int, episodeTitle: String, source: AnimeSourceType, translationTitle: String) -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberKinoSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
 
     var currentStepIndex by remember { mutableIntStateOf(0) }

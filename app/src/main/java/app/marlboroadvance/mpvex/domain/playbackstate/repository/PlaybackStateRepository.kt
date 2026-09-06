@@ -7,6 +7,8 @@ interface PlaybackStateRepository {
 
   suspend fun getVideoDataByTitle(mediaTitle: String): PlaybackStateEntity?
 
+  suspend fun getStatesByTitlePrefix(prefix: String): List<PlaybackStateEntity>
+
   suspend fun clearAllPlaybackStates()
 
   suspend fun deleteByTitle(mediaTitle: String)

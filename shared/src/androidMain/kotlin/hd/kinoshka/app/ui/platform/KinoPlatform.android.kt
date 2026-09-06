@@ -71,6 +71,8 @@ actual fun KinoHideSystemBarsEffect() {
 }
 
 @Composable
+// navigationBarColor deprecated с API 35 (там игнорируется из-за edge-to-edge), но на старых версиях замены нет.
+@Suppress("DEPRECATION")
 actual fun KinoKeepDialogNavBarEffect() {
     val view = LocalView.current
     DisposableEffect(view) {

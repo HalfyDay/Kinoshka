@@ -63,6 +63,19 @@ class WebmasterStreamSourcesTest {
         assertTrue(WebmasterStreamSources.parseVideocdnFiles(filesValue).perTranslation.isEmpty())
     }
 
+    @Test
+    fun `videocdn rows accept array and object data shapes`() {
+        // svetacdn returns data as an array; the cdnmovies short API returns an id-keyed
+        // object (Lampa converts it with `for key in json.data`).
+        val arrayRoot = org.json.JSONObject("""{"data":[{"id":1,"iframe_src":"//a/e"},{"id":2}]}""")
+        val objectRoot = org.json.JSONObject(
+            """{"data":{"1":{"id":1,"iframe_src":"//a/e"},"2":{"id":2}},"result":false}"""
+        )
+        assertEquals(2, WebmasterStreamSources.videocdnRows(arrayRoot).size)
+        assertEquals("//a/e", WebmasterStreamSources.videocdnRows(objectRoot).first().optString("iframe_src"))
+        assertTrue(WebmasterStreamSources.videocdnRows(org.json.JSONObject("""{"status":true}""")).isEmpty())
+    }
+
     // --- Collaps ----------------------------------------------------------------------------
 
     @Test
@@ -97,6 +110,51 @@ class WebmasterStreamSourcesTest {
     @Test
     fun `collaps parse returns null for foreign embeds`() {
         assertNull(WebmasterStreamSources.parseCollapsMakePlayer("<html>no player here</html>"))
+    }
+
+    @Test
+    fun `collaps 2026 config with embedded js functions parses seasons and episode audio`() {
+        // Mirrors the live api.delivembd.ws embed (kp=460586): the makePlayer argument carries
+        // raw JS (tracker function, arithmetic) next to the data, so only the seasons subtree parses.
+        val html = "<script>function makePlayer(opts) { var s; if (!window.VenomPlayer) { throw 'PLAYER_LOAD_FAIL_' } }</script>" +
+            "<script>makePlayer({" +
+            "poster: 'data:image/gif;base64,R0lGODlhAQABAICTAEAOw=='," +
+            "ui: { prevNext:  true  }," +
+            "playlist: { open: true , autoNext: true , id: 5780 , current: { season:  5 , episode: \"1\" }," +
+            "seasons:[{\"season\":1,\"blocked\":false,\"episodes\":[{\"episode\":\"1\",\"hls\":\"https://c/e1.m3u8\"," +
+            "\"title\":\"Пацаны (1 сезон) - 1 серия\",\"audio\":{\"order\":[0,1],\"names\":[\"LostFilm\",\"Кубик в кубе\"]},\"cc\":[],\"duration\":3609}]}]," +
+            "tracker: function() { var t = false; if (lastTracker + 3e5 < now) t = !t; return (t) ?\"wss://t5.zcvh.net/v1/ws\" :\"wss://t6.zcvh.net/v1/ws\" }," +
+            "longDownload: 30 * 1000 }" +
+            "});</script>"
+        val parse = WebmasterStreamSources.parseCollapsMakePlayer(html)
+
+        assertNotNull(parse)
+        assertEquals(1, parse!!.seasons.size)
+        assertEquals(1, parse.seasons[0].number)
+        assertEquals(1, parse.seasons[0].episodes[0].number)
+        assertEquals("https://c/e1.m3u8", parse.seasons[0].episodes[0].hls)
+        assertEquals("Пацаны (1 сезон) - 1 серия", parse.seasons[0].episodes[0].title)
+        assertEquals(listOf("LostFilm", "Кубик в кубе"), parse.seasons[0].episodes[0].audioNames)
+        assertNull(parse.movieHls)
+    }
+
+    @Test
+    fun `redirect target resolves relative locations and upgrades cleartext`() {
+        assertEquals(
+            "https://mirror.example.net/embed/460586?s=1",
+            WebmasterStreamSources.redirectTargetUrl(
+                "https://voidboost.net/embed/460586?s=1", "http://mirror.example.net/embed/460586?s=1"
+            )
+        )
+        assertEquals(
+            "https://voidboost.net/embed/460586?s=1",
+            WebmasterStreamSources.redirectTargetUrl("https://voidboost.net/embed/460586", "/embed/460586?s=1")
+        )
+        assertEquals(
+            "https://cdn.example.org/embed/x",
+            WebmasterStreamSources.redirectTargetUrl("https://a.example.org/e", "https://cdn.example.org/embed/x")
+        )
+        assertNull(WebmasterStreamSources.redirectTargetUrl("https://a.example.org/e", "http://[::bad::/"))
     }
 
     // --- Voidboost --------------------------------------------------------------------------

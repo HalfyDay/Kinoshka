@@ -35,7 +35,15 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.SmartDisplay
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.painterResource
@@ -53,7 +61,6 @@ import androidx.navigation.navArgument
 import hd.kinoshka.app.BuildConfig
 import hd.kinoshka.app.data.diagnostics.AppDiagnostics
 import java.io.File
-import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import hd.kinoshka.app.data.api.ApiClient
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
@@ -404,6 +411,13 @@ fun KinoApp() {
             }
             activityLifecycleOwner.lifecycle.addObserver(resumeObserver)
             onDispose { activityLifecycleOwner.lifecycle.removeObserver(resumeObserver) }
+        }
+
+        // Восстановление из облачного бэкапа перезаписывает хранилище напрямую (мимо ViewModel) —
+        // после успеха пересобираем библиотеку, иначе раздел показывает данные до восстановления.
+        val cloudSyncStatus by hd.kinoshka.app.data.cloud.CloudBackupManager.status.collectAsState()
+        LaunchedEffect(cloudSyncStatus.restoreCount) {
+            if (cloudSyncStatus.restoreCount > 0) vm.refreshAfterRestore()
         }
 
         KinoTheme(themeMode = vm.uiState.themeMode) {
@@ -871,17 +885,15 @@ fun KinoApp() {
                                      }
                                      activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext, mode)
                                  },
-                                playbackSequence = vm.uiState.playbackSequence,
                                 playerMode = vm.uiState.playerMode,
                                 // Платформенные слоты DetailsScreen: скачивание и выбор источника
                                 // живут в app (Android-механика), сам экран теперь общий.
                                 userStateStore = UserStateStore(LocalContext.current),
-                                animeSelectionScreen = { shikimoriId, kinopoiskId, animeTitle, sequence, onDismissRequest, onStreamSelected ->
+                                animeSelectionScreen = { shikimoriId, kinopoiskId, animeTitle, onDismissRequest, onStreamSelected ->
                                     AnimePlaybackSelectionScreen(
                                         shikimoriId = shikimoriId,
                                         kinopoiskId = kinopoiskId,
                                         animeTitle = animeTitle,
-                                        playbackSequence = sequence,
                                         onDismissRequest = onDismissRequest,
                                         onStreamSelected = onStreamSelected
                                     )
@@ -946,6 +958,9 @@ fun KinoApp() {
                             }
                         ) {
                             TvAdaptiveSecondary {
+                                // Контекст для писателя прокси: лямбда onProxyUrlChanged
+                                // некомпозабельна, LocalContext.current внутри неё нельзя.
+                                val settingsContext = LocalContext.current.applicationContext
                                 SettingsScreen(
                                     onBack = { navController.popBackStack() },
                                     selectedThemeMode = vm.uiState.themeMode,
@@ -953,8 +968,6 @@ fun KinoApp() {
                                     selectedDiscoverTileSize = vm.uiState.discoverTileSize,
                                     selectedLibraryTileSize = vm.uiState.libraryTileSize,
                                     selectedShowFpsCounter = vm.uiState.showFpsCounter,
-                                    selectedPlaybackSequence = vm.uiState.playbackSequence,
-                                    onPlaybackSequenceSelected = vm::setPlaybackSequence,
                                     selectedPlayerMode = vm.uiState.playerMode,
                                     onPlayerModeSelected = vm::setPlayerMode,
                                     onThemeModeSelected = vm::setThemeMode,
@@ -963,6 +976,14 @@ fun KinoApp() {
                                     onLibraryTileSizeSelected = vm::setLibraryTileSize,
                                     onShowFpsCounterChanged = vm::setShowFpsCounter,
                                     showDebugSettings = BuildConfig.DEBUG,
+                                    proxyUrl = hd.kinoshka.app.data.source.StreamProxyConfig.proxyUrl.orEmpty(),
+                                    onProxyUrlChanged = { value ->
+                                        val trimmed = value.trim()
+                                        hd.kinoshka.app.data.source.StreamProxyConfig.proxyUrl = trimmed.ifEmpty { null }
+                                        settingsContext
+                                            .getSharedPreferences("kinoshka_app_settings", Context.MODE_PRIVATE)
+                                            .edit().putString("stream_proxy_url", trimmed).apply()
+                                    },
                                     onOpenPlayerSettings = { navController.navigate("player_settings") }
                                 )
                             }
@@ -991,6 +1012,36 @@ fun KinoApp() {
                                     onOpenGithub = { openInBrowser("https://github.com/HalfyDay/Kinoshka") },
                                     onOpenTelegram = { openInBrowser("https://t.me/Kinoshka_HalfDay") },
                                     onOpenShikimori = { openInBrowser("https://shikimori.io") },
+                                    // Настоящая лаунчер-иконка: адаптивный icon нельзя отдать
+                                    // painterResource, рисуем drawable в bitmap и режем круг.
+                                    appIcon = {
+                                        val iconContext = LocalContext.current
+                                        val iconBitmap = remember(iconContext) {
+                                            runCatching {
+                                                val drawable = iconContext.packageManager.getApplicationIcon(iconContext.packageName)
+                                                val size = 256
+                                                val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+                                                val canvas = android.graphics.Canvas(bmp)
+                                                drawable.setBounds(0, 0, size, size)
+                                                drawable.draw(canvas)
+                                                bmp.asImageBitmap()
+                                            }.getOrNull()
+                                        }
+                                        if (iconBitmap != null) {
+                                            Image(
+                                                bitmap = iconBitmap,
+                                                contentDescription = "Иконка приложения",
+                                                modifier = Modifier.size(90.dp).clip(CircleShape)
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Rounded.SmartDisplay,
+                                                contentDescription = "Иконка приложения",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(90.dp)
+                                            )
+                                        }
+                                    },
                                     appVersion = BuildConfig.VERSION_NAME,
                                     appPackage = BuildConfig.APPLICATION_ID,
                                     onReportProblem = {

@@ -44,7 +44,10 @@ object CloudBackupManager {
         val busy: Boolean = false,
         val message: String? = null,
         val lastSyncAt: Long = 0,
-        val lastResult: String? = null
+        val lastResult: String? = null,
+        /** Счётчик успешных восстановлений — триггер пересборки библиотеки в UI (restore пишет
+         *  prefs напрямую, мимо ViewModel, и сам по себе экран раздела не обновляет). */
+        val restoreCount: Int = 0
     )
 
     private val _status = MutableStateFlow(SyncStatus())
@@ -201,7 +204,13 @@ object CloudBackupManager {
         outcome.fold(
             onSuccess = { msg ->
                 store.setLastSync(now, msg)
-                _status.value = _status.value.copy(busy = false, message = msg, lastResult = msg, lastSyncAt = now)
+                _status.value = _status.value.copy(
+                    busy = false,
+                    message = msg,
+                    lastResult = msg,
+                    lastSyncAt = now,
+                    restoreCount = _status.value.restoreCount + 1
+                )
             },
             onFailure = { e ->
                 val msg = "Ошибка восстановления: ${e.message ?: e.javaClass.simpleName}"
