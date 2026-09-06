@@ -80,7 +80,7 @@ object MovieNativeLauncher {
     ): NativeLaunchPayload =
         withContext(Dispatchers.IO) {
             if (request.kind == MovieContentKind.SERIES) {
-                resolveSeries(request, profile, stateStore)
+                resolveSeries(request, profile, stateStore, onLateVoiceovers)
             } else {
                 resolveMovie(request, stateStore, onLateVoiceovers)
             }
@@ -90,6 +90,7 @@ object MovieNativeLauncher {
         request: MoviePlaybackRequest,
         profile: UserFilmProfile?,
         stateStore: UserStateStoreBase? = null,
+        onLateVoiceovers: ((List<FlatTranslation>) -> Unit)? = null,
     ): NativeLaunchPayload {
         val raceStartMs = System.currentTimeMillis()
         // Detached race scope — same reason as in [resolveMovie]: a coroutineScope here would
@@ -97,9 +98,17 @@ object MovieNativeLauncher {
         // completion inside blocking OkHttp calls that never observe coroutine cancellation),
         // stalling the payload behind work the winner no longer needs.
         val raceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        // The ddbb-direct context built for the winning payload, published for the late-merge
+        // callback: webmaster sources finishing after the launch must rebuild THIS context,
+        // not a fresh profile-based pick (the player is already mid-episode by then).
+        val launchedDirect = java.util.concurrent.atomic.AtomicReference<MovieSeriesPlaybackContext?>(null)
         val ddbbSeriesDeferred = raceScope.async {
             request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
-                runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
+                runCatching {
+                    DdbbStreamResolver.resolveMovieStream(kpId, onLateSources = { merged ->
+                        refreshSeriesContextLate(request, merged, profile, stateStore, onLateVoiceovers, launchedDirect)
+                    })
+                }
                     .onFailure { KLog.w(TAG, "ddbb series race failed", it) }
                     .getOrNull()
             }
@@ -128,6 +137,7 @@ object MovieNativeLauncher {
                     KLog.i(TAG, "series race winner=ddbb/${harvested.sourceName} at ${System.currentTimeMillis() - raceStartMs}ms (ddbb eps=$ddbbEpisodeCount, kodik eps=$kodikEpisodeCount)")
                     val context = buildDdbbSeriesContext(request, harvested, profile)
                     if (context != null) {
+                        launchedDirect.set(context)
                         val ep = context.currentEpisode
                         val stream = AnimeMediaStream(
                             url = ep.playerUrl,
@@ -154,6 +164,31 @@ object MovieNativeLauncher {
         // The loser dies here; the winner's payload was already extracted above.
         raceScope.cancel()
         return payload
+    }
+
+    /**
+     * Late webmaster sources for a DIRECT series launch: the merged catalog rebuilds the
+     * series context (the episode actually playing is preserved — the rebuild's profile-based
+     * pick would otherwise jump), the store is refreshed and the player is notified so the dub
+     * dropdown gains the late rows without a relaunch. Kodik-won series are skipped: their
+     * candidates need resolveEpisode's HLS extraction and can't mix direct urls.
+     */
+    private fun refreshSeriesContextLate(
+        request: MoviePlaybackRequest,
+        merged: DdbbStream,
+        profile: UserFilmProfile?,
+        stateStore: UserStateStoreBase?,
+        onLateVoiceovers: ((List<FlatTranslation>) -> Unit)?,
+        launchedDirect: java.util.concurrent.atomic.AtomicReference<MovieSeriesPlaybackContext?>,
+    ) {
+        val playing = launchedDirect.get()?.currentEpisode ?: return
+        val fresh = buildDdbbSeriesContext(request, merged, profile) ?: return
+        val aligned = fresh.episodes.firstOrNull {
+            it.seasonNumber == playing.seasonNumber && it.episodeNumber == playing.episodeNumber
+        }?.let { fresh.copy(currentEpisode = it) } ?: fresh
+        hd.kinoshka.app.data.model.MovieSeriesContextStore.put(aligned)
+        KLog.i(TAG, "series late merge: dub candidates ${launchedDirect.get()?.candidates?.size ?: 0} → ${aligned.candidates.size}, tracks ${merged.episodeTracks.size}")
+        onLateVoiceovers?.invoke(stableMovieTranslations(request, merged, emptyList(), stateStore))
     }
 
     private suspend fun kodikSeriesPayload(
@@ -247,7 +282,13 @@ object MovieNativeLauncher {
         val raceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         val ddbbDeferred = raceScope.async {
             request.kinopoiskId?.takeIf { it > 0 }?.let { kpId ->
-                runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }
+                runCatching {
+                    DdbbStreamResolver.resolveMovieStream(kpId, onLateSources = { late ->
+                        // Sources that finished after the winner returned refresh the movie
+                        // dropdown without a relaunch (the winner already started playback).
+                        onLateVoiceovers?.invoke(stableMovieTranslations(request, late, emptyList(), stateStore))
+                    })
+                }
                     .onFailure { KLog.w(TAG, "ddbb race failed", it) }
                     .getOrNull()
             }
@@ -313,7 +354,11 @@ object MovieNativeLauncher {
                     rawUrl.contains("/stream/UTN", ignoreCase = true)
                 if (direct) {
                     val ladder = turboLadder.orEmpty().ifEmpty { mapOf("Auto" to rawUrl) }
-                    translation to AnimeMediaStream(rawUrl, ladder, launchStream.headers)
+                    // Per-url headers: a merged direct catalog mixes providers whose urls need
+                    // different Referers (turbo vs videocdn/collaps/voidboost).
+                    val headers = DdbbStreamResolver.directHeaders(kinopoiskId ?: 0, rawUrl)
+                        .ifEmpty { launchStream.headers }
+                    translation to AnimeMediaStream(rawUrl, ladder, headers)
                 } else {
                     val ladder = runCatching {
                         AnimeStreamResolver.resolveKodikHls(AnimeStreamResolver.absoluteKodikUrl(rawUrl))

@@ -54,6 +54,8 @@ object YouTubeStreamResolver {
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .proxySelector(hd.kinoshka.app.data.source.StreamProxySelector())
+            .proxyAuthenticator(hd.kinoshka.app.data.source.StreamProxyConfig.okHttpProxyAuthenticator())
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .build()

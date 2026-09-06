@@ -23,6 +23,13 @@ class KinoApplication : Application(), ImageLoaderFactory {
         // Должны выставиться до первого построения ApiClient-синглтонов.
         hd.kinoshka.app.data.api.ApiClient.httpLoggingEnabled = BuildConfig.DEBUG
 
+        // Прокси для заблокированных источников (вебмастер-трио, хентай, YouTube). Глобальная
+        // настройка: клиенты читают её на каждый запрос через StreamProxySelector, mpv — при
+        // каждом loadfile, так что применится без перезапуска после правки в настройках.
+        hd.kinoshka.app.data.source.StreamProxyConfig.proxyUrl = getSharedPreferences(
+            "kinoshka_app_settings", MODE_PRIVATE
+        ).getString("stream_proxy_url", null)
+
         // Initialize Koin for mpvEx
         startKoin {
             androidContext(this@KinoApplication)

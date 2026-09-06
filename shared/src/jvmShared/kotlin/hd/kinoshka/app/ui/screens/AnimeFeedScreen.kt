@@ -1251,8 +1251,10 @@ private fun parseTopicRichText(
  * Видео/трейлеры и постеры живут в html_footer (стена вложений) — он тоже источник.
  * Превью user_images поднимаем до original (тот же файл). Смайлы, аватары из цитат
  * и ютуб-тамбы видео отсеиваются — это не контент галереи.
+ *
+ * internal: используется ещё и каруселью «Новости» на Обзоре (HomeScreen).
  */
-private fun extractTopicImages(htmlBody: String?, body: String?, htmlFooter: String?): List<String> {
+internal fun extractTopicImages(htmlBody: String?, body: String?, htmlFooter: String?): List<String> {
     if (htmlBody.isNullOrBlank() && body.isNullOrBlank() && htmlFooter.isNullOrBlank()) return emptyList()
     val src = listOfNotNull(htmlBody, body, htmlFooter).joinToString("\n")
     val raw = linkedSetOf<String>()

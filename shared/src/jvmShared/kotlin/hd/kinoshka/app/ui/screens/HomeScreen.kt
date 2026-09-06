@@ -55,6 +55,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -86,6 +87,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.rememberScrollState
@@ -96,7 +99,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SecondaryScrollableTabRow
@@ -109,6 +111,7 @@ import androidx.compose.material3.Switch
 import hd.kinoshka.app.ui.components.BottomNavPill
 import hd.kinoshka.app.ui.components.NavPillItem
 import hd.kinoshka.app.ui.components.ScrollIntensityEffect
+import hd.kinoshka.app.ui.components.rememberKinoSheetState
 import hd.kinoshka.app.ui.components.sheetSquashStretch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -122,13 +125,13 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.RemoveCircle
-import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ripple
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import hd.kinoshka.app.data.model.FilterItem
@@ -139,7 +142,7 @@ import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.Feed
+import androidx.compose.material.icons.automirrored.filled.Feed
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.MoreHoriz
@@ -179,6 +182,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathBuilder
+import androidx.compose.ui.graphics.vector.group
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 
@@ -693,7 +699,7 @@ fun HomeScreen(
                                 custom(sel)
                             } else {
                                 Icon(
-                                    imageVector = Icons.Filled.Feed,
+                                    imageVector = Icons.AutoMirrored.Filled.Feed,
                                     contentDescription = null,
                                     modifier = Modifier.size(28.dp)
                                 )
@@ -766,7 +772,7 @@ fun HomeScreen(
                             .fillMaxWidth()
                             .height(searchRowHeight)
                     ) {
-                        if (showSectionHeader && sectionHeader != null) {
+                        if (showSectionHeader) {
                             DiscoverSectionHeader(
                                 title = sectionHeader,
                                 onBack = backToOverviewFeed,
@@ -1050,7 +1056,7 @@ fun HomeScreen(
             }
             // Секция ленты: полноэкранный слот вместо домашнего Column.
             if (isFeedSection) {
-                feedContent?.invoke { target -> handleNav(target) }
+                feedContent { target -> handleNav(target) }
             }
 
         }
@@ -1076,15 +1082,88 @@ enum class LibraryFilterType(val label: String) {
 
 /** Иконки переключателя контента в шапках Обзора и Библиотеки (текст заменён иконками). */
 private fun LibraryFilterType.toSwitcherIcon(): ImageVector = when (this) {
-    LibraryFilterType.ALL -> Icons.Filled.Apps
+    LibraryFilterType.ALL -> Icons.Filled.VideoLibrary
     LibraryFilterType.FILMS -> Icons.Filled.Movie
-    LibraryFilterType.ANIME -> Icons.Filled.Animation
+    LibraryFilterType.ANIME -> AnimeEyesIcon
 }
 
 private fun ContentType.toSwitcherIcon(): ImageVector = when (this) {
     ContentType.FILMS -> Icons.Filled.Movie
-    ContentType.ANIME -> Icons.Filled.Animation
+    ContentType.ANIME -> AnimeEyesIcon
 }
+
+/**
+ * Аниме-глаз из icons/anime-eye.svg: верхнее веко с ресницами, нижний контур,
+ * зрачок с бликами-отверстиями (EvenOdd) и нижнее веко. Вьюпорт квадратный
+ * 100×100 (иначе Compose растянет глаз под квадратный слот и он будет сжат),
+ * контент 100×70 из SVG отцентрован сдвигом +15 по Y. Тонируется через tint.
+ */
+private val AnimeEyesIcon: ImageVector = ImageVector.Builder(
+    name = "AnimeEyes",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 100f,
+    viewportHeight = 100f
+).apply {
+    group(translationY = 15f) {
+    // Верхнее веко / ресницы.
+    path(fill = SolidColor(Color.Black)) {
+        moveTo(9.5f, 9.5f)
+        quadTo(11.5f, 14f, 20f, 17.5f)
+        quadTo(12f, 18.5f, 1f, 17.5f)
+        quadTo(2.5f, 23.5f, 11.5f, 27.5f)
+        quadTo(7f, 29f, 0.5f, 32.5f)
+        quadTo(5f, 36.5f, 12.5f, 35.5f)
+        quadTo(15.5f, 48f, 32.5f, 62.5f)
+        quadTo(26f, 48f, 22f, 34.5f)
+        quadTo(21f, 29.5f, 26f, 26.5f)
+        quadTo(36f, 19.5f, 45f, 16.5f)
+        quadTo(58f, 13f, 82f, 21.5f)
+        lineTo(87f, 40f)
+        quadTo(89.5f, 34f, 90.5f, 27f)
+        quadTo(93f, 29.5f, 98.5f, 32.5f)
+        quadTo(96f, 27.5f, 91f, 20.5f)
+        quadTo(94f, 19f, 96.5f, 17.5f)
+        quadTo(93.5f, 16f, 90f, 16.5f)
+        quadTo(90.5f, 13.5f, 89.5f, 11f)
+        quadTo(87.5f, 12.5f, 84f, 13f)
+        quadTo(62f, 4.5f, 39f, 5.5f)
+        quadTo(23f, 6.5f, 9.5f, 9.5f)
+        close()
+    }
+    // Нижний контур глаза.
+    path(
+        fill = null,
+        stroke = SolidColor(Color.Black),
+        strokeLineWidth = 2.4f,
+        strokeLineCap = StrokeCap.Round,
+        strokeLineJoin = StrokeJoin.Round
+    ) {
+        moveTo(37.5f, 17.5f)
+        curveTo(31.5f, 29f, 33f, 51.5f, 52.5f, 65f)
+        lineTo(76.5f, 65f)
+        curveTo(89.5f, 56.5f, 91.5f, 34f, 83.5f, 20.5f)
+    }
+    // Зрачок с бликами (отверстия через EvenOdd).
+    path(fill = SolidColor(Color.Black), pathFillType = PathFillType.EvenOdd) {
+        moveTo(48f, 37f)
+        curveTo(48f, 28f, 53f, 20f, 61f, 20f)
+        curveTo(69f, 20f, 74f, 28f, 74f, 37f)
+        curveTo(74f, 47f, 69f, 55f, 61f, 55f)
+        curveTo(53f, 55f, 48f, 47f, 48f, 37f)
+        close()
+        circleTo(52f, 30f, 7f)
+        circleTo(68f, 46f, 3.5f)
+    }
+    // Нижнее веко.
+    path(fill = SolidColor(Color.Black)) {
+        moveTo(49f, 65.8f)
+        quadTo(65f, 69.5f, 82f, 65.8f)
+        quadTo(65f, 67.2f, 49f, 65.8f)
+        close()
+    }
+    }
+}.build()
 
 @Composable
 private fun SearchRow(
@@ -1223,7 +1302,7 @@ private fun SearchRow(
                             imageVector = targetType.toSwitcherIcon(),
                             contentDescription = if (targetType == ContentType.FILMS) "Кино" else "Аниме",
                             tint = discoverTextColor,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(24.dp)
                         )
                     }
                 }
@@ -1243,10 +1322,10 @@ private fun SearchRow(
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.List,
+                        imageVector = FilterSlidersVerticalIcon,
                         contentDescription = "Настройки библиотеки",
                         tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
@@ -1312,7 +1391,7 @@ private fun SearchRow(
                             imageVector = targetFilter.toSwitcherIcon(),
                             contentDescription = targetFilter.label,
                             tint = libIconColor,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(24.dp)
                         )
                     }
                 }
@@ -1378,8 +1457,7 @@ private fun LibrarySettingsSheet(
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        // skipPartiallyExpanded: только Hidden и Expanded (полураскрытия нет).
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberKinoSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         Column(
@@ -1979,7 +2057,7 @@ private fun DiscoverContent(
                 SkeletonGridLoading(columns = metrics.columns, contentPadding = PaddingValues(bottom = FloatingBottomContentPadding))
             }
         }
-        state.error != null -> ErrorCard(message = state.error ?: "", onRetry = onRetry) // Локальный elvis: error объявлен в другом модуле (shared), smart cast невозможен
+        state.error != null -> ErrorCard(message = state.error, onRetry = onRetry)
         sourceItems.isEmpty() -> {
             val text = if (state.isSearchResult && state.query.isNotBlank()) {
                 "Ничего не найдено по запросу: ${state.query}"
@@ -2509,8 +2587,9 @@ private fun OverviewHeroRow(
 }
 
 /**
- * Витрина «Новости» в стиле hero: широкие карточки с постером связанного
- * тайтла. Тап по плитке — сам пост, «Все» — на страницу новостей.
+ * Витрина «Новости» в стиле hero: широкие карточки, картинка — вложение из
+ * самого поста, иначе постер связанного тайтла. Тап по плитке — сам пост,
+ * «Все» — на страницу новостей.
  */
 @Composable
 private fun OverviewNewsHeroRow(
@@ -2541,6 +2620,12 @@ private fun OverviewNewsHeroRow(
         ) {
             items(topics, key = { "newshero_${it.id}" }) { topic ->
                 val linked = topic.linked
+                // Картинка карточки: вложение из самого поста, иначе постер связанного тайтла.
+                val cardImage = remember(
+                    topic.id, topic.htmlBody, topic.body, topic.htmlFooter
+                ) {
+                    extractTopicImages(topic.htmlBody, topic.body, topic.htmlFooter).firstOrNull()
+                } ?: linked?.posterUrl
                 Surface(
                     shape = RoundedCornerShape(20.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -2551,10 +2636,10 @@ private fun OverviewNewsHeroRow(
                         .clickable { onOpenTopic(topic.id) }
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        if (linked != null) {
+                        if (cardImage != null) {
                             KinoshkaAsyncImage(
-                                model = linked.posterUrl,
-                                contentDescription = linked.displayTitle,
+                                model = cardImage,
+                                contentDescription = topic.topicTitle?.takeIf { it.isNotBlank() } ?: "Новость",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
                             )
@@ -2725,6 +2810,12 @@ private fun MoreContent(
     onOpenAbout: () -> Unit,
     onOpenDownloads: () -> Unit = {}
 ) {
+    val searchEntries = moreSearchEntries(
+        onOpenProfile = onOpenProfile,
+        onOpenSettings = onOpenSettings,
+        onOpenAbout = onOpenAbout,
+        onOpenDownloads = onOpenDownloads
+    )
     val allItems = listOf(
         MoreMenuItem(
             title = "Загрузки",
@@ -2751,12 +2842,24 @@ private fun MoreContent(
             onClick = onOpenAbout
         )
     )
-    val items = if (query.isBlank()) {
+    val q = query.trim()
+    val items = if (q.isBlank()) {
         allItems
     } else {
         allItems.filter {
-            it.title.contains(query, ignoreCase = true) ||
-                it.subtitle.contains(query, ignoreCase = true)
+            it.title.contains(q, ignoreCase = true) ||
+                it.subtitle.contains(q, ignoreCase = true)
+        }
+    }
+    // Поиск по внутренним разделам: совпадение открывает свою страницу.
+    val matches = if (q.isBlank()) {
+        emptyList()
+    } else {
+        searchEntries.filter { entry ->
+            entry.page.contains(q, ignoreCase = true) ||
+                entry.section.contains(q, ignoreCase = true) ||
+                entry.title.contains(q, ignoreCase = true) ||
+                entry.subtitle.contains(q, ignoreCase = true)
         }
     }
 
@@ -2765,7 +2868,7 @@ private fun MoreContent(
         contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        if (items.isEmpty()) {
+        if (items.isEmpty() && matches.isEmpty()) {
             item {
                 EmptyCard(
                     title = "Ничего не найдено",
@@ -2773,13 +2876,34 @@ private fun MoreContent(
                 )
             }
         } else {
-            items(items, key = { it.title }) { item ->
+            items(items, key = { "menu:" + it.title }) { item ->
                 MenuCard(
                     title = item.title,
                     subtitle = item.subtitle,
                     icon = item.icon,
                     onClick = item.onClick
                 )
+            }
+
+            matches.groupBy { it.page }.forEach { (page, entries) ->
+                item(key = "header:$page") {
+                    Text(
+                        text = page,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+                    )
+                }
+                items(entries, key = { "$page:" + it.section + it.title }) { entry ->
+                    MenuCard(
+                        title = entry.title,
+                        subtitle = listOf(entry.section, entry.subtitle)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" · "),
+                        icon = allItems.first { it.title == page }.icon,
+                        onClick = entry.onClick
+                    )
+                }
             }
         }
     }
@@ -2792,13 +2916,14 @@ private fun MenuCard(
     icon: ImageVector,
     onClick: () -> Unit
 ) {
-    ElevatedCard(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
             .animateContentSize()
             .clip(RoundedCornerShape(22.dp))
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(22.dp)
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Row(
             modifier = Modifier.padding(14.dp),
@@ -3534,7 +3659,10 @@ private fun EmptyCard(
     title: String,
     message: String
 ) {
-    ElevatedCard(shape = RoundedCornerShape(24.dp)) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    ) {
         Column(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -3827,6 +3955,57 @@ private fun FilmTileSize.toGridMetrics(): GridMetrics {
     }
 }
 
+/**
+ * Запись внутреннего раздела для поиска на странице «Ещё»: попадает в выдачу
+ * по названию/подразделу/описанию, тап открывает свою страницу.
+ */
+private data class MoreSearchEntry(
+    val page: String,
+    val section: String,
+    val title: String,
+    val subtitle: String,
+    val onClick: () -> Unit
+)
+
+/**
+ * Индекс пунктов внутри страниц Ещё: Загрузки, Профиль, Настройки,
+ * О приложении. Держим рядом с выдачей поиска (MoreContent).
+ */
+private fun moreSearchEntries(
+    onOpenProfile: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenAbout: () -> Unit,
+    onOpenDownloads: () -> Unit
+): List<MoreSearchEntry> = listOf(
+    // Загрузки
+    MoreSearchEntry("Загрузки", "Загрузки", "Активные загрузки", "Прогресс скачивания серий", onOpenDownloads),
+    MoreSearchEntry("Загрузки", "Загрузки", "Скачанные серии", "Офлайн-просмотр", onOpenDownloads),
+    MoreSearchEntry("Загрузки", "Загрузки", "Очистить загрузки", "Удалить всё скачанное", onOpenDownloads),
+    // Профиль
+    MoreSearchEntry("Профиль", "Аккаунт", "Смена аватара", "Иконка профиля", onOpenProfile),
+    MoreSearchEntry("Профиль", "Статистика", "Список аниме", "Статусы и прогресс", onOpenProfile),
+    MoreSearchEntry("Профиль", "Статистика", "Список фильмов", "Статусы и прогресс", onOpenProfile),
+    MoreSearchEntry("Профиль", "Статистика", "Активность за 14 дней", "График просмотров", onOpenProfile),
+    MoreSearchEntry("Профиль", "Аккаунт", "Аккаунт Shikimori", "Вход и синхронизация списков", onOpenProfile),
+    MoreSearchEntry("Профиль", "Копии", "Резервная копия в облаке", "Яндекс Диск и WebDAV", onOpenProfile),
+    MoreSearchEntry("Профиль", "Копии", "Экспорт библиотеки", "Сохранить в JSON-файл", onOpenProfile),
+    MoreSearchEntry("Профиль", "Копии", "Импорт библиотеки", "Восстановить из JSON-файла", onOpenProfile),
+    // Настройки
+    MoreSearchEntry("Настройки", "Внешний вид", "Тема", "Системная, темная, AMOLED", onOpenSettings),
+    MoreSearchEntry("Настройки", "Внешний вид", "Размер плиток (Обзор)", "Плотность сетки", onOpenSettings),
+    MoreSearchEntry("Настройки", "Внешний вид", "Размер плиток (Библиотека)", "Плотность сетки", onOpenSettings),
+    MoreSearchEntry("Настройки", "Плеер", "Порядок выбора в плеере", "Озвучки или серии первыми", onOpenSettings),
+    MoreSearchEntry("Настройки", "Плеер", "Плеер фильмов", "mpvEx или веб-плеер", onOpenSettings),
+    MoreSearchEntry("Настройки", "Плеер", "Настройки плеера mpvEx", "Скорость, жесты, субтитры, декодер, сброс", onOpenSettings),
+    MoreSearchEntry("Настройки", "Фильтры и отладка", "Скрывать российские фильмы/сериалы", "Фильтр обзора и библиотеки", onOpenSettings),
+    // О приложении
+    MoreSearchEntry("О приложении", "Обновления", "Проверить обновления", "Версия приложения", onOpenAbout),
+    MoreSearchEntry("О приложении", "Ссылки", "GitHub", "Исходный код приложения", onOpenAbout),
+    MoreSearchEntry("О приложении", "Ссылки", "Telegram", "Новые версии и обсуждение", onOpenAbout),
+    MoreSearchEntry("О приложении", "Ссылки", "Shikimori", "Энциклопедия аниме и манги", onOpenAbout),
+    MoreSearchEntry("О приложении", "Ссылки", "Собрать отчёт о проблеме", "Устройство, события плеера и логи", onOpenAbout),
+)
+
 private data class MoreMenuItem(
     val title: String,
     val subtitle: String,
@@ -3834,35 +4013,62 @@ private data class MoreMenuItem(
     val onClick: () -> Unit
 )
 
+/**
+ * Вертикальные слайдеры из icons/variants/filter-sliders-vertical.svg:
+ * три дорожки с круглыми ручками на разной высоте. Вьюпорт 24×24 как в SVG.
+ */
+private val FilterSlidersVerticalIcon: ImageVector = ImageVector.Builder(
+    name = "FilterSlidersVertical",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f
+).apply {
+    // Дорожки — штрихом с круглыми концами (концы 4 и 20 с учётом радиуса).
+    path(
+        fill = null,
+        stroke = SolidColor(Color.Black),
+        strokeLineWidth = 2f,
+        strokeLineCap = StrokeCap.Round
+    ) {
+        moveTo(5.2f, 5f)
+        lineTo(5.2f, 19f)
+        moveTo(12f, 5f)
+        lineTo(12f, 19f)
+        moveTo(18.8f, 5f)
+        lineTo(18.8f, 19f)
+    }
+    // Ручки.
+    path(fill = SolidColor(Color.Black)) {
+        circleTo(5.2f, 8f, 3f)
+        circleTo(12f, 15f, 3f)
+        circleTo(18.8f, 10f, 3f)
+    }
+}.build()
+
+/** Круг четырьмя кубическими сегментами (kappa = 0.5523). Дуги из двух
+ *  полукругов на стыке диаметров дают вырожденный случай — их не используем. */
+private fun PathBuilder.circleTo(cx: Float, cy: Float, r: Float) {
+    val c = r * 0.5523f
+    moveTo(cx + r, cy)
+    curveTo(cx + r, cy + c, cx + c, cy + r, cx, cy + r)
+    curveTo(cx - c, cy + r, cx - r, cy + c, cx - r, cy)
+    curveTo(cx - r, cy - c, cx - c, cy - r, cx, cy - r)
+    curveTo(cx + c, cy - r, cx + r, cy - c, cx + r, cy)
+    close()
+}
+
 @Composable
 private fun FilterTuneIcon(
     tint: Color,
     modifier: Modifier = Modifier
 ) {
-    Canvas(modifier = modifier.size(20.dp)) {
-        val w = size.width
-        val h = size.height
-        val strokeWidth = 1.6.dp.toPx()
-        val circleRadius = 2.5.dp.toPx()
-
-        // Top line
-        val y1 = h * 0.25f
-        val x1 = w * 0.35f
-        drawLine(tint, Offset(0f, y1), Offset(w, y1), strokeWidth = strokeWidth, cap = StrokeCap.Round)
-        drawCircle(tint, radius = circleRadius, center = Offset(x1, y1))
-
-        // Middle line
-        val y2 = h * 0.5f
-        val x2 = w * 0.70f
-        drawLine(tint, Offset(0f, y2), Offset(w, y2), strokeWidth = strokeWidth, cap = StrokeCap.Round)
-        drawCircle(tint, radius = circleRadius, center = Offset(x2, y2))
-
-        // Bottom line
-        val y3 = h * 0.75f
-        val x3 = w * 0.45f
-        drawLine(tint, Offset(0f, y3), Offset(w, y3), strokeWidth = strokeWidth, cap = StrokeCap.Round)
-        drawCircle(tint, radius = circleRadius, center = Offset(x3, y3))
-    }
+    Icon(
+        imageVector = FilterSlidersVerticalIcon,
+        contentDescription = "Фильтры поиска",
+        tint = tint,
+        modifier = modifier.size(24.dp)
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -3897,8 +4103,7 @@ private fun SearchFilterBottomSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        // skipPartiallyExpanded: только Hidden и Expanded (полураскрытия нет).
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberKinoSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         Column(

@@ -18,7 +18,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.graphics.SolidColor
-import hd.kinoshka.app.data.model.PlaybackSequenceOption
 
 import hd.kinoshka.app.data.feed.YouTubeStreamResolver
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -134,7 +133,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.SheetValue
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -222,6 +220,7 @@ import hd.kinoshka.app.data.source.KodikMovieParser
 import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.ui.components.ProfileEditorCoverBackdrop
+import hd.kinoshka.app.ui.components.rememberKinoSheetState
 import hd.kinoshka.app.ui.components.sheetSquashStretch
 import hd.kinoshka.app.ui.components.shimmerEffect
 import java.util.Locale
@@ -274,7 +273,6 @@ fun DetailsScreen(
         currentTranslationId: String,
         movieSeriesContext: hd.kinoshka.app.data.model.MovieSeriesPlaybackContext?
     ) -> Unit)? = null,
-    playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
     playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.MPVEX,
     userStateStore: UserStateStoreBase? = null,
     // Платформенные слоты: Android подставляет живые реализации, desktop — null
@@ -283,7 +281,6 @@ fun DetailsScreen(
         shikimoriId: Int,
         kinopoiskId: Int,
         animeTitle: String,
-        playbackSequence: PlaybackSequenceOption,
         onDismissRequest: () -> Unit,
         onStreamSelected: (
             stream: hd.kinoshka.app.data.model.AnimeMediaStream,
@@ -464,9 +461,7 @@ fun DetailsScreen(
             }
 
             state.item != null -> {
-                // Инвариант ветки, но smart cast невозможен: item объявлен в другом модуле (shared).
                 val item = state.item
-                    ?: error("state.item проверен условием ветки when, значение не может быть null")
                 val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.any { it.genre?.lowercase() == "аниме" }
                 val scope = rememberCoroutineScope()
                 val scrollState = rememberLazyListState()
@@ -747,7 +742,6 @@ fun DetailsScreen(
                                 shikimoriId,
                                 item.kinopoiskId,
                                 item.nameRu ?: item.nameOriginal ?: "Аниме",
-                                playbackSequence,
                                 { activePlaybackSelection = false }
                             ) { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
                                 var normalizedUrl = stream.url
@@ -936,7 +930,7 @@ fun DetailsScreen(
                                 // чтобы смена дорожек в плеере не уводила обратно в сеть.
                                 if (localPlayable != null) {
                                     prepared[currentTrId]?.let { s ->
-                                        prepared[currentTrId] = s.copy(url = localPlayable!!, headers = emptyMap())
+                                        prepared[currentTrId] = s.copy(url = localPlayable, headers = emptyMap())
                                     }
                                 }
                                 onOpenNativePlayer?.invoke(
@@ -1143,7 +1137,7 @@ fun DetailsScreen(
         val editorItem = state.item
         // Состояние шита поднято наружу: бэкдроп гаснет по targetValue (старт hide),
         // а не по onDismiss (конец анимации) — уход строго вместе с шитом.
-        val profileSheetState = rememberModalBottomSheetState()
+        val profileSheetState = rememberKinoSheetState()
         if (editorItem != null) {
             ProfileEditorCoverBackdrop(
                 id = editorItem.kinopoiskId,
@@ -1710,7 +1704,7 @@ fun UserProfileEditorSheet(
     seasons: List<SeasonItem>,
     profile: UserFilmProfile?,
     saving: Boolean,
-    sheetState: SheetState = rememberModalBottomSheetState(),
+    sheetState: SheetState = rememberKinoSheetState(),
     onDismiss: () -> Unit,
     onSave: (
         status: UserFilmStatus?,
@@ -3476,7 +3470,7 @@ private fun AnimeChronologySheet(
         list.distinctBy { it.id }.sortedWith(compareBy<FilmLinkItem> { it.year ?: 9999 }.thenBy { it.id })
     }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberKinoSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -4182,7 +4176,7 @@ internal fun CharacterDetailsSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberKinoSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         Column(

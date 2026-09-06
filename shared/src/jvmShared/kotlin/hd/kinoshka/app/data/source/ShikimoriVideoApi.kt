@@ -144,6 +144,15 @@ object ShikimoriVideoApi {
         resolved
     }
 
+    /**
+     * Выбрасывает кэш резолва: с конкретным vkId — только его, без — весь. Нужен авто-retry
+     * плеера: переигранная из кэша подписанная ссылка (CDN отвечал 400) лечится только
+     * свежим резолвом с новой подписью.
+     */
+    fun evictResolveCache(vkId: String?) {
+        if (vkId == null) resolvedCache.clear() else resolvedCache.remove(vkId)
+    }
+
     private suspend fun fetchVideo(vkId: String): ResolvedVideo? {
         val body = get("$VIDEO_URL/$vkId") ?: return null
         val hls = runCatching { JSONObject(body).optJSONObject("sources")?.optString("hlsUrl") }

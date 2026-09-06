@@ -14,6 +14,9 @@ class PlaybackStateRepositoryImpl(
   override suspend fun getVideoDataByTitle(mediaTitle: String): PlaybackStateEntity? =
     database.videoDataDao().getVideoDataByTitle(mediaTitle)
 
+  override suspend fun getStatesByTitlePrefix(prefix: String): List<PlaybackStateEntity> =
+    database.videoDataDao().getByTitlePrefix(prefix)
+
   override suspend fun clearAllPlaybackStates() {
     database.videoDataDao().clearAllPlaybackStates()
   }

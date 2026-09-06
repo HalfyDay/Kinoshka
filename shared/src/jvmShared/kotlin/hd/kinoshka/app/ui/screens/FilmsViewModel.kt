@@ -26,7 +26,6 @@ import hd.kinoshka.app.data.model.SeasonItem
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.utils.SearchQueryUtils
-import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -171,7 +170,6 @@ data class HomeUiState(
     val topics: List<hd.kinoshka.app.data.model.ShikimoriTopic> = emptyList(),
     val calendarLoading: Boolean = false,
     val topicsLoading: Boolean = false,
-    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
     val playerMode: hd.kinoshka.app.data.local.PlayerMode = hd.kinoshka.app.data.local.PlayerMode.MPVEX,
     val searchHistory: List<hd.kinoshka.app.data.local.SearchHistoryRecord> = emptyList(),
     val isInstantSearch: Boolean = false,
@@ -423,6 +421,10 @@ class FilmsViewModel(
                     }
                     cachedShikimoriRates = ratesWithLocalCache
                     persistShikimoriRatesSnapshot(state.userId, ratesWithLocalCache)
+                    // Сверка с локальными профилями до пересборки: рейтинг новее локальной правки —
+                    // серверные статус/оценка/заметка/прогресс перезаписывают профиль, иначе правки
+                    // статуса с сайта Shikimori никогда не доезжают до библиотеки.
+                    withContext(Dispatchers.IO) { userStateStore.adoptShikimoriRates(ratesWithLocalCache) }
                     // Тяжёлая пересборка (парсинг JSON-блобов) — вне main, иначе дроп кадров.
                     val library = withContext(Dispatchers.Default) { buildLibraryItems() }
                     uiState = uiState.copy(library = library)
@@ -484,10 +486,11 @@ class FilmsViewModel(
                     }
                 }
             } else {
-                cachedShikimoriRates = emptyList()
+                // Разлогин не стирает библиотеку: тайтлы Shikimori остаются из in-memory списка
+                // и из снапшота (гидратация в buildLibraryItems даёт их и после перезапуска).
                 viewModelScope.launch {
-                    val emptyLibrary = withContext(Dispatchers.Default) { buildLibraryItems() }
-                    uiState = uiState.copy(library = emptyLibrary)
+                    val offlineLibrary = withContext(Dispatchers.Default) { buildLibraryItems() }
+                    uiState = uiState.copy(library = offlineLibrary)
                 }
                 ensureLibraryAdultVerdicts()
             }
@@ -1182,11 +1185,10 @@ class FilmsViewModel(
 
     fun logoutShikimori() {
         shikimoriAuthStore?.clearSession()
-        cachedShikimoriRates = emptyList()
-        snapshotUserId = 0
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { userStateStore.clearShikimoriRatesSnapshot() }
-        }
+        // Библиотека Shikimori остаётся на устройстве и после выхода: снапшот рейтов на диске не
+        // чистим, in-memory список не гасим — buildLibraryItems продолжает показывать тайтлы.
+        // Чужой список при входе в другой аккаунт гасится в refreshShikimoriAuth
+        // (snapshotUserId != userId), поэтому хвосты от старого аккаунта не мигнут.
         refreshShikimoriAuth()
     }
 
@@ -1652,11 +1654,6 @@ class FilmsViewModel(
     fun setShowFpsCounter(enabled: Boolean) {
         userStateStore.setFpsCounterEnabled(enabled)
         uiState = uiState.copy(showFpsCounter = enabled)
-    }
-
-    fun setPlaybackSequence(option: PlaybackSequenceOption) {
-        userStateStore.setPlaybackSequence(option)
-        uiState = uiState.copy(playbackSequence = option)
     }
 
     fun setPlayerMode(mode: hd.kinoshka.app.data.local.PlayerMode) {
@@ -2353,7 +2350,6 @@ class FilmsViewModel(
             librarySortType = userStateStore.getLibrarySortType(),
             libraryGroupType = userStateStore.getLibraryGroupType(),
             contentType = preferences.contentType,
-            playbackSequence = preferences.playbackSequence,
             playerMode = preferences.playerMode
             // calendarItems is intentionally left default-empty: uiState is being constructed for
             // the first time here, and buildLibraryItems reads from cachedShikimoriCalendar (set
@@ -2369,6 +2365,22 @@ class FilmsViewModel(
                 library = library,
                 profileAvatar = userStateStore.getProfileAvatar()
             )
+        }
+    }
+
+    /**
+     * Полная перечитка после восстановления библиотеки из облачного бэкапа (или установки поверх
+     * старой): импорт перезаписывает хранилище целиком мимо ViewModel, включая снапшот рейтингов
+     * Shikimori. Сбрасываем флаг гидратации — пересборка перечитает снапшот; при логине
+     * refreshShikimoriAuth параллельно перезапросит рейты с сервера и сверит профили.
+     */
+    fun refreshAfterRestore() {
+        shikimoriRatesSnapshotHydrated = false
+        refreshShikimoriAuth()
+        viewModelScope.launch {
+            val library = withContext(Dispatchers.Default) { buildLibraryItems() }
+            val avatar = withContext(Dispatchers.Default) { userStateStore.getProfileAvatar() }
+            uiState = uiState.copy(library = library, profileAvatar = avatar)
         }
     }
 
@@ -2413,8 +2425,7 @@ class FilmsViewModel(
                 hideRussianContent = preferences.hideRussianContent,
                 discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
                 libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
-                showFpsCounter = preferences.showFpsCounter,
-                playbackSequence = preferences.playbackSequence
+                showFpsCounter = preferences.showFpsCounter
             )
         }
     }
@@ -2425,15 +2436,17 @@ class FilmsViewModel(
         // refreshShikimoriAuth() освежит данные следом.
         if (!shikimoriRatesSnapshotHydrated) {
             shikimoriRatesSnapshotHydrated = true
+            // Гидратация и без логина: после переустановки Google-бэкап возвращает prefs, но не ключ
+            // Keystore — EncryptedSharedPreferences не расшифровываются, сессия мертва, и снапшот
+            // остаётся единственным источником Shikimori-части библиотеки до перелогина. При логине
+            // чужой аккаунт гасится в refreshShikimoriAuth (snapshotUserId != userId).
             val currentUserId = shikimoriAuthStore?.getAuthState()?.userId ?: 0
-            if (currentUserId > 0) {
-                runCatching { userStateStore.getShikimoriRatesSnapshot() }.getOrNull()
-                    ?.takeIf { it.userId == currentUserId && it.rates.isNotEmpty() }
-                    ?.let {
-                        cachedShikimoriRates = it.rates
-                        snapshotUserId = it.userId
-                    }
-            }
+            runCatching { userStateStore.getShikimoriRatesSnapshot() }.getOrNull()
+                ?.takeIf { it.rates.isNotEmpty() && (currentUserId == 0 || currentUserId == it.userId) }
+                ?.let {
+                    cachedShikimoriRates = it.rates
+                    snapshotUserId = it.userId
+                }
         }
         val historyRecords = userStateStore.getHistory()
         val profileMap = userStateStore.getProfiles()

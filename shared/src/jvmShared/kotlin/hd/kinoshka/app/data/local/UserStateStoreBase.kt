@@ -9,7 +9,6 @@ import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmItem
-import hd.kinoshka.app.data.model.PlaybackSequenceOption
 import java.util.Locale
 
 
@@ -48,7 +47,6 @@ data class UserPreferences(
     val libraryTileSize: FilmTileSize? = null,
     val showFpsCounter: Boolean = false,
     val contentType: hd.kinoshka.app.ui.screens.ContentType = hd.kinoshka.app.ui.screens.ContentType.FILMS,
-    val playbackSequence: PlaybackSequenceOption = PlaybackSequenceOption.SOURCES_FIRST,
     val playerMode: PlayerMode = PlayerMode.MPVEX
 )
 
@@ -141,7 +139,14 @@ data class LibraryBackup(
     val profileAvatar: String? = null,
     val preferences: UserPreferences? = null,
     val history: List<HistoryRecord>? = null,
-    val profiles: List<UserFilmProfile>? = null
+    val profiles: List<UserFilmProfile>? = null,
+    /**
+     * Снапшот оценок Shikimori: после переустановки сессия мертва (ключ Keystore не бэкапится,
+     * EncryptedSharedPreferences не расшифровываются), и без снапшота Shikimori-часть библиотеки
+     * не восстанавливается до перелогина. В старых копиях поля нет — Gson даст null, импорт пропустит.
+     */
+    val shikimoriRates: List<hd.kinoshka.app.data.model.ShikimoriUserRate>? = null,
+    val shikimoriUserId: Int = 0
 )
 
 data class ShikimoriAnimeCache(    val shikimoriId: Int,
@@ -245,7 +250,6 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     private val discoverTileSizeKey = "discover_tile_size"
     private val libraryTileSizeKey = "library_tile_size"
     private val showFpsCounterKey = "show_fps_counter"
-    private val playbackSequenceKey = "playback_sequence"
     private val preferredQualityKey = "preferred_quality"
     private val shikimoriAnimeCacheKey = "shikimori_anime_cache"
     private val shikimoriRatesSnapshotKey = "shikimori_rates_snapshot"
@@ -309,8 +313,50 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         prefs.putString(shikimoriRatesSnapshotKey, gson.toJson(snapshot)).apply()
     }
 
-    fun clearShikimoriRatesSnapshot() {
-        prefs.putString(shikimoriRatesSnapshotKey, null).apply()
+    /**
+     * Last-write-wins сверка локальных профилей с серверными оценками Shikimori. Без неё локальный
+     * профиль всегда теньет рейтинг: правка статуса на сайте Shikimori не доезжает до библиотеки,
+     * а следующая правка в приложении уезжает на сервер и затирает сайт устаревшим значением.
+     * Рейтинг новее профиля — его статус/оценка/заметка/прогресс перезаписывают профиль; профиль
+     * новее — не трогается (его значения уже уехали на сервер при сохранении или это прогресс
+     * плеера). Возвращает число обновлённых профилей.
+     */
+    fun adoptShikimoriRates(rates: List<hd.kinoshka.app.data.model.ShikimoriUserRate>): Int {
+        if (rates.isEmpty()) return 0
+        return synchronized(BLOB_LOCK) {
+            val byId = (readProfilesOrNull() ?: return@synchronized 0)
+                .associateBy { it.kinopoiskId }
+                .toMutableMap()
+            var updated = 0
+            for (rate in rates) {
+                if (rate.targetId <= 0) continue
+                val rateTime = rate.getUpdatedEpochMillis()
+                if (rateTime <= 0) continue
+                val existing = byId[rate.targetId + ANIME_ID_OFFSET] ?: continue
+                if (rateTime <= existing.updatedAt) continue
+                val status = when (rate.status.lowercase()) {
+                    "watching" -> UserFilmStatus.WATCHING
+                    "planned" -> UserFilmStatus.PLANNED
+                    "completed" -> UserFilmStatus.COMPLETED
+                    "rewatching" -> UserFilmStatus.REWATCHING
+                    "on_hold" -> UserFilmStatus.ON_HOLD
+                    "dropped" -> UserFilmStatus.DROPPED
+                    // Неизвестный статус сервера — не рискуем перезаписывать профиль.
+                    else -> null
+                } ?: continue
+                byId[rate.targetId + ANIME_ID_OFFSET] = existing.copy(
+                    status = status,
+                    userRating = rate.score.takeIf { it > 0 },
+                    note = rate.text?.trim()?.takeUnless { it.isBlank() },
+                    watchedEpisodes = rate.episodes.takeIf { it > 0 },
+                    watchedSeasons = rate.rewatches.takeIf { it > 0 },
+                    updatedAt = rateTime
+                )
+                updated++
+            }
+            if (updated > 0) writeProfiles(capProfiles(byId.values.toList()))
+            updated
+        }
     }
 
     fun getLibrarySortType(): LibrarySortType {
@@ -344,14 +390,6 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
     fun setHentaiVisibleInLibrary(visible: Boolean) {
         prefs.putBoolean(showHentaiInLibraryKey, visible).apply()
-    }
-
-    fun getPlaybackSequence(): PlaybackSequenceOption {
-        return readEnum(playbackSequenceKey, PlaybackSequenceOption.SOURCES_FIRST)
-    }
-
-    fun setPlaybackSequence(option: PlaybackSequenceOption) {
-        prefs.putString(playbackSequenceKey, option.name).apply()
     }
 
     private val playerModeKey = "player_mode"
@@ -440,7 +478,6 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             libraryTileSize = getLibraryTileSize(),
             showFpsCounter = isFpsCounterEnabled(),
             contentType = getSavedContentType(),
-            playbackSequence = getPlaybackSequence(),
             playerMode = getPlayerMode()
         )
     }
@@ -820,12 +857,15 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     }
 
     fun exportLibraryJson(): String {
+        val ratesSnapshot = getShikimoriRatesSnapshot()
         val backup = LibraryBackup(
             exportedAt = System.currentTimeMillis(),
             profileAvatar = getProfileAvatar(),
             preferences = getUserPreferences(),
             history = readHistory(),
-            profiles = readProfiles()
+            profiles = readProfiles(),
+            shikimoriRates = ratesSnapshot.rates.takeIf { it.isNotEmpty() },
+            shikimoriUserId = ratesSnapshot.userId
         )
         return prettyGson.toJson(backup)
     }
@@ -837,6 +877,15 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             writeHistory(backup.history.orEmpty().take(200))
             writeProfiles(capProfiles(backup.profiles.orEmpty()))
             setProfileAvatar(backup.profileAvatar.orEmpty().ifBlank { "🎬" })
+            backup.shikimoriRates?.takeIf { it.isNotEmpty() }?.let { rates ->
+                saveShikimoriRatesSnapshot(
+                    ShikimoriRatesSnapshot(
+                        userId = backup.shikimoriUserId,
+                        savedAtMs = System.currentTimeMillis(),
+                        rates = rates
+                    )
+                )
+            }
             backup.preferences?.let { preferences ->
                 setThemeMode(preferences.themeMode)
                 setHideRussianContentEnabled(preferences.hideRussianContent)

@@ -18,15 +18,26 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -45,7 +56,6 @@ import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
 import hd.kinoshka.app.data.local.PlayerMode
-import hd.kinoshka.app.data.model.PlaybackSequenceOption
 
 /**
  * Настройки и «О приложении» — общие для Android и desktop (переехали из app-модуля в рамках
@@ -61,8 +71,6 @@ fun SettingsScreen(
     selectedDiscoverTileSize: FilmTileSize,
     selectedLibraryTileSize: FilmTileSize,
     selectedShowFpsCounter: Boolean,
-    selectedPlaybackSequence: PlaybackSequenceOption,
-    onPlaybackSequenceSelected: (PlaybackSequenceOption) -> Unit,
     selectedPlayerMode: PlayerMode,
     onPlayerModeSelected: (PlayerMode) -> Unit,
     onThemeModeSelected: (AppThemeMode) -> Unit,
@@ -71,114 +79,107 @@ fun SettingsScreen(
     onLibraryTileSizeSelected: (FilmTileSize) -> Unit,
     onShowFpsCounterChanged: (Boolean) -> Unit,
     showDebugSettings: Boolean = false,
+    // Прокси для заблокированных источников (Android-отладка): начальное значение и писатель.
+    proxyUrl: String = "",
+    onProxyUrlChanged: (String) -> Unit = {},
     // Настройки плеера mpvEx есть только на Android: их UI живёт в app-модуле, desktop-плеер их не читает.
     onOpenPlayerSettings: (() -> Unit)? = null
 ) {
     var showThemePicker by remember { mutableStateOf(false) }
     var showDiscoverTileSizePicker by remember { mutableStateOf(false) }
     var showLibraryTileSizePicker by remember { mutableStateOf(false) }
-    var showPlaybackSequencePicker by remember { mutableStateOf(false) }
     var showPlayerModePicker by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding(),
-        contentPadding = PaddingValues(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(bottom = 24.dp)
     ) {
         item {
             SettingsHeaderCard(
                 title = "Настройки",
                 subtitle = "Внешний вид и библиотека",
-                onBack = onBack
+                onBack = onBack,
+                // Боковые поля раньше давал контентный паддинг страницы, теперь он
+                // у карточек настроек — шапке задаём отступы явно.
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)
             )
         }
         item {
-            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
-                Column(
-                    modifier = Modifier
-                        .padding(14.dp)
-                        .animateContentSize(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    SettingsSelectRow(
-                        title = "Тема",
-                        value = selectedThemeMode.toSettingsLabel(),
-                        onClick = { showThemePicker = true }
+            KinoSettingsSectionHeader("Внешний вид")
+        }
+        item {
+            KinoSettingsCard {
+                KinoSettingsRow(
+                    title = "Тема",
+                    summary = selectedThemeMode.toSettingsLabel(),
+                    icon = Icons.Outlined.Palette,
+                    onClick = { showThemePicker = true }
+                )
+                KinoSettingsDivider()
+                KinoSettingsRow(
+                    title = "Размер плиток (Обзор)",
+                    summary = selectedDiscoverTileSize.toSettingsLabel(),
+                    icon = Icons.Outlined.GridView,
+                    onClick = { showDiscoverTileSizePicker = true }
+                )
+                KinoSettingsDivider()
+                KinoSettingsRow(
+                    title = "Размер плиток (Библиотека)",
+                    summary = selectedLibraryTileSize.toSettingsLabel(),
+                    icon = Icons.Outlined.Dashboard,
+                    onClick = { showLibraryTileSizePicker = true }
+                )
+            }
+        }
+        item {
+            KinoSettingsSectionHeader("Плеер")
+        }
+        item {
+            KinoSettingsCard {
+                KinoSettingsRow(
+                    title = "Плеер фильмов",
+                    summary = selectedPlayerMode.displayName,
+                    icon = Icons.Outlined.PlayCircle,
+                    onClick = { showPlayerModePicker = true }
+                )
+                if (onOpenPlayerSettings != null) {
+                    KinoSettingsDivider()
+                    KinoSettingsRow(
+                        title = "Настройки плеера mpvEx",
+                        summary = "Скорость, жесты, субтитры, декодер, сброс",
+                        icon = Icons.Outlined.Tune,
+                        onClick = onOpenPlayerSettings
                     )
-                    SettingsSelectRow(
-                        title = "Размер плиток (Обзор)",
-                        value = selectedDiscoverTileSize.toSettingsLabel(),
-                        onClick = { showDiscoverTileSizePicker = true }
-                    )
-                    SettingsSelectRow(
-                        title = "Размер плиток (Библиотека)",
-                        value = selectedLibraryTileSize.toSettingsLabel(),
-                        onClick = { showLibraryTileSizePicker = true }
-                    )
-                    SettingsSelectRow(
-                        title = "Порядок выбора в плеере",
-                        value = selectedPlaybackSequence.toUiLabel(),
-                        onClick = { showPlaybackSequencePicker = true }
-                    )
-                    SettingsSelectRow(
-                        title = "Плеер фильмов",
-                        value = selectedPlayerMode.displayName,
-                        onClick = { showPlayerModePicker = true }
-                    )
-                    if (onOpenPlayerSettings != null) {
-                        SettingsSelectRow(
-                            title = "Настройки плеера mpvEx",
-                            value = "Скорость, жесты, субтитры, декодер, сброс",
-                            onClick = onOpenPlayerSettings
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Скрывать российские фильмы/сериалы",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "Фильтр применяется к обзору и библиотеке",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                }
+            }
+        }
+        item {
+            KinoSettingsSectionHeader("Фильтры и отладка")
+        }
+        item {
+            KinoSettingsCard {
+                KinoSettingsRow(
+                    title = "Скрывать российские фильмы/сериалы",
+                    summary = "Фильтр применяется к обзору и библиотеке",
+                    icon = Icons.Outlined.VisibilityOff,
+                    trailing = {
                         Switch(checked = hideRussianContent, onCheckedChange = onHideRussianChanged)
                     }
-
-                    if (showDebugSettings) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Показывать FPS",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = "Счетчик кадров поверх главного экрана (только debug).",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Switch(
-                                checked = selectedShowFpsCounter,
-                                onCheckedChange = onShowFpsCounterChanged
-                            )
+                )
+                if (showDebugSettings) {
+                    KinoSettingsDivider()
+                    KinoSettingsRow(
+                        title = "Показывать FPS",
+                        summary = "Счётчик кадров поверх главного экрана (только debug)",
+                        icon = Icons.Outlined.Speed,
+                        trailing = {
+                            Switch(checked = selectedShowFpsCounter, onCheckedChange = onShowFpsCounterChanged)
                         }
-                    }
+                    )
+                    KinoSettingsDivider()
+                    StreamProxySettingRow(initial = proxyUrl, onChanged = onProxyUrlChanged)
                 }
             }
         }
@@ -217,17 +218,6 @@ fun SettingsScreen(
         )
     }
 
-    if (showPlaybackSequencePicker) {
-        SettingsSelectBottomSheet(
-            title = "Порядок выбора в плеере",
-            options = PlaybackSequenceOption.entries.toList(),
-            selected = selectedPlaybackSequence,
-            optionLabel = { it.toUiLabel() },
-            onSelect = onPlaybackSequenceSelected,
-            onDismiss = { showPlaybackSequencePicker = false }
-        )
-    }
-
     if (showPlayerModePicker) {
         SettingsSelectBottomSheet(
             title = "Плеер фильмов",
@@ -236,6 +226,32 @@ fun SettingsScreen(
             optionLabel = { it.displayName },
             onSelect = onPlayerModeSelected,
             onDismiss = { showPlayerModePicker = false }
+        )
+    }
+}
+
+/**
+ * Текстовое поле прокси в отладочных настройках: через него ходят вебмастер-источники
+ * (VideoCDN/Collaps/Voidboost), хентай-каталоги и YouTube — OkHttp по хосту запроса
+ * (StreamProxySelector) и mpv перед loadfile (http-proxy). Остальной трафик — напрямую.
+ */
+@Composable
+private fun StreamProxySettingRow(initial: String, onChanged: (String) -> Unit) {
+    var draft by remember(initial) { mutableStateOf(initial) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text(
+            "Прокси для заблокированных источников",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = draft,
+            onValueChange = { draft = it; onChanged(it) },
+            placeholder = { Text("http://host:port или socks5://host:port") },
+            supportingText = { Text("VideoCDN / Collaps / Voidboost, хентай, YouTube. Пусто — напрямую") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }
@@ -251,7 +267,10 @@ fun AboutScreen(
     onOpenShikimori: () -> Unit,
     appVersion: String,
     appPackage: String? = null,
-    onReportProblem: (() -> Unit)? = null
+    onReportProblem: (() -> Unit)? = null,
+    // Настоящая иконка приложения в круге (Android передаёт лаунчер-иконку);
+    // null — запасной SmartDisplay (desktop без ресурса иконки).
+    appIcon: (@Composable () -> Unit)? = null
 ) {
     val isUpdateAvailable = updateStatusText.contains("Доступна", ignoreCase = true)
     val statusColor = if (isUpdateAvailable) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
@@ -271,7 +290,11 @@ fun AboutScreen(
             )
         }
         item {
-            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+            ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -280,12 +303,16 @@ fun AboutScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.SmartDisplay,
-                        contentDescription = "Иконка приложения",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(90.dp)
-                    )
+                    if (appIcon != null) {
+                        appIcon()
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.SmartDisplay,
+                            contentDescription = "Иконка приложения",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(90.dp)
+                        )
+                    }
                     Text(
                         text = "Киношка",
                         style = MaterialTheme.typography.headlineSmall,
@@ -306,7 +333,11 @@ fun AboutScreen(
             }
         }
         item {
-            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+            ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -345,7 +376,11 @@ fun AboutScreen(
             }
         }
         item {
-            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+            ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -541,12 +576,19 @@ private fun FilmTileSize.toSettingsLabel(): String {
 }
 
 @Composable
-private fun SettingsHeaderCard(
+fun SettingsHeaderCard(
     title: String,
     subtitle: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    // Действие справа от заголовка (например, «Очистить всё» на Загрузках).
+    action: (@Composable () -> Unit)? = null
 ) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(14.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -566,9 +608,12 @@ private fun SettingsHeaderCard(
                     )
                 }
             }
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(text = title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (action != null) {
+                action()
             }
         }
     }

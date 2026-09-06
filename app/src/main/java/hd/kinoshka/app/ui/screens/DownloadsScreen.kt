@@ -20,7 +20,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -93,37 +92,23 @@ fun DownloadsScreen(
             .fillMaxSize()
             .statusBarsPadding()
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-            }
-            Column(modifier = Modifier.weight(1f).padding(horizontal = 8.dp)) {
-                Text(
-                    text = "Загрузки",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "${library.size} сер. · ${formatBytes(library.sumOf { it.sizeBytes })}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (library.isNotEmpty()) {
-                IconButton(onClick = { confirmClearAll = true }) {
-                    Icon(
-                        Icons.Default.DeleteSweep,
-                        contentDescription = "Очистить всё",
-                        tint = MaterialTheme.colorScheme.error
-                    )
+        SettingsHeaderCard(
+            title = "Загрузки",
+            subtitle = "${library.size} сер. · ${formatBytes(library.sumOf { it.sizeBytes })}",
+            onBack = onBack,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            action = if (library.isNotEmpty()) {
+                {
+                    IconButton(onClick = { confirmClearAll = true }) {
+                        Icon(
+                            Icons.Default.DeleteSweep,
+                            contentDescription = "Очистить всё",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
-            }
-        }
+            } else null
+        )
 
         val activeTasks = tasks.values.sortedBy { it.title + it.episodeNumber.toString() }
         val grouped = library
@@ -252,7 +237,7 @@ fun DownloadsScreen(
                     val entry = episodes[index]
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 3.dp)
@@ -354,7 +339,7 @@ private fun ActiveDownloadRow(
     // (загрузка вместо play) и цвете подложки прогресса.
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 3.dp)
