@@ -960,6 +960,14 @@ fun HomeScreen(
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
 
+                                // Живой прогресс импорта Anixart: виден весь catch-up
+                                // (минуты сопоставления), steady-state его не поднимает.
+                                val importProgress = state.anixartImportProgress
+                                if (importProgress != null) {
+                                    AnixartImportProgressCard(progress = importProgress)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
+
                                 HorizontalPager(
                                     state = pagerState,
                                     // Without a gap the last column of one tab and the first
@@ -4814,6 +4822,41 @@ private fun SearchFilterBottomSheet(
                 Text("Показать результаты", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
             }
             Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
+/** Живой прогресс импорта библиотеки Anixart (catch-up после логина/вайпа).
+ *  Общая карточка: Библиотека (shared) и карточка аккаунта в Профиле (app).
+ *  total=0 — неопределённый (крутилка фазы метаданных). */
+@Composable
+fun AnixartImportProgressCard(progress: AnixartImportProgress) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(
+                text = "Импорт из Anixart" +
+                    (if (progress.total > 0) ": ${progress.done}/${progress.total}" else "…"),
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            if (progress.total > 0) {
+                LinearProgressIndicator(
+                    progress = progress.done.toFloat() / progress.total.coerceAtLeast(1),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            Text(
+                text = progress.phase,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

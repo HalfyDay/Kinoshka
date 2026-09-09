@@ -224,7 +224,18 @@ data class HomeUiState(
     /** Разовый deep-link в Библиотеку из Профиля (тап по легенде). Null — нет запроса. */
     val libraryDeepLink: LibraryDeepLink? = null,
     /** Pull-to-refresh Библиотеки в процессе (индикатор PullToRefreshBox). */
-    val libraryRefreshing: Boolean = false
+    val libraryRefreshing: Boolean = false,
+    /** Живой прогресс импорта библиотеки Anixart (catch-up после логина/вайпа).
+     *  Null — тихо (steady-state). */
+    val anixartImportProgress: AnixartImportProgress? = null
+)
+
+/** Живой прогресс импорта библиотеки Anixart: фаза + счётчик.
+ *  total=0 — неопределённый (крутилка). */
+data class AnixartImportProgress(
+    val phase: String,
+    val done: Int,
+    val total: Int
 )
 
 data class DetailsUiState(
@@ -488,6 +499,11 @@ class FilmsViewModel(
             889 to 8769, // OreImo TV-1 = S1 (2010); был склеен с S2 через exact-путь без сверки года
             1611 to 31043, // Erased: дубль релиза (год тот же)
             2190 to 31043, // Erased: дубль релиза (год опечатан 2017 — та же запись)
+            // Пограничные годы (тот же тайтл, топ-1 выдачи, спор только о годе):
+            1627 to 27829, // Heavy Object: сплит-кур 10.2015–03.2016 (Anixart 2016 vs Shiki 2015)
+            2741 to 762, // Bleach: Memories in the Rain OVA (Anixart 2005 vs Shiki 2004)
+            2966 to 37522, // Pet (Anixart 2019 vs Shiki 2020)
+            14611 to 36999, // Zoku Owarimonogatari (Anixart 2018 vs Shiki 2019)
             // 18913 Rick and Morty: The Anime — записи в Shikimori нет, честный пропуск.
         )
 
@@ -1444,6 +1460,10 @@ class FilmsViewModel(
             val cache = userStateStore.getShikimoriAnimeCache()
             val pending = libraryIds.filter { cache[it - offset]?.kind == null }.take(500)
             if (pending.isEmpty()) return@launch
+            // Долгая добивка (сотни оболочек после catch-up) — неопределённая фаза
+            // баннера; мелочь (<50) молча, без мигания.
+            val showMetaProgress = pending.size > 50
+            if (showMetaProgress) setImportProgress("Добираем обложки", 0, 0)
             val brief = fetchAnimeBrief(pending.map { it - offset })
             val fresh = userStateStore.getShikimoriAnimeCache()
             // Одна запись кэша на весь батч (см. вердикты выше).
@@ -1461,6 +1481,7 @@ class FilmsViewModel(
                     uiState = uiState.copy(library = library)
                 }
             }
+            if (showMetaProgress) clearImportProgress()
         }
     }
 
@@ -2266,6 +2287,9 @@ class FilmsViewModel(
             "pull: " + lists.entries.joinToString(" ") { (listId, releases) -> "$listId=${releases.size}" } +
                 " total=${lists.values.sumOf { it.size }}"
         )
+        // Самолечение залипшего баннера: прошлый пул мог умереть исключением
+        // до гашения прогресса — следующий пул начинает с чистого экрана.
+        clearImportProgress()
         // Карты для пуша и матчинга.
         val releaseLists = mutableMapOf<Int, MutableSet<Int>>()
         lists.forEach { (listId, releases) ->
@@ -2663,18 +2687,20 @@ class FilmsViewModel(
             }
             PullCounts(byId, exact, fuzzy, unmatched)
         }
-        // Фаза 1.5 (IO): детали релизов Anixart пачкой параллельно — полный объект
-        // иногда несёт shikimori_id (в списках он всегда 0). Но id Anixart —
-        // франшизного уровня (S2-релиз ссылается на S1-запись, инцидент 09.09),
-        // поэтому принимаем только с годовой сверкой: батч brief'ов Shikimori,
-        // год сошёлся (или неизвестен) — берём; разошёлся — в титульный каскад.
-        // Нет id — тихо дальше на поиск, без мемоизации.
+        // Фаза 1.5 (IO) — ФОЛБЭК после поиска, не прелюдия: полный объект релиза
+        // иногда несёт shikimori_id (в списках он всегда 0), но дёргать детали
+        // по всем 800+ релизам upfront — ~50 c тишины (замер 09.09: hits=0).
+        // Поиск идёт первым, сюда — только его остатки (обычно единицы).
+        // Id Anixart франшизного уровня (S2-релиз ссылается на S1-запись,
+        // инцидент 09.09), поэтому принимаем только со сверками: годовой +
+        // сезонно-видовой. Нет id — тихо в пропуск, без мемоизации.
         var detailHits = 0
         val detailTally = PullTally()
-        if (unmatchedReleases.isNotEmpty()) {
+        suspend fun runDetailFallback(targets: List<Pair<Int, hd.kinoshka.app.data.model.AnixartRelease>>) {
+            if (targets.isEmpty()) return
             val detailOutcomes = withContext(Dispatchers.IO) {
                 val semaphore = kotlinx.coroutines.sync.Semaphore(5)
-                unmatchedReleases.map { (listId, release) ->
+                targets.map { (listId, release) ->
                     async {
                         semaphore.acquire()
                         try {
@@ -2698,7 +2724,6 @@ class FilmsViewModel(
             for (chunk in detailPairs.map { it.third }.distinct().chunked(500)) {
                 briefById += fetchAnimeBrief(chunk)
             }
-            val detailDone = mutableSetOf<Int>()
             for ((listId, release, sid) in detailPairs) {
                 val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: continue
                 val anixYear = release.releaseYear()
@@ -2734,11 +2759,9 @@ class FilmsViewModel(
                 val title = info?.titleRu ?: info?.titleOriginal ?: info?.titleEn
                     ?: release.titleRu ?: release.titleOriginal ?: release.titleEn
                     ?: "Без названия"
-                detailDone.add(release.id)
                 detailHits++
                 reconcilePulledRelease(release.id, sid, status, "anixart-detail", title, null, null, detailTally)
             }
-            if (detailDone.isNotEmpty()) unmatchedReleases.removeAll { it.second.id in detailDone }
             KLog.i("AnixartSync", "pull: detail-resolve hits=$detailHits of ${detailOutcomes.size}")
         }
         val remainingUnmatched = unmatchedReleases.size
@@ -2754,8 +2777,10 @@ class FilmsViewModel(
             KLog.i(
                 "AnixartSync",
                 "pull: catch-up mode, resolving $remainingUnmatched unmatched " +
-                    "(knownMiss=$knownMiss detailHits=$detailHits skipped)"
+                    "(knownMiss=$knownMiss skipped)"
             )
+            // Живой прогресс с первых секунд: дальше баннер движется каждым хитом.
+            setImportProgress("Сопоставление", 0, remainingUnmatched)
         }
         anixartReleaseLists = releaseLists
         var createdTotal = 0
@@ -2785,8 +2810,10 @@ class FilmsViewModel(
             createdTotal += toCreate.size
             flushedSinceUiRefresh += toCreate.size
             toCreate.clear()
-            // Catch-up видно сразу: библиотека добирается чанками (~200), а не в конце.
-            if (catchUp && flushedSinceUiRefresh >= 200) {
+            // Catch-up видно сразу: библиотека добирается чанками (~100), а не в конце.
+            // Первая сотня — уже через ~минуту после логина (детали больше
+            // не держат старт: фолбэк 1.5 отрабатывает после поиска).
+            if (catchUp && flushedSinceUiRefresh >= 100) {
                 flushedSinceUiRefresh = 0
                 val rebuilt = withContext(Dispatchers.Default) { buildLibraryItems() }
                 uiState = uiState.copy(library = rebuilt)
@@ -2796,6 +2823,8 @@ class FilmsViewModel(
         val tally2 = PullTally()
         var firstSearch = true
         var sinceFlush = 0
+        // Резолвы поиска: фолбэк 1.5 ниже добирает только НЕ покрытые поиском.
+        val searchResolvedIds = mutableSetOf<Int>()
         for ((listId, release) in unmatchedReleases.take(pullResolveLimit)) {
             if (release.id <= 0) continue
             val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: continue
@@ -2803,6 +2832,8 @@ class FilmsViewModel(
             firstSearch = false
             val hit = searchShikimoriForAnixart(release, release.releaseYear(), vetoes) ?: continue
             resolved++
+            searchResolvedIds.add(release.id)
+            if (catchUp) setImportProgress("Сопоставление", resolved, remainingUnmatched)
             KLog.d(
                 "AnixartSync",
                 "pull-resolve: release=${release.id} shikimoriId=${hit.shikimoriId} via shiki-search"
@@ -2817,6 +2848,14 @@ class FilmsViewModel(
                 flushPullProgress()
                 sinceFlush = 0
             }
+        }
+        // Фолбэк 1.5: детали только для остатков поиска (см. выше) — upfront
+        // он держал старт ~50 c при hits=0.
+        val detailLeftovers = unmatchedReleases.filter { it.second.id !in searchResolvedIds }
+        if (detailLeftovers.isNotEmpty()) {
+            if (catchUp) setImportProgress("Уточнение", resolved, remainingUnmatched)
+            KLog.i("AnixartSync", "pull: detail fallback for ${detailLeftovers.size} leftover(s)")
+            runDetailFallback(detailLeftovers)
         }
         flushPullProgress()
         // Сироты самолечения: shiki, сброшенные валидацией и не подобранные
@@ -2859,10 +2898,13 @@ class FilmsViewModel(
             val rebuilt = withContext(Dispatchers.Default) { buildLibraryItems() }
             uiState = uiState.copy(library = rebuilt)
         }
+        // Импорт отработал — баннер гаснет до итоговой строки (метаданные ниже,
+        // если их много, поднимут свою неопределённую фазу сами).
+        clearImportProgress()
         KLog.i(
             "AnixartSync",
             "pull: matched byId=${pass1.byId} exact=${pass1.exact} fuzzy=${pass1.fuzzy} " +
-                "resolved=$resolved unmatched=${remainingUnmatched - resolved} " +
+                "resolved=$resolved unmatched=${remainingUnmatched - resolved - detailHits} " +
                 "knownMiss=$knownMiss detailHits=$detailHits yearVeto=${vetoes.releases.size} " +
                 "created=$createdTotal " +
                 "adopted=$adopted diverged=$diverged"
@@ -2906,13 +2948,25 @@ class FilmsViewModel(
     /** Сезон/вид кандидата Shikimori: kind из brief авторитетен, иначе из названий. */
     private fun shikiCandidateSK(
         name: String?, russian: String?, kind: String?
-    ): Pair<Int?, String?> {
-        val matcher = hd.kinoshka.app.data.source.TitleMatching
+    ): Pair<Int?, String?> {        val matcher = hd.kinoshka.app.data.source.TitleMatching
         val infos = listOfNotNull(name, russian)
             .map { matcher.parseSeasonKind(matcher.normalizeTitle(it)) }
         val ck = kind?.lowercase()?.takeIf { it.isNotBlank() }
             ?: infos.mapNotNull { it.kind }.toSet().singleOrNull()
         return infos.mapNotNull { it.season }.toSet().singleOrNull() to ck
+    }
+
+    /** Живой прогресс catch-up: баннер Библиотеки. Дешёвый state-copy,
+     *  список под ним не перестраивается (тот же reference). */
+    private fun setImportProgress(phase: String, done: Int, total: Int) {
+        uiState = uiState.copy(anixartImportProgress = AnixartImportProgress(phase, done, total))
+    }
+
+    /** Гасим баннер (no-op, если его нет). */
+    private fun clearImportProgress() {
+        if (uiState.anixartImportProgress != null) {
+            uiState = uiState.copy(anixartImportProgress = null)
+        }
     }
 
     /** Счётчик годовых вето за пул (сверка сезонов Anixart↔Shikimori). */

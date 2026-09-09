@@ -639,6 +639,7 @@ fun KinoApp() {
                                             vm.loginAnixart(login, password, onResult)
                                         },
                                         onLogoutAnixart = vm::logoutAnixart,
+                                        anixartImportProgress = vm.uiState.anixartImportProgress,
                                         onOpenSettings = { navController.navigate("settings") },
                                         onOpenDownloads = { navController.navigate("downloads") },
                                         isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED
@@ -1006,6 +1007,7 @@ fun KinoApp() {
                                         vm.loginAnixart(login, password, onResult)
                                     },
                                     onLogoutAnixart = vm::logoutAnixart,
+                                    anixartImportProgress = vm.uiState.anixartImportProgress,
                                     onOpenSettings = { navController.navigate("settings") },
                                     onOpenDownloads = { navController.navigate("downloads") },
                                     isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED

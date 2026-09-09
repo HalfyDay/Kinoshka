@@ -178,6 +178,7 @@ fun ProfileScreen(
     onLoginAnixart: (String, String, (Boolean, String?) -> Unit) -> Unit = { _, _, _ -> },
     onLogoutAnixart: () -> Unit = {},
     onOpenLibraryStatus: (UserFilmStatus, Boolean) -> Unit = { _, _ -> },
+    anixartImportProgress: hd.kinoshka.app.ui.screens.AnixartImportProgress? = null,
     onOpenSettings: () -> Unit = {},
     onOpenDownloads: () -> Unit = {},
     showBack: Boolean = true,
@@ -568,6 +569,14 @@ fun ProfileScreen(
                             shape = RoundedCornerShape(14.dp)
                         ) {
                             Text("Выйти из Anixart")
+                        }
+                        // Живой прогресс импорта: catch-up после логина идёт минуты,
+                        // пользователь ждёт прямо на этом экране.
+                        if (anixartImportProgress != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            hd.kinoshka.app.ui.screens.AnixartImportProgressCard(
+                                progress = anixartImportProgress
+                            )
                         }
                     } else {
                         Button(
