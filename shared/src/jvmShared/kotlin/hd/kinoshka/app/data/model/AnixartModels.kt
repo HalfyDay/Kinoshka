@@ -115,3 +115,81 @@ object AnixartLists {
     const val ON_HOLD = 4
     const val DROPPED = 5
 }
+
+/**
+ * Видео-цепочка Anixart (сверено с AnixartJS, гостевой доступ без токена работает):
+ * release/{id} -> episode/{id} (озвучки) -> episode/{id}/{dubber} (источники) ->
+ * episode/{id}/{dubber}/{source}?sort=1 (серии) -> episode/target/{id}/{source}/{pos}
+ * (подписанная ссылка, ?d &s &ip живут минуты — резолвить в момент воспроизведения).
+ * Все поля nullable/с дефолтами — схема плавает между бетами.
+ */
+
+/** Озвучка релиза (GET episode/{releaseId} -> types[]). */
+data class AnixartDubber(
+    @SerializedName("id") val id: Int = 0,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("icon") val icon: String? = null,
+    @SerializedName("workers") val workers: String? = null,
+    @SerializedName("is_sub") val isSub: Boolean = false,
+    @SerializedName("episode_count") val episodeCount: Int = 0,
+    @SerializedName("view_count") val viewCount: Int = 0,
+    @SerializedName("pinned") val pinned: Boolean = false
+)
+
+/** Источник озвучки (GET episode/{releaseId}/{dubberId} -> sources[]). */
+data class AnixartVideoSource(
+    @SerializedName("id") val id: Int = 0,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("episode_count") val episodeCount: Int = 0
+)
+
+/**
+ * Серия (GET episode/{releaseId}/{dubberId}/{sourceId} и episode/target/...).
+ * url — либо прямая ссылка, либо embed (iframe=true: Kodik-плеер, Libria iframe.php);
+ * Sibnet shell.php приходит с iframe=false, но играется только после скрапа в MP4.
+ */
+data class AnixartEpisode(
+    @SerializedName("position") val position: Int = 0,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("iframe") val iframe: Boolean = false,
+    @SerializedName("addedDate") val addedDate: Long = 0L,
+    @SerializedName("is_watched") val isWatched: Boolean = false
+)
+
+data class AnixartDubbersResponse(
+    @SerializedName("code") val code: Int = -1,
+    @SerializedName("types") val types: List<AnixartDubber>? = null
+)
+
+data class AnixartSourcesResponse(
+    @SerializedName("code") val code: Int = -1,
+    @SerializedName("sources") val sources: List<AnixartVideoSource>? = null
+)
+
+data class AnixartEpisodesResponse(
+    @SerializedName("code") val code: Int = -1,
+    @SerializedName("episodes") val episodes: List<AnixartEpisode>? = null
+)
+
+data class AnixartEpisodeTargetResponse(
+    @SerializedName("code") val code: Int = -1,
+    @SerializedName("episode") val episode: AnixartEpisode? = null
+)
+
+/**
+ * Строка апдейта серий (GET episode/updates/{releaseId}/{page}): запасной источник
+ * id источников, когда официальный episode/{release}/{dubber} пуст (Anixart прячет
+ * мёртвые «Источник N (не работает)»).
+ */
+data class AnixartEpisodeUpdate(
+    @SerializedName("last_episode_type_update_id") val dubberId: Int = 0,
+    @SerializedName("last_episode_source_update_id") val sourceId: Int = 0,
+    @SerializedName("last_episode_source_update_name") val sourceName: String? = null
+)
+
+data class AnixartEpisodeUpdatesResponse(
+    @SerializedName("code") val code: Int = -1,
+    @SerializedName("content") val content: List<AnixartEpisodeUpdate>? = null,
+    @SerializedName("total_page_count") val totalPageCount: Int = 0
+)

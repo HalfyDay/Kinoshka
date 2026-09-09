@@ -120,7 +120,8 @@ object AnimeStreamResolver {
             AnimeSource(AnimeSourceType.KODIK, isAvailable = true),
             AnimeSource(AnimeSourceType.SHIKIMORI, isAvailable = true),
             AnimeSource(AnimeSourceType.ANILIBERTY, isAvailable = true),
-            AnimeSource(AnimeSourceType.ANILIB, isAvailable = true)
+            AnimeSource(AnimeSourceType.ANILIB, isAvailable = true),
+            AnimeSource(AnimeSourceType.ANIXART, isAvailable = true)
         )
     }
 
@@ -238,6 +239,7 @@ object AnimeStreamResolver {
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANISTAR -> fetchAniStarFlatTranslations(animeTitle)
+            AnimeSourceType.ANIXART -> fetchAnixartFlatTranslations(shikimoriId, animeTitle)
             AnimeSourceType.SMARTHARD -> fetchSmarthardFlatTranslations(shikimoriId)
             // ddbb/hentai rows exist only in movie/QOM playback lists, never in the anime picker.
             AnimeSourceType.DDBB,
@@ -595,6 +597,7 @@ object AnimeStreamResolver {
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANILIB -> fetchAniLibTranslations(shikimoriId, animeTitle)
             AnimeSourceType.ANISTAR -> fetchAniStarTranslations(animeTitle)
+            AnimeSourceType.ANIXART -> fetchAnixartTranslations(shikimoriId, animeTitle)
             AnimeSourceType.SMARTHARD -> fetchSmarthardTranslations(shikimoriId)
             // ddbb/hentai rows are QOM voiceovers with direct links — nothing to fetch here.
             AnimeSourceType.DDBB,
@@ -618,6 +621,7 @@ object AnimeStreamResolver {
             AnimeSourceType.ANILIBERTY -> fetchAniLibertyEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANILIB -> fetchAniLibEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.ANISTAR -> fetchAniStarEpisodes(animeTitle)
+            AnimeSourceType.ANIXART -> fetchAnixartEpisodes(shikimoriId, animeTitle, translationId)
             AnimeSourceType.SMARTHARD -> fetchSmarthardEpisodes(shikimoriId, translationId)
             // ddbb/hentai rows are QOM voiceovers with direct links — nothing to fetch here.
             AnimeSourceType.DDBB,
@@ -680,6 +684,7 @@ object AnimeStreamResolver {
             AnimeSourceType.SHIKIMORI -> resolveShikimoriStream(shikimoriId, animeTitle, translationId, episodeNumber)
             AnimeSourceType.ANILIBERTY -> resolveAniLibertyStream(shikimoriId, animeTitle, episodeNumber, translationId)
             AnimeSourceType.ANISTAR -> resolveAniStarStream(animeTitle, episodeNumber)
+            AnimeSourceType.ANIXART -> resolveAnixartStream(translationId, episodeNumber)
             AnimeSourceType.ANILIB ->
                 if (translationId.startsWith("L")) {
                     resolveAniLibLegacyStream(shikimoriId, animeTitle, translationId, episodeNumber)
@@ -862,6 +867,57 @@ object AnimeStreamResolver {
             headers = AniStarResolver.streamHeaders()
         )
     }
+
+    // ============================ Anixart ============================
+    // Агрегатор озвучек (Kodik/Sibnet/Libria/...): цепочка release → озвучки →
+    // источники → серии, подписанный target в момент воспроизведения
+    // (см. AnixartVideoResolver). translationId "releaseId:dubberId:sourceId".
+
+    private suspend fun fetchAnixartFlatTranslations(shikimoriId: Int, animeTitle: String): List<FlatTranslation> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                AnixartVideoResolver.fetchFlatTranslations(shikimoriId, animeTitle)
+            }.getOrElse { e ->
+                KLog.e(TAG, "[Anixart] search failed: ${e.message}")
+                emptyList()
+            }
+        }
+
+    private suspend fun fetchAnixartTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> =
+        withContext(Dispatchers.IO) {
+            runCatching { AnixartVideoResolver.fetchFlatTranslations(shikimoriId, animeTitle) }
+                .getOrDefault(emptyList())
+                .map { flat ->
+                    AnimeTranslation(
+                        id = flat.translationId,
+                        title = flat.title,
+                        type = flat.type,
+                        episodesCount = flat.episodes.size
+                    )
+                }
+        }
+
+    private suspend fun fetchAnixartEpisodes(
+        shikimoriId: Int,
+        animeTitle: String,
+        translationId: String
+    ): List<AnimeEpisode> = withContext(Dispatchers.IO) {
+        runCatching { AnixartVideoResolver.fetchFlatTranslations(shikimoriId, animeTitle) }
+            .getOrDefault(emptyList())
+            .firstOrNull { it.translationId == translationId }
+            ?.episodes
+            ?: emptyList()
+    }
+
+    private suspend fun resolveAnixartStream(translationId: String, episodeNumber: Int): AnimeMediaStream? =
+        withContext(Dispatchers.IO) {
+            KLog.i(TAG, "[Anixart] resolveStream: $translationId, ep=$episodeNumber")
+            runCatching { AnixartVideoResolver.resolveStream(translationId, episodeNumber) }
+                .getOrElse { e ->
+                    KLog.e(TAG, "[Anixart] resolve failed: ${e.message}")
+                    null
+                }
+        }
 
     private suspend fun fetchAniLibertyTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> = withContext(Dispatchers.IO) {
         val release = findAniLibertyRelease(shikimoriId, animeTitle) ?: return@withContext emptyList()

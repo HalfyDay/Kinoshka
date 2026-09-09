@@ -1,12 +1,17 @@
 package hd.kinoshka.app.data.api
 
 import hd.kinoshka.app.data.model.AnixartDefaultResponse
+import hd.kinoshka.app.data.model.AnixartDubbersResponse
+import hd.kinoshka.app.data.model.AnixartEpisodeTargetResponse
+import hd.kinoshka.app.data.model.AnixartEpisodeUpdatesResponse
+import hd.kinoshka.app.data.model.AnixartEpisodesResponse
 import hd.kinoshka.app.data.model.AnixartListResponse
 import hd.kinoshka.app.data.model.AnixartLoginResponse
 import hd.kinoshka.app.data.model.AnixartSignUpResponse
 import hd.kinoshka.app.data.model.AnixartReleaseInfoResponse
 import hd.kinoshka.app.data.model.AnixartSearchRequest
 import hd.kinoshka.app.data.model.AnixartSearchResponse
+import hd.kinoshka.app.data.model.AnixartSourcesResponse
 import retrofit2.http.Body
 import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
@@ -17,12 +22,13 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 
 /**
- * Неофициальный API Anixart (api.anixsekai.com, спека AniX-org v9, сверено
+ * Неофициальный API Anixart (api-s.anixsekai.com основной, спека AniX-org v9, сверено
  * с AnixartJS): авторизация — query-параметр ?token=, а логин — POST
  * с urlEncoded-боди (login+password). Query-вариант сервер принимает с 200,
  * но отвечает кодом ошибки — плюс пароль светился в URL и logcat.
- * v1: только списки (статусы). Посерийный прогресс требует sourceId их
- * парсеров и сюда не входит.
+ * Списки требуют токен; каталог и видео-цепочка (dubbers/sources/episodes/target)
+ * работают гостем (токен опционален). Посерийный прогресс в списках требует
+ * sourceId их парсеров и сюда не входит.
  */
 interface AnixartApi {
 
@@ -124,4 +130,72 @@ interface AnixartApi {
         @Header("Api-Version") apiVersion: String = "v2",
         @Query("token") token: String? = null
     ): AnixartSearchResponse
+
+    // ---- Видео-цепочка (источник серий для плеера, сверено живьём 09.09.2026) ----
+    //
+    // release/{id}?extended_mode -> episode/{id} (озвучки types[]) ->
+    // episode/{id}/{dubber} (источники sources[]) ->
+    // episode/{id}/{dubber}/{source}?sort=1 (серии episodes[]) ->
+    // episode/target/{id}/{source}/{position} (подписанная ссылка для воспроизведения).
+    // Все GET работают гостем (токен опционален, с ним ответы персонализированы):
+    // поэтому token здесь nullable, в отличие от списков выше.
+
+    /**
+     * Полный объект релиза с флагом is_play_disabled и счётчиками серий
+     * (episodes_released/total). extended_mode=true — как у AnixartJS.
+     */
+    @GET("release/{id}")
+    suspend fun releaseExtended(
+        @Path("id") releaseId: Int,
+        @Query("extended_mode") extendedMode: Boolean = true,
+        @Query("token") token: String? = null
+    ): AnixartReleaseInfoResponse
+
+    /** Озвучки релиза (включая субтитры, is_sub=true). */
+    @GET("episode/{id}")
+    suspend fun dubbers(
+        @Path("id") releaseId: Int,
+        @Query("token") token: String? = null
+    ): AnixartDubbersResponse
+
+    /** Источники озвучки (Kodik, Sibnet, Libria, ...). */
+    @GET("episode/{id}/{dubber}")
+    suspend fun dubberSources(
+        @Path("id") releaseId: Int,
+        @Path("dubber") dubberId: Int,
+        @Query("token") token: String? = null
+    ): AnixartSourcesResponse
+
+    /** Серии источника (sort=1 — по возрастанию позиции, как у AnixartJS). */
+    @GET("episode/{id}/{dubber}/{source}")
+    suspend fun episodes(
+        @Path("id") releaseId: Int,
+        @Path("dubber") dubberId: Int,
+        @Path("source") sourceId: Int,
+        @Query("sort") sort: Int = 1,
+        @Query("token") token: String? = null
+    ): AnixartEpisodesResponse
+
+    /**
+     * Подписанная ссылка серии (?d &s &ip, живёт минуты) — вызывать в момент
+     * воспроизведения, а не кэшировать из листинга episodes().
+     */
+    @GET("episode/target/{id}/{source}/{position}")
+    suspend fun episodeTarget(
+        @Path("id") releaseId: Int,
+        @Path("source") sourceId: Int,
+        @Path("position") position: Int,
+        @Query("token") token: String? = null
+    ): AnixartEpisodeTargetResponse
+
+    /**
+     * Апдейты серий релиза: запасной источник id источников озвучки, когда
+     * официальный dubberSources пуст (Anixart прячет мёртвые источники).
+     */
+    @GET("episode/updates/{id}/{page}")
+    suspend fun episodeUpdates(
+        @Path("id") releaseId: Int,
+        @Path("page") page: Int,
+        @Query("token") token: String? = null
+    ): AnixartEpisodeUpdatesResponse
 }

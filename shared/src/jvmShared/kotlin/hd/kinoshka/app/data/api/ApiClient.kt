@@ -19,6 +19,9 @@ object ApiClient {
     private var anixartApiInstance: AnixartApi? = null
     private const val API_CACHE_MAX_AGE_SECONDS = 3L * 24L * 60L * 60L
 
+    /** HTTP-коды, при которых пробуем следующее зеркало Anixart. */
+    private val RETRYABLE_ANIXART_CODES = setOf(403, 404, 408, 429, 500, 502, 503, 504)
+
     private val REDACT_TOKEN_REGEX = Regex("([?&]token=)[^&\\s]*")
 
     /**
@@ -130,7 +133,10 @@ object ApiClient {
 
     /**
      * Неофициальный API Anixart: пользовательские списки — только сеть, без
-     * дискового кэша. Основной хост api.anixsekai.com, запасной api-s.
+     * дискового кэша. Основной хост api-s.anixsekai.com (как в приложении и
+     * AnixartJS-дефолте), дальше по цепочке зеркал. baproxy-demo.ds1nc.ru
+     * (09.09.2026 мёртв — таймаут) оставлен последним шансом: если оживёт,
+     * подхватится без обновления приложения.
      */
     fun anixartApi(cacheDir: File): AnixartApi {
         anixartApiInstance?.let { return it }
@@ -141,20 +147,50 @@ object ApiClient {
         }
     }
 
+    /** Зеркала Anixart по приоритету (порядок важен и для AnixartVideoResolver). */
+    val ANIXART_HOSTS = listOf(
+        "api-s.anixsekai.com", // основной (приложение, AnixartJS-дефолт)
+        "api.anixsekai.com",
+        "api.anixart.app",
+        "api.anixart.tv", // заблокирован в РФ — только через VPN/DNS
+        "baproxy-demo.ds1nc.ru" // прокси, 09.09.2026 мёртв — последний шанс
+    )
+
     private fun buildAnixartApi(cacheDir: File): AnixartApi {
+        // Ротация по цепочке зеркал: IOException (DNS/таймаут) ИЛИ retryable HTTP
+        // (429/5xx/403/404 — зеркала отдают их при геоблоке и рассинхроне бет).
+        // POST (поиск, auth) тоже безопасно повторять: тело маленькое, идемпотентное
+        // для чтения, а auth-verify идёт после редиректа крайне редко.
         val fallbackInterceptor = Interceptor { chain ->
             val request = chain.request()
+            var nextHostIndex = ANIXART_HOSTS.indexOf(request.url.host).let { if (it < 0) 0 else it + 1 }
             try {
-                chain.proceed(request)
-            } catch (e: java.io.IOException) {
-                val host = request.url.host
-                val nextHost = when (host) {
-                    "api.anixsekai.com" -> "api-s.anixsekai.com"
-                    "api-s.anixsekai.com" -> "api.anixsekai.com"
-                    else -> "api.anixsekai.com"
+                val response = chain.proceed(request)
+                if (response.code !in RETRYABLE_ANIXART_CODES || nextHostIndex >= ANIXART_HOSTS.size) {
+                    return@Interceptor response
                 }
-                chain.proceed(request.newBuilder().url(request.url.newBuilder().host(nextHost).build()).build())
+                response.close()
+            } catch (e: java.io.IOException) {
+                if (nextHostIndex >= ANIXART_HOSTS.size) throw e
             }
+            var lastError: java.io.IOException? = null
+            while (nextHostIndex < ANIXART_HOSTS.size) {
+                val retry = request.newBuilder()
+                    .url(request.url.newBuilder().host(ANIXART_HOSTS[nextHostIndex]).build())
+                    .build()
+                nextHostIndex++
+                try {
+                    val response = chain.proceed(retry)
+                    if (response.code in RETRYABLE_ANIXART_CODES && nextHostIndex < ANIXART_HOSTS.size) {
+                        response.close()
+                        continue
+                    }
+                    return@Interceptor response
+                } catch (e: java.io.IOException) {
+                    lastError = e
+                }
+            }
+            throw lastError ?: java.io.IOException("All Anixart mirrors failed")
         }
         // UA официального приложения (как у референсного AnixartJS): зеркало дружелюбнее
         // отвечает клиентам, притворяющимся приложением, а не безликому okhttp.
@@ -178,7 +214,7 @@ object ApiClient {
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
         return Retrofit.Builder()
-            .baseUrl("https://api.anixsekai.com/")
+            .baseUrl("https://api-s.anixsekai.com/")
             .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()

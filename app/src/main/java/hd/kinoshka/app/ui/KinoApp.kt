@@ -146,6 +146,13 @@ fun KinoApp() {
         }
 
         val appContext = LocalContext.current.applicationContext
+        // Anixart-видео: гость без входа, персонализировано со входом (токен читается
+        // лениво в момент запроса — после логина/выхода подхватывается сам).
+        remember(appContext) {
+            val authStore = hd.kinoshka.app.data.local.AnixartAuthStore(appContext)
+            hd.kinoshka.app.data.source.AnixartVideoResolver.tokenProvider =
+                { authStore.getAuthState().token }
+        }
         val updateManager = remember(appContext) { AppUpdateManager(appContext) }
         val updatePrefs = remember(appContext) {
             appContext.getSharedPreferences(UPDATE_PREFS_NAME, Context.MODE_PRIVATE)

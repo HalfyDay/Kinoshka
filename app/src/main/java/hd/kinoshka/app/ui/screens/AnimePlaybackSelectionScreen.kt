@@ -339,25 +339,37 @@ fun AnimePlaybackSelectionScreen(
     }
 
     // Full error state only when every source has settled and none produced usable content.
-    val allSourcesSettled = ANIME_PICKER_SOURCES.all {
+    val allSourcesSettled = pickerPrefsReady && queriedPickerSources.all {
         sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Empty || sourceStates[it] is SourceLoadState.Failed
     }
-    val isLoadingSources = sourceStates.values.any { it is SourceLoadState.Loading }
+    val isLoadingSources = !pickerPrefsReady ||
+        sourceStates.values.any { it is SourceLoadState.Loading } ||
+        (pickerPrefsReady && queriedPickerSources.any { sourceStates[it] == null })
     val errorMessage = if (allSourcesSettled && !isLoadingSources && effectiveTranslations.isEmpty()) {
-        "Не удалось найти видео для этого аниме."
+        when {
+            queriedPickerSources.isEmpty() -> "Все источники выключены — включите их в настройках."
+            allTranslations.isNotEmpty() -> "Источники скрыты в настройках — включите их отображение."
+            else -> "Не удалось найти видео для этого аниме."
+        }
     } else {
         null
     }
 
     // Pre-compute derived data once when translations load
+    // Badge counts DUB GROUPS per episode (distinct dubTitleKey among voice rows), not raw
+    // translations: the dubs page merges same-team rows (incl. Anixart host variants),
+    // and counting translations inflated the badge (e.g. «AniDUB» × Kodik/Sibnet/Libria).
+    // Voice-only, like the default tab of the dubs page the badge leads to.
     val episodeTranslationCountMap = remember(effectiveTranslations) {
-        buildMap {
+        buildMap<Int, MutableSet<String>> {
             for (tr in effectiveTranslations) {
+                if (tr.type == "sub" || tr.type == "subtitles") continue
+                val key = dubTitleKey(tr.title)
                 for (ep in tr.episodes) {
-                    merge(ep.number, 1, Int::plus)
+                    getOrPut(ep.number) { mutableSetOf() }.add(key)
                 }
             }
-        }
+        }.mapValues { (_, keys) -> keys.size }
     }
 
     val mergedEpisodes = remember(effectiveTranslations) {
@@ -993,11 +1005,14 @@ private fun SelectTranslationStep(
             }
         }
 
-        // Sources still resolving or failed — shown as compact rows above the results so the
-        // page explains itself instead of silently hiding providers (18+ source-page pattern).
-        val pendingSources = ANIME_PICKER_SOURCES.mapNotNull { src ->
+        // Still-loading sources live only in the slim progress strip above (п. «Загрузка
+        // источников… n/m»): rows on the dubs page are for failures needing a retry tap.
+        // Loading rows here duplicated the sources page and pushed dubs down while Anixart
+        // (tens of roundtrips) was still resolving.
+        val pendingSources = ANIME_PICKER_SOURCES
+            .filter { it.name !in disabledSources && it.name !in hiddenSources }
+            .mapNotNull { src ->
             when (val state = sourceStates[src]) {
-                is SourceLoadState.Loading -> src to null
                 is SourceLoadState.Failed -> src to state.message
                 else -> null
             }
@@ -1103,8 +1118,8 @@ private fun SelectTranslationStep(
             }
         }
 
-        // Still-loading / failed sources sit BELOW the ready content: loaded dubs first,
-        // progress at the bottom of the list.
+        // Failed sources sit BELOW the ready content: loaded dubs first, retry rows last.
+        // (Loading progress lives in the slim strip under the header, not in this list.)
         if (pendingSources.isNotEmpty()) {
             items(
                 count = pendingSources.size,
