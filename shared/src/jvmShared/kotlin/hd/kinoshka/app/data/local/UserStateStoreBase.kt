@@ -746,6 +746,25 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         }
 
     /**
+     * Удаление осиротевших импортных оболочек Anixart (пул их больше не
+     * референсит после самолечения карты). Только importSource == "anixart":
+     * тронутые пользователем профили метку уже сняли. Возвращает число удалённых.
+     */
+    fun removeImportedOrphans(shikimoriIds: Set<Int>): Int = synchronized(BLOB_LOCK) {
+        if (shikimoriIds.isEmpty()) return 0
+        val offset = hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+        val current = readProfilesOrNull() ?: return 0
+        val doomed = current.filter {
+            it.type == "ANIME" && it.importSource == "anixart" &&
+                (it.kinopoiskId - offset) in shikimoriIds
+        }
+        if (doomed.isEmpty()) return 0
+        val doomedIds = doomed.mapTo(mutableSetOf()) { it.kinopoiskId }
+        writeProfiles(current.filterNot { it.kinopoiskId in doomedIds })
+        doomed.size
+    }
+
+    /**
      * Разовая чистка пустой шелухи без статуса (снятия пометок и сиды до фикса):
      * такие записи невидимы ни в одной вкладке библиотеки, но раздували итоги.
      * Возвращает число удалённых.

@@ -486,6 +486,8 @@ class FilmsViewModel(
             2637 to 38249, // Saiki Kanketsuhen (финал, 2018)
             1919 to 30016, // Nanbaka TV-1 (2016)
             889 to 8769, // OreImo TV-1 = S1 (2010); был склеен с S2 через exact-путь без сверки года
+            1611 to 31043, // Erased: дубль релиза (год тот же)
+            2190 to 31043, // Erased: дубль релиза (год опечатан 2017 — та же запись)
             // 18913 Rick and Morty: The Anime — записи в Shikimori нет, честный пропуск.
         )
 
@@ -2296,6 +2298,10 @@ class FilmsViewModel(
                 withContext(Dispatchers.IO) { userStateStore.getAnixartPullUnresolvable() }
             )
         }
+        // Кэш метаданных кандидатов: сезон/вид/год без сети (exact-сверка,
+        // самолечение карты). Грузим раз на пул.
+        val anixartPullCache =
+            withContext(Dispatchers.IO) { userStateStore.getShikimoriAnimeCache() }
         // Контест пересчитываем каждым пулом с нуля (ниже, в reconcile); персист
         // нужен точечным пушам между пулами.
         // Одноразовые догонялки restore 09.09: ремонт сервера + провенанс оболочек.
@@ -2350,6 +2356,38 @@ class FilmsViewModel(
                 if (renamed) {
                     KLog.i("AnixartSync", "pull: renamed shell 13659 to S2 title")
                 }
+            }
+        }
+        // Самолечение карты: старые склейки, ЯВНО противоречащие сезону/виду
+        // (ядро инцидентов 09.09), сносим на перерезолв. Пины и релизы вне пула
+        // не трогаем; без кэша кандидата судить нечем — оставляем. Год здесь
+        // НЕ валидируем осознанно: опечатки года в дублях — та же запись.
+        val relById = lists.values.flatten().associateBy { it.id }
+        val droppedShikis = mutableSetOf<Int>()
+        run {
+            val matcher = hd.kinoshka.app.data.source.TitleMatching
+            val cleanedMap = anixartIdToShiki.toMutableMap()
+            var dropped = 0
+            for ((relId, shiki) in anixartIdToShiki) {
+                if (relId in ANIXART_PINNED_MAP) continue
+                val rel = relById[relId] ?: continue
+                val brief = anixartPullCache[shiki] ?: continue
+                val (rs, rk, ry) = anixartReleaseSKY(rel)
+                val (cs, ck) = shikiCandidateSK(brief.name, brief.russian, brief.kind)
+                if (matcher.seasonKindVeto(rs, rk, ry, cs, ck, brief.year)) {
+                    cleanedMap.remove(relId)
+                    droppedShikis.add(shiki)
+                    dropped++
+                    KLog.i(
+                        "AnixartSync",
+                        "pull: invalidated idmap release=$relId shiki=$shiki " +
+                            "season-kind mismatch (rel=$rs/$rk/$ry cand=$cs/$ck/${brief.year})"
+                    )
+                }
+            }
+            if (dropped > 0) {
+                anixartIdToShiki = cleanedMap
+                KLog.i("AnixartSync", "pull: invalidated $dropped stale idmap entrie(s) for re-resolve")
             }
         }
         // Счётчик годовых вето (фазы 1.5 и 2).
@@ -2578,9 +2616,26 @@ class FilmsViewModel(
                     }
                     if (shikimoriId == null) {
                         val titles = listOfNotNull(release.titleRu, release.titleOriginal, release.titleEn)
-                        shikimoriId = titles.firstNotNullOfOrNull { titleToShiki[matcher.normalizeTitle(it)] }
-                        if (shikimoriId != null) {
-                            way = "exact"
+                        val exactHit = titles.firstNotNullOfOrNull { titleToShiki[matcher.normalizeTitle(it)] }
+                        if (exactHit != null) {
+                            // Exact по библиотеке без сверки сезона/вида клеил S1-релиз
+                            // в S2-запись (инцидент 889): сверяем с кэшем кандидата,
+                            // без кэша — как раньше. Вето → дальше в поиск, не в пропуск.
+                            val brief = anixartPullCache[exactHit]
+                            val vetoed = if (brief != null) {
+                                val (rs, rk, ry) = anixartReleaseSKY(release)
+                                val (cs, ck) = shikiCandidateSK(brief.name, brief.russian, brief.kind)
+                                matcher.seasonKindVeto(rs, rk, ry, cs, ck, brief.year)
+                            } else false
+                            if (vetoed) {
+                                KLog.d(
+                                    "AnixartSync",
+                                    "pull: exact-vs-library season-kind-veto release=${release.id} shiki=$exactHit"
+                                )
+                            } else {
+                                shikimoriId = exactHit
+                                way = "exact"
+                            }
                         }
                     }
                     if (shikimoriId == null) {
@@ -2654,6 +2709,24 @@ class FilmsViewModel(
                         "AnixartSync",
                         "pull-resolve: release=${release.id} shikimoriId=$sid " +
                             "detail year-veto (anixart=$anixYear shiki=$shikiYear)"
+                    )
+                    continue
+                }
+                // Сезонно-видовая сверка и здесь: id Anixart франшизного уровня,
+                // титульный каскад — нет.
+                val brief = briefById[sid]
+                val skVetoed = if (brief != null) {
+                    val (rs, rk, _) = anixartReleaseSKY(release)
+                    val (cs, ck) = shikiCandidateSK(brief.name, brief.russian, brief.kind)
+                    hd.kinoshka.app.data.source.TitleMatching.seasonKindVeto(
+                        rs, rk, anixYear, cs, ck, shikiYear
+                    )
+                } else false
+                if (skVetoed) {
+                    KLog.d(
+                        "AnixartSync",
+                        "pull-resolve: release=${release.id} shikimoriId=$sid " +
+                            "detail season-kind-veto"
                     )
                     continue
                 }
@@ -2746,6 +2819,23 @@ class FilmsViewModel(
             }
         }
         flushPullProgress()
+        // Сироты самолечения: shiki, сброшенные валидацией и не подобранные
+        // перерезолвом (промах каскада), — их оболочки удаляем. Только shiki из
+        // droppedShikis этого пула (снятия на сайте сюда не попадают) и только
+        // нетронутые оболочки (importSource == "anixart").
+        if (droppedShikis.isNotEmpty()) {
+            val orphans = droppedShikis - anixartIdToShiki.values.toSet()
+            if (orphans.isNotEmpty()) {
+                val removed = withContext(Dispatchers.IO) {
+                    userStateStore.removeImportedOrphans(orphans)
+                }
+                if (removed > 0) {
+                    KLog.i("AnixartSync", "pull: removed $removed orphan shell profile(s)")
+                    val rebuilt = withContext(Dispatchers.Default) { buildLibraryItems() }
+                    uiState = uiState.copy(library = rebuilt)
+                }
+            }
+        }
         val adopted = tally1.adopted + tally2.adopted + detailTally.adopted
         val diverged = tally1.diverged + tally2.diverged + detailTally.diverged
         // Диагностика контеста: реальные названия релизов из пула (без них разбор
@@ -2797,6 +2887,34 @@ class FilmsViewModel(
         val poster: String?
     )
 
+    /** Сезон/вид/год релиза Anixart: консенсус по всем названиям (ru/orig/en) —
+     *  маркер обычно лишь в одном («...: Фильм» vs bare orig). Разные номера
+     *  в разных названиях → неоднозначность (null): не знаем — не мешаем. */
+    private fun anixartReleaseSKY(
+        release: hd.kinoshka.app.data.model.AnixartRelease
+    ): Triple<Int?, String?, Int?> {
+        val matcher = hd.kinoshka.app.data.source.TitleMatching
+        val infos = listOfNotNull(release.titleOriginal, release.titleRu, release.titleEn)
+            .map { matcher.parseSeasonKind(matcher.normalizeTitle(it)) }
+        return Triple(
+            infos.mapNotNull { it.season }.toSet().singleOrNull(),
+            infos.mapNotNull { it.kind }.toSet().singleOrNull(),
+            release.releaseYear()
+        )
+    }
+
+    /** Сезон/вид кандидата Shikimori: kind из brief авторитетен, иначе из названий. */
+    private fun shikiCandidateSK(
+        name: String?, russian: String?, kind: String?
+    ): Pair<Int?, String?> {
+        val matcher = hd.kinoshka.app.data.source.TitleMatching
+        val infos = listOfNotNull(name, russian)
+            .map { matcher.parseSeasonKind(matcher.normalizeTitle(it)) }
+        val ck = kind?.lowercase()?.takeIf { it.isNotBlank() }
+            ?: infos.mapNotNull { it.kind }.toSet().singleOrNull()
+        return infos.mapNotNull { it.season }.toSet().singleOrNull() to ck
+    }
+
     /** Счётчик годовых вето за пул (сверка сезонов Anixart↔Shikimori). */
     private class YearVetoes {
         var checks = 0
@@ -2840,6 +2958,8 @@ class FilmsViewModel(
         // modulo пробелы, сезонность не трогает.
         val normedSolid = normed.map { it.replace(" ", "") }
             .filter { it.length >= 8 }.toSet()
+        // Сезон/вид/год релиза один раз на вызов: все проходы ниже сверяются с ними.
+        val (relSeason, relKind, _) = anixartReleaseSKY(release)
         fun tryHit(item: hd.kinoshka.app.data.model.ShikimoriAnimeItem): ShikiPullHit? {
             // Годовая сверка: Anixart год выхода знает (17/17 сверенных), Shikimori
             // aired_on — тоже. Известное расхождение = разные сезоны/записи:
@@ -2852,6 +2972,19 @@ class FilmsViewModel(
                     "AnixartSync",
                     "pull-resolve: release=${release.id} shikimoriId=${item.id} " +
                         "year-veto (anixart=$expectedYear shiki=$itemYear)"
+                )
+                return null
+            }
+            // Сезонно-видовая сверка (09.09): точность строк склейки сезонов не ловит
+            // («Space Dandy TV-2»→S1 при совпадении годов), маркеры — ловят.
+            // Единственная воронка всех проходов каскада: покрывает их все разом.
+            val (candSeason, candKind) = shikiCandidateSK(item.name, item.russian, item.kind)
+            if (matcher.seasonKindVeto(relSeason, relKind, expectedYear, candSeason, candKind, itemYear)) {
+                KLog.d(
+                    "AnixartSync",
+                    "pull-resolve: release=${release.id} shikimoriId=${item.id} " +
+                        "season-kind-veto (rel=$relSeason/$relKind/$expectedYear " +
+                        "cand=$candSeason/$candKind/$itemYear)"
                 )
                 return null
             }

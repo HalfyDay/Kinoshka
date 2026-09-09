@@ -73,6 +73,112 @@ object TitleMatching {
     private val TRAILING_BARE_SEASON_REGEX = Regex("\\s+(\\d+)$")
     private val QUOTED_ALIAS_REGEX = Regex("\"([^\"]+)\"")
 
+    /** Сезонно-видовая сигнатура названия: номер сезона (null — голое, S1 обычно
+     *  голые) + вид (tv/movie/ova/ona/special, null — не выражен). Парсинг по
+     *  НОРМАЛИЗОВАННОМУ названию. Основа сезонной disambiguation (09.09): точность
+     *  строк склейки сезонов не ловит, их ловят маркеры. */
+    data class SeasonKindInfo(val season: Int?, val kind: String?)
+
+    // Латиница — \b-границы; кириллица — через (^|\s)...(\s|$), т.к. \b
+    // кириллицу за границу слова не считает.
+    private val SEASON_TV_REGEX = Regex("\\btv\\s*(\\d{1,2})\\b")
+    private val SEASON_TV_RU_REGEX = Regex("(^|\\s)тв\\s*(\\d{1,2})(\\s|$)")
+    private val SEASON_S_REGEX = Regex("\\bs(\\d{1,2})\\b")
+    private val SEASON_ORDINAL_REGEX = Regex("\\b(\\d{1,2})(?:st|nd|rd|th)\\s+seasons?\\b")
+    private val SEASON_WORD_REGEX = Regex("\\bseasons?\\s+(\\d{1,2})\\b")
+    private val SEASON_RU_WORD_REGEX = Regex("(^|\\s)(\\d{1,2})\\s+сезон[а-я]*(\\s|$)")
+    private val SEASON_PART_REGEX = Regex("(^|\\s)(?:part|часть)\\s*(\\d{1,2})(\\s|$)")
+    private val SEASON_TRAILING_DIGIT_REGEX = Regex("\\s(\\d)\\s*$")
+    private val SEASON_ROMAN_REGEX = Regex("\\b(ii|iii|iv|vi|vii|viii)\\b")
+    private val SEASON_WORDNAME_REGEX =
+        Regex("(^|\\s)(?:first|second|third|fourth|fifth|sixth|первый|второй|третий|четвертый|пятый|шестой)\\s+(?:season|сезон[а-я]*)(\\s|$)")
+    private val SEASON_WORDNAME_MAP = mapOf(
+        "first" to 1, "second" to 2, "third" to 3, "fourth" to 4, "fifth" to 5, "sixth" to 6,
+        "первый" to 1, "второй" to 2, "третий" to 3, "четвертый" to 4, "пятый" to 5, "шестой" to 6
+    )
+    private val SEASON_ROMAN_MAP = mapOf(
+        "ii" to 2, "iii" to 3, "iv" to 4, "vi" to 6, "vii" to 7, "viii" to 8
+    )
+
+    private val KIND_MOVIE_REGEX = Regex("\\b(gekijouban|eiga|movies?|films?)\\b")
+    private val KIND_MOVIE_RU_REGEX = Regex("(^|\\s)фильм(\\s|$)")
+    private val KIND_OVA_REGEX = Regex("\\b(ova|oad)\\b")
+    private val KIND_OVA_RU_REGEX = Regex("(^|\\s)ова(\\s|$)")
+    private val KIND_ONA_REGEX = Regex("\\bona\\b")
+    private val KIND_SPECIAL_REGEX = Regex("\\b(special)\\b")
+    private val KIND_SPECIAL_RU_REGEX = Regex("(^|\\s)спешл(\\s|$)")
+    private val KIND_TV_REGEX = Regex("\\btv\\b")
+    private val KIND_TV_RU_REGEX = Regex("(^|\\s)тв(\\s|$)")
+
+    /** Сигнатура одного нормализованного названия. Несколько РАЗНЫХ номеров —
+     *  неоднозначность (null): не знаем — не мешаем. */
+    fun parseSeasonKind(normalized: String): SeasonKindInfo {
+        val seasons = mutableSetOf<Int>()
+        fun add(n: Int?) {
+            if (n != null && n in 0..12) seasons.add(n)
+        }
+        SEASON_TV_REGEX.findAll(normalized).forEach { add(it.groupValues[1].toIntOrNull()) }
+        SEASON_TV_RU_REGEX.findAll(normalized).forEach { add(it.groupValues[2].toIntOrNull()) }
+        SEASON_S_REGEX.findAll(normalized).forEach { add(it.groupValues[1].toIntOrNull()) }
+        SEASON_ORDINAL_REGEX.findAll(normalized).forEach { add(it.groupValues[1].toIntOrNull()) }
+        SEASON_WORD_REGEX.findAll(normalized).forEach { add(it.groupValues[1].toIntOrNull()) }
+        SEASON_RU_WORD_REGEX.findAll(normalized).forEach { add(it.groupValues[2].toIntOrNull()) }
+        SEASON_PART_REGEX.findAll(normalized).forEach { add(it.groupValues[2].toIntOrNull()) }
+        SEASON_TRAILING_DIGIT_REGEX.find(normalized)?.let { add(it.groupValues[1].toIntOrNull()) }
+        SEASON_ROMAN_REGEX.findAll(normalized)
+            .forEach { SEASON_ROMAN_MAP[it.groupValues[1]]?.let { n -> seasons.add(n) } }
+        SEASON_WORDNAME_REGEX.findAll(normalized).forEach {
+            val word = it.value.trim().split(Regex("\\s+")).firstOrNull()
+            SEASON_WORDNAME_MAP[word]?.let { n -> seasons.add(n) }
+        }
+        val kinds = mutableSetOf<String>()
+        fun addKind(regex: Regex, kind: String) {
+            if (regex.containsMatchIn(normalized)) kinds.add(kind)
+        }
+        addKind(KIND_MOVIE_REGEX, "movie")
+        addKind(KIND_MOVIE_RU_REGEX, "movie")
+        addKind(KIND_OVA_REGEX, "ova")
+        addKind(KIND_OVA_RU_REGEX, "ova")
+        addKind(KIND_ONA_REGEX, "ona")
+        addKind(KIND_SPECIAL_REGEX, "special")
+        addKind(KIND_SPECIAL_RU_REGEX, "special")
+        addKind(KIND_TV_REGEX, "tv")
+        addKind(KIND_TV_RU_REGEX, "tv")
+        return SeasonKindInfo(
+            season = seasons.singleOrNull(),
+            kind = kinds.singleOrNull()
+        )
+    }
+
+    /** tv_special совместим с обеими сторонами (ТВ-спешл). */
+    fun kindsCompatible(a: String, b: String): Boolean {
+        if (a == b) return true
+        val pair = setOf(a, b)
+        return pair == setOf("tv", "tv_special") || pair == setOf("special", "tv_special")
+    }
+
+    /**
+     * Вето склейки релиз->кандидат по сезону/виду. Консервативно: вето только при
+     * ЯВНОМ противоречии маркеров, иначе разрешаем (не знаем — не мешаем).
+     * - сезоны известны с обеих сторон и различаются → вето;
+     * - у релиза сезон есть, у кандидата голое название, годы известны и
+     *   различаются → вето (голый кандидат — S1/корень франшизы; случай
+     *   «OreImo TV-1 2010 vs S2-запись 2013»);
+     * - виды известны с обеих сторон и различаются → вето.
+     * Год сам по себе НЕ вето (опечатки года в дублях — та же запись).
+     */
+    fun seasonKindVeto(
+        relSeason: Int?, relKind: String?, relYear: Int?,
+        candSeason: Int?, candKind: String?, candYear: Int?
+    ): Boolean {
+        if (relSeason != null && candSeason != null && relSeason != candSeason) return true
+        if (relSeason != null && candSeason == null &&
+            relYear != null && candYear != null && relYear != candYear
+        ) return true
+        if (relKind != null && candKind != null && !kindsCompatible(relKind, candKind)) return true
+        return false
+    }
+
     /**
      * Алиасы в кавычках из официального названия («… "Shomin Sample" …»):
      * кавычки в названиях аниме почти всегда маркируют обиходное имя.
