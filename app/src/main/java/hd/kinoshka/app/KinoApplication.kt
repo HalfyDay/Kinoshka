@@ -67,9 +67,10 @@ class KinoApplication : Application(), ImageLoaderFactory {
         hd.kinoshka.app.data.download.EpisodeDownloadManager.init(this)
 
         // Офлайн-индекс Shikimori для импорта Anixart: ридер бандла
-        // (ленивый — 1.6MB gzip читаются только при первом catch-up).
+        // (ленивый — читается только при первом catch-up; в APK лежит
+        // распакованным shiki_index.json — пайплайн ассетов сам разжал .gz).
         hd.kinoshka.app.data.source.ShikiIndexBridge.provider = {
-            runCatching { assets.open("shiki_index.json.gz").readBytes() }.getOrNull()
+            runCatching { assets.open("shiki_index.json").readBytes() }.getOrNull()
         }
 
         // Импорт Anixart: детерминированный прогресс catch-up (total>0; фаза

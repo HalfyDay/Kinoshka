@@ -3057,7 +3057,12 @@ class FilmsViewModel(
             }
             KLog.i("AnixartSync", "pull: offline-index hits=$offlineHits of ${plan.size} planned")
         }
-        for ((listId, release) in unmatchedReleases.take(pullResolveLimit)) {
+        // Живой поиск — только непокрытое офлайн-фазой (searchResolvedIds);
+        // кап применяется к живой работе, а не к тейку (иначе офлайн-хиты
+        // съедали бы лимит steady-state, а в catch-up шёл двойной резолв
+        // всех 820 с формулой unmatched=-820: кейс 10.09).
+        val liveTargets = unmatchedReleases.filter { it.second.id !in searchResolvedIds }
+        for ((listId, release) in liveTargets.take(pullResolveLimit)) {
             if (release.id <= 0) continue
             val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: continue
             if (!firstSearch) kotlinx.coroutines.delay(300L)

@@ -1,8 +1,6 @@
 package hd.kinoshka.app.data.source
 
 import com.google.gson.JsonParser
-import java.io.ByteArrayInputStream
-import java.util.zip.GZIPInputStream
 
 /**
  * Мост к бандлу индекса: app-модуль кладёт сюда ридер
@@ -130,10 +128,14 @@ class ShikiOfflineIndex private constructor(
     }
 
     companion object {
-        /** Разбор бандла [id, year, kind, scoreBp, name, ru, en, [syn], [quoted]]. */
-        fun parse(gzippedJson: ByteArray): ShikiOfflineIndex? = runCatching {
-            val json = GZIPInputStream(ByteArrayInputStream(gzippedJson))
-                .use { it.readBytes().toString(Charsets.UTF_8) }
+        /**
+         * Разбор бандла [id, year, kind, scoreBp, name, ru, en, [syn], [quoted]].
+         * В APK лежит РАСПАКОВАННЫМ shiki_index.json: пайплайн ассетов молча
+         * разжимает .gz и режет расширение (проверено подставным файлом),
+         * поэтому здесь plain JSON без GZIPInputStream.
+         */
+        fun parse(jsonBytes: ByteArray): ShikiOfflineIndex? = runCatching {
+            val json = jsonBytes.toString(Charsets.UTF_8)
             val root = JsonParser.parseString(json).asJsonObject
             val arr = root.getAsJsonArray("entries") ?: return null
             val matcher = TitleMatching
