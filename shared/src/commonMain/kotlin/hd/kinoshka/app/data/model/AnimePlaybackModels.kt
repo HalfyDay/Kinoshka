@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 enum class AnimeSourceType(val displayName: String, val description: String, val needsVpn: Boolean = false) {
     KODIK("Kodik", "Большой каталог озвучек и субтитров"),
     ANILIBERTY("AniLiberty", "Релизы AniLiberty с качествами 1080p/720p/480p"),
-    ANILIB("AniLib", "Каталог AniLib (animelib.org), озвучки по командам"),
+    ANILIB("AnimeLib", "Каталог AnimeLib (animelib.org), озвучки по командам"),
     ANISTAR("AniStar", "Свои озвучки AniStar, MP4/HLS 360–720p"),
     /** Официальный плеер «Смотреть онлайн» на Shikimori (агрегатор cdnvideohub, хостинг
      *  VK/OK CDN). Ключ — Shikimori id, без поиска по названию. В каталоге только

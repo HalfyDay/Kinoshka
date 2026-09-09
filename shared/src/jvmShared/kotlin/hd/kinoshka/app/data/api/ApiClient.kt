@@ -15,7 +15,11 @@ object ApiClient {
     private var kinopoiskApiInstance: KinopoiskApi? = null
     @Volatile
     private var shikimoriApiInstance: ShikimoriApi? = null
+    @Volatile
+    private var anixartApiInstance: AnixartApi? = null
     private const val API_CACHE_MAX_AGE_SECONDS = 3L * 24L * 60L * 60L
+
+    private val REDACT_TOKEN_REGEX = Regex("([?&]token=)[^&\\s]*")
 
     /**
      * Выключатель HTTP-логов (OkHttp BASIC пишет каждую строку запроса/ответа в logcat —
@@ -26,8 +30,19 @@ object ApiClient {
     @Volatile
     var httpLoggingEnabled: Boolean = true
 
-    private fun loggingInterceptor() = HttpLoggingInterceptor().apply {
-        level = if (httpLoggingEnabled) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
+    private fun loggingInterceptor(redactToken: Boolean = false): HttpLoggingInterceptor {
+        val logger = if (redactToken) {
+            // Anixart возит токен сессии в query (?token=) — BASIC-лог печатал бы его
+            // в logcat целиком. Режем до звёздочек, остальное как есть.
+            HttpLoggingInterceptor.Logger { message ->
+                println(REDACT_TOKEN_REGEX.replace(message, "$1***"))
+            }
+        } else {
+            HttpLoggingInterceptor.Logger.DEFAULT
+        }
+        return HttpLoggingInterceptor(logger).apply {
+            level = if (httpLoggingEnabled) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
+        }
     }
 
     private fun authInterceptor(apiKey: String) = Interceptor { chain ->
@@ -111,6 +126,63 @@ object ApiClient {
                 shikimoriApiInstance = it
             }
         }
+    }
+
+    /**
+     * Неофициальный API Anixart: пользовательские списки — только сеть, без
+     * дискового кэша. Основной хост api.anixsekai.com, запасной api-s.
+     */
+    fun anixartApi(cacheDir: File): AnixartApi {
+        anixartApiInstance?.let { return it }
+        return synchronized(this) {
+            anixartApiInstance ?: buildAnixartApi(cacheDir).also {
+                anixartApiInstance = it
+            }
+        }
+    }
+
+    private fun buildAnixartApi(cacheDir: File): AnixartApi {
+        val fallbackInterceptor = Interceptor { chain ->
+            val request = chain.request()
+            try {
+                chain.proceed(request)
+            } catch (e: java.io.IOException) {
+                val host = request.url.host
+                val nextHost = when (host) {
+                    "api.anixsekai.com" -> "api-s.anixsekai.com"
+                    "api-s.anixsekai.com" -> "api.anixsekai.com"
+                    else -> "api.anixsekai.com"
+                }
+                chain.proceed(request.newBuilder().url(request.url.newBuilder().host(nextHost).build()).build())
+            }
+        }
+        // UA официального приложения (как у референсного AnixartJS): зеркало дружелюбнее
+        // отвечает клиентам, притворяющимся приложением, а не безликому okhttp.
+        val anixartHeaderInterceptor = Interceptor { chain ->
+            chain.proceed(
+                chain.request().newBuilder()
+                    .header(
+                        "User-Agent",
+                        "AnixartApp/9.0 BETA 7-25082901 (Android 9; SDK 28; x86_64; ROG ASUS AI2201_B; ru)"
+                    )
+                    .header("Accept", "application/json")
+                    .build()
+            )
+        }
+        val client: OkHttpClient = OkHttpClient.Builder()
+            .addInterceptor(anixartHeaderInterceptor)
+            .addInterceptor(fallbackInterceptor)
+            .addInterceptor(rateLimitRetryInterceptor)
+            .addInterceptor(loggingInterceptor(redactToken = true))
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .build()
+        return Retrofit.Builder()
+            .baseUrl("https://api.anixsekai.com/")
+            .client(client)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(AnixartApi::class.java)
     }
 
     private fun buildApi(cacheDir: File, apiKey: String): KinopoiskApi {

@@ -194,7 +194,8 @@ fun main(args: Array<String>) = application {
                                 onDiscoverTileSizeSelected = viewModel::setDiscoverTileSize,
                                 onLibraryTileSizeSelected = viewModel::setLibraryTileSize,
                                 onShowFpsCounterChanged = viewModel::setShowFpsCounter,
-                                showDebugSettings = false
+                                showDebugSettings = false,
+                                onOpenAbout = { screen = Screen.About }
                             )
                         }
                         is Screen.About -> TvSecondaryContainer {

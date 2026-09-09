@@ -4,6 +4,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -584,16 +586,12 @@ fun AnimeQualityDropdown(
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                         )
                     },
-                    trailingIcon = if (isSelected) {
-                        {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = "Выбрано",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    } else null,
+                    leadingIcon = {
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = null,
+                        )
+                    },
                     onClick = {
                         menuExpanded = false
                         onQualitySelected(q)
@@ -630,12 +628,12 @@ fun AnimeShaderControl(
     val decoderPreferences = koinInject<DecoderPreferences>()
     val anime4kManager = koinInject<Anime4KManager>()
     val scope = rememberCoroutineScope()
-    
+
     val anime4kMode by decoderPreferences.anime4kMode.collectAsState()
     val anime4kQuality by decoderPreferences.anime4kQuality.collectAsState()
-    
+
     var showDialog by remember { mutableStateOf(false) }
-    
+
     val isOff = anime4kMode == "OFF"
 
     LaunchedEffect(showDialog) {
@@ -654,7 +652,7 @@ fun AnimeShaderControl(
         Box(contentAlignment = Alignment.Center) {
             Icon(
                 imageVector = if (!isOff) Icons.Default.AutoFixHigh else Icons.Default.AutoFixNormal,
-                contentDescription = "Anime4K Shader",
+                contentDescription = "Anime4K",
                 modifier = Modifier.size(24.dp)
             )
         }
@@ -675,84 +673,182 @@ fun AnimeShaderControl(
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null
-                    ) { showDialog = false }
+                    ) { showDialog = false },
+                contentAlignment = Alignment.CenterEnd
             ) {
                 Surface(
-                    shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp),
+                    shape = RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
                     modifier = Modifier
                         .fillMaxHeight()
-                        .width(380.dp)
-                        .align(Alignment.CenterEnd)
-                        .clickable(enabled = false) {}
+                        .width(340.dp)
                 ) {
-                    Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        // Header: Anime4K + hourglass | Filters button
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(
-                                "Anime4K Улучшение",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            
-                            // Compact quality selector
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Anime4KManager.Quality.entries.forEach { q ->
-                                    val isSelected = anime4kQuality == q.name
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                                        contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.clickable {
-                                            decoderPreferences.anime4kQuality.set(q.name)
-                                            applyShaders(anime4kMode, q.name, anime4kManager, decoderPreferences, scope)
-                                        }
-                                    ) {
-                                        Text(
-                                            text = q.name,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                        )
-                                    }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    "Anime4K",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "⏳",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    showDialog = false
+                                    viewModel.setAnimeModalOpen(false)
+                                    viewModel.sheetShown.value =
+                                        app.marlboroadvance.mpvex.ui.player.Sheets.None
+                                    viewModel.panelShown.value =
+                                        app.marlboroadvance.mpvex.ui.player.Panels.VideoFilters
+                                    viewModel.hideControls()
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tune,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        "Фильтры",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                             }
                         }
 
-                        Text("Режим (Preset)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        
-                        val modes = listOf(
-                            ShaderModeInfo("OFF", "Выключено", "Оригинальное изображение"),
-                            ShaderModeInfo("A", "Mode A (Fast)", "Оптимизировано для большинства аниме"),
-                            ShaderModeInfo("B", "Mode B (Restore)", "Для старых аниме с артефактами"),
-                            ShaderModeInfo("C", "Mode C (Sharp)", "Для современных аниме, фокус на четкости"),
-                            ShaderModeInfo("A_PLUS", "Mode A+", "Улучшенное восстановление деталей"),
-                            ShaderModeInfo("B_PLUS", "Mode B+", "Глубокое восстановление мягких линий"),
-                            ShaderModeInfo("C_PLUS", "Mode C+", "Максимальная четкость и контуры")
+                        Text(
+                            "Активируется после запуска видео",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(modifier = Modifier.height(12.dp))
 
-                        LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // --- Тип улучшения ---
+                        val modes = remember {
+                            listOf(
+                                ShaderModeInfo("OFF", "Выкл", "Оригинальное изображение без обработки", null),
+                                ShaderModeInfo("A", "Чёткость", "Универсальное улучшение для большинства аниме", null),
+                                ShaderModeInfo("B", "Баланс", "Мягкое восстановление, баланс деталей и шума", "👍"),
+                                ShaderModeInfo("C", "Очистка", "Сглаживает шум и мыло, может быть полезно для 480p и 720p", null),
+                                ShaderModeInfo("A_PLUS", "Чёткость+", "Усиленная чёткость и восстановление деталей", "🔥"),
+                                ShaderModeInfo("B_PLUS", "Баланс+", "Глубокое восстановление мягких линий", "🔥"),
+                                ShaderModeInfo("C_PLUS", "Восстановление", "Максимальное восстановление контуров", "🔥"),
+                            )
+                        }
+                        val selectedModeInfo = modes.firstOrNull { it.id == anime4kMode } ?: modes[0]
+
+                        Text(
+                            "Тип улучшения",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            selectedModeInfo.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
                             items(modes) { mode ->
                                 val isSelected = anime4kMode == mode.id
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth().clickable {
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
                                         decoderPreferences.anime4kMode.set(mode.id)
                                         applyShaders(mode.id, anime4kQuality, anime4kManager, decoderPreferences, scope)
                                     },
-                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
-                                        Text(mode.title, fontWeight = FontWeight.Bold)
-                                        Text(mode.description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    label = {
+                                        Text(
+                                            mode.title,
+                                            style = MaterialTheme.typography.labelMedium
+                                        )
+                                    },
+                                    leadingIcon = mode.icon?.let { e ->
+                                        { Text(text = e, fontSize = 12.sp) }
                                     }
-                                }
+                                )
                             }
                         }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // --- Режим обработки ---
+                        val qualities = remember {
+                            listOf(
+                                ShaderQualityInfo("FAST", "Легко", "Минимальная нагрузка на устройство", "👍"),
+                                ShaderQualityInfo("BALANCED", "Оптимально", "Лучшее качество при умеренной нагрузке", null),
+                                ShaderQualityInfo("HIGH", "Максимум", "Максимальное качество, высокая нагрузка", "🔥"),
+                            )
+                        }
+                        val selectedQualityInfo =
+                            qualities.firstOrNull { it.id == anime4kQuality } ?: qualities[1]
+
+                        Text(
+                            "Режим обработки",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            selectedQualityInfo.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Spacer(modifier = Modifier.height(8.dp))
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(qualities) { q ->
+                                val isSelected = anime4kQuality == q.id
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        decoderPreferences.anime4kQuality.set(q.id)
+                                        applyShaders(anime4kMode, q.id, anime4kManager, decoderPreferences, scope)
+                                    },
+                                    label = {
+                                        Text(
+                                            q.title,
+                                            style = MaterialTheme.typography.labelMedium
+                                        )
+                                    },
+                                    leadingIcon = q.icon?.let { e ->
+                                        { Text(text = e, fontSize = 12.sp) }
+                                    }
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
                     }
                 }
             }
@@ -760,7 +856,19 @@ fun AnimeShaderControl(
     }
 }
 
-private data class ShaderModeInfo(val id: String, val title: String, val description: String)
+private data class ShaderModeInfo(
+    val id: String,
+    val title: String,
+    val description: String,
+    val icon: String?
+)
+
+private data class ShaderQualityInfo(
+    val id: String,
+    val title: String,
+    val description: String,
+    val icon: String?
+)
 
 private fun applyShaders(
     modeStr: String,

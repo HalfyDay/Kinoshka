@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -83,7 +84,9 @@ fun SettingsScreen(
     proxyUrl: String = "",
     onProxyUrlChanged: (String) -> Unit = {},
     // Настройки плеера mpvEx есть только на Android: их UI живёт в app-модуле, desktop-плеер их не читает.
-    onOpenPlayerSettings: (() -> Unit)? = null
+    onOpenPlayerSettings: (() -> Unit)? = null,
+    // «О приложении» живёт внутри настроек (раньше — отдельный пункт меню).
+    onOpenAbout: (() -> Unit)? = null
 ) {
     var showThemePicker by remember { mutableStateOf(false) }
     var showDiscoverTileSizePicker by remember { mutableStateOf(false) }
@@ -183,6 +186,21 @@ fun SettingsScreen(
                 }
             }
         }
+        if (onOpenAbout != null) {
+            item {
+                KinoSettingsSectionHeader("Приложение")
+            }
+            item {
+                KinoSettingsCard {
+                    KinoSettingsRow(
+                        title = "О приложении",
+                        summary = "Версия, обновления и полезные ссылки",
+                        icon = Icons.Outlined.Info,
+                        onClick = onOpenAbout
+                    )
+                }
+            }
+        }
     }
 
     if (showThemePicker) {
@@ -228,6 +246,46 @@ fun SettingsScreen(
             onDismiss = { showPlayerModePicker = false }
         )
     }
+}
+
+/**
+ * Строка настроек для поиска на странице Профиля: тап открывает сами настройки.
+ */
+data class SettingsSearchEntry(
+    val title: String,
+    val subtitle: String,
+    val keywords: String
+)
+
+/** Все строки экрана настроек, видимые при данных флагах (для поиска с Профиля). */
+fun settingsSearchEntries(
+    hasPlayerSettings: Boolean,
+    showDebugSettings: Boolean
+): List<SettingsSearchEntry> = buildList {
+    add(SettingsSearchEntry("Тема", "Внешний вид приложения", "тема тёмная светлая amoled оформление внешность"))
+    add(SettingsSearchEntry("Размер плиток (Обзор)", "Крупные или компактные обложки", "плитки размер обзор сетка крупные мелкие"))
+    add(SettingsSearchEntry("Размер плиток (Библиотека)", "Крупные или компактные обложки", "плитки размер библиотека сетка крупные мелкие"))
+    add(SettingsSearchEntry("Плеер фильмов", "Какой плеер открывает кино", "плеер mpv ex внешний внутренний кино"))
+    if (hasPlayerSettings) {
+        add(SettingsSearchEntry("Настройки плеера mpvEx", "Скорость, жесты, субтитры, декодер", "mpvex скорость жесты субтитры декодер сброс плеер"))
+    }
+    add(SettingsSearchEntry("Скрывать российские фильмы", "Фильтр обзора и библиотеки", "скрыть российские русские фильтр"))
+    if (showDebugSettings) {
+        add(SettingsSearchEntry("Показывать FPS", "Счётчик кадров (только debug)", "fps кадры счётчик отладка debug"))
+        add(SettingsSearchEntry("Прокси для источников", "VideoCDN, хентай, YouTube", "прокси proxy заблокированные источники"))
+    }
+    add(SettingsSearchEntry("О приложении", "Версия, обновления и ссылки", "о приложении версия обновление github telegram шикимори"))
+}
+
+/**
+ * Совпадение поискового запроса: все слова запроса должны встретиться
+ * хотя бы в одном из полей. Пустой запрос совпадает со всем.
+ */
+fun matchesSearchQuery(query: String, vararg fields: String): Boolean {
+    val tokens = query.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+    if (tokens.isEmpty()) return true
+    val haystacks = fields.map { it.lowercase() }
+    return tokens.all { token -> haystacks.any { it.contains(token) } }
 }
 
 /**

@@ -9,6 +9,7 @@ import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmItem
+import hd.kinoshka.app.data.model.formatSyncTimeMs
 import java.util.Locale
 
 
@@ -47,7 +48,12 @@ data class UserPreferences(
     val libraryTileSize: FilmTileSize? = null,
     val showFpsCounter: Boolean = false,
     val contentType: hd.kinoshka.app.ui.screens.ContentType = hd.kinoshka.app.ui.screens.ContentType.FILMS,
-    val playerMode: PlayerMode = PlayerMode.MPVEX
+    val playerMode: PlayerMode = PlayerMode.MPVEX,
+    // Состояние библиотеки и фильтров: раньше в облако не ездили вовсе.
+    val librarySortType: LibrarySortType = LibrarySortType.LAST_VIEWED,
+    val librarySortReversed: Boolean = false,
+    val libraryGroupType: LibraryGroupType = LibraryGroupType.NONE,
+    val showHentaiInLibrary: Boolean = true
 )
 
 data class HistoryRecord(
@@ -66,7 +72,7 @@ data class SearchHistoryRecord(
     val searchedAt: Long
 )
 
-/** Usage counters for one playback source (Kodik/AniLiberty/AniLib). */
+/** Usage counters for one playback source (Kodik/AniLiberty/AnimeLib). */
 data class SourceUsage(val count: Int = 0, val lastUsedAt: Long = 0)
 
 /**
@@ -146,7 +152,22 @@ data class LibraryBackup(
      * не восстанавливается до перелогина. В старых копиях поля нет — Gson даст null, импорт пропустит.
      */
     val shikimoriRates: List<hd.kinoshka.app.data.model.ShikimoriUserRate>? = null,
-    val shikimoriUserId: Int = 0
+    val shikimoriUserId: Int = 0,
+    // Остальное состояние «всего»: история поиска, resume-позиции, память
+    // источников/озвучек, кэш деталей аниме (включая 18+-вердикты). В старых
+    // копиях полей нет — Gson даст null, импорт/слияние их пропускают.
+    val searchHistory: List<SearchHistoryRecord>? = null,
+    val playbackPositions: Map<String, PlaybackPosition>? = null,
+    val playbackUsage: PlaybackUsageStats? = null,
+    val animeCache: Map<Int, ShikimoriAnimeCache>? = null
+)
+
+/** Итог [UserStateStoreBase.mergeLibraryJson]: сколько записей реально обновилось. */
+data class LibraryMergeReport(
+    val profilesApplied: Int,
+    val historyApplied: Int,
+    /** Прочее состояние (позиции, usage, поиск, кэш, мета) — для строки статуса синка. */
+    val extrasApplied: Int = 0
 )
 
 data class ShikimoriAnimeCache(    val shikimoriId: Int,
@@ -164,6 +185,11 @@ data class ShikimoriAnimeCache(    val shikimoriId: Int,
     // Boolean?, а не Boolean: Gson не применяет Kotlin-дефолты — в старых кэшах поле
     // отсутствует и десериализуется как null.
     val isAdult: Boolean? = null,
+    // Жанровая проверка 18+ (батч ids+genre) пройдена. Краткий объект батча жанров не
+    // несёт, поэтому его isAdult=false без жанрового сигнала недостоверен. Non-null
+    // Boolean: в старых кэшах без поля Gson оставляет JVM-дефолт false — то есть
+    // «нужна проверка», что и требуется для одноразовой перепроверки старых записей.
+    val genreChecked: Boolean = false,
     val savedAtMs: Long = System.currentTimeMillis()
 ) {
     val displayTitle: String get() = russian?.takeIf { it.isNotBlank() } ?: name ?: "Аниме #$shikimoriId"
@@ -204,6 +230,14 @@ private const val PROFILE_HARD_CEILING = 20_000
 private const val MAX_DUB_USAGE_ENTRIES = 100
 private const val MAX_TITLE_DUB_USAGE_ENTRIES = 400
 private const val MAX_PLAYBACK_POSITION_ENTRIES = 300
+/**
+ * Потолок дискового кэша деталей аниме: библиотеки 600+ тайтлов (Anixart-пул)
+ * не влезали в 500 — записи вытесняли друг друга, джобы добивки гонялись
+ * по кругу (померяно в проде 2026-09-08: backfill 423 → вытеснение → backfill
+ * 382 → …), плитки мигали, prefs переписывался сотнями полных сериализаций.
+ * ~350 байт на запись: 2000 ≈ 700 КБ, для SharedPreferences нормально.
+ */
+private const val MAX_ANIME_CACHE_ENTRIES = 2000
 
 /**
  * Пометка «эта озвучка играла» снимается сама: месяц без включения — и запись выпадает из
@@ -253,9 +287,11 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     private val preferredQualityKey = "preferred_quality"
     private val shikimoriAnimeCacheKey = "shikimori_anime_cache"
     private val shikimoriRatesSnapshotKey = "shikimori_rates_snapshot"
+    private val prefetchCooloffKey = "shikimori_prefetch_cooloff_until"
     private val librarySortKey = "library_sort_type"
     private val librarySortReversedKey = "library_sort_reversed"
     private val showHentaiInLibraryKey = "show_hentai_in_library"
+    private val cloudMetaAppliedAtKey = "cloud_meta_applied_at"
     private val searchHistoryKey = "search_history_json"
     private val overviewFilmCacheKey = "overview_film_cache_json"
     private val overviewAnimeCacheKey = "overview_anime_cache_json"
@@ -291,12 +327,35 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         return getShikimoriAnimeCache()[shikimoriId]
     }
 
-    fun saveShikimoriAnimeInfo(info: ShikimoriAnimeCache) = synchronized(BLOB_LOCK) {        val cache = getShikimoriAnimeCache().toMutableMap()
-        cache[info.shikimoriId] = info
-        // Keep only last 500 entries
-        if (cache.size > 500) {
+    /**
+     * Вес кэш-записи для облачного слияния: проверенная (жанровый флаг) и 18+
+     * бьют непроверенные; при равенстве решает savedAtMs. См. mergeLibraryJson.
+     */
+    private fun animeCacheScore(entry: ShikimoriAnimeCache): Int =
+        (if (entry.genreChecked) 2 else 0) + (if (entry.isAdult == true) 1 else 0)
+
+    /** Кап кэша как в saveShikimoriAnimeInfos (последние MAX_ANIME_CACHE_ENTRIES по savedAtMs). */
+    private fun capAnimeCache(cache: Map<Int, ShikimoriAnimeCache>): Map<Int, ShikimoriAnimeCache> {
+        if (cache.size <= MAX_ANIME_CACHE_ENTRIES) return cache
+        return cache.entries.sortedByDescending { it.value.savedAtMs }.take(MAX_ANIME_CACHE_ENTRIES).associate { it.toPair() }
+    }
+
+    fun saveShikimoriAnimeInfo(info: ShikimoriAnimeCache) = saveShikimoriAnimeInfos(listOf(info))
+
+    /**
+     * Пакетная запись кэша: ОДИН read-modify-write вместо поштучных. Поштучные
+     * saveShikimoriAnimeInfo на джобах добивки (400+ записей) парсили
+     * и сериализовали весь блоб на каждую запись — секунды GC-штопора и
+     * сотни перезаписей prefs за один холодный старт.
+     */
+    fun saveShikimoriAnimeInfos(infos: Collection<ShikimoriAnimeCache>) = synchronized(BLOB_LOCK) {
+        if (infos.isEmpty()) return
+        val cache = getShikimoriAnimeCache().toMutableMap()
+        for (info in infos) cache[info.shikimoriId] = info
+        // Keep only last MAX_ANIME_CACHE_ENTRIES entries
+        if (cache.size > MAX_ANIME_CACHE_ENTRIES) {
             val sorted = cache.entries.sortedBy { it.value.savedAtMs }
-            val toRemove = sorted.take(cache.size - 500).map { it.key }
+            val toRemove = sorted.take(cache.size - MAX_ANIME_CACHE_ENTRIES).map { it.key }
             toRemove.forEach { cache.remove(it) }
         }
         saveShikimoriAnimeCache(cache)
@@ -314,12 +373,24 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     }
 
     /**
-     * Last-write-wins сверка локальных профилей с серверными оценками Shikimori. Без неё локальный
-     * профиль всегда теньет рейтинг: правка статуса на сайте Shikimori не доезжает до библиотеки,
-     * а следующая правка в приложении уезжает на сервер и затирает сайт устаревшим значением.
-     * Рейтинг новее профиля — его статус/оценка/заметка/прогресс перезаписывают профиль; профиль
-     * новее — не трогается (его значения уже уехали на сервер при сохранении или это прогресс
-     * плеера). Возвращает число обновлённых профилей.
+     * Кулдаун фоновой добивки деталей Shikimori (wall-clock мс): после серии 429 префетч
+     * останавливается и молчит до метки — иначе отравленные тайтлы (429 → ничего не
+     * сохранено → повтор при следующем запуске) штормили бы API вечно.
+     */
+    fun getPrefetchCooloffUntilMs(): Long = prefs.getLong(prefetchCooloffKey, 0L)
+
+    fun setPrefetchCooloffUntilMs(untilMs: Long) {
+        prefs.putLong(prefetchCooloffKey, untilMs).apply()
+    }
+
+    /**
+     * Сверка локальных профилей с серверными оценками Shikimori: чистый last-write-wins
+     * по времени изменения. Серверный рейт новее локального профиля — забирается целиком
+     * (статус, серии, оценка, заметка, повторы). Локальное новее или равно (эхо своего
+     * пуша) — профиль не трогается, отправкой занимается пуш. Часы сервера — общая шкала:
+     * после каждого пуша локальная метка якорится из server updated_at
+     * (см. anchorProfileUpdatedAt), поэтому перекос часов устройств на решения не влияет.
+     * Возвращает число обновлённых профилей.
      */
     fun adoptShikimoriRates(rates: List<hd.kinoshka.app.data.model.ShikimoriUserRate>): Int {
         if (rates.isEmpty()) return 0
@@ -328,13 +399,41 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 .associateBy { it.kinopoiskId }
                 .toMutableMap()
             var updated = 0
+            var skippedLocalNewer = 0
+            var skippedUnparsable = 0
             for (rate in rates) {
                 if (rate.targetId <= 0) continue
                 val rateTime = rate.getUpdatedEpochMillis()
-                if (rateTime <= 0) continue
-                val existing = byId[rate.targetId + ANIME_ID_OFFSET] ?: continue
-                if (rateTime <= existing.updatedAt) continue
-                val status = when (rate.status.lowercase()) {
+                // Серверное время неизвестно — решать не по чему, пропускаем.
+                if (rateTime <= 0) {
+                    skippedUnparsable++
+                    KLog.w(
+                        "ShikimoriSync",
+                        "adopt: shikimoriId=${rate.targetId} SKIP unparsable time " +
+                            "(updated_at='${rate.updatedAt}' created_at='${rate.createdAt}')"
+                    )
+                    continue
+                }
+                val key = rate.targetId + ANIME_ID_OFFSET
+                val existing = byId[key] ?: continue
+                // Локальное новее или равно — побеждает локальное, серверное игнорируем.
+                if (rateTime <= existing.updatedAt) {
+                    skippedLocalNewer++
+                    // Интересен только конфликт значений: молчаливое эхо пуша не логируем.
+                    val serverEp = rate.episodes.coerceAtLeast(0)
+                    val localEp = existing.watchedEpisodes ?: 0
+                    if (serverEp != localEp) {
+                        KLog.d(
+                            "ShikimoriSync",
+                            "adopt: shikimoriId=${rate.targetId} SKIP local-newer " +
+                                "ep(local=$localEp server=$serverEp) " +
+                                "app=[${formatSyncTimeMs(existing.updatedAt)} ${existing.updatedAt}] " +
+                                "site=[${formatSyncTimeMs(rateTime)} raw='${rate.updatedAt}']"
+                        )
+                    }
+                    continue
+                }
+                val serverStatus = when (rate.status.lowercase()) {
                     "watching" -> UserFilmStatus.WATCHING
                     "planned" -> UserFilmStatus.PLANNED
                     "completed" -> UserFilmStatus.COMPLETED
@@ -343,19 +442,61 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                     "dropped" -> UserFilmStatus.DROPPED
                     // Неизвестный статус сервера — не рискуем перезаписывать профиль.
                     else -> null
-                } ?: continue
-                byId[rate.targetId + ANIME_ID_OFFSET] = existing.copy(
-                    status = status,
+                }
+                if (serverStatus == null) continue
+                val merged = existing.copy(
+                    watchedEpisodes = rate.episodes.coerceAtLeast(0),
+                    status = serverStatus,
                     userRating = rate.score.takeIf { it > 0 },
                     note = rate.text?.trim()?.takeUnless { it.isBlank() },
-                    watchedEpisodes = rate.episodes.takeIf { it > 0 },
                     watchedSeasons = rate.rewatches.takeIf { it > 0 },
+                    // Сервер-авторитетное обновление (adopt): дальше транзитом на
+                    // другие зеркала, как пользовательская правка. Импортная метка
+                    // снимается — иначе Shikimori->Anixart перестал бы доезжать.
+                    importSource = null,
                     updatedAt = rateTime
                 )
-                updated++
+                if (merged != existing) {
+                    byId[key] = merged
+                    updated++
+                    KLog.d(
+                        "ShikimoriSync",
+                        "adopt: shikimoriId=${rate.targetId} ADOPT server-newer " +
+                            "ep(local=${existing.watchedEpisodes ?: 0} -> server=${rate.episodes}) " +
+                            "status(${existing.status} -> $serverStatus) " +
+                            "app=[${formatSyncTimeMs(existing.updatedAt)} ${existing.updatedAt}] " +
+                            "site=[${formatSyncTimeMs(rateTime)} raw='${rate.updatedAt}']"
+                    )
+                }
+            }
+            if (updated > 0 || skippedUnparsable > 0) {
+                KLog.i(
+                    "ShikimoriSync",
+                    "adopt: done adopted=$updated skippedLocalNewer=$skippedLocalNewer " +
+                        "skippedUnparsable=$skippedUnparsable of ${rates.size}"
+                )
             }
             if (updated > 0) writeProfiles(capProfiles(byId.values.toList()))
             updated
+        }
+    }
+
+    /**
+     * Якорение часов после успешного пуша на Shikimori: локальная метка выставляется
+     * из server updated_at, значения не трогаются (полный adopt эха затёр бы заметку,
+     * которая не пушится). Часы сервера — общая шкала для LWW-решений.
+     */
+    fun anchorProfileUpdatedAt(kinopoiskId: Int, timeMs: Long) {
+        if (timeMs <= 0) return
+        synchronized(BLOB_LOCK) {
+            val profiles = readProfilesOrNull() ?: return
+            val idx = profiles.indexOfFirst { it.kinopoiskId == kinopoiskId }
+            if (idx < 0) return
+            val existing = profiles[idx]
+            if (timeMs <= existing.updatedAt) return
+            val updated = profiles.toMutableList()
+            updated[idx] = existing.copy(updatedAt = timeMs)
+            writeProfiles(capProfiles(updated))
         }
     }
 
@@ -390,6 +531,17 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
     fun setHentaiVisibleInLibrary(visible: Boolean) {
         prefs.putBoolean(showHentaiInLibraryKey, visible).apply()
+    }
+
+    /**
+     * Метка последнего применённого слиянием облачного мета-состояния (аватар,
+     * преференсы, снапшот рейтов): у них нет собственных меток, новее/старее
+     * решает exportedAt копии. См. mergeLibraryJson.
+     */
+    private fun getCloudMetaAppliedAt(): Long = prefs.getLong(cloudMetaAppliedAtKey, 0L)
+
+    private fun setCloudMetaAppliedAt(atMs: Long) {
+        prefs.putLong(cloudMetaAppliedAtKey, atMs).apply()
     }
 
     private val playerModeKey = "player_mode"
@@ -478,8 +630,30 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             libraryTileSize = getLibraryTileSize(),
             showFpsCounter = isFpsCounterEnabled(),
             contentType = getSavedContentType(),
-            playerMode = getPlayerMode()
+            playerMode = getPlayerMode(),
+            librarySortType = getLibrarySortType(),
+            librarySortReversed = isLibrarySortReversed(),
+            libraryGroupType = getLibraryGroupType(),
+            showHentaiInLibrary = isHentaiVisibleInLibrary()
         )
+    }
+
+    /**
+     * Применяет преференсы из облачной копии (импорт целиком и gated-слияние).
+     * Вызывать внутри synchronized(BLOB_LOCK) — собственной синхронизации нет.
+     */
+    private fun applyPreferences(preferences: UserPreferences) {
+        setThemeMode(preferences.themeMode)
+        setHideRussianContentEnabled(preferences.hideRussianContent)
+        val fallbackTileSize = runCatching { preferences.tileSize }.getOrDefault(FilmTileSize.MEDIUM)
+        setTileSize(fallbackTileSize)
+        setDiscoverTileSize(preferences.discoverTileSize ?: fallbackTileSize)
+        setLibraryTileSize(preferences.libraryTileSize ?: fallbackTileSize)
+        setFpsCounterEnabled(preferences.showFpsCounter)
+        setLibrarySortType(runCatching { preferences.librarySortType }.getOrDefault(LibrarySortType.LAST_VIEWED))
+        setLibrarySortReversed(preferences.librarySortReversed)
+        setLibraryGroupType(runCatching { preferences.libraryGroupType }.getOrDefault(LibraryGroupType.NONE))
+        setHentaiVisibleInLibrary(preferences.showHentaiInLibrary)
     }
 
     fun getHistory(): List<HistoryRecord> = readHistory()
@@ -499,6 +673,9 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     /**
      * Быстрая пометка статуса без деталей — кнопка «В планах» во фиде.
      * Поверх существующего профиля, если он уже есть; status=null снимает пометку.
+     * Пустую шелуху не плодим: снятие пометки с пустого профиля удаляет его
+     * вовсе (иначе тайтл невидим ни в одной вкладке, но раздувает итоги),
+     * а профиля без записи вообще не трогаем.
      */
     fun setFeedQuickStatus(
         kinopoiskId: Int,
@@ -507,6 +684,18 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         status: UserFilmStatus?
     ) = synchronized(BLOB_LOCK) {
         val existing = readProfilesOrNull()?.firstOrNull { it.kinopoiskId == kinopoiskId }
+        if (status == null) {
+            if (existing == null || existing.status == null) return@synchronized
+            if (isProfileEmpty(existing) && readHistory().none { it.kinopoiskId == kinopoiskId }) {
+                removeFromLibrary(kinopoiskId)
+            } else {
+                upsertProfile(existing.copy(status = null, importSource = null, updatedAt = System.currentTimeMillis()))
+            }
+            return@synchronized
+        }
+        // Тот же статус повторно — не пользовательская правка, метку не двигаем
+        // (иначе LWW считал бы профиль новее сайта и пуш затирал бы его).
+        if (existing?.status == status) return@synchronized
         val base = existing ?: UserFilmProfile(
             kinopoiskId = kinopoiskId,
             title = title,
@@ -524,7 +713,34 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             totalEpisodes = null,
             updatedAt = System.currentTimeMillis()
         )
-        upsertProfile(base.copy(status = status, updatedAt = System.currentTimeMillis()))
+        // Явная пометка (кнопка фида) и adopt серверного статуса — в обоих случаях
+        // локальное состояние становится осознанным: импортная метка снимается,
+        // дальше профиль пушится как обычно (в т.ч. транзитом на другие зеркала).
+        upsertProfile(base.copy(status = status, importSource = null, updatedAt = System.currentTimeMillis()))
+    }
+
+    /** Профиль без данных: ни статуса, ни оценки, ни заметки, ни прогресса. */
+    private fun isProfileEmpty(profile: UserFilmProfile): Boolean {
+        return profile.status == null &&
+            profile.userRating == null &&
+            profile.note.isNullOrBlank() &&
+            (profile.watchedSeasons ?: 0) <= 0 &&
+            (profile.watchedEpisodes ?: 0) <= 0
+    }
+
+    /**
+     * Разовая чистка пустой шелухи без статуса (снятия пометок и сиды до фикса):
+     * такие записи невидимы ни в одной вкладке библиотеки, но раздували итоги.
+     * Возвращает число удалённых.
+     */
+    fun pruneEmptyStatuslessProfiles(): Int = synchronized(BLOB_LOCK) {
+        val current = readProfilesOrNull() ?: return@synchronized 0
+        val historyIds = readHistory().mapTo(mutableSetOf()) { it.kinopoiskId }
+        val doomed = current.filter { isProfileEmpty(it) && it.kinopoiskId !in historyIds }
+        if (doomed.isEmpty()) return@synchronized 0
+        val doomedIds = doomed.mapTo(mutableSetOf()) { it.kinopoiskId }
+        writeProfiles(current.filterNot { it.kinopoiskId in doomedIds })
+        doomed.size
     }
 
     fun clearHistory() {
@@ -678,6 +894,21 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 watchedSeasons ?: existing?.watchedSeasons
             }
 
+            val finalNote = note?.trim().takeUnless { it.isNullOrBlank() }
+            val finalTotalInSeason = (totalEpisodesInSeason ?: existing?.totalEpisodesInSeason)?.coerceAtLeast(0)
+            val finalSeasons = finalTotalSeasons?.coerceAtLeast(0)
+            val finalTotal = finalTotalEpisodes?.coerceAtLeast(0)
+            // Сохранение без изменений не двигает метку: иначе но-оп «Сохранить» делал бы
+            // локальное новее сайта, и следующий пуш затирал бы серверные правки.
+            val contentUnchanged = existing != null &&
+                existing.status == status &&
+                existing.userRating == userRating &&
+                existing.note == finalNote &&
+                existing.watchedSeasons == finalWatchedSeasons &&
+                existing.watchedEpisodes == finalWatchedEpisodes &&
+                existing.totalEpisodesInSeason == finalTotalInSeason &&
+                existing.totalSeasons == finalSeasons &&
+                existing.totalEpisodes == finalTotal
             val profile = UserFilmProfile(
                 kinopoiskId = item.kinopoiskId,
                 title = title,
@@ -688,13 +919,13 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 isRussian = isRussian,
                 status = status,
                 userRating = userRating,
-                note = note?.trim().takeUnless { it.isNullOrBlank() },
+                note = finalNote,
                 watchedSeasons = finalWatchedSeasons,
                 watchedEpisodes = finalWatchedEpisodes,
-                totalEpisodesInSeason = (totalEpisodesInSeason ?: existing?.totalEpisodesInSeason)?.coerceAtLeast(0),
-                totalSeasons = finalTotalSeasons?.coerceAtLeast(0),
-                totalEpisodes = finalTotalEpisodes?.coerceAtLeast(0),
-                updatedAt = System.currentTimeMillis()
+                totalEpisodesInSeason = finalTotalInSeason,
+                totalSeasons = finalSeasons,
+                totalEpisodes = finalTotal,
+                updatedAt = if (contentUnchanged) existing?.updatedAt ?: System.currentTimeMillis() else System.currentTimeMillis()
             )
             upsertProfile(profile)
             profile
@@ -712,11 +943,19 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 existing.status == UserFilmStatus.REWATCHING || existing.status == UserFilmStatus.COMPLETED -> existing.status
                 else -> UserFilmStatus.WATCHING
             }
+            // Повторный коммит той же серии метку не двигает: иначе плеер вечно
+            // «омолаживал» бы профиль, и правки с сайта Shikimori никогда не побеждали в LWW.
+            if (existing.watchedSeasons == seasonNumber &&
+                existing.watchedEpisodes == episodeNumber &&
+                existing.status == status
+            ) return
             upsertProfile(
                 existing.copy(
                     watchedSeasons = seasonNumber,
                     watchedEpisodes = episodeNumber,
                     status = status,
+                    // Реальный прогресс плеера — пользовательское действие.
+                    importSource = null,
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -736,7 +975,9 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 UserFilmStatus.DROPPED, UserFilmStatus.ON_HOLD -> existing.status
                 else -> UserFilmStatus.COMPLETED
             }
-            upsertProfile(existing.copy(status = status, updatedAt = System.currentTimeMillis()))
+            // Статус не меняется (уже COMPLETED/DROPPED/ON_HOLD) — метку не двигаем.
+            if (existing.status == status) return
+            upsertProfile(existing.copy(status = status, importSource = null, updatedAt = System.currentTimeMillis()))
         }
     }
 
@@ -745,6 +986,19 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
      * with an explicitly cleared (null) status means "remove from library" — otherwise a statusless
      * husk would keep surfacing in the История tab despite having no progress at all.
      */
+    /**
+     * Точечное добавление профилей, которых ещё нет (пул Anixart): существующих
+     * не трогает. Возвращает число добавленных.
+     */
+    fun addProfilesIfAbsent(profiles: List<UserFilmProfile>): Int = synchronized(BLOB_LOCK) {
+        val current = readProfilesOrNull() ?: return@synchronized 0
+        val ids = current.mapTo(mutableSetOf()) { it.kinopoiskId }
+        val fresh = profiles.filter { it.kinopoiskId !in ids }
+        if (fresh.isEmpty()) return@synchronized 0
+        writeProfiles(capProfiles(current + fresh))
+        fresh.size
+    }
+
     fun removeFromLibrary(kinopoiskId: Int) = synchronized(BLOB_LOCK) {
         readProfilesOrNull()?.let { current ->
             val filtered = current.filterNot { it.kinopoiskId == kinopoiskId }
@@ -785,6 +1039,18 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             val existing = if (index >= 0) current[index] else null
 
             val currentStatus = existing?.status
+            // The player's episode list is not canonical (it can be shorter than the real run while
+            // a season is airing). Never let it shrink the stored total — that made the progress
+            // percentage and the watched checkmarks disagree.
+            val mergedTotal = maxOf(
+                existing?.totalEpisodes ?: 0,
+                totalEpisodes.takeIf { it > 0 } ?: 0
+            ).takeIf { it > 0 } ?: existing?.totalEpisodes
+            // Онгоинг Shikimori нельзя завершить просмотром вышедших серий (10 из 10
+            // вышедших при всего 12 — это WATCHING). Сигнал — кэшированный статус релиза.
+            val knownOngoing = kinopoiskId >= ANIME_ID_OFFSET &&
+                getShikimoriAnimeInfo(kinopoiskId - ANIME_ID_OFFSET)?.status
+                    .equals("ongoing", ignoreCase = true)
             val newStatus = when {
                 // User explicitly dropped/put the title on hold — playback must not override that.
                 currentStatus == UserFilmStatus.DROPPED || currentStatus == UserFilmStatus.ON_HOLD -> currentStatus
@@ -795,24 +1061,28 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                     UserFilmStatus.REWATCHING, UserFilmStatus.COMPLETED -> currentStatus
                     else -> UserFilmStatus.WATCHING
                 }
-                totalEpisodes > 0 && episodeNum >= totalEpisodes -> UserFilmStatus.COMPLETED
+                // Автокомплит только по полному числу серий: сравнение с mergedTotal
+                // (максимум известного), а не с коротким списком плеера.
+                !knownOngoing && mergedTotal != null && mergedTotal > 0 && episodeNum >= mergedTotal ->
+                    UserFilmStatus.COMPLETED
                 currentStatus == UserFilmStatus.REWATCHING -> currentStatus
                 else -> UserFilmStatus.WATCHING
             }
 
-            // The player's episode list is not canonical (it can be shorter than the real run while
-            // a season is airing). Never let it shrink the stored total — that made the progress
-            // percentage and the watched checkmarks disagree.
-            val mergedTotal = maxOf(
-                existing?.totalEpisodes ?: 0,
-                totalEpisodes.takeIf { it > 0 } ?: 0
-            ).takeIf { it > 0 } ?: existing?.totalEpisodes
-
+            // Повторный коммит того же состояния метку не двигает: иначе прогресс
+            // плеера вечно выглядел бы новее сайта и затирал его в LWW (тот самый откат).
+            if (existing != null &&
+                existing.watchedEpisodes == episodeNum &&
+                existing.totalEpisodes == mergedTotal &&
+                existing.status == newStatus
+            ) return
             val updated = if (existing != null) {
                 existing.copy(
                     watchedEpisodes = episodeNum,
                     totalEpisodes = mergedTotal,
                     status = newStatus,
+                    // Прогресс плеера — пользовательское действие.
+                    importSource = null,
                     updatedAt = System.currentTimeMillis()
                 )
             } else {
@@ -873,9 +1143,179 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             history = readHistory(),
             profiles = readProfiles(),
             shikimoriRates = ratesSnapshot.rates.takeIf { it.isNotEmpty() },
-            shikimoriUserId = ratesSnapshot.userId
+            shikimoriUserId = ratesSnapshot.userId,
+            searchHistory = getSearchHistory().takeIf { it.isNotEmpty() },
+            playbackPositions = readPlaybackPositions().takeIf { it.isNotEmpty() },
+            playbackUsage = getPlaybackUsage().takeIf {
+                it.sources.isNotEmpty() || it.dubs.isNotEmpty() || it.titleDubs.isNotEmpty()
+            },
+            animeCache = getShikimoriAnimeCache().takeIf { it.isNotEmpty() }
         )
         return prettyGson.toJson(backup)
+    }
+
+    /**
+     * Объединение облачной копии с локальной без потерь: по каждому тайтлу побеждает
+     * более новая запись (updatedAt), история объединяется по максимуму. Ручной
+     * импорт/восстановление по-прежнему заменяют целиком — это осознанное действие.
+     * Ограничение: удалений без меток нет — локально удалённый тайтл со старой
+     * облачной записью воскреснет (лечится повторным удалением).
+     */
+    fun mergeLibraryJson(rawJson: String): Result<LibraryMergeReport> = synchronized(BLOB_LOCK) {
+        runCatching {
+            val backup = gson.fromJson(rawJson, LibraryBackup::class.java)
+                ?: error("Файл пустой или поврежден")
+            var profilesApplied = 0
+            val incomingProfiles = backup.profiles.orEmpty()
+            if (incomingProfiles.isNotEmpty()) {
+                // null вместо списка — битый блоб: как и везде, отменяем запись,
+                // чтобы не затереть библиотеку пустотой.
+                val current = readProfilesOrNull()
+                    ?: error("Локальная библиотека не читается — слияние отменено")
+                val byId = current.associateBy { it.kinopoiskId }.toMutableMap()
+                for (incoming in incomingProfiles) {
+                    val local = byId[incoming.kinopoiskId]
+                    if (local == null || incoming.updatedAt > local.updatedAt) {
+                        byId[incoming.kinopoiskId] = incoming
+                        profilesApplied++
+                    }
+                }
+                if (profilesApplied > 0) writeProfiles(capProfiles(byId.values.toList()))
+            }
+            var historyApplied = 0
+            val incomingHistory = backup.history.orEmpty()
+            if (incomingHistory.isNotEmpty()) {
+                val byId = readHistory().associateBy { it.kinopoiskId }.toMutableMap()
+                for (incoming in incomingHistory) {
+                    val local = byId[incoming.kinopoiskId]
+                    if (local == null || incoming.viewedAt > local.viewedAt) {
+                        byId[incoming.kinopoiskId] = incoming
+                        historyApplied++
+                    }
+                }
+                if (historyApplied > 0) {
+                    writeHistory(byId.values.sortedByDescending { it.viewedAt }.take(200))
+                }
+            }
+            var extrasApplied = 0
+            // Resume-позиции: новее по updatedAt побеждает (поключевно).
+            val incomingPositions = backup.playbackPositions.orEmpty()
+            if (incomingPositions.isNotEmpty()) {
+                val merged = readPlaybackPositions().toMutableMap()
+                var dirty = false
+                for ((key, incoming) in incomingPositions) {
+                    val local = merged[key]
+                    if (local == null || incoming.updatedAt > local.updatedAt) {
+                        merged[key] = incoming
+                        dirty = true
+                        extrasApplied++
+                    }
+                }
+                if (dirty) savePlaybackPositions(merged)
+            }
+            // Память источников/озвучек: новее по lastUsedAt побеждает (поключевно).
+            backup.playbackUsage?.let { incomingUsage ->
+                val current = getPlaybackUsage()
+                var dirty = false
+                val sources = current.sources.toMutableMap()
+                for ((key, incoming) in incomingUsage.sources) {
+                    val local = sources[key]
+                    if (local == null || incoming.lastUsedAt > local.lastUsedAt) {
+                        sources[key] = incoming
+                        dirty = true
+                        extrasApplied++
+                    }
+                }
+                val dubs = current.dubs.toMutableMap()
+                for ((key, incoming) in incomingUsage.dubs) {
+                    val local = dubs[key]
+                    if (local == null || incoming.lastUsedAt > local.lastUsedAt) {
+                        dubs[key] = incoming
+                        dirty = true
+                        extrasApplied++
+                    }
+                }
+                val titleDubs = current.titleDubs.toMutableMap()
+                for ((key, incoming) in incomingUsage.titleDubs) {
+                    val local = titleDubs[key]
+                    if (local == null || incoming.lastUsedAt > local.lastUsedAt) {
+                        titleDubs[key] = incoming
+                        dirty = true
+                        extrasApplied++
+                    }
+                }
+                if (dirty) savePlaybackUsageStats(
+                    PlaybackUsageStats(sources = sources, dubs = dubs, titleDubs = titleDubs)
+                )
+            }
+            // История поиска: объединение по запросу (свежее searchedAt побеждает), кап 20.
+            val incomingQueries = backup.searchHistory.orEmpty()
+            if (incomingQueries.isNotEmpty()) {
+                val merged = getSearchHistory().associateBy { it.query.lowercase() to it.contentType }.toMutableMap()
+                var dirty = false
+                for (incoming in incomingQueries) {
+                    val key = incoming.query.lowercase() to incoming.contentType
+                    val local = merged[key]
+                    if (local == null || incoming.searchedAt > local.searchedAt) {
+                        merged[key] = incoming
+                        dirty = true
+                        extrasApplied++
+                    }
+                }
+                if (dirty) saveSearchHistory(
+                    merged.values.sortedByDescending { it.searchedAt }.take(20)
+                )
+            }
+            // Кэш деталей аниме: побеждает проверенная запись (жанровый флаг, 18+-флаг),
+            // при равенстве — новее по savedAtMs. Не даём свежей «пустой» записи затереть
+            // готовый вердикт.
+            val incomingCache = backup.animeCache.orEmpty()
+            if (incomingCache.isNotEmpty()) {
+                val merged = getShikimoriAnimeCache().toMutableMap()
+                var dirty = false
+                for ((id, incoming) in incomingCache) {
+                    val local = merged[id]
+                    if (local == null || animeCacheScore(incoming) > animeCacheScore(local) ||
+                        (animeCacheScore(incoming) == animeCacheScore(local) &&
+                            incoming.savedAtMs > local.savedAtMs)
+                    ) {
+                        merged[id] = incoming
+                        dirty = true
+                        extrasApplied++
+                    }
+                }
+                if (dirty) saveShikimoriAnimeCache(capAnimeCache(merged))
+            }
+            // Мета без собственных меток (аватар, преференсы, снапшот рейтов): применяем
+            // только из копии новее последней применённой — иначе два устройства
+            // гоняли бы настройки туда-сюда каждым синком.
+            if (backup.exportedAt > getCloudMetaAppliedAt()) {
+                var metaTouched = false
+                backup.profileAvatar?.takeIf { it.isNotBlank() }?.let {
+                    setProfileAvatar(it)
+                    metaTouched = true
+                }
+                backup.preferences?.let {
+                    applyPreferences(it)
+                    metaTouched = true
+                }
+                backup.shikimoriRates?.takeIf { it.isNotEmpty() }?.let { rates ->
+                    saveShikimoriRatesSnapshot(
+                        ShikimoriRatesSnapshot(
+                            userId = backup.shikimoriUserId,
+                            savedAtMs = System.currentTimeMillis(),
+                            rates = rates
+                        )
+                    )
+                    metaTouched = true
+                }
+                if (metaTouched) {
+                    setCloudMetaAppliedAt(backup.exportedAt)
+                    extrasApplied++
+                }
+            }
+            LibraryMergeReport(profilesApplied, historyApplied, extrasApplied)
+        }
     }
 
     fun importLibraryJson(rawJson: String): Result<Unit> = synchronized(BLOB_LOCK) {
@@ -894,15 +1334,12 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                     )
                 )
             }
-            backup.preferences?.let { preferences ->
-                setThemeMode(preferences.themeMode)
-                setHideRussianContentEnabled(preferences.hideRussianContent)
-                val fallbackTileSize = runCatching { preferences.tileSize }.getOrDefault(FilmTileSize.MEDIUM)
-                setTileSize(fallbackTileSize)
-                setDiscoverTileSize(preferences.discoverTileSize ?: fallbackTileSize)
-                setLibraryTileSize(preferences.libraryTileSize ?: fallbackTileSize)
-                setFpsCounterEnabled(preferences.showFpsCounter)
-            }
+            backup.preferences?.let { applyPreferences(it) }
+            // Новое в схеме (старых копий нет — null пропускаем, локальное не трогаем).
+            backup.searchHistory?.let { saveSearchHistory(it) }
+            backup.playbackPositions?.let { savePlaybackPositions(it) }
+            backup.playbackUsage?.let { savePlaybackUsageStats(it) }
+            backup.animeCache?.let { saveShikimoriAnimeCache(capAnimeCache(it)) }
             Unit
         }
     }
@@ -945,6 +1382,192 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         // SIGKILLed right after an episode pick — could lose the edit, which is how titles silently
         // disappeared from the library.
         prefs.putString(profileKey, gson.toJson(value)).commit()
+    }
+
+    private val anixartBaselineKey = "anixart_lists_baseline_json"
+
+    /**
+     * Последний известный сервер Anixart (releaseId -> списки): baseline для правила
+     * «untouched → adopt сервера, diverged → пуш локального». In-memory карта ViewModel
+     * умирает с процессом, и первый синк после рестарта видел пустой baseline — любое
+     * расхождение решалось в пользу локального с пушем поверх правок сайта/другого
+     * устройства. Персист чинит это.
+     */
+    fun getAnixartListsBaseline(): Map<Int, Set<Int>> {
+        val raw = prefs.getString(anixartBaselineKey, null) ?: return emptyMap()
+        val type = object : TypeToken<Map<Int, Set<Int>>>() {}.type
+        return runCatching { gson.fromJson<Map<Int, Set<Int>>>(raw, type).orEmpty() }
+            .getOrDefault(emptyMap())
+    }
+
+    fun setAnixartListsBaseline(value: Map<Int, Set<Int>>) {
+        val capped = if (value.size > 10_000) {
+            value.entries.take(10_000).associate { it.key to it.value }
+        } else value
+        prefs.putString(anixartBaselineKey, gson.toJson(capped)).apply()
+    }
+
+    fun clearAnixartListsBaseline() {
+        // Сброс всего зеркального состояния Anixart (baseline + id-карта + мемоизация
+        // несопоставимого): всё это привязано к аккаунту, чужому не товарищ.
+        prefs.remove(anixartBaselineKey).remove(anixartIdMapKey).remove(anixartUnresolvableKey)
+            .remove(anixartPullUnresolvableKey).remove(anixartContestedKey).apply()
+    }
+
+    /**
+     * Сброс только baseline (членства релизов по аккаунту). Карты знаний
+     * (idmap, мемоизация промахов) — глобальная истина «релиз->аниме», от аккаунта
+     * не зависят: их храним, иначе каждый вход заново жёг бы сотни поисков.
+     */
+    fun clearAnixartBaselineOnly() {
+        prefs.remove(anixartBaselineKey).apply()
+    }
+
+    private val anixartIdMapKey = "anixart_idmap_json"
+    private val anixartUnresolvableKey = "anixart_unresolvable_json"
+    private val anixartPullUnresolvableKey = "anixart_pull_unresolvable_json"
+    private val anixartMatcherGenKey = "anixart_matcher_gen"
+    /** Бампить при изменении правил матчинга pull-резолюции (см. getAnixartPullUnresolvable). */
+    private val ANIXART_MATCHER_GEN = 5L
+
+    /**
+     * Карта релиз Anixart -> shikimoriId (итог матчинга пула и резолюций каталога).
+     * Без персиста холодный старт до построения библиотеки матчил всё мимо
+     * (exact=0) и заново дёргал поиск по уже известным тайтлам.
+     */
+    fun getAnixartIdMap(): Map<Int, Int> {
+        val raw = prefs.getString(anixartIdMapKey, null) ?: return emptyMap()
+        val type = object : TypeToken<Map<Int, Int>>() {}.type
+        return runCatching { gson.fromJson<Map<Int, Int>>(raw, type).orEmpty() }
+            .getOrDefault(emptyMap())
+    }
+
+    fun setAnixartIdMap(value: Map<Int, Int>) {
+        val capped = if (value.size > 10_000) {
+            value.entries.take(10_000).associate { it.key to it.value }
+        } else value
+        prefs.putString(anixartIdMapKey, gson.toJson(capped)).apply()
+    }
+
+    /**
+     * ShikimoriId, честно не найденные в каталоге Anixart (exact-поиск отработал,
+     * совпадения нет). Без персиста каждый рестарт заново жег по 1-3 POST на тайтл.
+     * Ошибки сети сюда не попадают (их повторит следующий синк).
+     */
+    fun getAnixartUnresolvable(): Set<Int> {
+        val raw = prefs.getString(anixartUnresolvableKey, null) ?: return emptySet()
+        val type = object : TypeToken<Set<Int>>() {}.type
+        return runCatching { gson.fromJson<Set<Int>>(raw, type).orEmpty() }
+            .getOrDefault(emptySet())
+    }
+
+    fun setAnixartUnresolvable(value: Set<Int>) {
+        val capped = if (value.size > 10_000) value.take(10_000).toSet() else value
+        prefs.putString(anixartUnresolvableKey, gson.toJson(capped)).apply()
+    }
+
+    /**
+     * Релизы Anixart (их id), честно не найденные поиском Shikimori при пуле.
+     * Без персиста каждый рестарт заново жег поиск по тем же промахам — а их
+     * сотни, и каждый foreground-пул упирался бы в кап резолюций одними
+     * повторами вместо новых тайтлов.
+     */
+    fun getAnixartPullUnresolvable(): Set<Int> {
+        // Поколение матчера: правила резолва улучшились (сезонные алиасы, ядра,
+        // префиксы, омоглифы) — старые «честные промахи» перепроверяем один раз.
+        if (prefs.getLong(anixartMatcherGenKey, 0L) < ANIXART_MATCHER_GEN) {
+            prefs.putLong(anixartMatcherGenKey, ANIXART_MATCHER_GEN).apply()
+            prefs.remove(anixartPullUnresolvableKey).apply()
+            return emptySet()
+        }
+        val raw = prefs.getString(anixartPullUnresolvableKey, null) ?: return emptySet()
+        val type = object : TypeToken<Set<Int>>() {}.type
+        return runCatching { gson.fromJson<Set<Int>>(raw, type).orEmpty() }
+            .getOrDefault(emptySet())
+    }
+
+    fun setAnixartPullUnresolvable(value: Set<Int>) {
+        val capped = if (value.size > 10_000) value.take(10_000).toSet() else value
+        prefs.putString(anixartPullUnresolvableKey, gson.toJson(capped)).apply()
+    }
+
+    private val anixartContestedKey = "anixart_contested_json"
+
+    /**
+     * ShikimoriId, встреченные пулом в ≥2 списках с разными статусами (дубли:
+     * сезоны/спешлы отдельными релизами). Один статус на shiki их не представляет —
+     * пуш такие тайтлы не трогает никогда (иначе echo давил бы сервер, инцидент
+     * 09.09), adopt серверного — можно. Пересчитывается каждым пулом.
+     */
+    fun getAnixartContested(): Set<Int> {
+        val raw = prefs.getString(anixartContestedKey, null) ?: return emptySet()
+        val type = object : TypeToken<Set<Int>>() {}.type
+        return runCatching { gson.fromJson<Set<Int>>(raw, type).orEmpty() }
+            .getOrDefault(emptySet())
+    }
+
+    fun setAnixartContested(value: Set<Int>) {
+        val capped = if (value.size > 10_000) value.take(10_000).toSet() else value
+        prefs.putString(anixartContestedKey, gson.toJson(capped)).apply()
+    }
+
+    private val anixartRepairV1Key = "anixart_server_repair_v1_done"
+
+    fun isAnixartServerRepairV1Done(): Boolean =
+        prefs.getBoolean(anixartRepairV1Key, false)
+
+    fun setAnixartServerRepairV1Done() {
+        prefs.putBoolean(anixartRepairV1Key, true).apply()
+    }
+
+    private val importBackfillDoneKey = "import_source_backfill_v2_done"
+    // Нижняя граница restore-окна 09.09: вайп 00:12 по часам устройства (UTC+8,
+    // т.е. 16:12 UTC) — оболочки новее созданы импортом. v1 смотрела на 21:12 UTC
+    // (ошибка на 5 часов: MSK вместо часов устройства) и пометила 0.
+    private val RESTORE_WIPE_EPOCH_MS = 1788883920000L
+
+    /**
+     * Разовый бэкфилл провенанса после restore 09.09: оболочки без пользовательского
+     * содержимого (ни оценки, ни заметки, ни прогресса), созданные после вайпа, —
+     * импорт; помечаем "anixart". Иначе вход в Shikimori создал бы ~750 рейтов из
+     * импортных оболочек, а пуш Anixart — эхо. Эвристика самозаживающая: следующая
+     * явная правка метку снимает.
+     */
+    fun backfillImportSourceForRestore(): Int = synchronized(BLOB_LOCK) {
+        if (prefs.getBoolean(importBackfillDoneKey, false)) return@synchronized 0
+        prefs.putBoolean(importBackfillDoneKey, true).apply()
+        val current = readProfilesOrNull() ?: return@synchronized 0
+        var marked = 0
+        val updated = current.map { p ->
+            if (p.kinopoiskId >= ANIME_ID_OFFSET && p.importSource == null &&
+                p.userRating == null && p.note.isNullOrBlank() &&
+                (p.watchedSeasons ?: 0) <= 0 && (p.watchedEpisodes ?: 0) <= 0 &&
+                p.updatedAt >= RESTORE_WIPE_EPOCH_MS
+            ) {
+                marked++
+                p.copy(importSource = "anixart")
+            } else p
+        }
+        if (marked > 0) writeProfiles(updated)
+        KLog.i("AnixartSync", "import backfill: marked $marked profile(s) as anixart-imported")
+        marked
+    }
+
+    /**
+     * Чистка legacy: аниме-профили (id >= ANIME_ID_OFFSET), созданные до унификации
+     * типов, лежат с type=TV_SERIES. Идемпотентно; возвращает число исправленных.
+     */
+    fun migrateStaleAnimeTypes(): Int = synchronized(BLOB_LOCK) {
+        val profiles = readProfilesOrNull() ?: return 0
+        var fixed = 0
+        val updated = profiles.map {
+            if (it.kinopoiskId >= ANIME_ID_OFFSET && it.type != "ANIME") {
+                fixed++
+                it.copy(type = "ANIME")
+            } else it
+        }
+        if (fixed > 0) writeProfiles(capProfiles(updated))
+        fixed
     }
 
     /**
@@ -1022,8 +1645,17 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
     private fun editPlaybackUsage(edit: (PlaybackUsageStats) -> PlaybackUsageStats) = synchronized(BLOB_LOCK) {
         val updated = edit(dropExpiredDubs(getPlaybackUsage()))
+        prefs.putString(playbackUsageKey, gson.toJson(capPlaybackUsage(updated))).apply()
+    }
+
+    /** Запись статистики usage целиком (облачный импорт/слияние) с тем же капом роста. */
+    fun savePlaybackUsageStats(stats: PlaybackUsageStats) = synchronized(BLOB_LOCK) {
+        prefs.putString(playbackUsageKey, gson.toJson(capPlaybackUsage(dropExpiredDubs(stats)))).apply()
+    }
+
+    private fun capPlaybackUsage(updated: PlaybackUsageStats): PlaybackUsageStats {
         // Bound growth: numeric Kodik labels accumulate fast across titles — keep the freshest.
-        val capped = updated.copy(
+        return updated.copy(
             dubs = updated.dubs.entries
                 .sortedByDescending { it.value.lastUsedAt }
                 .take(MAX_DUB_USAGE_ENTRIES)
@@ -1033,7 +1665,6 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 .take(MAX_TITLE_DUB_USAGE_ENTRIES)
                 .associate { it.toPair() }
         )
-        prefs.putString(playbackUsageKey, gson.toJson(capped)).apply()
     }
 
     // ---- Resume-позиции (cross-session playback state, ключ — стабильный media-идентификатор) ----
@@ -1043,6 +1674,18 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         val type = object : TypeToken<Map<String, PlaybackPosition>>() {}.type
         return runCatching { gson.fromJson<Map<String, PlaybackPosition>>(raw, type) }
             .getOrNull().orEmpty()
+    }
+
+    /** Все resume-позиции (для облачного экспорта/слияния). */
+    fun getPlaybackPositions(): Map<String, PlaybackPosition> = readPlaybackPositions()
+
+    /** Запись позиций целиком (облачный импорт/слияние) с тем же капом роста. */
+    fun savePlaybackPositions(positions: Map<String, PlaybackPosition>) = synchronized(BLOB_LOCK) {
+        val capped = positions.entries
+            .sortedByDescending { it.value.updatedAt }
+            .take(MAX_PLAYBACK_POSITION_ENTRIES)
+            .associate { it.toPair() }
+        prefs.putString(playbackPositionsKey, gson.toJson(capped)).apply()
     }
 
     /** Сохранённая позиция [identifier]'а либо null (нет записи / досмотрено / позиция < 5 c). */
@@ -1113,7 +1756,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         val now = System.currentTimeMillis()
         val profile = readProfiles().firstOrNull { it.kinopoiskId == kinopoiskId } ?: return
         if (profile.status == null || profile.status == UserFilmStatus.PLANNED) {
-            upsertProfile(profile.copy(status = UserFilmStatus.WATCHING, updatedAt = now))
+            upsertProfile(profile.copy(status = UserFilmStatus.WATCHING, importSource = null, updatedAt = now))
         }
         upsert(
             HistoryRecord(
@@ -1147,6 +1790,11 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             current.add(0, SearchHistoryRecord(clean, contentType, System.currentTimeMillis()))
             prefs.putString(searchHistoryKey, gson.toJson(current.take(20))).apply()
         }
+    }
+
+    /** Запись истории поиска целиком (облачный импорт/слияние) с тем же капом 20. */
+    fun saveSearchHistory(history: List<SearchHistoryRecord>) = synchronized(BLOB_LOCK) {
+        prefs.putString(searchHistoryKey, gson.toJson(history.take(20))).apply()
     }
 
     fun removeSearchQuery(query: String, contentType: String) = synchronized(BLOB_LOCK) {
@@ -1260,7 +1908,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 }
 
 private fun FilmItem.isRussianContent(): Boolean {
-    return countries.any { country ->
+    return countries.orEmpty().any { country ->
         when (country.country?.trim()?.lowercase(Locale.forLanguageTag("ru"))) {
             "россия", "ссср" -> true
             else -> false
@@ -1269,7 +1917,7 @@ private fun FilmItem.isRussianContent(): Boolean {
 }
 
 private fun FilmDetails.isRussianContent(): Boolean {
-    return countries.any { country ->
+    return countries.orEmpty().any { country ->
         when (country.country?.trim()?.lowercase(Locale.forLanguageTag("ru"))) {
             "россия", "ссср" -> true
             else -> false

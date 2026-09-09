@@ -4,6 +4,7 @@ import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -26,14 +27,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import hd.kinoshka.app.R
 import hd.kinoshka.app.data.model.*
 import hd.kinoshka.app.data.download.DownloadBridges
 import hd.kinoshka.app.data.download.DownloadPhase
@@ -1107,12 +1112,85 @@ private fun SelectTranslationStep(
             ) { index ->
                 val (source, failure) = pendingSources[index]
                 SourceStatusRow(
-                    sourceName = source.displayName,
+                    source = source,
                     loading = failure == null,
                     message = failure,
                     onRetry = { onRetrySource(source) }
                 )
             }
+        }
+    }
+}
+
+/**
+ * Фирменная иконка источника: реальные логотипы (Kodik — стилизация, у балансера нет
+ * публичного лого) вместо generic play. Фон круга — фирменный цвет источника.
+ */
+@Composable
+private fun SourceIcon(source: AnimeSourceType, size: Dp = 36.dp) {
+    val bg = when (source) {
+        AnimeSourceType.KODIK -> Color(0xFF121826)
+        AnimeSourceType.SHIKIMORI -> Color(0xFFE8E3EF)
+        AnimeSourceType.ANILIBERTY -> Color(0xFF17171A)
+        AnimeSourceType.ANILIB -> Color(0xFF20232A)
+        AnimeSourceType.ANISTAR -> Color.White
+        else -> null
+    }
+    if (bg == null) {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.PlayArrow,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.fillMaxSize(0.55f)
+            )
+        }
+        return
+    }
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(bg),
+        contentAlignment = Alignment.Center
+    ) {
+        when (source) {
+            AnimeSourceType.KODIK -> Icon(
+                painter = painterResource(R.drawable.ic_src_kodik),
+                contentDescription = null,
+                tint = Color.Unspecified,
+                modifier = Modifier.fillMaxSize()
+            )
+            AnimeSourceType.SHIKIMORI -> Image(
+                painter = painterResource(R.drawable.ic_src_shikimori),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+            AnimeSourceType.ANILIBERTY -> Icon(
+                painter = painterResource(R.drawable.ic_src_aniliberty),
+                contentDescription = null,
+                tint = Color.Unspecified,
+                modifier = Modifier.fillMaxSize(0.83f)
+            )
+            AnimeSourceType.ANILIB -> Icon(
+                painter = painterResource(R.drawable.ic_src_animelib),
+                contentDescription = null,
+                tint = Color.Unspecified,
+                modifier = Modifier.fillMaxSize(0.83f)
+            )
+            else -> Image(
+                painter = painterResource(R.drawable.ic_src_anistar),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(0.83f)
+            )
         }
     }
 }
@@ -1196,20 +1274,7 @@ private fun SelectSourceStep(
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
+                        SourceIcon(source = tr.source)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -1308,7 +1373,7 @@ private fun SelectSourceStep(
 /** Compact per-source progress/failure row shown while the page fills in progressively. */
 @Composable
 private fun SourceStatusRow(
-    sourceName: String,
+    source: AnimeSourceType,
     loading: Boolean,
     message: String?,
     onRetry: () -> Unit
@@ -1326,20 +1391,11 @@ private fun SourceStatusRow(
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (loading) {
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-            } else {
-                Icon(
-                    imageVector = Icons.Default.Warning,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
+            SourceIcon(source = source, size = 32.dp)
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = sourceName,
+                    text = source.displayName,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -1349,7 +1405,9 @@ private fun SourceStatusRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (!loading) {
+            if (loading) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
                 TextButton(onClick = onRetry, contentPadding = PaddingValues(horizontal = 8.dp)) {
                     Text("Повторить", style = MaterialTheme.typography.labelLarge)
                 }

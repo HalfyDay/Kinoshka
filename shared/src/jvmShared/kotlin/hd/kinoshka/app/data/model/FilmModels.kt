@@ -2,6 +2,12 @@ package hd.kinoshka.app.data.model
 
 import com.google.gson.annotations.SerializedName
 
+/**
+ * Списки ниже — nullable осознанно: неофициальный API иногда присылает явный null,
+ * а Gson игнорирует Kotlin-дефолты и кладёт null в non-null поле → NPE на первой
+ * же итерации (краш cold start 2026-09-08 в loadFilmSections: for над null-списком).
+ * Use-site'ы читают их только через .orEmpty().
+ */
 data class FilmItem(
     @SerializedName("kinopoiskId") val kinopoiskId: Int,
     @SerializedName("nameRu") val nameRu: String?,
@@ -9,8 +15,8 @@ data class FilmItem(
     @SerializedName("posterUrlPreview") val posterUrlPreview: String?,
     @SerializedName("ratingKinopoisk") val ratingKinopoisk: Double?,
     @SerializedName("year") val year: Int?,
-    @SerializedName("countries") val countries: List<NameOnly> = emptyList(),
-    @SerializedName("genres") val genres: List<NameOnly> = emptyList()
+    @SerializedName("countries") val countries: List<NameOnly>? = null,
+    @SerializedName("genres") val genres: List<NameOnly>? = null
 )
 
 const val ANIME_GENRE_NAME = "аниме"
@@ -25,17 +31,17 @@ fun List<NameOnly>?.containsAnimeGenre(): Boolean {
 }
 
 data class FilmsResponse(
-    @SerializedName("items") val items: List<FilmItem>
+    @SerializedName("items") val items: List<FilmItem>? = null
 )
 
 data class FilmSeasonsResponse(
     @SerializedName("total") val total: Int = 0,
-    @SerializedName("items") val items: List<SeasonItem> = emptyList()
+    @SerializedName("items") val items: List<SeasonItem>? = null
 )
 
 data class SeasonItem(
     @SerializedName("number") val number: Int = 0,
-    @SerializedName("episodes") val episodes: List<EpisodeItem> = emptyList()
+    @SerializedName("episodes") val episodes: List<EpisodeItem>? = null
 )
 
 data class EpisodeItem(
@@ -49,7 +55,7 @@ data class EpisodeItem(
 
 data class FilmLinksResponse(
     @SerializedName("total") val total: Int = 0,
-    @SerializedName("items") val items: List<FilmLinkItem> = emptyList()
+    @SerializedName("items") val items: List<FilmLinkItem>? = null
 )
 
 data class FilmLinkItem(
@@ -71,7 +77,7 @@ data class FilmLinkItem(
 data class FilmImagesResponse(
     @SerializedName("total") val total: Int = 0,
     @SerializedName("totalPages") val totalPages: Int = 0,
-    @SerializedName("items") val items: List<FilmImageItem> = emptyList()
+    @SerializedName("items") val items: List<FilmImageItem>? = null
 )
 
 data class FilmImageItem(
@@ -121,8 +127,8 @@ data class FilmDetails(
     @SerializedName("serial") val serial: Boolean? = null,
     @SerializedName("shortFilm") val shortFilm: Boolean? = null,
     @SerializedName("completed") val completed: Boolean? = null,
-    @SerializedName("genres") val genres: List<NameOnly> = emptyList(),
-    @SerializedName("countries") val countries: List<NameOnly> = emptyList()
+    @SerializedName("genres") val genres: List<NameOnly>? = null,
+    @SerializedName("countries") val countries: List<NameOnly>? = null
 )
 
 data class NameOnly(
@@ -137,13 +143,13 @@ data class FilterItem(
 )
 
 data class FiltersResponse(
-    @SerializedName("genres") val genres: List<FilterItem> = emptyList(),
-    @SerializedName("countries") val countries: List<FilterItem> = emptyList()
+    @SerializedName("genres") val genres: List<FilterItem>? = null,
+    @SerializedName("countries") val countries: List<FilterItem>? = null
 )
 
 data class FilmVideosResponse(
     @SerializedName("total") val total: Int = 0,
-    @SerializedName("items") val items: List<FilmVideoItem> = emptyList()
+    @SerializedName("items") val items: List<FilmVideoItem>? = null
 )
 
 data class FilmVideoItem(

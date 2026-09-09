@@ -172,6 +172,22 @@ class AnimeRepository(
         return loaded
     }
 
+    /**
+     * Батч кратких объектов (до 50 id одним запросом) для фоновых проходов.
+     * Пустой ответ / несовпадение — не ошибка парсинга, а сигнал вызывающей стороне
+     * добить поштучно: сервер может порезать ids или ответить обобщённым списком.
+     */
+    suspend fun animesByIds(
+        ids: List<Int>,
+        genre: Int? = null
+    ): List<hd.kinoshka.app.data.model.ShikimoriAnimeItem> {
+        val chunk = ids.distinct().take(50)
+        if (chunk.isEmpty()) return emptyList()
+        return runCatching {
+            api.getByIds(ids = chunk.joinToString(","), limit = chunk.size, censored = false, genre = genre)
+        }.getOrDefault(emptyList())
+    }
+
     suspend fun screenshots(shikimoriId: Int): List<ShikimoriScreenshot> {
         screenshotsCache.get(shikimoriId)?.let { return it }
         val loaded = api.screenshots(shikimoriId)
@@ -249,18 +265,37 @@ class AnimeRepository(
      */
     suspend fun getUserRates(userId: Int): Result<List<hd.kinoshka.app.data.model.ShikimoriUserRate>> {
         val r1 = runCatching { api.getUserAnimeRates(userId) }
-        r1.getOrNull()?.let { if (it.isNotEmpty()) return Result.success(it) }
         val r2 = runCatching { api.getUserRates(userId) }
         // Об ошибке сообщаем только если упали ОБА эндпоинта; реально пустая библиотека — это успех.
-        return if (r2.isFailure && r1.isFailure) r2 else Result.success(r2.getOrDefault(emptyList()))
+        if (r1.isFailure && r2.isFailure) return r2
+        val l1 = r1.getOrNull().orEmpty()
+        val l2 = r2.getOrNull().orEmpty()
+        // Объединение обоих списков: один из эндпоинтов может отставать (серверный кэш
+        // после свежей правки на сайте — инцидент 2026-09-07: bulk не содержал свежий рейт,
+        // пуш решил «рейта нет» и POST-ом затирали сайт). По каждому target_id побеждает
+        // более свежий updated_at.
+        val merged = (l1 + l2).groupBy { it.targetId }
+            .values.mapNotNull { dup -> dup.maxByOrNull { it.getUpdatedEpochMillis() } }
+        KLog.i("ShikimoriSync", "rates: v1=${l1.size} v2=${l2.size} union=${merged.size}")
+        return Result.success(merged)
+    }
+
+    /**
+     * Точечный запрос без фолбэка — для пакетной сверки, где общий union-фолбэк
+     * делается один раз на всех кандидатов (см. pushDirtyAnimeRates).
+     */
+    suspend fun getUserRatePoint(userId: Int, targetId: Int): hd.kinoshka.app.data.model.ShikimoriUserRate? {
+        return runCatching { api.getUserRates(userId, targetId = targetId) }.getOrNull()
+            ?.firstOrNull { it.targetId == targetId }
     }
 
     suspend fun getUserRateForTarget(userId: Int, targetId: Int): Result<hd.kinoshka.app.data.model.ShikimoriUserRate?> {
         // Точечный запрос надёжнее полного списка: кэш/пагинация полного списка могли
         // не содержать рейт, и удаление молча считалось успехом (id=null), не доходя до сервера.
-        runCatching { api.getUserRates(userId, targetId = targetId) }.getOrNull()
-            ?.firstOrNull { it.targetId == targetId }
-            ?.let { return Result.success(it) }
+        // Union-фолбэк — только при промахе point: consult полного union на КАЖДЫЙ хит стоил
+        // 2 тяжёлых запроса на открытие карточки. Свежесть хита вызывающая сторона сверяет
+        // с in-memory кэшем (см. FilmsViewModel.freshestRateForTarget) — без лишней сети.
+        getUserRatePoint(userId, targetId)?.let { return Result.success(it) }
         return getUserRates(userId).map { list -> list.firstOrNull { it.targetId == targetId } }
     }
 

@@ -2,6 +2,7 @@ package hd.kinoshka.app.ui.screens
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import hd.kinoshka.app.data.local.AnixartAuthStore
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.repo.AnimeRepository
@@ -14,10 +15,21 @@ class FilmsViewModelFactory(
     private val repository: FilmsRepository,
     private val animeRepository: AnimeRepository,
     private val userStateStore: UserStateStore,
-    private val shikimoriAuthStore: ShikimoriAuthStore? = null
+    private val shikimoriAuthStore: ShikimoriAuthStore? = null,
+    private val anixartRepository: hd.kinoshka.app.data.repo.AnixartRepository? = null,
+    private val anixartAuthStore: AnixartAuthStore? = null,
+    private val onLibraryMutated: () -> Unit = {}
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return FilmsViewModel(repository, animeRepository, userStateStore, shikimoriAuthStore) as T
+        return FilmsViewModel(
+            repository,
+            animeRepository,
+            userStateStore,
+            shikimoriAuthStore,
+            anixartRepository,
+            anixartAuthStore,
+            onLibraryMutated
+        ) as T
     }
 }

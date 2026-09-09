@@ -515,14 +515,15 @@ fun RenderPlayerButton(
         icon =
           when (aspect) {
             VideoAspect.Fit -> Icons.Default.AspectRatio
-            VideoAspect.Stretch -> Icons.Default.ZoomOutMap
             VideoAspect.Crop -> Icons.Default.FitScreen
+            // Stretch убран из кнопки: старый сохранённый пресет показываем как «Вписать»
+            VideoAspect.Stretch -> Icons.Default.AspectRatio
           },
         onClick = {
           when (aspect) {
-            VideoAspect.Fit -> viewModel.changeVideoAspect(VideoAspect.Stretch)
-            VideoAspect.Stretch -> viewModel.changeVideoAspect(VideoAspect.Crop)
+            VideoAspect.Fit -> viewModel.changeVideoAspect(VideoAspect.Crop)
             VideoAspect.Crop -> viewModel.changeVideoAspect(VideoAspect.Fit)
+            VideoAspect.Stretch -> viewModel.changeVideoAspect(VideoAspect.Fit)
           }
         },
         onLongClick = { onOpenSheet(Sheets.AspectRatios) },

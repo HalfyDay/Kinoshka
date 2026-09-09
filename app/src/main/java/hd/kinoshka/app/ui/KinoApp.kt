@@ -378,7 +378,16 @@ fun KinoApp() {
                     hd.kinoshka.app.BuildConfig.SHIKIMORI_CLIENT_SECRET,
                 ),
                 UserStateStore(appContext),
-                ShikimoriAuthStore(appContext)
+                ShikimoriAuthStore(appContext),
+                hd.kinoshka.app.data.repo.AnixartRepository(
+                    hd.kinoshka.app.data.api.ApiClient.anixartApi(appContext.cacheDir)
+                ),
+                hd.kinoshka.app.data.local.AnixartAuthStore(appContext),
+                // Мутации библиотеки из ViewModel (редактор, синки) — в облачную
+                // выгрузку: раньше триггер был только в плеере и правки не уезжали.
+                onLibraryMutated = {
+                    hd.kinoshka.app.data.cloud.CloudBackupManager.onLibraryChanged(appContext)
+                }
             )
         )
 
@@ -401,11 +410,19 @@ fun KinoApp() {
         // The native player (its own Activity) writes watch progress straight into
         // SharedPreferences. Re-read it whenever the app comes back to the foreground so the
         // library folders, progress bars and details header never lag behind what was watched.
+        // Тут же дотягиваем облака: Shikimori пул+пуш (прогресс с других устройств),
+        // Яндекс Диск/WebDAV — скачать и объединить (см. syncFromCloudIfNeeded).
         val activityLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
         androidx.compose.runtime.DisposableEffect(activityLifecycleOwner, vm) {
             val resumeObserver = LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     vm.refreshAfterPlayerClosed()
+                    vm.syncShikimoriOnForeground()
+                    vm.syncAnixartOnForeground()
+                    hd.kinoshka.app.data.cloud.CloudBackupManager.syncFromCloudIfNeeded(
+                        appContext,
+                        onMerged = vm::refreshAfterRestore
+                    )
                     resumePendingInstallIfReady()
                 }
             }
@@ -470,7 +487,29 @@ fun KinoApp() {
                                 onDiscoverCategorySelected = vm::onDiscoverCategorySelected,
                                 onLoadMore = vm::loadMore,
                                 onRemoveFromHistory = vm::removeFromHistory,
+                                onRefreshLibrary = vm::refreshLibrary,
+                                onLibraryRefreshHaptic = { intensity ->
+                                    // Амплитудная вибрация за жестом (minSdk 26 —
+                                    // VibrationEffect доступен везде): тики 30→235,
+                                    // срыв обновления — 255. Уважаем системный
+                                    // тумблер тактильного отклика.
+                                    val vibrator = appContext.getSystemService(
+                                        android.os.Vibrator::class.java
+                                    )
+                                    val hapticsOn = android.provider.Settings.System.getInt(
+                                        appContext.contentResolver,
+                                        android.provider.Settings.System.HAPTIC_FEEDBACK_ENABLED,
+                                        1
+                                    ) == 1
+                                    if (vibrator != null && vibrator.hasVibrator() && hapticsOn) {
+                                        val amplitude = (30 + 225 * intensity.coerceIn(0f, 1f)).toInt()
+                                        vibrator.vibrate(
+                                            android.os.VibrationEffect.createOneShot(20, amplitude)
+                                        )
+                                    }
+                                },
                                 onOpenProfile = { navController.navigate("profile") },
+                                onConsumeLibraryDeepLink = vm::consumeLibraryDeepLink,
                                 onOpenSettings = { navController.navigate("settings") },
                                 onOpenAbout = { navController.navigate("about") },
                                 onOpenDownloads = { navController.navigate("downloads") },
@@ -515,7 +554,7 @@ fun KinoApp() {
                                                 when (tab) {
                                                     HomeTab.HISTORY -> MainSection.LIBRARY
                                                     HomeTab.CATALOG -> MainSection.DISCOVER
-                                                    HomeTab.MORE -> MainSection.MORE
+                                                    HomeTab.MORE -> MainSection.PROFILE
                                                 }
                                             )
                                         },
@@ -575,14 +614,34 @@ fun KinoApp() {
                                         modifier = Modifier.size(28.dp)
                                     )
                                 },
-                                moreGlyph = { sel ->
-                                    Icon(
-                                        painter = painterResource(
-                                            if (sel) hd.kinoshka.app.R.drawable.ic_nav_more_filled
-                                            else hd.kinoshka.app.R.drawable.ic_nav_more_outlined
-                                        ),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(28.dp)
+                                // Секция «Профиль» вместо старого «Ещё»: тот же экран,
+                                // но без кнопки Назад и с отступом под плавающую пилюлю
+                                // (112.dp = FloatingBottomContentPadding в общем HomeScreen).
+                                profileContent = {
+                                    ProfileScreen(
+                                        avatar = vm.uiState.profileAvatar,
+                                        library = vm.uiState.library,
+                                        onBack = {},
+                                        showBack = false,
+                                        sectionBottomPadding = 112.dp,
+                                        onAvatarSelected = vm::setProfileAvatar,
+                                        onExportLibrary = vm::exportLibraryJson,
+                                        onImportLibrary = vm::importLibraryJson,
+                                        shikimoriAuthState = vm.uiState.shikimoriAuthState,
+                                        onSaveShikimoriToken = vm::saveShikimoriToken,
+                                        onSaveShikimoriSession = vm::saveShikimoriSession,
+                                        onLogoutShikimori = vm::logoutShikimori,
+                                        onOpenLibraryStatus = { status, isAnime ->
+                                            vm.requestLibraryDeepLink(status, isAnime)
+                                        },
+                                        anixartAuthState = vm.uiState.anixartAuthState,
+                                        onLoginAnixart = { login, password, onResult ->
+                                            vm.loginAnixart(login, password, onResult)
+                                        },
+                                        onLogoutAnixart = vm::logoutAnixart,
+                                        onOpenSettings = { navController.navigate("settings") },
+                                        onOpenDownloads = { navController.navigate("downloads") },
+                                        isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED
                                     )
                                 },
                                 onLibrarySortSelected = vm::setLibrarySortType,
@@ -938,6 +997,17 @@ fun KinoApp() {
                                     onSaveShikimoriToken = vm::saveShikimoriToken,
                                     onSaveShikimoriSession = vm::saveShikimoriSession,
                                     onLogoutShikimori = vm::logoutShikimori,
+                                    onOpenLibraryStatus = { status, isAnime ->
+                                        vm.requestLibraryDeepLink(status, isAnime)
+                                        navController.popBackStack()
+                                    },
+                                    anixartAuthState = vm.uiState.anixartAuthState,
+                                    onLoginAnixart = { login, password, onResult ->
+                                        vm.loginAnixart(login, password, onResult)
+                                    },
+                                    onLogoutAnixart = vm::logoutAnixart,
+                                    onOpenSettings = { navController.navigate("settings") },
+                                    onOpenDownloads = { navController.navigate("downloads") },
                                     isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED
                                 )
                             }
@@ -984,7 +1054,8 @@ fun KinoApp() {
                                             .getSharedPreferences("kinoshka_app_settings", Context.MODE_PRIVATE)
                                             .edit().putString("stream_proxy_url", trimmed).apply()
                                     },
-                                    onOpenPlayerSettings = { navController.navigate("player_settings") }
+                                    onOpenPlayerSettings = { navController.navigate("player_settings") },
+                                    onOpenAbout = { navController.navigate("about") }
                                 )
                             }
                         }

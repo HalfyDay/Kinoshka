@@ -105,7 +105,13 @@ data class ShikimoriAnimeItem(
     @SerializedName("episodes") val episodes: Int? = 0,
     @SerializedName("episodes_aired") val episodesAired: Int? = 0,
     @SerializedName("aired_on") val airedOn: String? = null,
-    @SerializedName("released_on") val releasedOn: String? = null
+    @SerializedName("released_on") val releasedOn: String? = null,
+    /**
+     * Жанры есть и в краткой выдаче /api/animes (нужны 18+-вердиктам без полных details).
+     * Nullable осознанно: сервер иногда присылает явный null, а Gson игнорирует
+     * Kotlin-дефолты и кладёт null в non-null поле → NPE на .any (краш 2026-09-07).
+     */
+    @SerializedName("genres") val genres: List<ShikimoriGenre>? = null
 ) {
     val displayTitle: String get() = russian?.takeIf { it.isNotBlank() } ?: name ?: "Аниме"
     /** Poster URL — uses Shikimori URL, or falls back to smarthard.net HD poster if missing */
@@ -169,7 +175,9 @@ data class ShikimoriAnimeDetails(
     @SerializedName("description_html") val descriptionHtml: String? = null,
     @SerializedName("franchise") val franchise: String? = null,
     @SerializedName("studios") val studios: List<ShikimoriStudio> = emptyList(),
-    @SerializedName("genres") val genres: List<ShikimoriGenre> = emptyList(),
+    // Nullable: сервер иногда присылает явный null, Gson игнорирует Kotlin-дефолты
+    // (тот же краш, что у краткого объекта 2026-09-07). Читать только через .orEmpty().
+    @SerializedName("genres") val genres: List<ShikimoriGenre>? = null,
     @SerializedName("japanese") val japanese: List<String>? = emptyList(),
     @SerializedName("english") val english: List<String>? = emptyList(),
     @SerializedName("synonyms") val synonyms: List<String>? = emptyList(),
@@ -192,7 +200,7 @@ data class ShikimoriAnimeDetails(
             ?.replace(Regex("\\[/?(b|i|u|s|url)]"), "")
             ?.trim()
 
-        val genresList = genres.map { NameOnly(genre = it.russian ?: it.name) }
+        val genresList = genres.orEmpty().map { NameOnly(genre = it.russian ?: it.name) }
         val studioNames = studios.mapNotNull { it.name }.joinToString(", ")
         val kindStr = when (kind?.lowercase()) {
             "tv" -> "ТВ"
@@ -368,6 +376,19 @@ data class ShikimoriUserRate(
             java.time.OffsetDateTime.parse(dateStr).toInstant().toEpochMilli()
         }.getOrDefault(0L)
     }
+}
+
+/**
+ * Человекочитаемая метка времени для диагностики синка Shikimori: дата в системной
+ * зоне телефона + сырые мс. Пишется в KLog рядом с сырым `updated_at` сервера, чтобы
+ * было видно, какое время говорит приложение (updatedAt профиля), а какое — сайт.
+ */
+fun formatSyncTimeMs(ms: Long): String {
+    if (ms <= 0) return "n/a"
+    return runCatching {
+        java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+    }.getOrDefault(ms.toString())
 }
 
 data class ShikimoriCalendarItem(

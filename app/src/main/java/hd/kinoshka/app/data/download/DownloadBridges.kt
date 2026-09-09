@@ -36,7 +36,7 @@ object DownloadBridges {
     private fun fromStream(stream: AnimeMediaStream) = mediaSource(stream)
 
     // ------------------------------------------------------------------
-    // Аниме (Kodik / AniLiberty / AniLib / AniStar)
+    // Аниме (Kodik / AniLiberty / AnimeLib / AniStar)
     // ------------------------------------------------------------------
 
     fun animeRequests(

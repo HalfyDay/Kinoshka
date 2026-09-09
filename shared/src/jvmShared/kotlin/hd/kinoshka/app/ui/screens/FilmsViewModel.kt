@@ -7,10 +7,13 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.sync.withLock
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
 import hd.kinoshka.app.data.local.HistoryRecord
 import hd.kinoshka.app.data.local.UserFilmProfile
+import hd.kinoshka.app.data.repo.anixartListToStatus
+import hd.kinoshka.app.data.repo.toAnixartList
 import hd.kinoshka.app.data.local.isCurated
 import hd.kinoshka.app.data.local.UserFilmStatus
 import hd.kinoshka.app.data.local.ShikimoriAuthProvider
@@ -22,6 +25,7 @@ import hd.kinoshka.app.data.model.FilmLinkItem
 import hd.kinoshka.app.data.model.FilmTrailer
 import hd.kinoshka.app.data.model.FilterItem
 import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+import hd.kinoshka.app.data.model.formatSyncTimeMs
 import hd.kinoshka.app.data.model.containsAnimeGenre
 import hd.kinoshka.app.data.model.SeasonItem
 import hd.kinoshka.app.data.repo.AnimeRepository
@@ -29,6 +33,7 @@ import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.utils.SearchQueryUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -139,6 +144,37 @@ val shikimoriGenres = listOf(
     FilterItem(id = 64, genre = "Хентай")
 )
 
+/**
+ * Разовый запрос «открыть Библиотеку на статусе»: тап по легенде статистики
+ * в Профиле. Потребляется экраном один раз (см. consumeLibraryDeepLink).
+ */
+data class LibraryDeepLink(
+    val status: UserFilmStatus,
+    val animeOnly: Boolean
+)
+
+/** Локальный статус -> строка статуса Shikimori API. */
+private fun UserFilmStatus.toShikiStatus(): String = when (this) {
+    UserFilmStatus.WATCHING -> "watching"
+    UserFilmStatus.PLANNED -> "planned"
+    UserFilmStatus.COMPLETED -> "completed"
+    UserFilmStatus.REWATCHING -> "rewatching"
+    UserFilmStatus.ON_HOLD -> "on_hold"
+    UserFilmStatus.DROPPED -> "dropped"
+}
+
+/** Строка статуса рейта Shikimori -> локальный статус (зеркало Anixart для
+ *  rate-backed тайтлов; неизвестное — null, не рискуем). */
+private fun shikiRateStatusToUserStatus(status: String): UserFilmStatus? = when (status.lowercase()) {
+    "watching" -> UserFilmStatus.WATCHING
+    "planned" -> UserFilmStatus.PLANNED
+    "completed" -> UserFilmStatus.COMPLETED
+    "rewatching" -> UserFilmStatus.REWATCHING
+    "on_hold" -> UserFilmStatus.ON_HOLD
+    "dropped" -> UserFilmStatus.DROPPED
+    else -> null
+}
+
 data class HomeUiState(
     val loading: Boolean = false,
     val error: String? = null,
@@ -167,6 +203,7 @@ data class HomeUiState(
     val showFilterSheet: Boolean = false,
     val contentType: ContentType = ContentType.FILMS,
     val shikimoriAuthState: hd.kinoshka.app.data.local.ShikimoriAuthState = hd.kinoshka.app.data.local.ShikimoriAuthState(),
+    val anixartAuthState: hd.kinoshka.app.data.local.AnixartAuthState = hd.kinoshka.app.data.local.AnixartAuthState(),
     val calendarItems: List<hd.kinoshka.app.data.model.ShikimoriCalendarItem> = emptyList(),
     val topics: List<hd.kinoshka.app.data.model.ShikimoriTopic> = emptyList(),
     val calendarLoading: Boolean = false,
@@ -183,7 +220,11 @@ data class HomeUiState(
     val overviewLoading: Boolean = false,
     val overviewError: String? = null,
     /** Заголовок открытого раздела Обзора (кнопка «Все»): виден в сетке раздела. Null — главная лента. */
-    val discoverTitle: String? = null
+    val discoverTitle: String? = null,
+    /** Разовый deep-link в Библиотеку из Профиля (тап по легенде). Null — нет запроса. */
+    val libraryDeepLink: LibraryDeepLink? = null,
+    /** Pull-to-refresh Библиотеки в процессе (индикатор PullToRefreshBox). */
+    val libraryRefreshing: Boolean = false
 )
 
 data class DetailsUiState(
@@ -210,7 +251,17 @@ class FilmsViewModel(
     private val repository: FilmsRepository,
     private val animeRepository: AnimeRepository,
     private val userStateStore: UserStateStoreBase,
-    private val shikimoriAuthStore: ShikimoriAuthProvider? = null
+    private val shikimoriAuthStore: ShikimoriAuthProvider? = null,
+    private val anixartRepository: hd.kinoshka.app.data.repo.AnixartRepository? = null,
+    private val anixartAuthStore: hd.kinoshka.app.data.local.AnixartAuthProvider? = null,
+    /**
+     * Хук облачной выгрузки (Яндекс Диск/WebDAV): платформа инжектит сюда свой
+     * auto-upload. Дёргается из единой воронки пересборки библиотеки — через неё
+     * проходят все мутации (редактор прогресса, adopts синков, пулы, удаления),
+     * которые раньше до облака не доезжали вовсе (триггер был только в плеере).
+     * Сам колбэк дебаунсится получателем; desktop — no-op по умолчанию.
+     */
+    private val onLibraryMutated: () -> Unit = {}
 ) : ViewModel() {
 
     // Пересборка библиотеки уходит на Dispatchers.Default (см. refreshAfterPlayerClosed),
@@ -243,14 +294,165 @@ class FilmsViewModel(
     // search) can't let an older, slower request clobber the newer results.
     private var searchJob: kotlinx.coroutines.Job? = null
 
+    // Сериализация Shikimori-синка: фоновый рефреш (пул→пуш), точечные пуши из
+    // saveUserProfile и пакетный пуш делят in-memory кэш рейтов. Без мьютекса точечный
+    // пуш мог читать кэш посреди чужого фетча и перезаписывать сайт протухшими данными.
+    // Всегда вызывать с захваченным мьютексом: refreshShikimoriRatesLocked,
+    // pushDirtyAnimeRates, pushSingleAnimeRate.
+    private val shikimoriSyncMutex = kotlinx.coroutines.sync.Mutex()
+
+    // Общий темп фоновых префетчей деталей (добивка anime к рейтам + 18+-вердикты):
+    // лимит Shikimori — 5rps, а два префетчера с семафорами 5 и 4 лупили до 9 запросов
+    // параллельно и топили лог в 429 с ретраями. Пейсер держит ≤4rps на оба префетчера
+    // разом; открытие карточки идёт мимо него (там важна скорость, дальше — кэш).
+    private val detailsPrefetchMutex = kotlinx.coroutines.sync.Mutex()
+    private var lastPrefetchNs = 0L
+    private var prefetchBackoffUntilNs = 0L
+    private var consecutivePrefetch429 = 0
+    private var prefetchHalted = false
+
+    /** In-flight дедуп деталей: параллельные запросы одного id ждут один общий. */
+    private val detailsInFlight =
+        java.util.concurrent.ConcurrentHashMap<Int, kotlinx.coroutines.Deferred<hd.kinoshka.app.data.model.ShikimoriAnimeDetails?>>()
+
+    private suspend fun prefetchDetails(
+        shikimoriId: Int
+    ): hd.kinoshka.app.data.model.ShikimoriAnimeDetails? {
+        // Кулдаун после 429-шторма (переживает рестарт): префетч молчит до метки.
+        // Кулдаун истёк, а флаг жив (долгая сессия) — пробуем снова.
+        if (System.currentTimeMillis() < userStateStore.getPrefetchCooloffUntilMs()) return null
+        if (prefetchHalted) {
+            prefetchHalted = false
+            consecutivePrefetch429 = 0
+        }
+        val deferred = synchronized(detailsInFlight) {
+            detailsInFlight.getOrPut(shikimoriId) {
+                viewModelScope.async(kotlinx.coroutines.Dispatchers.IO) {
+                    detailsPrefetchMutex.withLock {
+                        val now = System.nanoTime()
+                        var waitMs = 250L - (now - lastPrefetchNs) / 1_000_000L
+                        val backoffMs = (prefetchBackoffUntilNs - now) / 1_000_000L
+                        if (backoffMs > waitMs) waitMs = backoffMs
+                        if (waitMs > 0) kotlinx.coroutines.delay(waitMs)
+                        lastPrefetchNs = System.nanoTime()
+                    }
+                    val result = runCatching { animeRepository.details(shikimoriId) }
+                    val is429 = (result.exceptionOrNull() as? retrofit2.HttpException)?.code() == 429
+                    detailsPrefetchMutex.withLock {
+                        if (is429) {
+                            consecutivePrefetch429++
+                            // Экспоненциальный откат общей паузой + стоп после серии: 429-шторм
+                            // самоподдерживается (ретраи → новые 429 → кэш не пополняется → повтор).
+                            val shift = minOf(consecutivePrefetch429, 4)
+                            prefetchBackoffUntilNs = System.nanoTime() + (5L shl shift) * 1_000_000_000L
+                            if (consecutivePrefetch429 >= 3 && !prefetchHalted) {
+                                prefetchHalted = true
+                                KLog.w(
+                                    "ShikimoriSync",
+                                    "prefetch: halting for 1h after $consecutivePrefetch429 consecutive 429s"
+                                )
+                                userStateStore.setPrefetchCooloffUntilMs(
+                                    System.currentTimeMillis() + PREFETCH_COOLOFF_MS
+                                )
+                            }
+                        } else if (result.isSuccess) {
+                            consecutivePrefetch429 = 0
+                        }
+                    }
+                    result.getOrNull()
+                }
+            }
+        }
+        return try {
+            deferred.await()
+        } finally {
+            detailsInFlight.remove(shikimoriId, deferred)
+        }
+    }
+
     /** In-flight job ленты «Обзора»: один за раз, повторные вызовы — no-op пока активен. */
     private var overviewJob: kotlinx.coroutines.Job? = null
+
+    // Состояние Anixart-синка — ДО init: init уже запускает refreshAnixartAuth(), а поля,
+    // объявленные ниже init, в этот момент ещё null (краш Mutex.lock на null, 2026-09-07).
+    // Правило: всё, до чего дотягивается init (прямо или через refresh), живёт выше него.
+    /** Карта релиз Anixart -> shikimoriId из последнего пула (для пуша). */
+    @Volatile
+    private var anixartIdToShiki: Map<Int, Int> = emptyMap()
+
+    /** Релиз Anixart -> списки, где он лежит (из последнего пула). */
+    @Volatile
+    private var anixartReleaseLists: Map<Int, Set<Int>> = emptyMap()
+
+    @Volatile
+    private var pushingAnixart = false
+
+    @Volatile
+    private var lastAnixartSyncMs = 0L
+
+    /**
+     * Shikimori-id без точного матча в каталоге Anixart (честный «нет в каталоге»).
+     * Сессионное: не дёргаем поиск каждый синк. Ошибки сети сюда не пишем — их
+     * повторит следующий синк. Трогать только под anixartSyncMutex.
+     */
+    private val anixartUnresolvable = mutableSetOf<Int>()
+
+    /**
+     * Релизы Anixart без точного матча в поиске Shikimori (честный «не нашли»).
+     * Сессионное; ошибки сети не пишем. Трогать только под anixartSyncMutex.
+     */
+    private val anixartPullUnresolvable = mutableSetOf<Int>()
+
+    /**
+     * ShikimoriId, встреченные пулом в ≥2 списках с разными статусами (контест).
+     * Пересчитывается каждым пулом, персистится во flush. Трогать под anixartSyncMutex.
+     */
+    private val anixartContestedShiki = mutableSetOf<Int>()
+
+    /**
+     * Сериализация Anixart-синка (паритет с shikimoriSyncMutex): пул, пуши и точечные
+     * сверки делят in-memory карты. Всегда вызывать перечисленное под этим мьютексом.
+     */
+    private val anixartSyncMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** In-flight job вердиктов (до init — его трогает добрасывающий проход из refresh). */
+    private var adultVerdictJob: kotlinx.coroutines.Job? = null
+    private var animeMetaJob: kotlinx.coroutines.Job? = null
 
     // Throttle for refreshAfterPlayerClosed(): ON_RESUME fires several times while navigating,
     // and rebuilding the library re-serializes the whole profile blob.
     private var lastResumeRefreshMs = 0L
     private companion object {
         const val RESUME_REFRESH_THROTTLE_MS = 1_000L
+
+        /** Пауза между фоновыми синками Shikimori при возврате в приложение. */
+        const val FOREGROUND_SYNC_THROTTLE_MS = 15 * 60_000L
+
+        /** Молчание префетча деталей после серии 429 (сохраняется на диск, переживает рестарт). */
+        const val PREFETCH_COOLOFF_MS = 60 * 60_000L
+
+        /** Пауза между точечными сверками одного тайтла при открытии карточки. */
+        const val DETAILS_RATE_CHECK_THROTTLE_MS = 60_000L
+
+        /** Потолок пуша рейтов Shikimori: окно 25 голодало хвост (импортированные
+         *  Anixart-оболочки append'ятся в конец и не доходили до сверки никогда).
+         *  Дорога только сеть на различающихся (verify-GET/create), совпавшие —
+         *  локальное сравнение. */
+        const val MAX_SHIKI_PUSH_PER_SYNC = 200
+
+        /** Потолок резолюций каталога Anixart за один синк (поиск несматченных
+         *  тайтлов — до 3 POST на тайтл; дальше оставим следующим синкам).
+         *  Поднят под первичную сходимость библиотек (~800 rate-backed тайтлов);
+         *  честные промахи мемоизируются (персист) и повторно не ищутся. */
+        const val MAX_ANIXART_RESOLVE_PER_SYNC = 100
+
+        /** Потолок обратной резолюции за один пул (поиск Shikimori для релизов,
+         *  не сматчившихся с библиотекой, — 1 запрос на тайтл с паузой 300мс). */
+        const val MAX_ANIXART_PULL_RESOLVE_PER_SYNC = 40
+
+        /** Бюджет сетевых правок списков Anixart за один синк (перенос/добавление).
+         *  Проверка «уже на месте» сети не требует и в бюджет не входит. */
+        const val MAX_ANIXART_PUSH_OPS_PER_SYNC = 200
 
         /** Пауза между стартом кино- и аниме-веток Обзора — не упираемся в RPS обоих API. */
         const val OVERVIEW_STAGGER_MS = 400L
@@ -260,9 +462,10 @@ class FilmsViewModel(
          *  пермит и сериализует всю ветку (хвост 2.8–3.5с держал 1 из 3 пермитов). */
         const val OVERVIEW_REQUEST_GAP_MS = 250L
 
-        /** Добрасывающий проход 18+-вердиктов (до ~120 details) стартует с задержкой после
-         *  init, чтобы не отъедать 5 rps Shikimori у секций первого экрана Обзора. */
-        const val ADULT_VERDICT_DEFER_MS = 8_000L
+        /** Добрасывающий проход 18+-вердиктов стартует с задержкой после init, чтобы
+         *  не отъедать 5 rps Shikimori у секций первого экрана Обзора. Батч дешёвый
+         *  (1 запрос на 50 тайтлов), поэтому пауза символическая. */
+        const val ADULT_VERDICT_DEFER_MS = 3_000L
 
         /** «Новинки» кино: фильмы/сериалы начиная с этого года. */
         const val FRESH_YEAR_FROM = 2024
@@ -273,6 +476,11 @@ class FilmsViewModel(
         /** Превью-клип hanime1 на 18+-страницах выключен (протухающий токен, чужие тайтлы);
          *  переключение обратно включает фетч + карточку без прочих правок. */
         const val HENTAI_PREVIEW_ENABLED = false
+
+        /** Жанры Shikimori, считающиеся 18+ для тумблера «Показывать хентай»
+         *  (проверено по /api/genres: 12 Hentai, 539 Erotica, 9 Ecchi — паритет
+         *  с подстроками isAdultBrief/isAdultAnime). */
+        val ADULT_GENRE_IDS = listOf(12, 539, 9)
     }
 
     var uiState by mutableStateOf(buildInitialState())
@@ -284,11 +492,35 @@ class FilmsViewModel(
     init {
         loadDiscoverFirstPage(uiState.discoverCategory)
         loadFilters()
-        refreshShikimoriAuth()
+        // Холодный старт = вход: пул + пуш локального (офлайн-правки улетают сразу,
+        // с verify-gate это безопасно). Иначе правки перед убийством приложения
+        // ждали бы следующего foreground-синка.
+        refreshShikimoriAuth(pushLocalNewer = true, caller = "init")
+        // Прогрев hanime-каталога для синхронного фильтра хентая: первые кадры библиотеки
+        // строятся до окончания фонового warmup-а Application (isKnownHentai = false) и
+        // пропускают 18+. Как только каталог готов — одна пересборка прячет известное сразу,
+        // не дожидаясь отложенных сетевых вердиктов. Только при выключенном показе.
+        viewModelScope.launch {
+            if (!userStateStore.isHentaiVisibleInLibrary()) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        hd.kinoshka.app.data.source.HentaiStreamResolver.preloadCatalog()
+                    }
+                }
+                refreshLibraryAndAvatar()
+            }
+        }
+        // Холодный старт = вход (паритет с Shikimori): пул + пуш локального.
+        refreshAnixartAuth(pushLocalNewer = true)
+        // Чистка legacy type=TV_SERIES у аниме-профилей (до унификации типов).
+        viewModelScope.launch(Dispatchers.IO) {
+            if (userStateStore.migrateStaleAnimeTypes() > 0) refreshLibraryAndAvatar()
+        }
         // Тяжёлый добрасывающий проход вердиктов — после первого экрана, не вместе со штормом init.
         viewModelScope.launch {
             kotlinx.coroutines.delay(ADULT_VERDICT_DEFER_MS)
             ensureLibraryAdultVerdicts()
+            ensureLibraryAnimeMeta()
         }
         loadCalendar()
         loadTopics()
@@ -378,7 +610,12 @@ class FilmsViewModel(
         }
     }
 
-    fun refreshShikimoriAuth() {
+    /**
+     * @param pushLocalNewer после пула отправить на сервер локально-более-свежий
+     * прогресс (вход/возврат в сеть): иначе правки, сделанные офлайн или на другом
+     * устройстве без пуша, молча расходились бы с сервером навсегда.
+     */
+    fun refreshShikimoriAuth(pushLocalNewer: Boolean = false, caller: String = "") {
         shikimoriAuthStore?.let { store ->
             val state = store.getAuthState()
             uiState = uiState.copy(shikimoriAuthState = state)
@@ -390,14 +627,32 @@ class FilmsViewModel(
                     cachedShikimoriRates = emptyList()
                 }
                 viewModelScope.launch {
+                    // Пул и пуш — атомарно под мьютексом: точечный пуш из saveUserProfile
+                    // ждёт конца фетча и сравнивается уже со свежими рейтами, а не со снапшотом.
+                    shikimoriSyncMutex.withLock {
+                    // Пока ждали мьютекс, полный пул уже мог отработать (холодный
+                    // старт: init держит мьютекс, ON_RESUME встаёт в очередь) —
+                    // проверять надо здесь, а не только в syncShikimoriOnForeground
+                    // до ожидания. Иначе второй полный пул (та же гонка, что была
+                    // у Anixart). Неудачный пул lastFullSyncMs не штампует —
+                    // ретрай честно пойдёт полным путём.
+                    if (caller == "foreground" &&
+                        System.nanoTime() / 1_000_000L - lastFullSyncMs < FOREGROUND_SYNC_THROTTLE_MS
+                    ) {
+                        if (pushLocalNewer) pushDirtyAnimeRates()
+                        return@withLock
+                    }
                     val ratesResult = animeRepository.getUserRates(state.userId)
                     // Если оба эндпоинта Shikimori упали — сохраняем последний известный список.
                     // Иначе одна временная ошибка сети стирала бы всю Shikimori-часть библиотеки.
                     val rates = ratesResult.getOrNull()
                     if (rates == null) {
                         uiState = uiState.copy(error = "Не удалось обновить список Shikimori. Показаны последние данные.")
-                        return@launch
+                        return@withLock
                     }
+                    // Пул успешен: foreground-вызов следом (холодный старт: init + ON_RESUME)
+                    // пойдёт коротким путём (только пуш) вместо повторного bulk-пула.
+                    lastFullSyncMs = System.nanoTime() / 1_000_000L
                     // First, populate from local cache
                     val localCache = userStateStore.getShikimoriAnimeCache()
                     val ratesWithLocalCache = rates.map { rate ->
@@ -421,43 +676,80 @@ class FilmsViewModel(
                         } else rate
                     }
                     cachedShikimoriRates = ratesWithLocalCache
+                    // Диагностика часов: если время телефона убежало вперёд, локальные метки
+                    // выглядят новее серверных и пуш затирает сайт. Сравни phone= с site= в
+                    // строках adopt/push ниже — они должны идти в ногу с реальным временем.
+                    val phoneNow = System.currentTimeMillis()
+                    KLog.i(
+                        "ShikimoriSync",
+                        "sync: fetched ${ratesWithLocalCache.size} rates " +
+                            "phone=[${formatSyncTimeMs(phoneNow)} $phoneNow " +
+                            "${java.time.ZoneId.systemDefault()}]" +
+                            (caller.takeIf { it.isNotBlank() }?.let { " src=$it" } ?: "")
+                    )
                     persistShikimoriRatesSnapshot(state.userId, ratesWithLocalCache)
-                    // Сверка с локальными профилями до пересборки: рейтинг новее локальной правки —
-                    // серверные статус/оценка/заметка/прогресс перезаписывают профиль, иначе правки
-                    // статуса с сайта Shikimori никогда не доезжают до библиотеки.
+                    // Сверка с локальными профилями до пересборки (чистый last-write-wins:
+                    // серверно-новое забирается целиком, локально-новое не трогается — его
+                    // отправит пуш ниже). Иначе правки с сайта Shikimori не доезжали бы до библиотеки.
                     withContext(Dispatchers.IO) { userStateStore.adoptShikimoriRates(ratesWithLocalCache) }
                     // Тяжёлая пересборка (парсинг JSON-блобов) — вне main, иначе дроп кадров.
                     val library = withContext(Dispatchers.Default) { buildLibraryItems() }
                     uiState = uiState.copy(library = library)
+                    if (pushLocalNewer) pushDirtyAnimeRates()
 
-                    // Fetch missing details from API in parallel
+                    // Fetch missing details: сначала батч кратких объектов (1 запрос
+                    // на 50 тайтлов), непокрытое — поштучно с пейсингом (см. prefetchDetails).
                     val missingDetailsRates = ratesWithLocalCache.filter { it.anime == null && it.targetId > 0 }
                     if (missingDetailsRates.isNotEmpty()) {
                         val updatedRates = ratesWithLocalCache.toMutableList()
-                        val semaphore = kotlinx.coroutines.sync.Semaphore(5)
-                        val deferreds = missingDetailsRates.take(40).map { rate ->
-                            async {
-                                semaphore.acquire()
-                                try {
-                                    runCatching {
-                                        val details = animeRepository.details(rate.targetId)
-                                        val animeItem = hd.kinoshka.app.data.model.ShikimoriAnimeItem(
-                                            id = details.id,
-                                            name = details.name,
-                                            russian = details.russian,
-                                            image = details.image,
-                                            url = details.url,
-                                            kind = details.kind,
-                                            score = details.score,
-                                            status = details.status,
-                                            episodes = details.episodes,
-                                            episodesAired = details.episodesAired
-                                        )
-                                        val idx = updatedRates.indexOfFirst { it.id == rate.id || (it.targetId == rate.targetId && it.targetId > 0) }
-                                        if (idx >= 0) {
-                                            updatedRates[idx] = updatedRates[idx].copy(anime = animeItem)
-                                        }
-                                        userStateStore.saveShikimoriAnimeInfo(
+                        val batch = missingDetailsRates.take(200)
+                        // Сеть, парсинг батча и запись дискового кэша — вне main: блок рефреша
+                        // выполняется на Main-потоке и вешал бы кадры (updatedRates — локальный
+                        // список, его правка на IO безопасна).
+                        val brief = withContext(Dispatchers.IO) {
+                            val fetched = fetchAnimeBrief(batch.map { it.targetId })
+                            val diskCache = userStateStore.getShikimoriAnimeCache()
+                            // Одна запись кэша на весь батч: поштучные read-modify-write
+                            // парсили и сериализовали весь блоб на каждую запись.
+                            val toSave = mutableListOf<hd.kinoshka.app.data.local.ShikimoriAnimeCache>()
+                            for (rate in batch) {
+                                val item = fetched[rate.targetId] ?: continue
+                                val idx = updatedRates.indexOfFirst { it.id == rate.id || (it.targetId == rate.targetId && it.targetId > 0) }
+                                if (idx >= 0) {
+                                    updatedRates[idx] = updatedRates[idx].copy(anime = item)
+                                }
+                                toSave.add(briefToCache(rate.targetId, item, diskCache[rate.targetId]))
+                            }
+                            userStateStore.saveShikimoriAnimeInfos(toSave)
+                            fetched
+                        }
+                        val leftovers = batch.filter { brief[it.targetId] == null }
+                        if (leftovers.isNotEmpty()) {
+                            val semaphore = kotlinx.coroutines.sync.Semaphore(5)
+                            val deferreds = leftovers.map { rate ->
+                                async {
+                                    semaphore.acquire()
+                                    try {
+                                        runCatching {
+                                            // Пейсинг + дедуп (см. prefetchDetails): без них параллельная
+                                            // добивка упиралась в 429 и держала мьютекс синка ретраями.
+                                            val details = prefetchDetails(rate.targetId) ?: return@runCatching null
+                                            val animeItem = hd.kinoshka.app.data.model.ShikimoriAnimeItem(
+                                                id = details.id,
+                                                name = details.name,
+                                                russian = details.russian,
+                                                image = details.image,
+                                                url = details.url,
+                                                kind = details.kind,
+                                                score = details.score,
+                                                status = details.status,
+                                                episodes = details.episodes,
+                                                episodesAired = details.episodesAired
+                                            )
+                                            val idx = updatedRates.indexOfFirst { it.id == rate.id || (it.targetId == rate.targetId && it.targetId > 0) }
+                                            if (idx >= 0) {
+                                                updatedRates[idx] = updatedRates[idx].copy(anime = animeItem)
+                                            }
                                             hd.kinoshka.app.data.local.ShikimoriAnimeCache(
                                                 shikimoriId = details.id,
                                                 name = details.name,
@@ -471,20 +763,26 @@ class FilmsViewModel(
                                                 year = details.airedOn?.take(4)?.toIntOrNull(),
                                                 isAdult = isAdultAnime(details)
                                             )
-                                        )
+                                        }.getOrNull()
+                                    } finally {
+                                        semaphore.release()
                                     }
-                                } finally {
-                                    semaphore.release()
                                 }
                             }
+                            // Одна запись кэша на всю добивку (см. батч выше); сериализация
+                            // двух тысяч записей — вне Main, иначе дроп кадров.
+                            val leftoverEntries = deferreds.mapNotNull { it.await() }
+                            withContext(Dispatchers.IO) {
+                                userStateStore.saveShikimoriAnimeInfos(leftoverEntries)
+                            }
                         }
-                        deferreds.forEach { it.await() }
                         cachedShikimoriRates = updatedRates
                         persistShikimoriRatesSnapshot(state.userId, updatedRates)
                         val refreshedLibrary = withContext(Dispatchers.Default) { buildLibraryItems() }
                         uiState = uiState.copy(library = refreshedLibrary)
                         ensureLibraryAdultVerdicts()
                     }
+                    } // withLock
                 }
             } else {
                 // Разлогин не стирает библиотеку: тайтлы Shikimori остаются из in-memory списка
@@ -498,44 +796,542 @@ class FilmsViewModel(
         }
     }
 
-    private var adultVerdictJob: kotlinx.coroutines.Job? = null
+    @Volatile
+    private var lastForegroundSyncMs = 0L
+
+    /** Монотонные мс последнего успешного пула рейтов (любым путём: init/логин/foreground). */
+    @Volatile
+    private var lastFullSyncMs = 0L
+
+    /**
+     * Синк при возврате приложения на передний план (троттлинг 15 минут):
+     * пул серверных рейтов + пуш локально-более-свежего прогресса.
+     * Закрывает рассинхрон «посмотрел на телефоне 1 — на телефоне 2 не приехало».
+     */
+    fun syncShikimoriOnForeground() {
+        val now = System.nanoTime() / 1_000_000L
+        if (now - lastForegroundSyncMs < FOREGROUND_SYNC_THROTTLE_MS) return
+        lastForegroundSyncMs = now
+        val auth = uiState.shikimoriAuthState
+        if (!auth.isLoggedIn || auth.userId <= 0) return
+        // Полный пул только что отработал (init/логин при холодном старте): bulk свежий —
+        // только допихиваем локальное, без повторного тяжёлого пула и добивки деталей.
+        if (now - lastFullSyncMs < FOREGROUND_SYNC_THROTTLE_MS) {
+            viewModelScope.launch {
+                shikimoriSyncMutex.withLock { pushDirtyAnimeRates() }
+            }
+            return
+        }
+        refreshShikimoriAuth(pushLocalNewer = true, caller = "foreground")
+    }
+
+    /**
+     * Точечный пуш одного аниме-рейта по правилу last-write-wins.
+     * Вызывать только под shikimoriSyncMutex.
+     *
+     * Сначала — свежий рейт с сервера точечным запросом: in-memory кэш на холодном
+     * старте это дисковый снапшот и мог протухнуть, а сохранение карточки, открытой
+     * до фонового пула, иначе перезаписывало сайт старыми данными (тот самый откат).
+     * Сервер новее локального — забираем его и не пушим. Локальное новее (или рейта
+     * нет) — пушим локальное. Значения совпали — ничего не делаем.
+     */
+    private suspend fun pushSingleAnimeRate(
+        kinopoiskId: Int,
+        shikiStatus: String,
+        episodes: Int?,
+        rating: Int?,
+        rewatches: Int?
+    ) {
+        val shikimoriId = kinopoiskId - ANIME_ID_OFFSET
+        val authState = uiState.shikimoriAuthState
+        var token = authState.accessToken
+        if (!authState.isLoggedIn || token == null || authState.userId <= 0) {
+            KLog.w("ShikimoriSync", "pushSingle: not logged in or no access token")
+            return
+        }
+        // Свежая серверная правда вместо кэша; провал запроса — работаем с кэшем как раньше.
+        val serverRate = freshestRateForTarget(authState.userId, shikimoriId)
+        if (serverRate == null) {
+            KLog.w("ShikimoriSync", "pushSingle: fresh fetch failed for shikimoriId=$shikimoriId, falling back to cache")
+        }
+        val profile = withContext(Dispatchers.IO) { userStateStore.getProfile(kinopoiskId) }
+        val localUpdatedAt = profile?.updatedAt ?: 0L
+        val serverTime = serverRate?.getUpdatedEpochMillis() ?: 0L
+        if (serverRate != null && serverTime > localUpdatedAt) {
+            // Сайт (или другое устройство) новее: забираем, пуш отменяется.
+            KLog.d(
+                "ShikimoriSync",
+                "pushSingle: shikimoriId=$shikimoriId server-newer, adopting " +
+                    "ep(local=${profile?.watchedEpisodes ?: 0} server=${serverRate.episodes}) " +
+                    "app=[${formatSyncTimeMs(localUpdatedAt)} $localUpdatedAt] " +
+                    "site=[${formatSyncTimeMs(serverTime)} raw='${serverRate.updatedAt}']"
+            )
+            withContext(Dispatchers.IO) { userStateStore.adoptShikimoriRates(listOf(serverRate)) }
+            val current = cachedShikimoriRates.filterNot { it.targetId == shikimoriId } + serverRate
+            cachedShikimoriRates = current
+            persistShikimoriRatesSnapshot(authState.userId, current)
+            refreshLibraryAndAvatar()
+            if (detailsState.item?.kinopoiskId == kinopoiskId) {
+                detailsState = detailsState.copy(userProfile = getUserProfileForFilm(kinopoiskId))
+            }
+            return
+        }
+        if (serverRate != null &&
+            (episodes == null || episodes == serverRate.episodes) &&
+            shikiStatus.equals(serverRate.status, ignoreCase = true) &&
+            (rating ?: 0) == serverRate.score
+        ) {
+            // Значения уже совпали (эхо прошлого пуша) — лишний запрос не нужен.
+            KLog.d("ShikimoriSync", "pushSingle: already in sync for shikimoriId=$shikimoriId")
+            return
+        }
+        KLog.d(
+            "ShikimoriSync",
+            "pushSingle: shikimoriId=$shikimoriId PUSH local-newer " +
+                "ep(local=${profile?.watchedEpisodes} server=${serverRate?.episodes}) " +
+                "app=[${formatSyncTimeMs(localUpdatedAt)} $localUpdatedAt] " +
+                "site=[${formatSyncTimeMs(serverTime)} raw='${serverRate?.updatedAt}']"
+        )
+        suspend fun attempt(t: String): hd.kinoshka.app.data.model.ShikimoriUserRate? =
+            if (serverRate != null) {
+                KLog.d("ShikimoriSync", "pushSingle: updating rate id=${serverRate.id}")
+                animeRepository.updateUserRate(
+                    token = t,
+                    rateId = serverRate.id,
+                    status = shikiStatus,
+                    episodes = episodes,
+                    score = rating,
+                    rewatches = rewatches
+                )
+            } else {
+                KLog.d("ShikimoriSync", "pushSingle: creating rate for targetId=$shikimoriId")
+                animeRepository.createUserRate(
+                    token = t,
+                    userId = authState.userId,
+                    targetId = shikimoriId,
+                    status = shikiStatus,
+                    episodes = episodes ?: 0,
+                    score = rating ?: 0,
+                    rewatches = rewatches
+                )
+            }
+        var result = attempt(token)
+        // Create при существующей серверной оценке может дать 422 (а может молча сделать
+        // upsert поверх неё — см. инцидент 2026-09-07): подтягиваем свежие рейты и повторяем
+        // как update, иначе прогресс «не сохраняется».
+        if (result == null && serverRate == null && authState.userId > 0) {
+            animeRepository.getUserRates(authState.userId).getOrNull()?.let { rates ->
+                cachedShikimoriRates = rates
+                rates.firstOrNull { it.targetId == shikimoriId }?.let { found ->
+                    KLog.d("ShikimoriSync", "pushSingle: found server rate id=${found.id} after create failed, updating")
+                    result = animeRepository.updateUserRate(
+                        token = token,
+                        rateId = found.id,
+                        status = shikiStatus,
+                        episodes = episodes,
+                        score = rating,
+                        rewatches = rewatches
+                    )
+                }
+            }
+        }
+        if (result == null && authState.refreshToken != null) {
+            KLog.d("ShikimoriSync", "pushSingle: token expired, attempting refresh...")
+            val newTokenResponse = animeRepository.refreshToken(authState.refreshToken)
+            if (newTokenResponse != null) {
+                persistFreshShikimoriTokens(authState, newTokenResponse.accessToken, newTokenResponse.refreshToken)
+                token = newTokenResponse.accessToken
+                KLog.d("ShikimoriSync", "pushSingle: token refreshed, retrying...")
+                result = attempt(token)
+            } else {
+                KLog.e("ShikimoriSync", "pushSingle: failed to refresh token, user needs to re-login")
+            }
+        }
+        if (result != null) {
+            val pushed = result
+            // Контроль эха: сервер должен вернуть отправленное. Расхождение — признак того,
+            // что create/update задел не ту строку (upsert вместо 422).
+            if (episodes != null && pushed.episodes != episodes) {
+                KLog.w(
+                    "ShikimoriSync",
+                    "pushSingle: shikimoriId=$shikimoriId server echo ep=${pushed.episodes} " +
+                        "!= sent $episodes (rate id=${pushed.id}) — check the site value"
+                )
+            }
+            val current = cachedShikimoriRates.toMutableList()
+            val idx = current.indexOfFirst { it.targetId == shikimoriId }
+            if (idx >= 0) current[idx] = pushed else current.add(pushed)
+            cachedShikimoriRates = current
+            // Якорение часов (только метка — значения только что отправлены).
+            withContext(Dispatchers.IO) {
+                userStateStore.anchorProfileUpdatedAt(kinopoiskId, pushed.getUpdatedEpochMillis())
+            }
+            refreshLibraryAndAvatar()
+        } else {
+            KLog.e("ShikimoriSync", "pushSingle: sync failed for shikimoriId=$shikimoriId, resyncing from server")
+            refreshShikimoriAuth(caller = "pushSingle-retry")
+        }
+    }
+
+    /** Последняя точечная сверка карточки (kpId → монотонные мс): повороты и переоткрытия сеть не дёргают. */
+    private val detailsRateCheckAt = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
+    /**
+     * Свежайший рейт из точечного запроса и in-memory union-кэша (без полного bulk-пула:
+     * consult v1+v2 на каждое открытие карточки стоил 2 тяжёлых запроса). Кэш тут —
+     * последний union-пул (секунды/минуты давности), point — только что с сервера.
+     */
+    private suspend fun freshestRateForTarget(
+        userId: Int,
+        shikimoriId: Int
+    ): hd.kinoshka.app.data.model.ShikimoriUserRate? {
+        val point = animeRepository.getUserRatePoint(userId, shikimoriId)
+        val cached = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
+        if (point != null && cached != null &&
+            (point.getUpdatedEpochMillis() != cached.getUpdatedEpochMillis() ||
+                point.episodes != cached.episodes)
+        ) {
+            KLog.d(
+                "ShikimoriSync",
+                "rate target=$shikimoriId: point(ep=${point.episodes} '${point.updatedAt}') vs " +
+                    "cached(ep=${cached.episodes} '${cached.updatedAt}'), taking fresher"
+            )
+        }
+        return listOfNotNull(point, cached).maxByOrNull { it.getUpdatedEpochMillis() }
+    }
+
+    /**
+     * Точечная сверка тайтла с Shikimori при открытии карточки (1 дешёвый GET):
+     * посмотрел на телефоне 1 → открыл карточку на телефоне 2 → прогресс уже свежий,
+     * не дожидаясь 15-минутного фонового синка. LWW как везде: серверно-новое забирается
+     * (adopt + обновление профиля карточки), локально-новое не трогается (его отправит пуш).
+     */
+    fun refreshRateForDetails(kinopoiskId: Int) {
+        if (kinopoiskId < ANIME_ID_OFFSET) return
+        val auth = uiState.shikimoriAuthState
+        if (!auth.isLoggedIn || auth.userId <= 0) return
+        val now = System.nanoTime() / 1_000_000L
+        if (now - (detailsRateCheckAt[kinopoiskId] ?: 0L) < DETAILS_RATE_CHECK_THROTTLE_MS) return
+        detailsRateCheckAt[kinopoiskId] = now
+        viewModelScope.launch {
+            shikimoriSyncMutex.withLock {
+                val shikimoriId = kinopoiskId - ANIME_ID_OFFSET
+                val fresh = freshestRateForTarget(auth.userId, shikimoriId)
+                    ?: return@withLock
+                // Кэш: протухшее не вписываем, совпавшее не переписываем (иначе каждая
+                // открытая карточка пересохраняла бы мегабайтный снапшот в prefs).
+                val current = cachedShikimoriRates.toMutableList()
+                val idx = current.indexOfFirst { it.targetId == shikimoriId }
+                if (idx >= 0) {
+                    val old = current[idx]
+                    if (fresh.getUpdatedEpochMillis() < old.getUpdatedEpochMillis()) return@withLock
+                    if (fresh.updatedAt == old.updatedAt && fresh.episodes == old.episodes &&
+                        fresh.status.equals(old.status, ignoreCase = true) && fresh.score == old.score
+                    ) return@withLock
+                    current[idx] = fresh
+                } else {
+                    current.add(fresh)
+                }
+                cachedShikimoriRates = current
+                persistShikimoriRatesSnapshot(auth.userId, current)
+                val adopted = withContext(Dispatchers.IO) { userStateStore.adoptShikimoriRates(listOf(fresh)) }
+                if (adopted > 0) {
+                    KLog.d("ShikimoriSync", "details: shikimoriId=$shikimoriId adopted fresh rate on open")
+                    refreshLibraryAndAvatar()
+                }
+                // Профиль открытой карточки — из свежих данных (adopt мог пропустить, если
+                // локальное новее: тогда на экране и так уже локальное, обновляем для верности).
+                if (detailsState.item?.kinopoiskId == kinopoiskId) {
+                    val profile = withContext(Dispatchers.Default) { getUserProfileForFilm(kinopoiskId) }
+                    detailsState = detailsState.copy(userProfile = profile)
+                }
+            }
+        }
+    }
+
+    @Volatile
+    private var pushingAnimeRates = false
+
+    /**
+     * Отправляет на Shikimori локальный прогресс, которого нет на сервере:
+     * просмотры из плеера (пишутся мимо ViewModel и сами не пушатся) и правки,
+     * сделанные офлайн/после выхода. Вызывать только под shikimoriSyncMutex и
+     * только после свежего пула: пул уже применил серверно-новое
+     * (adoptShikimoriRates), кэш свежий. Правило last-write-wins по датам:
+     * пушится только локально-более-новое; серверно-новое пропускается.
+     * Ничего не затирает молча: при неуспехе только лог, без рефреша (иначе цикл).
+     */
+    private suspend fun pushDirtyAnimeRates() {
+        // Провенанс restore: иначе вход после вайпа создавал бы сотни рейтов
+        // из импортных оболочек. One-shot, дальше флаг в персисте.
+        withContext(Dispatchers.IO) { userStateStore.backfillImportSourceForRestore() }
+        val auth = uiState.shikimoriAuthState
+        val token0 = auth.accessToken ?: return
+        if (!auth.isLoggedIn || auth.userId <= 0 || pushingAnimeRates) return
+        pushingAnimeRates = true
+            try {
+                var token = token0
+                val profiles = withContext(Dispatchers.IO) { userStateStore.getProfiles() }
+                    // Импортные оболочки (restore) не пушим, пока их не коснулась явная
+                    // правка — иначе создавали бы рейты из серверного эха.
+                    .filter { it.kinopoiskId >= ANIME_ID_OFFSET && it.importSource == null && (it.status != null || (it.watchedEpisodes ?: 0) > 0) }
+                if (profiles.isEmpty()) return
+                val serverByTarget = cachedShikimoriRates.associateBy { it.targetId }
+                var tokenRefreshed = false
+                var pushed = 0
+                // Пакетный пуш ограничиваем: первая синхронизация большой локальной
+                // библиотеки не должна спамить API сотнями запросов — остаток уедет
+                // следующими синками.
+                // Ленивая контрольная сверка для кандидатов без bulk-рейта: bulk-список мог
+                // отставать (серверный кэш после свежей правки на сайте — инцидент 2026-09-07:
+                // «рейта нет» → POST → upsert поверх свежего). Один общий union-запрос на всех
+                // вместо каскада фолбэков на каждый тайтл.
+                var unionByTarget: Map<Int, hd.kinoshka.app.data.model.ShikimoriUserRate>? = null
+                suspend fun unionRate(targetId: Int): hd.kinoshka.app.data.model.ShikimoriUserRate? {
+                    if (unionByTarget == null) {
+                        val union = animeRepository.getUserRates(auth.userId).getOrNull()
+                        if (union != null) {
+                            withContext(Dispatchers.IO) { userStateStore.adoptShikimoriRates(union) }
+                            val merged = cachedShikimoriRates.associateBy { it.targetId }.toMutableMap()
+                            for (r in union) {
+                                val old = merged[r.targetId]
+                                if (old == null || r.getUpdatedEpochMillis() >= old.getUpdatedEpochMillis()) {
+                                    merged[r.targetId] = r
+                                }
+                            }
+                            cachedShikimoriRates = merged.values.toList()
+                            persistShikimoriRatesSnapshot(auth.userId, cachedShikimoriRates)
+                        }
+                        unionByTarget = union?.associateBy { it.targetId } ?: emptyMap()
+                    }
+                    return unionByTarget?.get(targetId)
+                }
+                suspend fun upsertCached(rate: hd.kinoshka.app.data.model.ShikimoriUserRate) {
+                    val current = cachedShikimoriRates.toMutableList()
+                    val idx = current.indexOfFirst { it.targetId == rate.targetId }
+                    if (idx >= 0) current[idx] = rate else current.add(rate)
+                    cachedShikimoriRates = current
+                }
+                for (profile in profiles.take(MAX_SHIKI_PUSH_PER_SYNC)) {
+                    val shikimoriId = profile.kinopoiskId - ANIME_ID_OFFSET
+                    val server = serverByTarget[shikimoriId]
+                    val localEp = profile.watchedEpisodes ?: 0
+                    val localStatus = profile.status?.toShikiStatus()
+                    val localScore = profile.userRating?.takeIf { it > 0 } ?: 0
+                    // Быстрый предфильтр по bulk (без сети): сервер строго новее — adopt его
+                    // уже применил, эхо пуша — делать нечего. Остальное — на сверку ниже.
+                    if (server != null) {
+                        val serverTime = server.getUpdatedEpochMillis()
+                        if (serverTime > profile.updatedAt) {
+                            if (localEp != server.episodes) {
+                                KLog.d(
+                                    "ShikimoriSync",
+                                    "push: shikimoriId=$shikimoriId SKIP server-newer " +
+                                        "ep(local=$localEp server=${server.episodes}) " +
+                                        "app=[${formatSyncTimeMs(profile.updatedAt)} ${profile.updatedAt}] " +
+                                        "site=[${formatSyncTimeMs(serverTime)} raw='${server.updatedAt}']"
+                                )
+                            }
+                            continue
+                        }
+                        if (serverTime == profile.updatedAt &&
+                            localEp == server.episodes &&
+                            (localStatus == null || localStatus == server.status.lowercase()) &&
+                            localScore == server.score
+                        ) continue
+                    } else if (profile.status == null && localEp <= 0 && localScore <= 0) {
+                        continue
+                    }
+                    // Контрольная сверка перед ЛЮБОЙ записью: bulk мог не содержать свежий
+                    // рейт (отставание) или содержать протухший. Пишем только если локальное
+                    // новее свежепроверенного — иначе забираем серверное и молчим.
+                    var effective = server ?: unionRate(shikimoriId)?.also {
+                        KLog.d(
+                            "ShikimoriSync",
+                            "push: shikimoriId=$shikimoriId verify: bulk missed, union found " +
+                                "ep=${it.episodes} '${it.updatedAt}'"
+                        )
+                    }
+                    animeRepository.getUserRatePoint(auth.userId, shikimoriId)?.let { point ->
+                        val cur = effective
+                        if (cur == null || point.getUpdatedEpochMillis() >= cur.getUpdatedEpochMillis()) {
+                            if (cur == null || point.id != cur.id || point.episodes != cur.episodes ||
+                                point.updatedAt != cur.updatedAt
+                            ) {
+                                KLog.d(
+                                    "ShikimoriSync",
+                                    "push: shikimoriId=$shikimoriId verify: point ep=${point.episodes} " +
+                                        "'${point.updatedAt}' vs known ep=${cur?.episodes} '${cur?.updatedAt}', taking point"
+                                )
+                            }
+                            effective = point
+                        }
+                    }
+                    val eff = effective
+                    if (eff != null) {
+                        val effTime = eff.getUpdatedEpochMillis()
+                        if (effTime > profile.updatedAt) {
+                            KLog.d(
+                                "ShikimoriSync",
+                                "push: shikimoriId=$shikimoriId SKIP verify-server-newer, adopting " +
+                                    "ep(local=$localEp server=${eff.episodes}) " +
+                                    "app=[${formatSyncTimeMs(profile.updatedAt)} ${profile.updatedAt}] " +
+                                    "site=[${formatSyncTimeMs(effTime)} raw='${eff.updatedAt}']"
+                            )
+                            withContext(Dispatchers.IO) { userStateStore.adoptShikimoriRates(listOf(eff)) }
+                            upsertCached(eff)
+                            continue
+                        }
+                        if (localEp == eff.episodes &&
+                            (localStatus == null || localStatus == eff.status.lowercase()) &&
+                            localScore == eff.score
+                        ) {
+                            // Значения совпали со свежепроверенными — только освежаем кэш.
+                            upsertCached(eff)
+                            continue
+                        }
+                        if (effTime <= 0L) {
+                            KLog.w(
+                                "ShikimoriSync",
+                                "push: shikimoriId=$shikimoriId pushing with unparsable server time " +
+                                    "'${eff.updatedAt}' — values differ, local is assumed newer"
+                            )
+                        }
+                    }
+                    // Локальное новее свежепроверенного (или рейта точно нет) — пушим как есть,
+                    // включая осознанное уменьшение серий (сброс при пересмотре).
+                    KLog.d(
+                        "ShikimoriSync",
+                        "push: shikimoriId=$shikimoriId PUSH " +
+                            "ep(local=$localEp server=${eff?.episodes}) " +
+                            "status(local=$localStatus server=${eff?.status}) " +
+                            "score(local=$localScore server=${eff?.score}) " +
+                            "app=[${formatSyncTimeMs(profile.updatedAt)} ${profile.updatedAt}] " +
+                            "site=[${formatSyncTimeMs(eff?.getUpdatedEpochMillis() ?: 0L)} raw='${eff?.updatedAt}']"
+                    )
+                    val episodesToSend: Int
+                    // Создание COMPLETED-рейта с нулевыми сериями (оболочка из
+                    // Anixart-импорта без прогресса) гадит на сайт: completed 0/N.
+                    // Завершённое значит просмотренное целиком — отправляем итог,
+                    // если известен; иначе ждём мета-добивки следующим синком.
+                    if (eff == null && localStatus == "completed" && localEp <= 0) {
+                        val total = profile.totalEpisodes ?: 0
+                        if (total <= 0) {
+                            KLog.d(
+                                "ShikimoriSync",
+                                "push: shikimoriId=$shikimoriId SKIP completed-shell without totals, " +
+                                    "waiting for meta backfill"
+                            )
+                            continue
+                        }
+                        episodesToSend = total
+                    } else {
+                        episodesToSend = localEp
+                    }
+                    val rewatches = profile.watchedSeasons?.takeIf { it > 0 }
+                    suspend fun attempt(t: String): hd.kinoshka.app.data.model.ShikimoriUserRate? =
+                        if (eff != null) {
+                            animeRepository.updateUserRate(t, eff.id, localStatus, episodesToSend, localScore, rewatches)
+                        } else {
+                            animeRepository.createUserRate(t, auth.userId, shikimoriId, localStatus ?: "watching", episodesToSend, localScore, rewatches)
+                        }
+                    var result = attempt(token)
+                    if (result == null && !tokenRefreshed && auth.refreshToken != null) {
+                        val fresh = animeRepository.refreshToken(auth.refreshToken)
+                        if (fresh != null) {
+                            persistFreshShikimoriTokens(auth, fresh.accessToken, fresh.refreshToken)
+                            token = fresh.accessToken
+                            tokenRefreshed = true
+                            result = attempt(token)
+                        }
+                    }
+                    if (result != null) {
+                        // Контроль эха: сервер должен вернуть то, что мы отправили. Расхождение
+                        // (старый id + чужие значения) — признак upsert поверх невидимого рейта.
+                        if (result.episodes != episodesToSend) {
+                            KLog.w(
+                                "ShikimoriSync",
+                                "push: shikimoriId=$shikimoriId server echo ep=${result.episodes} " +
+                                    "!= sent $episodesToSend (rate id=${result.id}) — check the site value"
+                            )
+                        }
+                        upsertCached(result)
+                        // Якорение часов (только метка, значения не трогаем — они только
+                        // что отправлены; полный adopt эха затёр бы заметку, которая не пушится).
+                        withContext(Dispatchers.IO) {
+                            userStateStore.anchorProfileUpdatedAt(
+                                profile.kinopoiskId,
+                                result.getUpdatedEpochMillis()
+                            )
+                        }
+                        pushed++
+                    } else {
+                        KLog.e("ShikimoriSync", "Push failed for shikimoriId=$shikimoriId, will retry next sync")
+                    }
+                }
+                if (pushed > 0) {
+                    persistShikimoriRatesSnapshot(auth.userId, cachedShikimoriRates)
+                    refreshLibraryAndAvatar()
+                }
+            } finally {
+                pushingAnimeRates = false
+            }
+    }
 
     /**
      * Дозагрузка 18+-вердиктов для аниме из библиотеки без кэша деталей (история/профили
      * без оценки Shikimori). Фильтр «Показывать хентай» синхронный, а каталог hanime
      * сопоставляет названия ненадёжно — добираем детали Shikimori и сохраняем isAdult
      * в кэш, после чего пересобираем библиотеку.
+     *
+     * Три этапа: сначала батч кратких объектов (1 запрос на 50 тайтлов — имена
+     * и поля для вердикта; жанров батч не несёт), затем жанровая разметка 18+
+     * (ids+genre — сервер режет выборку жанром), затем поштучный добор непокрытых
+     * (рейтинг rx и пр.) тем же пейсером.
      */
     private fun ensureLibraryAdultVerdicts() {
         if (userStateStore.isHentaiVisibleInLibrary()) return
         if (adultVerdictJob?.isActive == true) return
         adultVerdictJob = viewModelScope.launch(Dispatchers.IO) {
             val offset = ANIME_ID_OFFSET
-            val semaphore = kotlinx.coroutines.sync.Semaphore(4)
-            val totalSaved = java.util.concurrent.atomic.AtomicInteger(0)
-            // Порции по 40 (как в дозагрузке деталей оценок); раунд продолжается, только
-            // если предыдущий дал хотя бы один новый вердикт — иначе тайтлы недоступны.
-            // Список тайтлов пересчитываем в каждом раунде: оценки Shikimori приезжают
-            // асинхронно и расширяют библиотеку.
-            var rounds = 0
-            while (rounds < 3) {
-                rounds++
-                val libraryIds = buildSet {
-                    userStateStore.getHistory().forEach { if (it.kinopoiskId >= offset) add(it.kinopoiskId) }
-                    userStateStore.getProfiles().forEach { if (it.kinopoiskId >= offset) add(it.kinopoiskId) }
-                    cachedShikimoriRates.forEach { if (it.targetId > 0) add(it.targetId + offset) }
-                }
-                val cache = userStateStore.getShikimoriAnimeCache()
-                val pending = libraryIds.filter { cache[it - offset]?.isAdult == null }
-                if (pending.isEmpty()) break
-                val savedInRound = java.util.concurrent.atomic.AtomicInteger(0)
-                pending.take(40).map { kpId ->
+            val libraryIds = buildSet {
+                userStateStore.getHistory().forEach { if (it.kinopoiskId >= offset) add(it.kinopoiskId) }
+                userStateStore.getProfiles().forEach { if (it.kinopoiskId >= offset) add(it.kinopoiskId) }
+                cachedShikimoriRates.forEach { if (it.targetId > 0) add(it.targetId + offset) }
+            }
+            val cache = userStateStore.getShikimoriAnimeCache()
+            val pending = libraryIds.filter { cache[it - offset]?.isAdult == null }
+            if (pending.isEmpty()) return@launch
+            var totalSaved = 0
+            // Этап 1: батч — весь pending чанками по 50 (одна запись кэша:
+            // поштучные read-modify-write сериализовали весь блоб на запись).
+            val ids = pending.take(500).map { it - offset }
+            val brief = fetchAnimeBrief(ids)
+            val stageEntries = mutableListOf<hd.kinoshka.app.data.local.ShikimoriAnimeCache>()
+            for (kpId in pending.take(500)) {
+                val id = kpId - offset
+                val item = brief[id] ?: continue
+                stageEntries.add(briefToCache(id, item, cache[id]))
+            }
+            userStateStore.saveShikimoriAnimeInfos(stageEntries)
+            totalSaved += stageEntries.size
+            // Этап 1.5: жанровая разметка 18+ (см. markAdultByGenre).
+            totalSaved += markAdultByGenre(libraryIds)
+            // Этап 2: поштучный добор непокрытых батчем (порезка ids, цензура, провал запроса).
+            val leftovers = pending
+                .filter { brief[it - offset] == null }
+                .take(40)
+            if (leftovers.isNotEmpty()) {
+                val semaphore = kotlinx.coroutines.sync.Semaphore(4)
+                val leftoverEntries = leftovers.map { kpId ->
                     async {
                         semaphore.acquire()
                         try {
                             val shikimoriId = kpId - offset
-                            val details = runCatching { animeRepository.details(shikimoriId) }.getOrNull()
-                                ?: return@async
+                            // Тот же пейсер и дедуп, что у добивки рейтов: два префетчера делят
+                            // лимит 5rps, параллельные дубли одного id ждут один запрос.
+                            val details = prefetchDetails(shikimoriId)
+                                ?: return@async null
                             val animeItem = hd.kinoshka.app.data.model.ShikimoriAnimeItem(
                                 id = details.id,
                                 name = details.name,
@@ -548,32 +1344,77 @@ class FilmsViewModel(
                                 episodes = details.episodes,
                                 episodesAired = details.episodesAired
                             )
-                            userStateStore.saveShikimoriAnimeInfo(
-                                hd.kinoshka.app.data.local.ShikimoriAnimeCache(
-                                    shikimoriId = shikimoriId,
-                                    name = details.name,
-                                    russian = details.russian,
-                                    posterUrl = animeItem.posterUrl,
-                                    episodes = details.episodes,
-                                    episodesAired = details.episodesAired,
-                                    kind = details.kind,
-                                    score = details.score,
-                                    status = details.status,
-                                    year = details.airedOn?.take(4)?.toIntOrNull(),
-                                    isAdult = isAdultAnime(details)
-                                )
+                            hd.kinoshka.app.data.local.ShikimoriAnimeCache(
+                                shikimoriId = shikimoriId,
+                                name = details.name,
+                                russian = details.russian,
+                                posterUrl = animeItem.posterUrl,
+                                episodes = details.episodes,
+                                episodesAired = details.episodesAired,
+                                kind = details.kind,
+                                score = details.score,
+                                status = details.status,
+                                year = details.airedOn?.take(4)?.toIntOrNull(),
+                                // Полные details несут жанры и рейтинг rx — вердикт
+                                // авторитетный, жанровая проверка больше не нужна.
+                                isAdult = isAdultAnime(details),
+                                genreChecked = true
                             )
-                            savedInRound.incrementAndGet()
                         } finally {
                             semaphore.release()
                         }
                     }
-                }.forEach { it.await() }
-                totalSaved.addAndGet(savedInRound.get())
-                if (savedInRound.get() == 0) break
+                }.mapNotNull { it.await() }
+                // Одна запись кэша на всю добивку (уже на Dispatchers.IO).
+                userStateStore.saveShikimoriAnimeInfos(leftoverEntries)
+                totalSaved += leftoverEntries.size
             }
-            if (totalSaved.get() > 0) {
+            if (totalSaved > 0) {
                 // Уже на Dispatchers.IO: сборку делаем здесь, на Main — только публикацию.
+                val library = buildLibraryItems()
+                withContext(Dispatchers.Main) {
+                    uiState = uiState.copy(library = library)
+                }
+            }
+        }
+    }
+
+    /**
+     * Добор подробностей Shikimori для оболочек библиотеки без кэша деталей
+     * (импорт из пула Anixart: статус есть, а kind/серий/рейтинга нет — плитки
+     * врали «Фильм» и молчали про серии/оценку). Anixart говорит КАКОЕ аниме,
+     * подробности — Shikimori: батч кратких объектов по shikimoriId (1 запрос
+     * на 50 тайтлов) в дисковый кэш, затем пересборка (пост-проход
+     * buildLibraryItems разложит кэш по плиткам сам). В отличие от вердиктов,
+     * работает и при включённом хентае — это не про 18+, а про тип/серии/рейтинг.
+     * 18+-вердикт батча не пишем (оставляем prev/isAdult=null): его healing —
+     * дело ensureLibraryAdultVerdicts, иначе предположение батча скрыло бы
+     * тайтл от жанровой проверки при выключенном тумблере.
+     */
+    private fun ensureLibraryAnimeMeta() {
+        if (animeMetaJob?.isActive == true) return
+        animeMetaJob = viewModelScope.launch(Dispatchers.IO) {
+            val offset = ANIME_ID_OFFSET
+            val libraryIds = buildSet {
+                userStateStore.getHistory().forEach { if (it.kinopoiskId >= offset) add(it.kinopoiskId) }
+                userStateStore.getProfiles().forEach { if (it.kinopoiskId >= offset) add(it.kinopoiskId) }
+                cachedShikimoriRates.forEach { if (it.targetId > 0) add(it.targetId + offset) }
+            }
+            val cache = userStateStore.getShikimoriAnimeCache()
+            val pending = libraryIds.filter { cache[it - offset]?.kind == null }.take(500)
+            if (pending.isEmpty()) return@launch
+            val brief = fetchAnimeBrief(pending.map { it - offset })
+            val fresh = userStateStore.getShikimoriAnimeCache()
+            // Одна запись кэша на весь батч (см. вердикты выше).
+            val metaEntries = pending.mapNotNull { kpId ->
+                val id = kpId - offset
+                val item = brief[id] ?: return@mapNotNull null
+                val prev = fresh[id]
+                briefToCache(id, item, prev).copy(isAdult = prev?.isAdult)
+            }
+            userStateStore.saveShikimoriAnimeInfos(metaEntries)
+            if (metaEntries.isNotEmpty()) {
+                KLog.i("ShikimoriSync", "anime-meta: backfilled ${metaEntries.size} title(s), rebuilding library")
                 val library = buildLibraryItems()
                 withContext(Dispatchers.Main) {
                     uiState = uiState.copy(library = library)
@@ -803,6 +1644,18 @@ class FilmsViewModel(
         val marked = searchFromFeedTitle
         searchFromFeedTitle = null
         return marked != null && marked == uiState.discoverTitle
+    }
+
+    /** Профиль: открыть Библиотеку на вкладке статуса (тап по легенде статистики). */
+    fun requestLibraryDeepLink(status: UserFilmStatus, animeOnly: Boolean) {
+        uiState = uiState.copy(libraryDeepLink = LibraryDeepLink(status, animeOnly))
+    }
+
+    /** Библиотека применила deep-link: гасим запрос, чтобы не срабатывал повторно. */
+    fun consumeLibraryDeepLink() {
+        if (uiState.libraryDeepLink != null) {
+            uiState = uiState.copy(libraryDeepLink = null)
+        }
     }
 
     /** Кнопка «Все» на секции: сводится к существующим механизмам discover/поиска. */
@@ -1157,7 +2010,7 @@ class FilmsViewModel(
                     if (!fullAvatar.isNullOrBlank()) {
                         setProfileAvatar(fullAvatar)
                     }
-                    refreshShikimoriAuth()
+                    refreshShikimoriAuth(pushLocalNewer = true, caller = "oauth-login")
                     KLog.d("ShikimoriSync", "=== OAuth login successful! ===")
                 } else {
                     KLog.e("ShikimoriSync", "Failed to fetch user info")
@@ -1181,7 +2034,1294 @@ class FilmsViewModel(
         if (!fullAvatar.isNullOrBlank()) {
             setProfileAvatar(fullAvatar)
         }
-        refreshShikimoriAuth()
+        refreshShikimoriAuth(pushLocalNewer = true, caller = "token-login")
+    }
+
+    // ------------------------------------------------------------------
+    // Anixart: вход по логину+паролю (пароль не храним), двусторонний синк
+    // списков (статусы; посерийного прогресса в v1 нет — нужен sourceId их
+    // парсеров). Существующие локальные профили пул не перезаписывает
+    // (у записей Anixart нет меток времени) — только создаёт недостающие.
+    // ------------------------------------------------------------------
+
+    fun refreshAnixartAuth(pushLocalNewer: Boolean = false) {
+        val state = anixartAuthStore?.getAuthState()
+            ?: hd.kinoshka.app.data.local.AnixartAuthState()
+        uiState = uiState.copy(anixartAuthState = state)
+        if (state.isLoggedIn && state.token != null) {
+            viewModelScope.launch {
+                anixartSyncMutex.withLock { syncAnixartLists(state.token, pushLocalNewer, caller = "auth") }
+            }
+        } else {
+            anixartIdToShiki = emptyMap()
+            anixartReleaseLists = emptyMap()
+            viewModelScope.launch(Dispatchers.IO) { userStateStore.clearAnixartBaselineOnly() }
+        }
+    }
+
+    fun loginAnixart(login: String, password: String, onDone: (ok: Boolean, message: String?) -> Unit) {
+        val repo = anixartRepository
+        if (repo == null) {
+            onDone(false, "Anixart недоступен на этой платформе")
+            return
+        }
+        if (login.isBlank() || password.isEmpty()) {
+            onDone(false, "Введите логин и пароль")
+            return
+        }
+        viewModelScope.launch {
+            // Сеть — вне Main (иначе вход вешает UI на время signIn).
+            withContext(Dispatchers.IO) { repo.signIn(login, password) }
+                .onSuccess { session ->
+                    anixartAuthStore?.saveSession(session.token, session.userId, session.nickname)
+                    uiState = uiState.copy(
+                        anixartAuthState = hd.kinoshka.app.data.local.AnixartAuthState(
+                            isLoggedIn = true,
+                            token = session.token,
+                            userId = session.userId,
+                            nickname = session.nickname
+                        )
+                    )
+                    onDone(true, null)
+                    // Чужой baseline (прошлый аккаунт) первому синку не товарищ:
+                    // иначе расхождения решались бы против свежего сервера.
+                    anixartIdToShiki = emptyMap()
+                    anixartReleaseLists = emptyMap()
+                    anixartUnresolvable.clear()
+                    anixartPullUnresolvable.clear()
+                    // Только baseline: карты знаний (idmap, промахи) — глобальная истина,
+                    // переживают вход и ускоряют restore.
+                    userStateStore.clearAnixartBaselineOnly()
+                    anixartSyncMutex.withLock {
+                        syncAnixartLists(session.token, pushLocalNewer = true, caller = "login")
+                    }
+                }
+                .onFailure { e ->
+                    onDone(false, e.message ?: "Вход не удался")
+                }
+        }
+    }
+
+    fun logoutAnixart() {
+        anixartAuthStore?.clearSession()
+        anixartIdToShiki = emptyMap()
+        anixartReleaseLists = emptyMap()
+        anixartPullUnresolvable.clear()
+        viewModelScope.launch(Dispatchers.IO) { userStateStore.clearAnixartBaselineOnly() }
+        // Локальная библиотека остаётся — та же философия, что у Shikimori.
+        uiState = uiState.copy(anixartAuthState = hd.kinoshka.app.data.local.AnixartAuthState())
+    }
+
+    /** Синк при возврате в приложение (троттлинг общий с Shikimori). */
+    fun syncAnixartOnForeground() {
+        // Быстрая проверка до запуска корутины; авторитетная — внутри мьютекса:
+        // ON_RESUME за холодным стартом вставал в очередь ЗА пулом init и,
+        // дождавшись мьютекса, гнал второй полный пул (проверка была до ожидания).
+        if (throttledAnixartForeground()) return
+        val auth = uiState.anixartAuthState
+        if (!auth.isLoggedIn || auth.token == null) return
+        viewModelScope.launch {
+            anixartSyncMutex.withLock {
+                if (throttledAnixartForeground()) return@withLock
+                lastAnixartSyncMs = System.nanoTime() / 1_000_000L
+                syncAnixartLists(auth.token, pushLocalNewer = true, caller = "foreground")
+            }
+        }
+    }
+
+    /** Троттл foreground-пула Anixart со штампом (см. syncAnixartOnForeground). */
+    private fun throttledAnixartForeground(): Boolean {
+        val now = System.nanoTime() / 1_000_000L
+        if (now - lastAnixartSyncMs < FOREGROUND_SYNC_THROTTLE_MS) return true
+        lastAnixartSyncMs = now
+        return false
+    }
+
+    /**
+     * Одноразовый ремонт echo-пуша restore 09.09: пуш перенёс 9 релизов из
+     * «Завершено» (список 3) локальными импортными оболочками. Карта релиз->верный
+     * список и релиз->испорченный список (куда утащил пуш).
+     */
+    private val SERVER_REPAIR_V1_TARGET = mapOf(
+        1531 to 3, 2724 to 3, 3043 to 3, 16869 to 3, 1471 to 3,
+        17254 to 3, 19298 to 3, 16912 to 3, 3050 to 3
+    )
+    private val SERVER_REPAIR_V1_CORRUPTED = mapOf(
+        1531 to 1, 2724 to 1, 3043 to 2, 16869 to 1, 1471 to 1,
+        17254 to 1, 19298 to 1, 16912 to 1, 3050 to 1
+    )
+
+    /**
+     * Возвращает релизы из ремонта на место (мутирует buckets [releaseLists]).
+     * Чиним только если сервер всё ещё в испорченном виде; релиз в правильном
+     * списке (пользователь вернул вручную) или в третьем месте (пользователь
+     * переложил сам) не трогаем. Сервер в «нигде», а baseline помнит испорченный —
+     * наш недожим add: добавляем. Идемпотентно, флаг — в персисте.
+     * Возвращает (возможно) пересобранные списки для сверки ниже.
+     * Вызывать под anixartSyncMutex; сеть — на IO внутри.
+     */
+    private suspend fun runServerRepairV1(
+        token: String,
+        repo: hd.kinoshka.app.data.repo.AnixartRepository,
+        lists: Map<Int, List<hd.kinoshka.app.data.model.AnixartRelease>>,
+        releaseLists: MutableMap<Int, MutableSet<Int>>
+    ): Map<Int, List<hd.kinoshka.app.data.model.AnixartRelease>> {
+        if (withContext(Dispatchers.IO) { userStateStore.isAnixartServerRepairV1Done() }) return lists
+        val buckets = lists.mapValues { it.value.toMutableList() }.toMutableMap()
+        var repaired = 0
+        for ((releaseId, correctList) in SERVER_REPAIR_V1_TARGET) {
+            val corruptedList = SERVER_REPAIR_V1_CORRUPTED[releaseId] ?: continue
+            val current = buckets.entries.firstOrNull { (_, rs) -> rs.any { it.id == releaseId } }?.key
+            if (current == correctList) continue
+            if (current != null && current != corruptedList) continue
+            if (current == null && corruptedList !in anixartReleaseLists[releaseId].orEmpty()) continue
+            val rel = current?.let { c -> buckets[c]?.firstOrNull { it.id == releaseId } }
+            if (current != null && rel == null) continue
+            var ok = true
+            withContext(Dispatchers.IO) {
+                if (current != null && !repo.removeFromList(token, current, releaseId)) ok = false
+                if (ok && !repo.addToList(token, correctList, releaseId)) ok = false
+            }
+            if (!ok) {
+                KLog.w("AnixartSync", "repairV1: release=$releaseId FAILED, will retry next sync")
+                return buckets
+            }
+            if (current != null) buckets[current]?.removeAll { it.id == releaseId }
+            if (rel != null) buckets.getOrPut(correctList) { mutableListOf() }.add(rel)
+            releaseLists[releaseId] = mutableSetOf(correctList)
+            repaired++
+            KLog.i("AnixartSync", "repairV1: release=$releaseId back to list $correctList")
+        }
+        withContext(Dispatchers.IO) { userStateStore.setAnixartServerRepairV1Done() }
+        if (repaired > 0) KLog.i("AnixartSync", "repairV1: moved back $repaired title(s) to COMPLETED")
+        return buckets
+    }
+
+    /**
+     * Пул списков Anixart (паритет с Shikimori-пулом). Вызывать под anixartSyncMutex.
+     *
+     * У записей Anixart нет меток времени, поэтому вместо LWW по датам — правило baseline:
+     * локальный статус совпадает с последним известным сервером → серверное перенимаем
+     * (adopt: смена на сайте/другом устройстве); локальный разошёлся (явная правка или
+     * незапушенный пуш) → побеждает локальное, его отправит пуш ниже. Пустой baseline
+     * (самый первый пул, персиста ещё нет) — всё считается разошедшимся, как свежие
+     * локальные правки у Shikimori.
+     *
+     * Склейка релиз→аниме — титул + год выхода (Anixart год знает, Shikimori
+     * aired_on — тоже): известное расхождение годов ветоит кандидата на любом
+     * уровне титульного каскада. Иначе сезоны/спешлы под одним названием
+     * схлопываются в первую запись (инцидент 09.09: S2→S1, OVA→TV).
+     */
+    private suspend fun syncAnixartLists(token: String, pushLocalNewer: Boolean, caller: String = "") {
+        val repo = anixartRepository ?: return
+        KLog.d("AnixartSync", "sync start src=$caller")
+        // Сеть — IO: пул на сотни релизов (десятки запросов) на Main давал ANR.
+        var lists = withContext(Dispatchers.IO) { repo.getLists(token).getOrNull() } ?: run {
+            KLog.e("AnixartSync", "Pull failed, keeping local data")
+            return
+        }
+        KLog.i(
+            "AnixartSync",
+            "pull: " + lists.entries.joinToString(" ") { (listId, releases) -> "$listId=${releases.size}" } +
+                " total=${lists.values.sumOf { it.size }}"
+        )
+        // Карты для пуша и матчинга.
+        val releaseLists = mutableMapOf<Int, MutableSet<Int>>()
+        lists.forEach { (listId, releases) ->
+            releases.forEach { release ->
+                releaseLists.getOrPut(release.id) { mutableSetOf() }.add(listId)
+            }
+        }
+        // Baseline — прошлый известный сервер: свежая карта встанет только после сверки,
+        // иначе конфликт «локальное vs серверное» решать не с чем. Персист переживает
+        // рестарт: иначе первый пул видел пустой baseline и любое расхождение пушил
+        // локальным поверх правок сайта/другого устройства.
+        if (anixartReleaseLists.isEmpty()) {
+            anixartReleaseLists =
+                withContext(Dispatchers.IO) { userStateStore.getAnixartListsBaseline() }
+        }
+        val baseline = anixartReleaseLists
+        // Карта и мемоизация тоже переживают рестарт (персист ниже): иначе холодный
+        // старт до построения библиотеки матчил всё мимо и заново жег поиск.
+        if (anixartIdToShiki.isEmpty()) {
+            anixartIdToShiki =
+                withContext(Dispatchers.IO) { userStateStore.getAnixartIdMap() }
+        }
+        if (anixartUnresolvable.isEmpty()) {
+            anixartUnresolvable.addAll(
+                withContext(Dispatchers.IO) { userStateStore.getAnixartUnresolvable() }
+            )
+        }
+        if (anixartPullUnresolvable.isEmpty()) {
+            anixartPullUnresolvable.addAll(
+                withContext(Dispatchers.IO) { userStateStore.getAnixartPullUnresolvable() }
+            )
+        }
+        // Контест пересчитываем каждым пулом с нуля (ниже, в reconcile); персист
+        // нужен точечным пушам между пулами.
+        // Одноразовые догонялки restore 09.09: ремонт сервера + провенанс оболочек.
+        lists = runServerRepairV1(token, repo, lists, releaseLists)
+        withContext(Dispatchers.IO) { userStateStore.backfillImportSourceForRestore() }
+        // Отравленные прошлой склейкой: контест прошлого пула перерезолвится
+        // новыми правилами (годовая сверка) — старые записи карты сносим.
+        val prevContested = withContext(Dispatchers.IO) { userStateStore.getAnixartContested() }
+        if (prevContested.isNotEmpty()) {
+            val poisoned = anixartIdToShiki.filterValues { it in prevContested }.keys
+            if (poisoned.isNotEmpty()) {
+                val cleaned = anixartIdToShiki.toMutableMap()
+                poisoned.forEach { cleaned.remove(it) }
+                anixartIdToShiki = cleaned
+                KLog.i(
+                    "AnixartSync",
+                    "pull: dropped ${poisoned.size} contested idmap entrie(s) for re-resolve"
+                )
+            }
+        }
+        // Счётчик годовых вето (фазы 1.5 и 2).
+        val vetoes = YearVetoes()
+        // Эффективные локальные статусы rate-backed тайтлов (профиля нет, рейт
+        // Shikimori есть): пуш и сверка пула их иначе не видят. Снапшот чужого
+        // аккаунта не берём, чтобы не залить чужое на Anixart.
+        val rateStatusByShiki: Map<Int, UserFilmStatus> =
+            withContext(Dispatchers.IO) {
+                val snapshot = userStateStore.getShikimoriRatesSnapshot()
+                val authUserId = uiState.shikimoriAuthState.userId
+                if (snapshot.rates.isEmpty() || (authUserId > 0 && snapshot.userId != authUserId)) {
+                    emptyMap()
+                } else {
+                    snapshot.rates.mapNotNull { rate ->
+                        if (rate.targetId <= 0) return@mapNotNull null
+                        val st = shikiRateStatusToUserStatus(rate.status) ?: return@mapNotNull null
+                        rate.targetId to st
+                    }.toMap()
+                }
+            }
+        // Матчинг релизов с библиотекой: shikimori_id, карта прошлых резолюций,
+        // иначе ТОЧНОЕ название. Нечёткого матчинга здесь нет осознанно: правило
+        // «wanted начинается с кандидата» схлопывало S2-релизы в S1-записи
+        // («One Punch Man 2nd Season»→S1, инцидент 09.09) и травило id-карту.
+        // Несматченное уходит в поисковый каскад с годовой сверкой.
+        // Контест пересчитываем с нуля каждый пул (персист — для точечных пушей между пулами).
+        anixartContestedShiki.clear()
+        // Релиз, не сматчившийся ни с чем из библиотеки (новый тайтл с сайта/другого
+        // устройства), отдельно добираем поиском Shikimori (фаза 2): иначе он не
+        // импортируется никогда — матчить его против библиотеки не с чем.
+        val libraryAnime = uiState.library.filter { it.kinopoiskId >= ANIME_ID_OFFSET }
+        val libraryIdSet = libraryAnime.mapTo(mutableSetOf()) { it.kinopoiskId }
+        val profilesById = withContext(Dispatchers.IO) { userStateStore.getProfiles() }
+            .associateBy { it.kinopoiskId }
+        val idMap = mutableMapOf<Int, Int>()
+        val toCreate = mutableListOf<UserFilmProfile>()
+        // shiki -> первый встреченный в пуле статус: повтор с другим статусом = контест.
+        val seenShikiStatus = mutableMapOf<Int, hd.kinoshka.app.data.local.UserFilmStatus>()
+        fun notePullStatus(shikimoriId: Int, status: hd.kinoshka.app.data.local.UserFilmStatus) {
+            val prevPullStatus = seenShikiStatus[shikimoriId]
+            if (prevPullStatus != null && prevPullStatus != status) {
+                if (anixartContestedShiki.add(shikimoriId)) {
+                    KLog.d(
+                        "AnixartSync",
+                        "contested: shikimoriId=$shikimoriId statuses $prevPullStatus vs $status"
+                    )
+                }
+            } else {
+                seenShikiStatus.putIfAbsent(shikimoriId, status)
+            }
+        }
+        class PullTally { var adopted = 0; var diverged = 0 }
+        suspend fun reconcilePulledRelease(
+            releaseId: Int,
+            shikimoriId: Int,
+            status: hd.kinoshka.app.data.local.UserFilmStatus,
+            way: String,
+            titleFallback: String,
+            subtitleFallback: String?,
+            posterFallback: String?,
+            tally: PullTally
+        ) {
+            // Контест: тот же shiki уже встречался в этом пуле с другим статусом
+            // (дубли релизов по спискам). Пуш такие shiki не трогает никогда.
+            notePullStatus(shikimoriId, status)
+            idMap[releaseId] = shikimoriId
+            val kpId = shikimoriId + ANIME_ID_OFFSET
+            val existing = profilesById[kpId]
+            if (!libraryIdSet.contains(kpId) && existing?.status == null) {
+                toCreate.add(
+                    UserFilmProfile(
+                        kinopoiskId = kpId,
+                        title = titleFallback,
+                        subtitle = subtitleFallback,
+                        posterUrl = posterFallback,
+                        ratingText = null,
+                        type = "ANIME",
+                        isRussian = false,
+                        status = status,
+                        userRating = null,
+                        note = null,
+                        // Импортная оболочка: серверное содержимое, пуши молчат,
+                        // пока не коснётся явная правка (см. importSource).
+                        importSource = "anixart",
+                        watchedSeasons = null,
+                        watchedEpisodes = null,
+                        totalEpisodesInSeason = null,
+                        totalSeasons = null,
+                        totalEpisodes = null,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            } else if (existing != null && existing.status != null && existing.status != status) {
+                // Конфликт статусов: untouched (совпадает с baseline) → adopt сервера,
+                // иначе локальное новее по смыслу → оставляем, пуш ниже отправит его.
+                val curList = existing.status.toAnixartList()
+                if (curList in baseline[releaseId].orEmpty()) {
+                    if (shikimoriId in anixartContestedShiki) {
+                        // Контест: побеждает ПЕРВЫЙ статус пула (списки идут 1→5,
+                        // активное выше завершённого). Поздние списки локальное
+                        // не перетирают — иначе «Смотрю» вечно проигрывало
+                        // «Завершено» дубля (инцидент 09.09: 6 тайтлов).
+                        KLog.d(
+                            "AnixartSync",
+                            "adopt: shikimoriId=$shikimoriId release=$releaseId " +
+                                "SKIP contested, keep first (${existing.status} vs $status)"
+                        )
+                    } else {
+                        userStateStore.setFeedQuickStatus(kpId, existing.title, existing.posterUrl, status)
+                        tally.adopted++
+                        KLog.d(
+                            "AnixartSync",
+                            "adopt: shikimoriId=$shikimoriId release=$releaseId " +
+                                "status(${existing.status} -> $status) via=$way"
+                        )
+                    }
+                } else if (existing.importSource != null) {
+                    // Импортная оболочка никогда не «новее сервера»: расхождение —
+                    // stale-импорт, а не правка (иначе diverged+mute цементирует
+                    // неверный статус навсегда — инцидент 09.09: 6 тайтлов «Смотрю»
+                    // показывались «Завершено»). Контест → чиним к первому статусу
+                    // пула (активный список); одиночный → к серверному.
+                    val fix = if (shikimoriId in anixartContestedShiki) {
+                        seenShikiStatus[shikimoriId]
+                    } else {
+                        status
+                    }
+                    if (fix != null && fix != existing.status) {
+                        userStateStore.setFeedQuickStatus(kpId, existing.title, existing.posterUrl, fix)
+                        tally.adopted++
+                        KLog.d(
+                            "AnixartSync",
+                            "adopt: shikimoriId=$shikimoriId release=$releaseId " +
+                                "stale-import fix (${existing.status} -> $fix) via=$way"
+                        )
+                    } else {
+                        tally.diverged++
+                        KLog.d(
+                            "AnixartSync",
+                            "adopt: shikimoriId=$shikimoriId release=$releaseId SKIP diverged " +
+                                "local=${existing.status} server=$status, will push local"
+                        )
+                    }
+                }
+            } else if (existing?.status == null) {
+                // Профиля нет (или он без статуса), но тайтл уже в библиотеке через
+                // рейт Shikimori: эффективное локальное = статус рейта. То же правило
+                // baseline: untouched → adopt сервера (профиль создаёт
+                // setFeedQuickStatus, дальше его подхватит обычный пуш Shikimori
+                // через verify-gate), diverged → пуш ниже отправит состояние рейта.
+                val rateStatus = rateStatusByShiki[shikimoriId]
+                if (rateStatus != null && rateStatus != status) {
+                    val curList = rateStatus.toAnixartList()
+                    if (curList in baseline[releaseId].orEmpty()) {
+                        if (shikimoriId in anixartContestedShiki) {
+                            KLog.d(
+                                "AnixartSync",
+                                "adopt: shikimoriId=$shikimoriId release=$releaseId " +
+                                    "SKIP contested, keep first (rate $rateStatus vs $status)"
+                            )
+                        } else {
+                            userStateStore.setFeedQuickStatus(kpId, titleFallback, posterFallback, status)
+                            tally.adopted++
+                            KLog.d(
+                                "AnixartSync",
+                                "adopt: shikimoriId=$shikimoriId release=$releaseId " +
+                                    "rate-backed status($rateStatus -> $status) via=$way"
+                            )
+                        }
+                    } else {
+                        tally.diverged++
+                        KLog.d(
+                            "AnixartSync",
+                            "adopt: shikimoriId=$shikimoriId release=$releaseId SKIP diverged " +
+                                "rate-backed local=$rateStatus server=$status, will push rate"
+                        )
+                    }
+                }
+            }
+        }
+        data class PullCounts(val byId: Int, val exact: Int, val fuzzy: Int, val unmatched: Int)
+        // Матчинг и сверка — на Default: нечёткий скоринг сотен релизов по сотням
+        // кандидатов жрёт CPU (тот же ANR). Кандидаты нормализуются один раз.
+        // Несматченные релизы собираем для фазы 2 (поиск Shikimori на IO).
+        val unmatchedReleases = mutableListOf<Pair<Int, hd.kinoshka.app.data.model.AnixartRelease>>()
+        val tally1 = PullTally()
+        var knownMiss = 0
+        val pass1 = withContext(Dispatchers.Default) {
+            val matcher = hd.kinoshka.app.data.source.TitleMatching
+            val titleToShiki = mutableMapOf<String, Int>()
+            libraryAnime.forEach { item ->
+                titleToShiki[matcher.normalizeTitle(item.title)] = item.kinopoiskId - ANIME_ID_OFFSET
+            }
+            // Нечёткого матчинга здесь нет (см. комментарий выше): кандидаты для него
+            // больше не готовим.
+            var byId = 0; var exact = 0; var fuzzy = 0; var unmatched = 0
+            // Предпроход контеста по уже-известным склейкам (byId/idmap/exact):
+            // решения adopt/diverged ниже должны знать о дублях ДО первой сверки
+            // (списки идут 1→5, а конфликт виден лишь на втором вхождении).
+            // Поисковые склейки добавятся по ходу фаз (тот же notePullStatus).
+            lists.forEach { (listId, releases) ->
+                val preStatus = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: return@forEach
+                releases.forEach { release ->
+                    val preShiki = release.shikimoriId?.takeIf { it > 0 }
+                        ?: anixartIdToShiki[release.id]?.takeIf { it > 0 }
+                        ?: listOfNotNull(release.titleRu, release.titleOriginal, release.titleEn)
+                            .firstNotNullOfOrNull { titleToShiki[matcher.normalizeTitle(it)] }
+                        ?: return@forEach
+                    notePullStatus(preShiki, preStatus)
+                }
+            }
+            lists.forEach { (listId, releases) ->
+                val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: return@forEach
+                releases.forEach { release ->
+                    var shikimoriId = release.shikimoriId?.takeIf { it > 0 }
+                    var way = "byId"
+                    if (shikimoriId == null) {
+                        // Карта прошлых резолюций (персист): повторный restore и ресты
+                        // без единого поиска.
+                        val mapped = anixartIdToShiki[release.id]?.takeIf { it > 0 }
+                        if (mapped != null) {
+                            shikimoriId = mapped
+                            way = "idmap"
+                        }
+                    }
+                    if (shikimoriId == null) {
+                        val titles = listOfNotNull(release.titleRu, release.titleOriginal, release.titleEn)
+                        shikimoriId = titles.firstNotNullOfOrNull { titleToShiki[matcher.normalizeTitle(it)] }
+                        if (shikimoriId != null) {
+                            way = "exact"
+                        }
+                    }
+                    if (shikimoriId == null) {
+                        if (release.id in anixartPullUnresolvable) {
+                            // Честный промах с прошлого синка: поиск Shikimori уже
+                            // отработал вхолостую, повтор жег бы кап резолюций.
+                            knownMiss++
+                            return@forEach
+                        }
+                        unmatched++
+                        unmatchedReleases.add(listId to release)
+                        return@forEach
+                    }
+                    when (way) {
+                        "byId", "idmap" -> byId++
+                        "exact" -> exact++
+                        else -> fuzzy++
+                    }
+                    reconcilePulledRelease(
+                        release.id, shikimoriId, status, way,
+                        release.titleRu ?: release.titleOriginal ?: release.titleEn ?: "Без названия",
+                        null, null, tally1
+                    )
+                }
+            }
+            PullCounts(byId, exact, fuzzy, unmatched)
+        }
+        // Фаза 1.5 (IO): детали релизов Anixart пачкой параллельно — полный объект
+        // иногда несёт shikimori_id (в списках он всегда 0). Но id Anixart —
+        // франшизного уровня (S2-релиз ссылается на S1-запись, инцидент 09.09),
+        // поэтому принимаем только с годовой сверкой: батч brief'ов Shikimori,
+        // год сошёлся (или неизвестен) — берём; разошёлся — в титульный каскад.
+        // Нет id — тихо дальше на поиск, без мемоизации.
+        var detailHits = 0
+        val detailTally = PullTally()
+        if (unmatchedReleases.isNotEmpty()) {
+            val detailOutcomes = withContext(Dispatchers.IO) {
+                val semaphore = kotlinx.coroutines.sync.Semaphore(5)
+                unmatchedReleases.map { (listId, release) ->
+                    async {
+                        semaphore.acquire()
+                        try {
+                            Triple(
+                                listId,
+                                release,
+                                runCatching { repo.releaseInfo(token, release.id) }.getOrNull()
+                            )
+                        } finally {
+                            semaphore.release()
+                        }
+                    }
+                }.awaitAll()
+            }
+            // Годовая сверка id Anixart одним батчем (50/запрос).
+            val detailPairs = detailOutcomes.mapNotNull { (listId, release, info) ->
+                val sid = info?.shikimoriId?.takeIf { it > 0 } ?: return@mapNotNull null
+                Triple(listId, release, sid)
+            }
+            val briefById = mutableMapOf<Int, hd.kinoshka.app.data.model.ShikimoriAnimeItem>()
+            for (chunk in detailPairs.map { it.third }.distinct().chunked(500)) {
+                briefById += fetchAnimeBrief(chunk)
+            }
+            val detailDone = mutableSetOf<Int>()
+            for ((listId, release, sid) in detailPairs) {
+                val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: continue
+                val anixYear = release.releaseYear()
+                val shikiYear = briefById[sid]?.airedOn?.take(4)?.toIntOrNull()
+                if (anixYear != null && shikiYear != null && anixYear != shikiYear) {
+                    vetoes.veto(release.id)
+                    KLog.d(
+                        "AnixartSync",
+                        "pull-resolve: release=${release.id} shikimoriId=$sid " +
+                            "detail year-veto (anixart=$anixYear shiki=$shikiYear)"
+                    )
+                    continue
+                }
+                val info = detailOutcomes.firstOrNull { it.second.id == release.id }?.third
+                val title = info?.titleRu ?: info?.titleOriginal ?: info?.titleEn
+                    ?: release.titleRu ?: release.titleOriginal ?: release.titleEn
+                    ?: "Без названия"
+                detailDone.add(release.id)
+                detailHits++
+                reconcilePulledRelease(release.id, sid, status, "anixart-detail", title, null, null, detailTally)
+            }
+            if (detailDone.isNotEmpty()) unmatchedReleases.removeAll { it.second.id in detailDone }
+            KLog.i("AnixartSync", "pull: detail-resolve hits=$detailHits of ${detailOutcomes.size}")
+        }
+        val remainingUnmatched = unmatchedReleases.size
+        // Фаза 2 (IO): обратная резолюция несматченных через поиск Shikimori —
+        // только точный матч (импорт чужого тайтла хуже пропуска).
+        // Догоняющий режим: несматченных в разы больше капа (свежий логин, вайп) —
+        // резолвим всё за один синк, иначе восстановление ~850 тайтлов тянулось бы
+        // ~20 foreground-синков по 40. Steady-state (единицы новинок) идёт старым капом.
+        val catchUp = remainingUnmatched > MAX_ANIXART_PULL_RESOLVE_PER_SYNC
+        val pullResolveLimit =
+            if (catchUp) Int.MAX_VALUE else MAX_ANIXART_PULL_RESOLVE_PER_SYNC
+        if (catchUp) {
+            KLog.i(
+                "AnixartSync",
+                "pull: catch-up mode, resolving $remainingUnmatched unmatched " +
+                    "(knownMiss=$knownMiss detailHits=$detailHits skipped)"
+            )
+        }
+        anixartReleaseLists = releaseLists
+        var createdTotal = 0
+        var flushedSinceUiRefresh = 0
+        suspend fun flushPullProgress() {
+            // Карту пула сливаем с ранее зарезолвленными (поиск каталога): иначе записи,
+            // добавленные пушем, терялись бы каждый синк и поиск повторялся бы вечно.
+            // releaseLists при этом всегда свежие — решения пуша сверяются с ними.
+            // Слияние ДО персиста: иначе резолюции текущего пула ложились бы на диск
+            // только следующим синком.
+            val mergedIdMap = idMap.toMutableMap()
+            anixartIdToShiki.forEach { (anixartId, shikimoriId) ->
+                mergedIdMap.putIfAbsent(anixartId, shikimoriId)
+            }
+            anixartIdToShiki = mergedIdMap
+            idMap.clear()
+            withContext(Dispatchers.IO) {
+                userStateStore.setAnixartListsBaseline(releaseLists)
+                userStateStore.setAnixartIdMap(anixartIdToShiki)
+                userStateStore.setAnixartUnresolvable(anixartUnresolvable)
+                userStateStore.setAnixartPullUnresolvable(anixartPullUnresolvable)
+                userStateStore.setAnixartContested(anixartContestedShiki)
+                if (toCreate.isNotEmpty()) {
+                    userStateStore.addProfilesIfAbsent(toCreate)
+                }
+            }
+            createdTotal += toCreate.size
+            flushedSinceUiRefresh += toCreate.size
+            toCreate.clear()
+            // Catch-up видно сразу: библиотека добирается чанками (~200), а не в конце.
+            if (catchUp && flushedSinceUiRefresh >= 200) {
+                flushedSinceUiRefresh = 0
+                val rebuilt = withContext(Dispatchers.Default) { buildLibraryItems() }
+                uiState = uiState.copy(library = rebuilt)
+            }
+        }
+        var resolved = 0
+        val tally2 = PullTally()
+        var firstSearch = true
+        var sinceFlush = 0
+        for ((listId, release) in unmatchedReleases.take(pullResolveLimit)) {
+            if (release.id <= 0) continue
+            val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: continue
+            if (!firstSearch) kotlinx.coroutines.delay(300L)
+            firstSearch = false
+            val hit = searchShikimoriForAnixart(release, release.releaseYear(), vetoes) ?: continue
+            resolved++
+            KLog.d(
+                "AnixartSync",
+                "pull-resolve: release=${release.id} shikimoriId=${hit.shikimoriId} via shiki-search"
+            )
+            reconcilePulledRelease(
+                release.id, hit.shikimoriId, status, "shiki-search",
+                hit.title, hit.subtitle, hit.poster, tally2
+            )
+            // Чанковый flush: длинный catch-up переживает убийство процесса —
+            // следующий синк продолжит с созданных профилей, а не с нуля.
+            if (++sinceFlush >= 50) {
+                flushPullProgress()
+                sinceFlush = 0
+            }
+        }
+        flushPullProgress()
+        val adopted = tally1.adopted + tally2.adopted + detailTally.adopted
+        val diverged = tally1.diverged + tally2.diverged + detailTally.diverged
+        // Диагностика контеста: реальные названия релизов из пула (без них разбор
+        // «дубль vs разные сезоны» слепой — id одни, а контент может различаться).
+        if (anixartContestedShiki.isNotEmpty()) {
+            val relById = lists.values.flatten().associateBy { it.id }
+            for (sid in anixartContestedShiki.sorted()) {
+                val rids = anixartIdToShiki.filterValues { it == sid }.keys.sorted()
+                for (rid in rids) {
+                    val r = relById[rid]
+                    KLog.i(
+                        "AnixartSync",
+                        "contested-detail: shikimoriId=$sid release=$rid lists=${releaseLists[rid]} " +
+                            "ru=${r?.titleRu} orig=${r?.titleOriginal} en=${r?.titleEn} " +
+                            "year=${r?.yearRaw} season=${r?.seasonRaw} eps=${r?.episodesTotalRaw} country=${r?.countryRaw}"
+                    )
+                }
+            }
+        }
+        if (createdTotal > 0 || adopted > 0) {
+            val rebuilt = withContext(Dispatchers.Default) { buildLibraryItems() }
+            uiState = uiState.copy(library = rebuilt)
+        }
+        KLog.i(
+            "AnixartSync",
+            "pull: matched byId=${pass1.byId} exact=${pass1.exact} fuzzy=${pass1.fuzzy} " +
+                "resolved=$resolved unmatched=${remainingUnmatched - resolved} " +
+                "knownMiss=$knownMiss detailHits=$detailHits yearVeto=${vetoes.releases.size} " +
+                "created=$createdTotal " +
+                "adopted=$adopted diverged=$diverged"
+        )
+        // Полный пул только что отработал — штампуем троттл foreground-синка:
+        // иначе ON_RESUME следом за init/логином гнал второй полный пул
+        // (померяно в проде: два пула по ~30 запросов с разницей 10 c).
+        lastAnixartSyncMs = System.nanoTime() / 1_000_000L
+        // Catch-up только что массово импортировал с сервера: локальные «новее»
+        // из этого синка — эхо импорта, пушить нечего (следующий обычный синк
+        // отправит настоящие правки, если они появятся).
+        if (pushLocalNewer && !catchUp) pushDirtyAnixartLists(token)
+        // Импортированные оболочки (статус без подробностей) добираем из Shikimori.
+        ensureLibraryAnimeMeta()
+    }
+
+    /** Хит обратного поиска Shikimori для релиза Anixart (точный матч названия). */
+    private data class ShikiPullHit(
+        val shikimoriId: Int,
+        val title: String,
+        val subtitle: String?,
+        val poster: String?
+    )
+
+    /** Счётчик годовых вето за пул (сверка сезонов Anixart↔Shikimori). */
+    private class YearVetoes {
+        var checks = 0
+        val releases = mutableSetOf<Int>()
+        fun veto(releaseId: Int) {
+            checks++
+            releases.add(releaseId)
+        }
+    }
+
+    /**
+     * Обратная резолюция: shikimoriId для релиза Anixart через поиск Shikimori.
+     * Каскад точного нормализованного матча: сначала полное название
+     * (name/russian результатов любому названию релиза), затем алиасы сезонных
+     * хвостов («TV-2»→«2nd Season» — сезон сохраняют), затем беспробельное
+     * («To aru»→«Toaru»), затем обратный префикс («Maou Gakuin» vs полное имя
+     * с субтитром; хвост-«продолжение» — отказ), затем алиас в кавычках
+     * («Shomin Sample»), затем ядро без маркеров («K-On! 2»→«K-On»),
+     * затем префикс («Sakugan» vs «Sakugan Labyrinth Marker»).
+     * Фолбэки — только против результатов поиска ПОЛНОГО запроса, так что
+     * релевантность Shikimori остаётся гардом, а импорт чужого тайтла
+     * по-прежнему хуже пропуска. Честный «не нашли» мемоизируем
+     * в [anixartPullUnresolvable] (сессия), ошибки сети — нет, их повторит синк.
+     * Вызывать под anixartSyncMutex; сеть — на IO.
+     */
+    private suspend fun searchShikimoriForAnixart(
+        release: hd.kinoshka.app.data.model.AnixartRelease,
+        expectedYear: Int? = null,
+        vetoes: YearVetoes? = null
+    ): ShikiPullHit? {
+        if (release.id in anixartPullUnresolvable) return null
+        val matcher = hd.kinoshka.app.data.source.TitleMatching
+        val queries = listOfNotNull(release.titleOriginal, release.titleRu, release.titleEn)
+            .map { it.trim() }.filter { it.isNotEmpty() }.distinct().take(3)
+        if (queries.isEmpty()) return null
+        val normed = queries.map { matcher.normalizeTitle(it) }.filter { it.isNotEmpty() }
+        if (normed.isEmpty()) return null
+        val normedCores = normed.map { matcher.stripDecorativeMarkers(it) }
+            .filter { it.isNotEmpty() }.toSet()
+        // Беспробельные слепки для класса «To aru»→«Toaru»: точное равенство
+        // modulo пробелы, сезонность не трогает.
+        val normedSolid = normed.map { it.replace(" ", "") }
+            .filter { it.length >= 8 }.toSet()
+        fun tryHit(item: hd.kinoshka.app.data.model.ShikimoriAnimeItem): ShikiPullHit? {
+            // Годовая сверка: Anixart год выхода знает (17/17 сверенных), Shikimori
+            // aired_on — тоже. Известное расхождение = разные сезоны/записи:
+            // пропускаем кандидата (veto), а не импортируем чужое. Неизвестный
+            // год с любой стороны — не вето (пропускаем).
+            val itemYear = item.airedOn?.take(4)?.toIntOrNull()
+            if (expectedYear != null && itemYear != null && itemYear != expectedYear) {
+                vetoes?.veto(release.id)
+                KLog.d(
+                    "AnixartSync",
+                    "pull-resolve: release=${release.id} shikimoriId=${item.id} " +
+                        "year-veto (anixart=$expectedYear shiki=$itemYear)"
+                )
+                return null
+            }
+            return ShikiPullHit(
+                shikimoriId = item.id,
+                title = item.russian?.takeIf { it.isNotBlank() }
+                    ?: item.name?.takeIf { it.isNotBlank() }
+                    ?: release.titleRu ?: release.titleOriginal ?: release.titleEn ?: "Без названия",
+                subtitle = item.name,
+                poster = item.posterUrl
+            )
+        }
+        var searchedOk = false
+        // Проход 1: полное точное по всем запросам (результаты копим для прохода 2).
+        val seenHits = linkedMapOf<Int, hd.kinoshka.app.data.model.ShikimoriAnimeItem>()
+        for (query in queries) {
+            val hits = withContext(Dispatchers.IO) {
+                runCatching {
+                    animeRepository.search(query = query, censored = false, limit = 10)
+                }.getOrNull()
+            } ?: continue
+            searchedOk = true
+            for (item in hits) {
+                if (item.id <= 0) continue
+                seenHits.putIfAbsent(item.id, item)
+                val itemTitles = listOfNotNull(item.name, item.russian)
+                    .map { matcher.normalizeTitle(it) }
+                if (itemTitles.any { it.isNotEmpty() && it in normed }) {
+                    tryHit(item)?.let { return it }
+                }
+            }
+        }
+        // Проход 2: алиасы сезонных хвостов («TV-2»→«2nd Season») — сезон сохраняют,
+        // схлопнуть S2 в S1 не могут. Затем 2б (spaceless), 2в (reverse-prefix),
+        // 2г (quoted), 2д (ядро), 2е (префикс) — см. ниже.
+        val normedAliases = normed.flatMap { matcher.seasonAliases(it) }.toSet()
+        if (normedAliases.isNotEmpty()) {
+            for (item in seenHits.values) {
+                if (item.id <= 0) continue
+                val itemTitles = listOfNotNull(item.name, item.russian)
+                    .map { matcher.normalizeTitle(it) }
+                if (itemTitles.any { it.isNotEmpty() && it in normedAliases }) {
+                    KLog.d(
+                        "AnixartSync",
+                        "pull-resolve: release=${release.id} shikimoriId=${item.id} via season-alias match"
+                    )
+                    tryHit(item)?.let { return it }
+                }
+            }
+        }
+        // Проход 2б: беспробельное точное («To aru»→«Toaru»).
+        for (item in seenHits.values) {
+            if (item.id <= 0) continue
+            val itemSolid = listOfNotNull(item.name, item.russian)
+                .map { matcher.normalizeTitle(it).replace(" ", "") }
+            if (itemSolid.any { it.isNotEmpty() && it in normedSolid }) {
+                KLog.d(
+                    "AnixartSync",
+                    "pull-resolve: release=${release.id} shikimoriId=${item.id} via spaceless match"
+                )
+                tryHit(item)?.let { return it }
+            }
+        }
+        // Проход 2в: обратный префикс (запрос — начало имени: «Maou Gakuin» vs
+        // полное «Maou Gakuin: Shijou Saikyou …»). Хвост-«продолжение» — отказ
+        // (см. TitleMatching.isSequelTail), хвост-субтитр — матч.
+        // Дальше фолбэки идут от сильного к слабому: ядро (2г), затем префикс (2д).
+        for (item in seenHits.values) {
+            if (item.id <= 0) continue
+            val itemTitles = listOfNotNull(item.name, item.russian)
+                .map { matcher.normalizeTitle(it) }
+            val reverseHit = itemTitles.any { t ->
+                t.isNotEmpty() && (t.length >= 6 || t.any { c -> c.code >= 0x2E80 }) &&
+                    normed.any { q ->
+                        t.startsWith("$q ") && !matcher.isContinuationTail(t.removePrefix(q).trim())
+                    }
+            }
+            if (reverseHit) {
+                KLog.d(
+                    "AnixartSync",
+                    "pull-resolve: release=${release.id} shikimoriId=${item.id} via reverse-prefix match"
+                )
+                tryHit(item)?.let { return it }
+            }
+        }
+        // Проход 2г: алиас в кавычках официального имени («… "Shomin Sample" …»).
+        // Кавычки в названиях маркируют обиходное имя — точное равенство с запросом.
+        for (item in seenHits.values) {
+            if (item.id <= 0) continue
+            // Кавычки гибнут в нормализации — извлекаем из СЫРОГО имени.
+            val quoted = listOfNotNull(item.name, item.russian)
+                .flatMap { matcher.quotedAliases(it) }
+                .toSet()
+            if (quoted.isEmpty()) continue
+            val quotedHit = normed.any { it in quoted }
+            if (quotedHit) {
+                KLog.d(
+                    "AnixartSync",
+                    "pull-resolve: release=${release.id} shikimoriId=${item.id} via quoted-alias match"
+                )
+                tryHit(item)?.let { return it }
+            }
+        }
+        // Проход 2д: ядро без декоративных маркеров — только по уже найденному.
+        for (item in seenHits.values) {
+            val itemTitles = listOfNotNull(item.name, item.russian)
+                .map { matcher.normalizeTitle(it) }
+            if (itemTitles.any { it.isNotEmpty() && it in normedCores }) {
+                KLog.d(
+                    "AnixartSync",
+                    "pull-resolve: release=${release.id} shikimoriId=${item.id} via stripped-core match"
+                )
+                tryHit(item)?.let { return it }
+            }
+        }
+        // Проход 2е: префикс (кандидат — начало запроса: «Sakugan» vs
+        // «Sakugan Labyrinth Marker»). Длина ядра ≥6 (≥3 для CJK), иначе короткие
+        // слова («C», «K») давали бы ложные срабатывания.
+        for (item in seenHits.values) {
+            val itemTitles = listOfNotNull(item.name, item.russian)
+                .map { matcher.normalizeTitle(it) }
+            val prefixHit = itemTitles.any { t ->
+                t.isNotEmpty() && (t.length >= 6 || t.any { c -> c.code >= 0x2E80 }) &&
+                    normed.any { q -> q.startsWith("$t ") }
+            }
+            if (prefixHit) {
+                KLog.d(
+                    "AnixartSync",
+                    "pull-resolve: release=${release.id} shikimoriId=${item.id} via prefix match"
+                )
+                tryHit(item)?.let { return it }
+            }
+        }
+        if (searchedOk) {
+            anixartPullUnresolvable.add(release.id)
+            // Диагностика для будущих промахов: что искали (нормы), что вернул топ
+            // (сырьём и нормами — расхождение видно посимвольно) — без этого разбор
+            // «почему не сматчилось» слепой.
+            val topRaw = seenHits.values.take(3).mapNotNull { it.name ?: it.russian }
+            val topNorm = topRaw.map { matcher.normalizeTitle(it) }
+            KLog.d(
+                "AnixartSync",
+                "pull-resolve: release=${release.id} no exact shiki match, skip " +
+                    "queries=$normed top=$topRaw topNorm=$topNorm"
+            )
+        }
+        return null
+    }
+
+    /**
+     * Резолюция релиза Anixart для локального тайтла: сначала карты пула, иначе
+     * поиск по каталогу (точный матч). Успех сразу кладём в карты, честный
+     * «нет в каталоге» — в сессионное множество; ошибки сети не мемоизируем.
+     * Вызывать под anixartSyncMutex; сеть — на IO.
+     */
+    private suspend fun resolveAnixartId(
+        token: String?,
+        shikimoriId: Int,
+        extraTitles: List<String?> = emptyList(),
+        nameCache: Map<Int, hd.kinoshka.app.data.local.ShikimoriAnimeCache>? = null
+    ): Int? {
+        anixartIdToShiki.entries.firstOrNull { it.value == shikimoriId }?.key?.let { return it }
+        if (shikimoriId in anixartUnresolvable) return null
+        val repo = anixartRepository ?: return null
+        val cached = nameCache?.get(shikimoriId)
+            ?: withContext(Dispatchers.IO) { userStateStore.getShikimoriAnimeCache()[shikimoriId] }
+        val titles = listOfNotNull(cached?.name, cached?.russian) + extraTitles.filterNotNull()
+        val outcome = withContext(Dispatchers.IO) { repo.findReleaseId(token, titles, cached?.year) }
+        if (outcome.releaseId != null && outcome.releaseId > 0) {
+            val updated = anixartIdToShiki.toMutableMap()
+            updated[outcome.releaseId] = shikimoriId
+            anixartIdToShiki = updated
+            KLog.d(
+                "AnixartSync",
+                "resolve: shikimoriId=$shikimoriId release=${outcome.releaseId} via catalog search"
+            )
+            return outcome.releaseId
+        }
+        if (outcome.searchedOk && !outcome.yearVetoed) {
+            anixartUnresolvable.add(shikimoriId)
+            KLog.d("AnixartSync", "resolve: shikimoriId=$shikimoriId no exact catalog match, skip")
+        }
+        if (outcome.yearVetoed) {
+            // Год не сошёлся: не мемоизируем (как сеть — повторит следующий синк).
+            KLog.d("AnixartSync", "resolve: shikimoriId=$shikimoriId catalog year-veto, retry later")
+        }
+        return null
+    }
+
+    /**
+     * Пуш локальных статусов в списки Anixart: переносы сматченных при пуле тайтлов
+     * + добавление несматченных (резолюция через поиск каталога — иначе
+     * Shikimori-тайтлы никогда не доедут до Anixart и общего списка не получится).
+     * Удаление из чужих списков + добавление в целевой — перенос между списками.
+     * Вызывать под anixartSyncMutex. Сеть — на IO (пачка переносов на Main вешала UI).
+     */
+    private suspend fun pushDirtyAnixartLists(token: String, onlyKpId: Int? = null) {
+        val repo = anixartRepository ?: return
+        // Контест для точечных пушей между пулами (пул держит свежий in-memory).
+        if (anixartContestedShiki.isEmpty()) {
+            anixartContestedShiki.addAll(withContext(Dispatchers.IO) { userStateStore.getAnixartContested() })
+        }
+        if (pushingAnixart) return
+        pushingAnixart = true
+        try {
+            val shikiToAnixart = mutableMapOf<Int, Int>()
+            anixartIdToShiki.forEach { (anixartId, shikimoriId) ->
+                shikiToAnixart.putIfAbsent(shikimoriId, anixartId)
+            }
+            // Один тайтл — несколько релизов (сезоны/спешлы отдельными записями):
+            // переносим каждый, иначе дубли вечно числятся diverged.
+            val releasesByShiki = mutableMapOf<Int, MutableList<Int>>()
+            anixartIdToShiki.forEach { (anixartId, shikimoriId) ->
+                releasesByShiki.getOrPut(shikimoriId) { mutableListOf() }.add(anixartId)
+            }
+            var pushed = 0
+            var resolved = 0
+            var rateOnlyPushed = 0
+            var ops = 0
+            val nameCache = withContext(Dispatchers.IO) { userStateStore.getShikimoriAnimeCache() }
+            // Кандидаты пуша: профили + rate-backed (рейт Shikimori без профиля —
+            // раньше были невидимы пушу, ~850 тайтлов никогда не доезжали до Anixart).
+            // Активные статусы первыми; take() больше нет — голодания хвоста нет,
+            // сеть лимитирует только бюджет операций.
+            data class AnixartPushCandidate(
+                val shikimoriId: Int,
+                val status: UserFilmStatus,
+                val extraTitles: List<String>,
+                val fromRate: Boolean
+            )
+            fun statusPushPriority(s: UserFilmStatus): Int = when (s) {
+                UserFilmStatus.WATCHING, UserFilmStatus.PLANNED,
+                UserFilmStatus.ON_HOLD, UserFilmStatus.REWATCHING -> 0
+                UserFilmStatus.COMPLETED -> 1
+                UserFilmStatus.DROPPED -> 2
+            }
+            val storedProfiles = withContext(Dispatchers.IO) { userStateStore.getProfiles() }
+            val profileByShiki = storedProfiles
+                .filter { it.kinopoiskId >= ANIME_ID_OFFSET && it.status != null }
+                .associateBy { it.kinopoiskId - ANIME_ID_OFFSET }
+            val rateOnlyStatuses = withContext(Dispatchers.IO) {
+                val snapshot = userStateStore.getShikimoriRatesSnapshot()
+                val authUserId = uiState.shikimoriAuthState.userId
+                if (snapshot.rates.isEmpty() || (authUserId > 0 && snapshot.userId != authUserId)) {
+                    emptyList()
+                } else {
+                    snapshot.rates.mapNotNull { rate ->
+                        if (rate.targetId <= 0 || rate.targetId in profileByShiki) return@mapNotNull null
+                        val st = shikiRateStatusToUserStatus(rate.status) ?: return@mapNotNull null
+                        rate.targetId to st
+                    }
+                }
+            }
+            val allCandidates = (
+                profileByShiki.map { (sid, p) ->
+                    AnixartPushCandidate(sid, p.status!!, listOfNotNull(p.title, p.subtitle), false)
+                } + rateOnlyStatuses.map { (sid, st) ->
+                    AnixartPushCandidate(sid, st, emptyList(), true)
+                }
+                ).filter { onlyKpId == null || it.shikimoriId + ANIME_ID_OFFSET == onlyKpId }
+                .sortedWith(compareBy({ statusPushPriority(it.status) }, { it.shikimoriId }))
+            // Импортные оболочки (restore) не пушим, пока их не коснулась явная
+            // правка: иначе echo давит сервер (инцидент 09.09). Контест (дубли по
+            // спискам) не пушим никогда — даже точечным пушем из редактора: одна
+            // запись у нас против двух на сервере, перенос снёс бы вторую.
+            val candidates = allCandidates.filter { c ->
+                val profile = profileByShiki[c.shikimoriId]
+                (profile == null || profile.importSource == null) &&
+                    c.shikimoriId !in anixartContestedShiki
+            }
+            if (candidates.size != allCandidates.size) {
+                KLog.d(
+                    "AnixartSync",
+                    "push: muted ${allCandidates.size - candidates.size} echo/contested candidate(s)"
+                )
+            }
+            // Перенос между списками: удаление из чужих + добавление в целевой.
+            // Возвращает true при «уже на месте» или успешном переносе.
+            suspend fun moveToList(
+                shikimoriId: Int,
+                anixartId: Int,
+                target: Int,
+                status: UserFilmStatus,
+                via: String
+            ): Boolean {
+                val current = anixartReleaseLists[anixartId].orEmpty()
+                if (target in current) return true
+                if (ops >= MAX_ANIXART_PUSH_OPS_PER_SYNC) return false
+                ops++
+                KLog.d(
+                    "AnixartSync",
+                    "push: shikimoriId=$shikimoriId release=$anixartId " +
+                        "$via, lists($current -> $target) status=$status"
+                )
+                var ok = true
+                current.forEach { if (!repo.removeFromList(token, it, anixartId)) ok = false }
+                if (ok && repo.addToList(token, target, anixartId)) {
+                    val updated = anixartReleaseLists.toMutableMap()
+                    updated[anixartId] = setOf(target)
+                    anixartReleaseLists = updated
+                    return true
+                }
+                KLog.w(
+                    "AnixartSync",
+                    "push FAILED shikimoriId=$shikimoriId release=$anixartId " +
+                        "target=$target, will retry next sync"
+                )
+                return false
+            }
+            withContext(Dispatchers.IO) {
+                for (c in candidates) {
+                    val releaseIds = releasesByShiki[c.shikimoriId] ?: continue
+                    val target = c.status.toAnixartList()
+                    for (anixartId in releaseIds) {
+                        if (target in anixartReleaseLists[anixartId].orEmpty()) continue
+                        if (ops >= MAX_ANIXART_PUSH_OPS_PER_SYNC) break
+                        if (moveToList(c.shikimoriId, anixartId, target, c.status, "lists")) {
+                            pushed++
+                            if (c.fromRate) rateOnlyPushed++
+                        }
+                    }
+                    if (ops >= MAX_ANIXART_PUSH_OPS_PER_SYNC) break
+                }
+                // Несматченные пулом тайтлы: резолюция в каталоге + добавление в целевой
+                // список. Поиск — пачкой параллельно (зеркало без жёстких лимитов): пачка
+                // последовательных POST по ~250 мс держала мьютекс синка секундами.
+                // Политика resolveAnixartId: только точный матч, честный промах
+                // мемоизируем (персист), ошибки сети — нет (повторит следующий синк).
+                val unmatched = candidates
+                    .filter { it.shikimoriId !in shikiToAnixart }
+                    .filter { it.shikimoriId !in anixartUnresolvable }
+                    .take(MAX_ANIXART_RESOLVE_PER_SYNC)
+                val resolveSemaphore = kotlinx.coroutines.sync.Semaphore(3)
+                val resolveOutcomes = unmatched.map { c ->
+                    async {
+                        resolveSemaphore.acquire()
+                        try {
+                            c to resolveAnixartId(token, c.shikimoriId, c.extraTitles, nameCache)
+                        } finally {
+                            resolveSemaphore.release()
+                        }
+                    }
+                }.awaitAll()
+                for ((c, anixartId) in resolveOutcomes) {
+                    if (anixartId == null) continue
+                    val target = c.status.toAnixartList()
+                    if (target in anixartReleaseLists[anixartId].orEmpty()) continue
+                    if (ops >= MAX_ANIXART_PUSH_OPS_PER_SYNC) break
+                    if (moveToList(c.shikimoriId, anixartId, target, c.status, "resolved")) {
+                        resolved++
+                        if (c.fromRate) rateOnlyPushed++
+                    }
+                }
+            }
+            val stillUnmatched = candidates.count { it.shikimoriId !in anixartIdToShiki.values }
+            if (pushed > 0 || resolved > 0 || stillUnmatched > 0) {
+                KLog.i(
+                    "AnixartSync",
+                    "push: moved $pushed title(s) (rate-backed $rateOnlyPushed), " +
+                        "resolved+added $resolved title(s), still-unmatched $stillUnmatched title(s)"
+                )
+            }
+            // Пост-пуш состояние — новый baseline: иначе рестарт до следующего пула
+            // откатывал бы вердикт untouched/diverged на допереносное и пуш заново
+            // давил бы уже принятые сервером правки.
+            if (pushed > 0 || resolved > 0) {
+                withContext(Dispatchers.IO) {
+                    userStateStore.setAnixartListsBaseline(anixartReleaseLists)
+                    userStateStore.setAnixartIdMap(anixartIdToShiki)
+                    userStateStore.setAnixartUnresolvable(anixartUnresolvable)
+                }
+            }
+            if (pushed > 0) {
+                refreshLibraryAndAvatar()
+            }
+        } finally {
+            pushingAnixart = false
+        }
+    }
+
+    /**
+     * Точечный пуш одного тайтла (сохранение в редакторе прогресса): сначала verify
+     * свежего серверного статуса (1 GET) — уже в целевом списке, писать нечего.
+     */
+    fun pushAnixartTitle(kinopoiskId: Int) {
+        val auth = uiState.anixartAuthState
+        val token = auth.token
+        val repo = anixartRepository
+        if (!auth.isLoggedIn || token == null || repo == null) return
+        if (kinopoiskId < ANIME_ID_OFFSET) return
+        viewModelScope.launch {
+            anixartSyncMutex.withLock {
+                val profile = withContext(Dispatchers.IO) { userStateStore.getProfile(kinopoiskId) }
+                val target = profile?.status?.toAnixartList() ?: return@withLock
+                val shikimoriId = kinopoiskId - ANIME_ID_OFFSET
+                // Несматченного пулом тайтла здесь раньше просто не было (return):
+                // ищем в каталоге, иначе сохранение из карточки до Anixart не доезжает.
+                val anixartId = resolveAnixartId(
+                    token, shikimoriId, listOf(profile?.title, profile?.subtitle)
+                ) ?: return@withLock
+                val fresh = withContext(Dispatchers.IO) { repo.releaseListStatus(token, anixartId) }
+                if (fresh != null) {
+                    val updated = anixartReleaseLists.toMutableMap()
+                    updated[anixartId] = if (fresh > 0) setOf(fresh) else emptySet()
+                    anixartReleaseLists = updated
+                    if (target == fresh) {
+                        KLog.d("AnixartSync", "push: shikimoriId=$shikimoriId already in list $target, skip")
+                        return@withLock
+                    }
+                }
+                pushDirtyAnixartLists(token, onlyKpId = kinopoiskId)
+            }
+        }
+    }
+
+    /**
+     * Удаление тайтла из списков Anixart (удаление из библиотеки, status=null):
+     * паритет с удалением Shikimori-рейта в saveUserProfile. Без этого следующий
+     * пул воскресил бы тайтл локально (reconcilePulledRelease создаёт профиль
+     * под каждый релиз из списков). Трогаем только релиз, реально лежащий
+     * в списках юзера (свежий verify через releaseInfo + сверка shikimori_id):
+     * точный матч по названию чужой тайтл снести не должен. Возвращает успех;
+     * вызывать под anixartSyncMutex, сеть — на IO.
+     */
+    private suspend fun deleteAnixartTitle(
+        token: String,
+        kinopoiskId: Int,
+        titles: List<String?>
+    ): Boolean {
+        val repo = anixartRepository ?: return true
+        val shikimoriId = kinopoiskId - ANIME_ID_OFFSET
+        // Резолюция: карты пула, иначе точный поиск каталога (та же политика, что у пуша).
+        // Честный «нет в каталоге» (сессионная мемоизация) — удалять нечего, успех;
+        // немемоизированный промах (сеть) — не успех, вызывающая сторона честно ресинкнется.
+        val anixartId = anixartIdToShiki.entries.firstOrNull { it.value == shikimoriId }?.key
+            ?: resolveAnixartId(token, shikimoriId, titles)
+            ?: return shikimoriId in anixartUnresolvable
+        val knownLists = anixartReleaseLists[anixartId].orEmpty()
+        // Свежий verify: profile_list_status + shikimori_id релиза. null — сеть/код,
+        // успехом не считаем (как lookupFailed у Shikimori): ресинк вернёт правду.
+        val info = withContext(Dispatchers.IO) { repo.releaseInfo(token, anixartId) }
+            ?: return false
+        if (info.shikimoriId != null && info.shikimoriId != shikimoriId) {
+            KLog.w(
+                "AnixartSync",
+                "delete: shikimoriId=$shikimoriId release=$anixartId shikimori_id mismatch " +
+                    "(${info.shikimoriId}), skip"
+            )
+            return true
+        }
+        val targetLists = knownLists +
+            (info.profileListStatus.takeIf { it > 0 }?.let { setOf(it) } ?: emptySet())
+        if (targetLists.isEmpty()) {
+            KLog.d(
+                "AnixartSync",
+                "delete: shikimoriId=$shikimoriId release=$anixartId not in any list, nothing to delete"
+            )
+            val updated = anixartReleaseLists.toMutableMap()
+            updated[anixartId] = emptySet()
+            anixartReleaseLists = updated
+            return true
+        }
+        var ok = true
+        withContext(Dispatchers.IO) {
+            targetLists.forEach { if (!repo.removeFromList(token, it, anixartId)) ok = false }
+        }
+        if (!ok) return false
+        val updated = anixartReleaseLists.toMutableMap()
+        updated[anixartId] = emptySet()
+        anixartReleaseLists = updated
+        KLog.i("AnixartSync", "delete: shikimoriId=$shikimoriId release=$anixartId removed from $targetLists")
+        return true
+    }
+
+    /** Последняя точечная сверка карточки (kpId → монотонные мс): повороты и переоткрытия сеть не дёргают. */
+    private val anixartDetailsCheckAt = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
+    /**
+     * Точечная сверка тайтла со списками Anixart при открытии карточки (1 GET release info):
+     * паритет с refreshRateForDetails. Без меток времени у API — то же правило baseline,
+     * что в пуле: локальное совпадает с последним известным сервером → серверное перенимаем
+     * (adopt); локальное разошлось → побеждает локальное, пушим его. Вне списков (0) —
+     * локальное не трогаем (как Shikimori-absent: удаляет только явное действие юзера).
+     */
+    fun refreshAnixartForDetails(kinopoiskId: Int) {
+        if (kinopoiskId < ANIME_ID_OFFSET) return
+        val auth = uiState.anixartAuthState
+        val token = auth.token
+        val repo = anixartRepository
+        if (!auth.isLoggedIn || token == null || repo == null) return
+        val now = System.nanoTime() / 1_000_000L
+        if (now - (anixartDetailsCheckAt[kinopoiskId] ?: 0L) < DETAILS_RATE_CHECK_THROTTLE_MS) return
+        anixartDetailsCheckAt[kinopoiskId] = now
+        viewModelScope.launch {
+            anixartSyncMutex.withLock {
+                val shikimoriId = kinopoiskId - ANIME_ID_OFFSET
+                val anixartId = anixartIdToShiki.entries.firstOrNull { it.value == shikimoriId }?.key
+                    ?: return@withLock
+                val knownBefore = anixartReleaseLists[anixartId].orEmpty()
+                val freshList = withContext(Dispatchers.IO) { repo.releaseListStatus(token, anixartId) }
+                    ?: return@withLock
+                val updated = anixartReleaseLists.toMutableMap()
+                updated[anixartId] = if (freshList > 0) setOf(freshList) else emptySet()
+                anixartReleaseLists = updated
+                val freshStatus = anixartListToStatus(freshList) ?: return@withLock
+                val profile = withContext(Dispatchers.IO) { userStateStore.getProfile(kinopoiskId) }
+                if (profile?.status == freshStatus) {
+                    if (detailsState.item?.kinopoiskId == kinopoiskId) {
+                        val p = withContext(Dispatchers.Default) { getUserProfileForFilm(kinopoiskId) }
+                        detailsState = detailsState.copy(userProfile = p)
+                    }
+                    return@withLock
+                }
+                val localList = profile?.status?.toAnixartList()
+                if (profile?.status == null || (localList != null && localList in knownBefore)) {
+                    // Untouched — забираем серверное (adopt через setFeedQuickStatus: метка = сейчас).
+                    withContext(Dispatchers.IO) {
+                        userStateStore.setFeedQuickStatus(
+                            kinopoiskId,
+                            profile?.title ?: "Без названия",
+                            profile?.posterUrl,
+                            freshStatus
+                        )
+                    }
+                    KLog.d(
+                        "AnixartSync",
+                        "details: shikimoriId=$shikimoriId adopted list $freshList " +
+                            "(${profile?.status} -> $freshStatus)"
+                    )
+                    refreshLibraryAndAvatar()
+                    if (detailsState.item?.kinopoiskId == kinopoiskId) {
+                        val p = withContext(Dispatchers.Default) { getUserProfileForFilm(kinopoiskId) }
+                        detailsState = detailsState.copy(userProfile = p)
+                    }
+                } else {
+                    // Разошлось — побеждает локальное, пушим его.
+                    KLog.d(
+                        "AnixartSync",
+                        "details: shikimoriId=$shikimoriId diverged " +
+                            "local=${profile.status} server=$freshStatus, pushing local"
+                    )
+                    pushDirtyAnixartLists(token, onlyKpId = kinopoiskId)
+                }
+            }
+        }
     }
 
     fun logoutShikimori() {
@@ -1190,7 +3330,7 @@ class FilmsViewModel(
         // чистим, in-memory список не гасим — buildLibraryItems продолжает показывать тайтлы.
         // Чужой список при входе в другой аккаунт гасится в refreshShikimoriAuth
         // (snapshotUserId != userId), поэтому хвосты от старого аккаунта не мигнут.
-        refreshShikimoriAuth()
+        refreshShikimoriAuth(caller = "logout")
     }
 
     private fun loadFilters() {
@@ -1198,13 +3338,13 @@ class FilmsViewModel(
             runCatching { repository.filters() }
                 .onSuccess { res ->
                     uiState = uiState.copy(
-                        availableGenres = res.genres.filter { !it.genre.isNullOrBlank() },
-                        availableCountries = res.countries.filter { !it.country.isNullOrBlank() }
+                        availableGenres = res.genres.orEmpty().filter { !it.genre.isNullOrBlank() },
+                        availableCountries = res.countries.orEmpty().filter { !it.country.isNullOrBlank() }
                     )
                     // Жанровые карусели кино зависят от справочника: если Обзор уже загрузился
                     // без них — догружаем только жанры, а не всю ветку.
                     if (uiState.overviewFilmSections.none { it.id.startsWith("film_genre_") }) {
-                        refillFilmGenres(res.genres.filter { !it.genre.isNullOrBlank() })
+                        refillFilmGenres(res.genres.orEmpty().filter { !it.genre.isNullOrBlank() })
                     }
                 }
         }
@@ -1440,7 +3580,33 @@ class FilmsViewModel(
                             // Сервер не удалил: молчаливый рассинхрон — причина «удалил, а оно
                             // вернулось». Перечитываем серверную правду, чтобы библиотека не врала.
                             KLog.e("ShikimoriSync", "Delete failed for rate id=$targetRateId, resyncing from server")
-                            refreshShikimoriAuth()
+                            refreshShikimoriAuth(caller = "delete-retry")
+                        }
+                    }
+                }
+                // Anixart: удаление из списков (паритет с Shikimori выше) — иначе
+                // следующий пул воскресит тайтл локально через reconcilePulledRelease.
+                val anixartAuth = uiState.anixartAuthState
+                if (anixartAuth.isLoggedIn && anixartAuth.token != null && anixartRepository != null) {
+                    val anixartToken = anixartAuth.token
+                    viewModelScope.launch {
+                        val deleted = anixartSyncMutex.withLock {
+                            deleteAnixartTitle(
+                                anixartToken,
+                                details.kinopoiskId,
+                                listOf(details.nameRu, details.nameOriginal)
+                            )
+                        }
+                        if (!deleted) {
+                            // Сервер не удалил: та же честная политика, что у Shikimori, —
+                            // перечитываем серверную правду, пусть тайтл вернётся, чем врёт.
+                            KLog.e(
+                                "AnixartSync",
+                                "Delete failed for kinopoiskId=${details.kinopoiskId}, resyncing from server"
+                            )
+                            anixartSyncMutex.withLock {
+                                syncAnixartLists(anixartToken, pushLocalNewer = true, caller = "delete-retry")
+                            }
                         }
                     }
                 }
@@ -1482,124 +3648,37 @@ class FilmsViewModel(
         )
         refreshLibraryAndAvatar()
 
-        // Sync with Shikimori if it's an anime
+        // Sync with Shikimori if it's an anime (точечный пуш под мьютексом, LWW внутри).
         if (details.kinopoiskId >= ANIME_ID_OFFSET) {
-            val shikimoriId = details.kinopoiskId - ANIME_ID_OFFSET
-            val authState = uiState.shikimoriAuthState
-            KLog.d("ShikimoriSync", "saveUserProfile: kinopoiskId=${details.kinopoiskId}, shikimoriId=$shikimoriId, isLoggedIn=${authState.isLoggedIn}")
-            if (authState.isLoggedIn && authState.accessToken != null) {
+            val shikiStatus = when (status) {
+                UserFilmStatus.WATCHING -> "watching"
+                UserFilmStatus.PLANNED -> "planned"
+                UserFilmStatus.COMPLETED -> "completed"
+                UserFilmStatus.REWATCHING -> "rewatching"
+                UserFilmStatus.ON_HOLD -> "on_hold"
+                UserFilmStatus.DROPPED -> "dropped"
+                else -> null
+            }
+            // Для аниме watchedSeasons в шите — это «Повторы», у Shikimori это rewatches.
+            val rewatches = safeSeasons?.takeIf { it > 0 }
+            if (shikiStatus != null) {
                 viewModelScope.launch {
-                    val shikiStatus = when (status) {
-                        UserFilmStatus.WATCHING -> "watching"
-                        UserFilmStatus.PLANNED -> "planned"
-                        UserFilmStatus.COMPLETED -> "completed"
-                        UserFilmStatus.REWATCHING -> "rewatching"
-                        UserFilmStatus.ON_HOLD -> "on_hold"
-                        UserFilmStatus.DROPPED -> "dropped"
-                    }
-                    KLog.d("ShikimoriSync", "shikiStatus=$shikiStatus, existingRate=${cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }?.id}")
-                    var token = authState.accessToken
-                    val existingRate = cachedShikimoriRates.firstOrNull { it.targetId == shikimoriId }
-                    // Для аниме watchedSeasons в шите — это «Повторы», у Shikimori это rewatches.
-                    val rewatches = safeSeasons?.takeIf { it > 0 }
-
-                    // Try with current token first
-                    var result: hd.kinoshka.app.data.model.ShikimoriUserRate? = null
-                    if (existingRate != null) {
-                        KLog.d("ShikimoriSync", "Updating existing rate id=${existingRate.id}")
-                        result = animeRepository.updateUserRate(
-                            token = token,
-                            rateId = existingRate.id,
-                            status = shikiStatus,
+                    shikimoriSyncMutex.withLock {
+                        pushSingleAnimeRate(
+                            kinopoiskId = details.kinopoiskId,
+                            shikiStatus = shikiStatus,
                             episodes = safeEpisodes,
-                            score = safeRating,
+                            rating = safeRating,
                             rewatches = rewatches
                         )
-                    } else {
-                        KLog.d("ShikimoriSync", "Creating new rate for targetId=$shikimoriId")
-                        result = animeRepository.createUserRate(
-                            token = token,
-                            userId = authState.userId,
-                            targetId = shikimoriId,
-                            status = shikiStatus,
-                            episodes = safeEpisodes ?: 0,
-                            score = safeRating ?: 0,
-                            rewatches = rewatches
-                        )
-                    }
-
-                    // Create при существующей серверной оценке даёт 422: подтягиваем свежие
-                    // рейты и повторяем как update, иначе прогресс «не сохраняется».
-                    if (result == null && existingRate == null && authState.userId > 0) {
-                        animeRepository.getUserRates(authState.userId).getOrNull()?.let { fresh ->
-                            cachedShikimoriRates = fresh
-                            fresh.firstOrNull { it.targetId == shikimoriId }?.let { serverRate ->
-                                KLog.d("ShikimoriSync", "Found server rate id=${serverRate.id} after create failed, updating")
-                                result = animeRepository.updateUserRate(
-                                    token = token,
-                                    rateId = serverRate.id,
-                                    status = shikiStatus,
-                                    episodes = safeEpisodes,
-                                    score = safeRating,
-                                    rewatches = rewatches
-                                )
-                            }
-                        }
-                    }
-
-                    // If failed with 401, try refreshing token
-                    if (result == null && authState.refreshToken != null) {
-                        KLog.d("ShikimoriSync", "Token expired, attempting refresh...")
-                        val newTokenResponse = animeRepository.refreshToken(authState.refreshToken)
-                        if (newTokenResponse != null) {
-                            persistFreshShikimoriTokens(authState, newTokenResponse.accessToken, newTokenResponse.refreshToken)
-                            token = newTokenResponse.accessToken
-                            KLog.d("ShikimoriSync", "Token refreshed, retrying...")
-
-                            // Retry with new token
-                            result = if (existingRate != null) {
-                                animeRepository.updateUserRate(
-                                    token = token,
-                                    rateId = existingRate.id,
-                                    status = shikiStatus,
-                                    episodes = safeEpisodes,
-                                    score = safeRating,
-                                    rewatches = rewatches
-                                )
-                            } else {
-                                animeRepository.createUserRate(
-                                    token = token,
-                                    userId = authState.userId,
-                                    targetId = shikimoriId,
-                                    status = shikiStatus,
-                                    episodes = safeEpisodes ?: 0,
-                                    score = safeRating ?: 0,
-                                    rewatches = rewatches
-                                )
-                            }
-                        } else {
-                            KLog.e("ShikimoriSync", "Failed to refresh token, user needs to re-login")
-                        }
-                    }
-
-                    if (result != null) {
-                        // Раньше кэш оценок не обновлялся после успеха: библиотека строилась
-                        // из протухшего кэша, а следующий рефреш с сервера затирал локальный
-                        // прогресс. Вписываем серверный ответ сразу.
-                        val fresh = result
-                        val current = cachedShikimoriRates.toMutableList()
-                        val idx = current.indexOfFirst { it.targetId == shikimoriId }
-                        if (idx >= 0) current[idx] = fresh else current.add(fresh)
-                        cachedShikimoriRates = current
-                        refreshLibraryAndAvatar()
-                    } else {
-                        KLog.e("ShikimoriSync", "Sync failed for shikimoriId=$shikimoriId, resyncing from server")
-                        refreshShikimoriAuth()
                     }
                 }
-            } else {
-                KLog.w("ShikimoriSync", "Not logged in or no access token")
             }
+        }
+
+        // Anixart: точечный пуш статуса (по кэшу карт из последнего пула).
+        if (details.kinopoiskId >= ANIME_ID_OFFSET && status != null) {
+            pushAnixartTitle(details.kinopoiskId)
         }
     }
 
@@ -1707,6 +3786,9 @@ class FilmsViewModel(
                         loading = false
                     )
                     detailsState = baseState
+                    // Свежий прогресс с сервера (второй телефон): точечно, без полного синка.
+                    refreshRateForDetails(id)
+                    refreshAnixartForDetails(id)
 
                     if (isAdultAnime(animeDetails)) {
                         launch {
@@ -1722,7 +3804,7 @@ class FilmsViewModel(
                                 detailsState.item?.let { current ->
                                     val merged = buildList {
                                         add(hd.kinoshka.app.data.model.NameOnly(genre = "Хентай"))
-                                        addAll(current.genres.filterNot { it.genre?.equals("хентай", ignoreCase = true) == true })
+                                        addAll(current.genres.orEmpty().filterNot { it.genre?.equals("хентай", ignoreCase = true) == true })
                                         addAll(tags.map { hd.kinoshka.app.data.model.NameOnly(genre = it) })
                                     }.distinctBy { it.genre?.lowercase() }
                                     detailsState = detailsState.copy(item = current.copy(genres = merged))
@@ -1792,7 +3874,8 @@ class FilmsViewModel(
                                 "movie" -> "Фильм"
                                 "ova" -> "OVA"
                                 "ona" -> "ONA"
-                                "special" -> "Спешл"
+                                "special", "tv_special" -> "Спешл"
+                                "music" -> "Музыка"
                                 else -> a.kind?.uppercase()
                             }
                             FilmLinkItem(
@@ -1830,7 +3913,8 @@ class FilmsViewModel(
                                 "movie" -> "Фильм"
                                 "ova" -> "OVA"
                                 "ona" -> "ONA"
-                                "special" -> "Спешл"
+                                "special", "tv_special" -> "Спешл"
+                                "music" -> "Музыка"
                                 else -> node.kind?.uppercase()
                             }
                             FilmLinkItem(
@@ -2046,12 +4130,129 @@ class FilmsViewModel(
     private fun isAdultAnime(details: hd.kinoshka.app.data.model.ShikimoriAnimeDetails): Boolean {
         val rating = details.rating?.lowercase().orEmpty()
         if (rating.contains("18") || rating.startsWith("rx") || rating == "x" || rating.contains("nc17")) return true
-        val hasAdultGenre = details.genres.any { g ->
+        val hasAdultGenre = details.genres.orEmpty().any { g ->
             val n = (g.russian ?: g.name).lowercase()
             n.contains("хентай") || n.contains("hentai") || n.contains("эротик") || n.contains("ecchi")
         }
         return hasAdultGenre ||
             hd.kinoshka.app.data.source.HentaiStreamResolver.isKnownHentai(details.name, details.russian)
+    }
+
+    /**
+     * 18+-вердикт по краткому объекту батча (без полных details): жанры + каталог hanime.
+     * Сигнал рейтинга rx тут недоступен — непокрытое добивается поштучным details.
+     */
+    private fun isAdultBrief(item: hd.kinoshka.app.data.model.ShikimoriAnimeItem): Boolean {
+        val hasAdultGenre = item.genres.orEmpty().any { g ->
+            val n = (g.russian ?: g.name).lowercase()
+            n.contains("хентай") || n.contains("hentai") || n.contains("эротик") || n.contains("ecchi")
+        }
+        return hasAdultGenre ||
+            hd.kinoshka.app.data.source.HentaiStreamResolver.isKnownHentai(item.name, item.russian)
+    }
+
+    /** Кэш-запись из краткого объекта батча; отсутствующие поля добираются из прошлой записи. */
+    private fun briefToCache(
+        shikimoriId: Int,
+        item: hd.kinoshka.app.data.model.ShikimoriAnimeItem,
+        prev: hd.kinoshka.app.data.local.ShikimoriAnimeCache?
+    ): hd.kinoshka.app.data.local.ShikimoriAnimeCache {
+        return hd.kinoshka.app.data.local.ShikimoriAnimeCache(
+            shikimoriId = shikimoriId,
+            name = item.name ?: prev?.name,
+            russian = item.russian ?: prev?.russian,
+            posterUrl = item.posterUrl,
+            episodes = item.episodes ?: prev?.episodes,
+            episodesAired = item.episodesAired ?: prev?.episodesAired,
+            kind = item.kind ?: prev?.kind,
+            score = item.score ?: prev?.score,
+            status = item.status ?: prev?.status,
+            year = item.airedOn?.take(4)?.toIntOrNull() ?: prev?.year,
+            // Краткий объект жанров не несёт: его false без жанрового сигнала
+            // недостоверен и не смеет затирать уже установленный true.
+            isAdult = if (prev?.isAdult == true) true else isAdultBrief(item),
+            genreChecked = prev?.genreChecked ?: false
+        )
+    }
+
+    /**
+     * Жанровая разметка 18+ батчами ids+genre ([ADULT_GENRE_IDS]). Краткий объект
+     * жанров не несёт, поэтому его isAdult=false без этого этапа недостоверен
+     * (хентай вне каталога hanime кэшировался «чистым» и показывался при выключенном
+     * тумблере). Сервер режет ids-выборку жанром: вернувшийся id входит в жанр —
+     * по 1 запросу на 50 id и жанр. Проверяем всё без [ShikimoriAnimeCache.genreChecked]
+     * (включая старые false — у них флаг дефолтный): объём ограничен кэпом 500,
+     * повторные прогоны видят флаг и пропускают. Возвращает число обновлённых записей.
+     */
+    private suspend fun markAdultByGenre(libraryKpIds: Set<Int>): Int {
+        val offset = ANIME_ID_OFFSET
+        val cache = userStateStore.getShikimoriAnimeCache()
+        val unchecked = libraryKpIds.map { it - offset }.distinct()
+            .filter { (cache[it]?.genreChecked ?: false) != true }
+            .take(500)
+        if (unchecked.isEmpty()) return 0
+        val adultIds = mutableSetOf<Int>()
+        var allOk = true
+        for (genreId in ADULT_GENRE_IDS) {
+            var first = true
+            for (chunk in unchecked.chunked(50)) {
+                if (!first) kotlinx.coroutines.delay(300L)
+                first = false
+                val got = runCatching { animeRepository.animesByIds(chunk, genreId) }.getOrNull()
+                if (got == null) {
+                    allOk = false
+                    continue
+                }
+                for (item in got) if (item.id > 0) adultIds.add(item.id)
+            }
+            KLog.d(
+                "ShikimoriSync",
+                "adult-genre: genre=$genreId checked ${unchecked.size} adultHits=${adultIds.size}"
+            )
+        }
+        val fresh = userStateStore.getShikimoriAnimeCache()
+        // Одна запись кэша на всю разметку (см. батчи выше).
+        val genreEntries = unchecked.mapNotNull { id ->
+            val prev = fresh[id]
+            if (prev == null && id !in adultIds) return@mapNotNull null
+            val adult = id in adultIds || prev?.isAdult == true
+            if (prev != null && prev.isAdult == adult && prev.genreChecked == allOk) return@mapNotNull null
+            val base = prev ?: hd.kinoshka.app.data.local.ShikimoriAnimeCache(
+                shikimoriId = id,
+                name = null,
+                russian = null,
+                posterUrl = null,
+                episodes = null,
+                episodesAired = null,
+                kind = null,
+                score = null,
+                status = null
+            )
+            base.copy(isAdult = adult, genreChecked = allOk)
+        }
+        userStateStore.saveShikimoriAnimeInfos(genreEntries)
+        if (genreEntries.isNotEmpty()) {
+            KLog.i("ShikimoriSync", "adult-genre: updated ${genreEntries.size} (allOk=$allOk)")
+        }
+        return genreEntries.size
+    }
+
+    /**
+     * Батч кратких объектов: 1 запрос на 50 id вместо 50 поштучных details.
+     * Возвращает найденное по id; несовпадение asked/got (порезка ids, цензура) видно
+     * в логе — непокрытое вызывающая сторона добирает поштучно через prefetchDetails.
+     */
+    private suspend fun fetchAnimeBrief(ids: List<Int>): Map<Int, hd.kinoshka.app.data.model.ShikimoriAnimeItem> {
+        val out = mutableMapOf<Int, hd.kinoshka.app.data.model.ShikimoriAnimeItem>()
+        var first = true
+        for (chunk in ids.distinct().take(500).chunked(50)) {
+            if (!first) kotlinx.coroutines.delay(300L)
+            first = false
+            val list = runCatching { animeRepository.animesByIds(chunk) }.getOrNull().orEmpty()
+            for (item in list) if (item.id > 0) out[item.id] = item
+            KLog.d("ShikimoriSync", "brief: asked ${chunk.size} got ${list.size}")
+        }
+        return out
     }
 
     /**
@@ -2372,6 +4573,9 @@ class FilmsViewModel(
                 profileAvatar = userStateStore.getProfileAvatar()
             )
         }
+        // Единая воронка мутаций библиотеки → облачная выгрузка (дебаунс у получателя).
+        // Чистые рефреши без изменений тоже сюда доходят — лишние вызовы гасит дебаунс.
+        onLibraryMutated()
     }
 
     /**
@@ -2382,12 +4586,34 @@ class FilmsViewModel(
      */
     fun refreshAfterRestore() {
         shikimoriRatesSnapshotHydrated = false
-        refreshShikimoriAuth()
+        refreshShikimoriAuth(caller = "restore")
         viewModelScope.launch {
             val library = withContext(Dispatchers.Default) { buildLibraryItems() }
             val avatar = withContext(Dispatchers.Default) { userStateStore.getProfileAvatar() }
             uiState = uiState.copy(library = library, profileAvatar = avatar)
+            // Импорт из облака привозит оболочки без кэша деталей (тот же формат,
+            // что пул Anixart): добиваем из Shikimori, иначе плитки висят
+            // «Фильмом» без серий/рейтинга до следующего синка.
+            ensureLibraryAdultVerdicts()
+            ensureLibraryAnimeMeta()
         }
+    }
+
+    /**
+     * Pull-to-refresh Библиотеки (явный жест): локальная пересборка без троттла
+     * возврата + обычные фоновые синки Shikimori/Anixart с их троттлами (лимиты
+     * API штормом свайпов пробивать нельзя). Индикатор гаснет по концу локального
+     * обновления; серверные пулы подтянут раздел сами, когда данные приедут.
+     */
+    fun refreshLibrary() {
+        if (uiState.libraryRefreshing) return
+        uiState = uiState.copy(libraryRefreshing = true)
+        refreshAfterPlayerClosed(
+            forced = true,
+            onDone = { uiState = uiState.copy(libraryRefreshing = false) }
+        )
+        syncShikimoriOnForeground()
+        syncAnixartOnForeground()
     }
 
     /**
@@ -2395,10 +4621,13 @@ class FilmsViewModel(
      * writes progress straight to SharedPreferences from its own Activity, bypassing this
      * ViewModel). Without this the library folders, progress bars and the details header showed
      * stale values until the app was restarted.
+     *
+     * @param forced явный жест обновления: троттл возврата пропускаем.
+     * @param onDone разовый колбэк конца локального обновления (гашение индикатора).
      */
-    fun refreshAfterPlayerClosed() {
+    fun refreshAfterPlayerClosed(forced: Boolean = false, onDone: (() -> Unit)? = null) {
         val now = System.nanoTime() / 1_000_000L
-        if (now - lastResumeRefreshMs < RESUME_REFRESH_THROTTLE_MS) return
+        if (!forced && now - lastResumeRefreshMs < RESUME_REFRESH_THROTTLE_MS) return
         lastResumeRefreshMs = now
 
         viewModelScope.launch {
@@ -2415,6 +4644,16 @@ class FilmsViewModel(
                 detailsState = detailsState.copy(userProfile = profile)
             }
             ensureLibraryAdultVerdicts()
+            ensureLibraryAnimeMeta()
+            // Прогресс плеера — сразу на сервер (дешёво, если чисто): второй телефон подтянет
+            // его при открытии карточки, не дожидаясь 15-минутного фонового синка.
+            shikimoriSyncMutex.withLock { pushDirtyAnimeRates() }
+            // Anixart: тот же prompt-push статусов (паритет с Shikimori).
+            val anixartAuth = uiState.anixartAuthState
+            if (anixartAuth.isLoggedIn && anixartAuth.token != null && anixartRepository != null) {
+                anixartSyncMutex.withLock { pushDirtyAnixartLists(anixartAuth.token) }
+            }
+            onDone?.invoke()
         }
     }
 
@@ -2436,7 +4675,17 @@ class FilmsViewModel(
         }
     }
 
+    @Volatile
+    private var statuslessHusksPruned = false
+
     private fun buildLibraryItems(): List<LibraryUiItem> {
+        // Разовая чистка пустой шелухи без статуса (считалась в итогах профиля,
+        // но не видна ни в одной вкладке). Дальше такая не копится: снятие
+        // пометки с пустого профиля удаляет его (см. setFeedQuickStatus).
+        if (!statuslessHusksPruned) {
+            statuslessHusksPruned = true
+            runCatching { userStateStore.pruneEmptyStatuslessProfiles() }
+        }
         // Первый кадр библиотеки — из дискового снапшота рейтов: сеть с фетчем ещё
         // в пути, а раздел должен показать аниме Shikimori сразу. Фоновая
         // refreshShikimoriAuth() освежит данные следом.
@@ -2503,15 +4752,18 @@ class FilmsViewModel(
                 val existingIdx = result.indexOfFirst { it.kinopoiskId == item.kinopoiskId }
                 if (existingIdx >= 0) {
                     val existing = result[existingIdx]
-                    // Update poster if missing
-                    var enriched = existing
-                    if (enriched.posterUrl == null && item.posterUrl != null) {
-                        enriched = enriched.copy(posterUrl = item.posterUrl)
-                    }
-                    // Update total episodes if missing
-                    if (enriched.totalEpisodes == null && item.totalEpisodes != null) {
-                        enriched = enriched.copy(totalEpisodes = item.totalEpisodes)
-                    }
+                    // Единый формат (см. fillAnimeGaps): метаданные рейта добирают
+                    // пустоты истории/профиля — иначе ТВ-онгоинг без total
+                    // показывал бы тип по эвристику эпизодов («Фильм»).
+                    var enriched = existing.fillAnimeGaps(
+                        posterUrl = item.posterUrl,
+                        totalEpisodes = item.totalEpisodes,
+                        animeKind = item.animeKind,
+                        releaseStatus = item.releaseStatus,
+                        releaseYear = item.releaseYear,
+                        episodesAired = item.episodesAired,
+                        ratingText = null
+                    )
                     // The local side had no opinion about this title: a history-only
                     // entry carries a synthetic WATCHING default, a profile seeded by
                     // addFromDetails (merely pressing «Watch») carries status null.
@@ -2555,18 +4807,26 @@ class FilmsViewModel(
             }
         }
 
-        // Группировка/статистика библиотеки: тайтлы, построенные из истории/профилей (без
-        // встроенного anime у рейта), добирают kind/status/год из дискового кэша Shikimori.
+        // Группировка/статистика/плитки библиотеки: тот же единый формат
+        // (см. fillAnimeGaps), источник — дисковый кэш Shikimori. Anixart
+        // говорит КАКОЕ аниме, подробности — Shikimori.
         if (localAnimeCache.isNotEmpty()) {
             for (i in result.indices) {
                 val existing = result[i]
                 if (existing.kinopoiskId < hd.kinoshka.app.data.model.ANIME_ID_OFFSET) continue
-                if (existing.animeKind != null && existing.releaseStatus != null && existing.releaseYear != null) continue
+                if (existing.animeKind != null && existing.releaseStatus != null &&
+                    existing.releaseYear != null && existing.totalEpisodes != null &&
+                    existing.ratingText != null
+                ) continue
                 val cached = localAnimeCache[existing.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET] ?: continue
-                result[i] = existing.copy(
-                    animeKind = existing.animeKind ?: cached.kind,
-                    releaseStatus = existing.releaseStatus ?: cached.status,
-                    releaseYear = existing.releaseYear ?: cached.year
+                result[i] = existing.fillAnimeGaps(
+                    posterUrl = null,
+                    totalEpisodes = cached.episodes,
+                    animeKind = cached.kind,
+                    releaseStatus = cached.status,
+                    releaseYear = cached.year,
+                    episodesAired = cached.episodesAired,
+                    ratingText = cached.score
                 )
             }
         }
@@ -2658,6 +4918,36 @@ class FilmsViewModel(
     }
 }
 
+/**
+ * Единый формат аниме-плитки: добивка пустых полей из источника метаданных
+ * (рейт Shikimori / дисковый кэш). Один список полей на ВСЕ пути сборки
+ * (рейты, история, профили, импорт Anixart, хентай — у всех shikimori-id
+ * и один LibraryUiItem): расхождение форматов чинится здесь, а не в N местах.
+ * Только заполнение пустот — локальные данные всегда приоритетнее.
+ * ratingText из рейта осознанно не тянем (там смесь community score и своей
+ * оценки) — рейтинг плитки даёт только свой источник/кэш.
+ */
+private fun LibraryUiItem.fillAnimeGaps(
+    posterUrl: String?,
+    totalEpisodes: Int?,
+    animeKind: String?,
+    releaseStatus: String?,
+    releaseYear: Int?,
+    episodesAired: Int?,
+    ratingText: String?
+): LibraryUiItem {
+    if (kinopoiskId < ANIME_ID_OFFSET) return this
+    return copy(
+        posterUrl = this.posterUrl ?: posterUrl,
+        totalEpisodes = this.totalEpisodes ?: totalEpisodes,
+        animeKind = this.animeKind ?: animeKind,
+        releaseStatus = this.releaseStatus ?: releaseStatus,
+        releaseYear = this.releaseYear ?: releaseYear,
+        episodesAired = this.episodesAired ?: episodesAired,
+        ratingText = this.ratingText ?: ratingText
+    )
+}
+
 private fun hd.kinoshka.app.data.model.ShikimoriUserRate.toLibraryUiItem(): LibraryUiItem? {
     val animeItem = anime
     val actualTargetId = if (animeItem != null) animeItem.id else targetId
@@ -2694,7 +4984,11 @@ private fun hd.kinoshka.app.data.model.ShikimoriUserRate.toLibraryUiItem(): Libr
         totalEpisodesInSeason = null,
         totalSeasons = null,
         totalEpisodes = animeItem?.episodes,
-        updatedAt = rateTime
+        updatedAt = rateTime,
+        episodesAired = animeItem?.episodesAired,
+        animeKind = animeItem?.kind,
+        releaseStatus = animeItem?.status,
+        releaseYear = animeItem?.airedOn?.take(4)?.toIntOrNull()
     )
 }
 

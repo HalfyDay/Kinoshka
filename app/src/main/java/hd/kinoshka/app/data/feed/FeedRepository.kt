@@ -138,15 +138,15 @@ class FeedRepository(
         if (isAnimeId(id)) {
             val d = anime.details(id - hd.kinoshka.app.data.model.ANIME_ID_OFFSET)
             TasteContext(
-                genres = d.genres.mapNotNull { it.russian?.trim()?.lowercase() },
+                genres = d.genres.orEmpty().mapNotNull { it.russian?.trim()?.lowercase() },
                 countries = listOf("япония"),
                 year = d.airedOn?.take(4)?.toIntOrNull()
             )
         } else {
             val d = films.details(id)
             TasteContext(
-                genres = d.genres.mapNotNull { it.genre?.trim()?.lowercase() },
-                countries = d.countries.mapNotNull { it.country?.trim()?.lowercase() },
+                genres = d.genres.orEmpty().mapNotNull { it.genre?.trim()?.lowercase() },
+                countries = d.countries.orEmpty().mapNotNull { it.country?.trim()?.lowercase() },
                 year = d.year
             )
         }
@@ -593,13 +593,13 @@ class FeedRepository(
         val filters = runCatching { films.filters() }.getOrNull() ?: return emptyList()
         if (weights.isEmpty()) {
             val preferred = DEFAULT_GENRE_NAMES
-            val matched = filters.genres.filter { it.genre?.trim()?.lowercase() in preferred }.map { (it.id to it.genre!!.trim().lowercase()) }
-            return matched.ifEmpty { filters.genres.take(TOP_GENRES).map { (it.id to (it.genre ?: "жанр").trim().lowercase()) } }
+            val matched = filters.genres.orEmpty().filter { it.genre?.trim()?.lowercase() in preferred }.map { (it.id to it.genre!!.trim().lowercase()) }
+            return matched.ifEmpty { filters.genres.orEmpty().take(TOP_GENRES).map { (it.id to (it.genre ?: "жанр").trim().lowercase()) } }
         }
         return weights.entries
             .sortedByDescending { it.value }
             .mapNotNull { w ->
-                filters.genres.firstOrNull { it.genre?.trim()?.lowercase() == w.key }
+                filters.genres.orEmpty().firstOrNull { it.genre?.trim()?.lowercase() == w.key }
                     ?.let { f -> f.id to w.key }
             }
             .distinct()
@@ -609,7 +609,7 @@ class FeedRepository(
     /** Id жанра «мультфильм» для одноимённого чипса. */
     private suspend fun cartoonGenreId(): Int? {
         val filters = runCatching { films.filters() }.getOrNull() ?: return null
-        return filters.genres.firstOrNull { it.genre?.trim()?.lowercase() == "мультфильм" }?.id
+        return filters.genres.orEmpty().firstOrNull { it.genre?.trim()?.lowercase() == "мультфильм" }?.id
     }
 
     /** Взвешенный выбор страны среди позитивных вкусов — разнообразие вместо одного фаворита. */
@@ -619,7 +619,7 @@ class FeedRepository(
             .map { it.key to it.value }
         val chosen = weightedPick(positive) ?: return null
         val filters = runCatching { films.filters() }.getOrNull() ?: return null
-        val match = filters.countries.firstOrNull { it.country?.trim()?.lowercase() == chosen } ?: return null
+        val match = filters.countries.orEmpty().firstOrNull { it.country?.trim()?.lowercase() == chosen } ?: return null
         return match.id to chosen
     }
 
@@ -711,7 +711,7 @@ class FeedRepository(
     /** Справочник жанров KP для sheet: без аниме/мультфильма/взрослых (у них свои разделы). */
     suspend fun kpGenreOptions(): List<GenreOption> = withContext(Dispatchers.IO) {
         val filters = runCatching { films.filters() }.getOrNull() ?: return@withContext emptyList()
-        filters.genres.mapNotNull { g ->
+        filters.genres.orEmpty().mapNotNull { g ->
             val id = g.id
             val name = g.genre?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             val key = name.lowercase()
@@ -930,10 +930,10 @@ class FeedRepository(
             shortDescription = null,
             isAnime = false,
             isAdultContent = adult,
-            isRussian = countries.any { it.country.equals("Россия", ignoreCase = true) },
+            isRussian = countries.orEmpty().any { it.country.equals("Россия", ignoreCase = true) },
             contentType = null,
             // Страны в нижнем регистре — для авто-фильтра «не смотрю эту страну».
-            countries = countries.mapNotNull { it.country?.trim()?.lowercase() },
+            countries = countries.orEmpty().mapNotNull { it.country?.trim()?.lowercase() },
             // Анонс: год в будущем или совсем свежий год без оценки и без данных.
             upcoming = (filmYear != null && filmYear > currentYear) || (filmYear == currentYear && ratingKinopoisk == null && posterUrlPreview.isNullOrBlank())
         )

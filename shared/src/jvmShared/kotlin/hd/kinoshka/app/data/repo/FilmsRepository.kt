@@ -33,7 +33,7 @@ class FilmsRepository(private val api: KinopoiskApi) {
         // Дедупликация на входе: одна страница Kinopoisk может содержать повторяющийся
         // kinopoiskId, а keyed-списки в UI (key = { film.kinopoiskId }) на дубликате падают.
         // Делаем это ДО cache.put, иначе битая страница живёт в кэше.
-        val loaded = api.popular(type = collectionType, page = page).items.distinctBy { it.kinopoiskId }.withoutAnime()
+        val loaded = api.popular(type = collectionType, page = page).items.orEmpty().distinctBy { it.kinopoiskId }.withoutAnime()
         popularCache.put(key, loaded)
         return loaded
     }
@@ -64,7 +64,7 @@ class FilmsRepository(private val api: KinopoiskApi) {
             yearFrom = yearFrom,
             yearTo = yearTo,
             page = page
-        ).items.distinctBy { it.kinopoiskId }.withoutAnime() // см. popular(): дубликат id ломает keyed-списки UI
+        ).items.orEmpty().distinctBy { it.kinopoiskId }.withoutAnime() // см. popular(): дубликат id ломает keyed-списки UI
         searchCache.put(key, loaded)
         return loaded
     }
@@ -106,21 +106,21 @@ class FilmsRepository(private val api: KinopoiskApi) {
         // значением по умолчанию 0, поэтому два битых элемента дают одинаковый ключ -> краш.
         // Фильтровать number > 0 НЕЛЬЗЯ: сезон 0 у Kinopoisk — это спешлы, их потеря испортит
         // seasons.size / totalSeasons / totalEpisodes в профиле пользователя.
-        val loaded = api.seasons(id).items.distinctBy { it.number }
+        val loaded = api.seasons(id).items.orEmpty().distinctBy { it.number }
         seasonsCache.put(id, loaded)
         return loaded
     }
 
     suspend fun similars(id: Int): List<FilmLinkItem> {
         similarsCache.get(id)?.let { return it }
-        val loaded = api.similars(id).items
+        val loaded = api.similars(id).items.orEmpty()
         similarsCache.put(id, loaded)
         return loaded
     }
 
     suspend fun relations(id: Int): List<FilmLinkItem> {
         relationsCache.get(id)?.let { return it }
-        val loaded = api.relations(id).items
+        val loaded = api.relations(id).items.orEmpty()
         relationsCache.put(id, loaded)
         return loaded
     }
@@ -128,14 +128,14 @@ class FilmsRepository(private val api: KinopoiskApi) {
     suspend fun images(id: Int, page: Int = 1): List<FilmImageItem> {
         val key = "$id:$page"
         imagesCache.get(key)?.let { return it }
-        val loaded = api.images(id = id, page = page).items
+        val loaded = api.images(id = id, page = page).items.orEmpty()
         imagesCache.put(key, loaded)
         return loaded
     }
 
     suspend fun videos(id: Int): List<FilmVideoItem> {
         videosCache.get(id)?.let { return it }
-        val loaded = runCatching { api.videos(id).items }.getOrDefault(emptyList())
+        val loaded = runCatching { api.videos(id).items.orEmpty() }.getOrDefault(emptyList())
         if (loaded.isNotEmpty()) videosCache.put(id, loaded)
         return loaded
     }

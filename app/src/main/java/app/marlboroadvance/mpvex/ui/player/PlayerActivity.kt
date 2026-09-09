@@ -63,6 +63,7 @@ import hd.kinoshka.app.BuildConfig
 import hd.kinoshka.app.data.api.ApiClient
 import hd.kinoshka.app.data.download.toAnimeMediaStream
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
+import hd.kinoshka.app.data.local.UserFilmStatus
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeMediaStream
@@ -4310,7 +4311,17 @@ class PlayerActivity :
               val api = ApiClient.shikimoriApi(this@PlayerActivity.cacheDir)
               val rates = runCatching { api.getUserAnimeRates(authState.userId) }.getOrNull()
               val existingRate = rates?.firstOrNull { it.targetId == shikimoriId }
-              val newStatus = if (totalEps in 1..currentEp) "completed" else "watching"
+              // Статус — из только что записанного локального профиля (единый источник
+              // правды): прямое сравнение «10 из 10 вышедших» ложно завершало онгоинги
+              // 10/12 и здесь тоже — и на сайт улетал completed.
+              val newStatus = when (store.getProfile(profileKey)?.status) {
+                UserFilmStatus.COMPLETED -> "completed"
+                UserFilmStatus.REWATCHING -> "rewatching"
+                UserFilmStatus.ON_HOLD -> "on_hold"
+                UserFilmStatus.DROPPED -> "dropped"
+                UserFilmStatus.PLANNED -> "planned"
+                else -> "watching"
+              }
               val authHeader = if (token.startsWith("Bearer ")) token else "Bearer $token"
 
               if (existingRate != null) {

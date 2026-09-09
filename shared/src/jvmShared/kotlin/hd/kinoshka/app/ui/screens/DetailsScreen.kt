@@ -209,6 +209,7 @@ import hd.kinoshka.app.data.model.MovieContentKind
 import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.MovieStreamResult
 import hd.kinoshka.app.data.model.qualityBadgeLabel
+import hd.kinoshka.app.data.model.containsAnimeGenre
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.HentaiStream
@@ -462,7 +463,7 @@ fun DetailsScreen(
 
             state.item != null -> {
                 val item = state.item
-                val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.any { it.genre?.lowercase() == "аниме" }
+                val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.containsAnimeGenre()
                 val scope = rememberCoroutineScope()
                 val scrollState = rememberLazyListState()
                 // Трейлер играет только mpvEx. Прямой поток (hanime mp4) уже в nativeUrl;
@@ -530,7 +531,7 @@ fun DetailsScreen(
                     onWatch(filmDetails)
                     // 18+ titles (хентай/эротика) have no selection-sheet sources: neither
                     // the Kodik API nor AniLiberty indexes them, so skip the sheet.
-                    val isAdult = item.genres.any { genre ->
+                    val isAdult = item.genres.orEmpty().any { genre ->
                         val n = genre.genre?.lowercase().orEmpty()
                         n.contains("хентай") || n.contains("hentai") || n.contains("эротик") ||
                             n.contains("для взрослых") || n.contains("18+") || n.contains("adult") ||
@@ -1034,13 +1035,13 @@ fun DetailsScreen(
                         }
 
                         // Genres horizontal row
-                        if (item.genres.isNotEmpty()) {
+                        if (!item.genres.isNullOrEmpty()) {
                             item {
                                 LazyRow(
                                     contentPadding = PaddingValues(horizontal = 16.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    items(item.genres) { g ->
+                                    items(item.genres.orEmpty()) { g ->
                                         g.genre?.let { genreName ->
                                             Surface(
                                                 shape = RoundedCornerShape(12.dp),
@@ -1158,7 +1159,7 @@ fun DetailsScreen(
                 onSave = { status, rating, note, seasons, episodes ->
                     val totalSeasons = state.seasons.size.takeIf { it > 0 }
                         ?: if (state.animeDetails != null) 1 else null
-                    val totalEpisodes = state.seasons.sumOf { it.episodes.size }.takeIf { it > 0 }
+                    val totalEpisodes = state.seasons.sumOf { it.episodes.orEmpty().size }.takeIf { it > 0 }
                         ?: state.animeDetails?.episodes?.takeIf { it > 0 }
 
                     onSaveUserProfile(
@@ -1528,7 +1529,7 @@ private fun ActionPanel(
             if (seasons.isNotEmpty()) {
                 val sortedSeasons = seasons.filter { it.number > 0 }.sortedBy { it.number }
                 for (season in sortedSeasons) {
-                    val epCount = season.episodes.size
+                    val epCount = season.episodes.orEmpty().size
                     if (season.number < currentSeasonNum) {
                         cumulativeWatched += epCount
                         cumulativeTotal += epCount
@@ -1817,7 +1818,7 @@ fun UserProfileEditorSheet(
             }
 
             // Season and Episodes Counter Section with Max Boundaries & Season Reset
-            val isAnimeItem = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.any { it.genre?.lowercase() == "аниме" }
+            val isAnimeItem = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.containsAnimeGenre()
             val maxAnimeEpisodes = maxOf(
                 animeDetails?.episodes ?: 0,
                 profile?.totalEpisodes ?: 0,
@@ -1850,7 +1851,7 @@ fun UserProfileEditorSheet(
                                             episodesCount = maxAnimeEpisodes.takeIf { it != Int.MAX_VALUE } ?: 1
                                         } else if (item.type == "TV_SERIES" && seasons.isNotEmpty()) {
                                             seasonsCount = seasons.size
-                                            episodesCount = seasons.last().episodes.size
+                                            episodesCount = seasons.last().episodes.orEmpty().size
                                         } else {
                                             // seasonsCount = 1
                                             episodesCount = 1
@@ -2113,7 +2114,7 @@ private fun MovieFullDetailsCard(item: FilmDetails) {
     val detailsList = remember(item) {
         buildList {
             item.slogan?.takeIf { it.isNotBlank() }?.let { add(DetailEntry("Слоган", "\"$it\"")) }
-            item.countries.mapNotNull { it.country }.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { add(DetailEntry("Страны", it)) }
+            item.countries.orEmpty().mapNotNull { it.country }.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { add(DetailEntry("Страны", it)) }
             item.ratingKinopoisk?.let { r -> add(DetailEntry("Рейтинг Кинопоиск", "%.1f ★ (%d голосов)".format(Locale.US, r, item.ratingKinopoiskVoteCount ?: 0))) }
             item.ratingImdb?.let { r -> add(DetailEntry("Рейтинг IMDb", "%.1f (%d голосов)".format(Locale.US, r, item.ratingImdbVoteCount ?: 0))) }
             item.ratingFilmCritics?.let { r -> add(DetailEntry("Рейтинг критиков", "%.1f (%d)".format(Locale.US, r, item.ratingFilmCriticsVoteCount ?: 0))) }
@@ -2213,7 +2214,7 @@ private fun FactCell(
 private fun SeasonsCard(
     seasons: List<SeasonItem>
 ) {
-    val totalEpisodes = seasons.sumOf { it.episodes.size }
+        val totalEpisodes = seasons.sumOf { it.episodes.orEmpty().size }
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp)
@@ -2248,7 +2249,7 @@ private fun SeasonsCard(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "${season.episodes.size} сер.",
+                                text = "${season.episodes.orEmpty().size} сер.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -2883,13 +2884,17 @@ private fun AnimeDetailsLayout(
     var showCharactersSheet by remember { mutableStateOf(false) }
     var showChronologySheet by remember { mutableStateOf(false) }
 
+    // «Аниме» как тип не показываем никогда: это фолбэк был виден у music/
+    // tv_special (реальные kind Shikimori) и пока детали грузятся (kind=null).
     val kindStr = when (anime?.kind?.lowercase()) {
         "tv" -> "ТВ"
         "movie" -> "Фильм"
         "ova" -> "OVA"
         "ona" -> "ONA"
-        "special" -> "Спешл"
-        else -> "Аниме"
+        "special", "tv_special" -> "Спешл"
+        "music" -> "Музыка"
+        null -> "—"
+        else -> anime?.kind?.uppercase() ?: "—"
     }
     val statusStr = when (anime?.status?.lowercase()) {
         "released" -> "Вышло"
@@ -3077,7 +3082,7 @@ private fun AnimeDetailsLayout(
         }
 
         // Genres horizontally separated buttons
-        if (item.genres.isNotEmpty()) {
+        if (!item.genres.isNullOrEmpty()) {
             item {
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp),
@@ -3448,7 +3453,8 @@ private fun AnimeChronologySheet(
                     "movie" -> "Фильм"
                     "ova" -> "OVA"
                     "ona" -> "ONA"
-                    "special" -> "Спешл"
+                    "special", "tv_special" -> "Спешл"
+                    "music" -> "Музыка"
                     else -> animeDetails?.kind?.uppercase()
                 }
                 list.add(
@@ -5023,11 +5029,11 @@ private fun DetailsTvLayout(
     onBack: () -> Unit,
 ) {
     val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" ||
-        item.genres.any { it.genre?.lowercase() == "аниме" }
+        item.genres.containsAnimeGenre()
     val posterUrl = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview
     val metaParts = buildList {
         item.year?.let { add(it.toString()) }
-        item.countries.mapNotNull { it.country }.takeIf { it.isNotEmpty() }?.let { add(it.joinToString(", ")) }
+        item.countries.orEmpty().mapNotNull { it.country }.takeIf { it.isNotEmpty() }?.let { add(it.joinToString(", ")) }
         item.filmLength?.takeIf { it > 0 }?.let { add("${it / 60} ч ${it % 60} мин") }
         item.ratingAgeLimits?.let { add(it.replace("age", "") + "+") }
     }
@@ -5213,12 +5219,12 @@ private fun DetailsTvHeaderText(
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
-        if (item.genres.isNotEmpty()) {
+        if (!item.genres.isNullOrEmpty()) {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                item.genres.mapNotNull { it.genre }.forEach { genreName ->
+                item.genres.orEmpty().mapNotNull { it.genre }.forEach { genreName ->
                     TvChip(
                         text = genreName,
                         selected = false,

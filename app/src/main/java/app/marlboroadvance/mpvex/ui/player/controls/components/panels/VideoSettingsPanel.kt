@@ -42,23 +42,23 @@ fun VideoSettingsPanel(
         horizontalArrangement = Arrangement.SpaceBetween,
         modifier = Modifier
           .fillMaxWidth()
-          .padding(horizontal = MaterialTheme.spacing.medium)
-          .padding(top = MaterialTheme.spacing.small),
+          .padding(horizontal = MaterialTheme.spacing.small)
+          .padding(top = MaterialTheme.spacing.extraSmall),
       ) {
         Text(
           stringResource(R.string.player_sheets_video_settings_title),
-          style = MaterialTheme.typography.titleLarge,
+          style = MaterialTheme.typography.titleMedium,
         )
         Spacer(Modifier.weight(1f))
         IconButton(onClick = onDismissRequest) {
-          Icon(Icons.Default.Close, null, modifier = Modifier.size(32.dp))
+          Icon(Icons.Default.Close, null, modifier = Modifier.size(24.dp))
         }
       }
     }
   ) {
       Column(
-        Modifier.padding(MaterialTheme.spacing.medium),
-        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
+        Modifier.padding(MaterialTheme.spacing.small),
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
       ) {
         VideoSettingsFilterPresetsCard()
         VideoSettingsFiltersCard()

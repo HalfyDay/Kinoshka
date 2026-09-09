@@ -10,9 +10,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -108,6 +110,12 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.pulltorefresh.PullToRefreshState
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
+import kotlin.math.PI
+import kotlin.math.sin
 import hd.kinoshka.app.ui.components.BottomNavPill
 import hd.kinoshka.app.ui.components.NavPillItem
 import hd.kinoshka.app.ui.components.ScrollIntensityEffect
@@ -143,9 +151,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.automirrored.filled.Feed
-import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.outlined.Explore
-import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Info
@@ -167,6 +174,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
@@ -221,7 +229,7 @@ enum class MainSection {
     LIBRARY,
     DISCOVER,
     FEED,
-    MORE
+    PROFILE
 }
 
 internal enum class LibraryTab(val title: String) {
@@ -331,7 +339,7 @@ fun HomeScreen(
     // Лента рекомендаций как 4-я секция в том же окружении: один Scaffold, одна
     // пилюля, один дебаунс переключений. Слот привозит сам экран ленты
     // (Android-only, живёт в app-модуле); вызов получает переключатель секций,
-    // которым лента пользуется для кнопок Библиотека/Обзор/Ещё.
+    // которым лента пользуется для кнопок Библиотека/Обзор/Профиль.
     // Без слота (desktop) секция FEED недоступна, пилюля из трёх кнопок.
     feedContent: (@Composable (onSelectSection: (MainSection) -> Unit) -> Unit)? = null,
     // Интенсивность скролла ленты для физики пилюли (аналог contentScrollIntensity).
@@ -341,13 +349,20 @@ fun HomeScreen(
     onSeeAll: (OverviewSeeAll) -> Unit = {},
     // Повторный тап «Обзора» в пилюле: сбросить поиск/фильтры, вернуть ленту секций.
     onDiscoverReset: () -> Unit = {},
+    // Разовый deep-link из Профиля (тап по легенде статистики): открыть Библиотеку
+    // на вкладке статуса. TV-раскладка идёт своей веткой и запрос игнорирует.
+    onConsumeLibraryDeepLink: () -> Unit = {},
+    // Контент секции «Профиль» (Android: ProfileScreen из app-модуля без кнопки
+    // Назад — платформенных пикеров общий код не знает). Без слота (desktop)
+    // секция показывает старое меню Ещё как запасной вариант.
+    profileContent: (@Composable () -> Unit)? = null,
     // Глифы кнопок пилюли: Android (KinoApp) инъекцией возвращает кастомные
     // drawable-иконки (как до KMP M4), без инъекции (desktop) рисуются
     // material-фолбэки. Общий код не зависит от res-ID приложения.
     feedGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
     libraryGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
     discoverGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
-    moreGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
+    profileGlyph: (@Composable (selected: Boolean) -> Unit)? = null,
     onLibrarySortSelected: (hd.kinoshka.app.data.local.LibrarySortType) -> Unit = {},
     librarySortType: hd.kinoshka.app.data.local.LibrarySortType = hd.kinoshka.app.data.local.LibrarySortType.LAST_VIEWED,
     librarySortReversed: Boolean = false,
@@ -359,7 +374,12 @@ fun HomeScreen(
     onRemoveSearchHistory: (String) -> Unit = {},
     onClearSearchHistory: () -> Unit = {},
     // Android-only возможности (Загрузки/Профиль/ТикТок-лента): на desktop их экранов нет.
-    androidFeaturesAvailable: Boolean = true
+    androidFeaturesAvailable: Boolean = true,
+    // Pull-to-refresh Библиотеки (свайп вниз по сетке/списку раздела).
+    onRefreshLibrary: () -> Unit = {},
+    // Отзывчивая вибрация сияния: 0..1 (слабо → сильно). Реализацию привозит
+    // платформа (Android — Vibrator с амплитудой); без неё (desktop) — no-op.
+    onLibraryRefreshHaptic: (Float) -> Unit = {}
 ) {
     // TV-дизайн (ПК/планшет landscape/ТВ): полностью другой макет с той же моделью состояния.
     if (hd.kinoshka.app.ui.tv.rememberTvLayout()) {
@@ -414,7 +434,7 @@ fun HomeScreen(
     // иначе возврат из тайтла, открытого из ленты, сбрасывал бы на Библиотеку.
     val initialSection = when (state.tab) {
         HomeTab.HISTORY -> MainSection.LIBRARY
-        HomeTab.MORE -> MainSection.MORE
+        HomeTab.MORE -> MainSection.PROFILE
         else -> MainSection.DISCOVER
     }
     // Секция переживает снятие с композиции (уход на details/{id} и возврат):
@@ -429,11 +449,11 @@ fun HomeScreen(
     var isSearchFocused by remember { mutableStateOf(false) }
     var libraryQuery by rememberSaveable { mutableStateOf("") }
     var discoverQuery by rememberSaveable { mutableStateOf("") }
-    var moreQuery by rememberSaveable { mutableStateOf("") }
+    var profileQuery by rememberSaveable { mutableStateOf("") }
     val activeQuery = when (section) {
         MainSection.LIBRARY -> libraryQuery
         MainSection.DISCOVER -> discoverQuery
-        MainSection.MORE -> moreQuery
+        MainSection.PROFILE -> profileQuery
         // У ленты своего поиска нет, шапка в её секции скрыта.
         MainSection.FEED -> ""
     }
@@ -489,6 +509,18 @@ fun HomeScreen(
     // resetCount пересоздаёт пейджер на «Смотрю» (повторный тап «Библиотека», возврат из ленты).
     var libraryTopSignal by rememberSaveable { mutableStateOf(0) }
     var libraryResetCount by rememberSaveable { mutableStateOf(0) }
+    // Deep-link из Профиля: разово переключаем Библиотеку на запрошенные
+    // вкладку и фильтр Кино/Аниме, затем гасим запрос во ViewModel.
+    val pendingLibraryDeepLink = state.libraryDeepLink
+    LaunchedEffect(pendingLibraryDeepLink) {
+        if (pendingLibraryDeepLink != null) {
+            section = MainSection.LIBRARY
+            libraryFilter = if (pendingLibraryDeepLink.animeOnly) LibraryFilterType.ANIME else LibraryFilterType.FILMS
+            libraryTab = pendingLibraryDeepLink.status.toLibraryTab()
+            libraryTopSignal++
+            onConsumeLibraryDeepLink()
+        }
+    }
     // Удержание на заголовке раздела: диалог статистики вкладки.
     var libraryStatsTab by remember { mutableStateOf<LibraryTab?>(null) }
     // Скролл ленты «Обзора» по вкладкам Кино/Аниме: живёт на уровне экрана,
@@ -514,6 +546,9 @@ fun HomeScreen(
     // нижней пилюли: сетки сообщают сюда через колбэки. Горизонтальный свайп
     // вкладок и жесты без движения — не в счёт.
     var contentScrollIntensity by remember { mutableStateOf(0f) }
+    // Жест pull-to-refresh Библиотеки: состояние общее — его читают и страницы
+    // пейджера (сам жест), и сияние на корне экрана (индикация от верхней кромки).
+    val libraryPtrState = rememberPullToRefreshState()
     val searchRowHeight =
         if (section == MainSection.LIBRARY) LibrarySearchChromeHeight else SearchChromeHeight
     val searchRowAlpha = 1f
@@ -584,7 +619,7 @@ fun HomeScreen(
                         onDiscoverReset()
                     }
                 }
-                MainSection.MORE -> Unit
+                MainSection.PROFILE -> Unit
                 // Повторный тап по ленте ничего не делает (скролл наверх не проброшен).
                 MainSection.FEED -> Unit
             }
@@ -595,7 +630,7 @@ fun HomeScreen(
                 when (section) {
                     MainSection.LIBRARY -> libraryQuery = state.query
                     MainSection.DISCOVER -> discoverQuery = state.query
-                    MainSection.MORE -> moreQuery = state.query
+                    MainSection.PROFILE -> profileQuery = state.query
                     // У ленты поискового запроса нет — сохранять нечего.
                     MainSection.FEED -> Unit
                 }
@@ -618,8 +653,8 @@ fun HomeScreen(
                         onTabSelected(HomeTab.CATALOG)
                         onDiscoverCategorySelected(DiscoverCategory.POPULAR)
                     }
-                    MainSection.MORE -> {
-                        moreQuery = ""
+                    MainSection.PROFILE -> {
+                        profileQuery = ""
                         onQueryChange("")
                         onTabSelected(HomeTab.MORE)
                     }
@@ -707,16 +742,16 @@ fun HomeScreen(
                         }
                     ),
                     NavPillItem(
-                        contentDescription = "Ещё",
-                        selected = section == MainSection.MORE,
-                        onClick = { handleNav(MainSection.MORE) },
+                        contentDescription = "Профиль",
+                        selected = section == MainSection.PROFILE,
+                        onClick = { handleNav(MainSection.PROFILE) },
                         glyph = { sel ->
-                            val custom = moreGlyph
+                            val custom = profileGlyph
                             if (custom != null) {
                                 custom(sel)
                             } else {
                                 Icon(
-                                    imageVector = if (sel) Icons.Filled.MoreHoriz else Icons.Outlined.MoreHoriz,
+                                    imageVector = if (sel) Icons.Filled.Person else Icons.Outlined.PersonOutline,
                                     contentDescription = null,
                                     modifier = Modifier.size(28.dp)
                                 )
@@ -732,6 +767,9 @@ fun HomeScreen(
         // Лента — четвёртая секция в том же Scaffold: полноэкранный чёрный слот
         // без домашней шапки и отступов, поверх — та же общая пилюля.
         val isFeedSection = section == MainSection.FEED && feedContent != null
+        // Профиль со слотом — тоже полноэкранный: домашняя шапка поиска
+        // в нём ни к чему, у профиля своя шапка с кнопками.
+        val isProfileSection = section == MainSection.PROFILE && profileContent != null
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -750,22 +788,30 @@ fun HomeScreen(
                         )
                     }
                 )
-                .then(
-                    if (isFeedSection) {
-                        // Слот ленты рисует себя сам во весь экран (как отдельным
-                        // маршрутом): домашние отступы и ime здесь ни к чему.
-                        Modifier
-                    } else {
-                        Modifier
-                            .padding(top = innerPadding.calculateTopPadding())
-                            .imePadding()
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
-                    }
-                )
         ) {
-            // Домашний контент под лентой не компонуем — не тратим кадры и память.
-            if (!isFeedSection) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            // Сияние pull-to-refresh Библиотеки — ФОНОМ (первый ребёнок, рисуется
+            // под контентом) и мимо домашних отступов: касается краёв экрана
+            // от самой верхней кромки. Жест живёт на страницах пейджера ниже,
+            // состояние общее. Canvas тапы не перехватывает.
+            if (section == MainSection.LIBRARY) {
+                AuroraRefreshOverlay(
+                    pullState = libraryPtrState,
+                    isRefreshing = state.libraryRefreshing,
+                    onHaptic = onLibraryRefreshHaptic
+                )
+            }
+            // Домашний контент под лентой/профилем не компонуем — не тратим кадры и память.
+            if (!isFeedSection && !isProfileSection) {
+            // Домашние отступы — на контенте, а не на корне: иначе фон (сияние)
+            // сжимался бы на 14.dp с боков и не касался краёв экрана. Лента
+            // и профиль рисуют себя сами во весь экран — им отступы ни к чему.
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = innerPadding.calculateTopPadding())
+                    .imePadding()
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
                 Box(modifier = Modifier.fillMaxWidth()) {
                     Box(
                         modifier = Modifier
@@ -785,7 +831,7 @@ fun HomeScreen(
                             placeholder = when (section) {
                                 MainSection.LIBRARY -> "Поиск в библиотеке"
                                 MainSection.DISCOVER -> if (state.contentType == ContentType.ANIME) "Поиск аниме" else "Поиск фильмов"
-                                MainSection.MORE -> "Поиск по разделу Ещё"
+                                MainSection.PROFILE -> "Поиск по меню"
                                 // Шапка в секции ленты скрыта, ветка для exhaustive.
                                 MainSection.FEED -> ""
                             },
@@ -817,7 +863,7 @@ fun HomeScreen(
                                 when (section) {
                                     MainSection.LIBRARY -> libraryQuery = value
                                     MainSection.DISCOVER -> discoverQuery = value
-                                    MainSection.MORE -> moreQuery = value
+                                    MainSection.PROFILE -> profileQuery = value
                                     // В секции ленты шапки нет — ввод сюда не доходит.
                                     MainSection.FEED -> Unit
                                 }
@@ -927,7 +973,16 @@ fun HomeScreen(
                                     // The library has its own content filter (libraryFilter).
                                     // Do not also filter it by the global Discover/Search type:
                                     // changing Kino/Anime in search must not hide library items.
-                                    LibraryPageGrid(
+                                    androidx.compose.material3.pulltorefresh.PullToRefreshBox(
+                                        isRefreshing = state.libraryRefreshing,
+                                        onRefresh = onRefreshLibrary,
+                                        modifier = Modifier.fillMaxSize(),
+                                        state = libraryPtrState,
+                                        // Индикатор рисуем сами на корне экрана (см. ниже):
+                                        // штатный спиннер и слотная иконка не нужны.
+                                        indicator = {}
+                                    ) {
+                                        LibraryPageGrid(
                                         items = items,
                                         tab = pageTab,
                                         queryActive = normalizedQuery.isNotEmpty(),
@@ -939,16 +994,18 @@ fun HomeScreen(
                                         listState = libraryListStates.getValue(pageTab),
                                         gridState = libraryGridStates.getValue(pageTab),
                                         scrollToTopSignal = libraryTopSignal,
-                                        onScrollActivity = {
-                                            contentScrollIntensity = it
-                                            // Скролл контента гасит фокус поиска и клавиатуру.
-                                            if (it > 0f && isSearchFocused) {
+                                        onScrollActivity = { contentScrollIntensity = it },
+                                        // Фокус гасим только живым жестом (см. DragGatedScrollIntensity):
+                                        // перестройка сетки при вводе — не скролл пользователя.
+                                        onUserScroll = {
+                                            if (isSearchFocused) {
                                                 isSearchFocused = false
                                                 focusManager.clearFocus()
                                             }
                                         },
                                         group = libraryGroupType
-                                    )
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -984,10 +1041,10 @@ fun HomeScreen(
                                     onRetryOverview = onRetryOverview,
                                     onSeeAll = onSeeAll,
                                     feedListState = overviewListStates.getValue(targetContentType),
-                                    onScrollActivity = {
-                                        contentScrollIntensity = it
-                                        // Скролл контента гасит фокус поиска и клавиатуру.
-                                        if (it > 0f && isSearchFocused) {
+                                    onScrollActivity = { contentScrollIntensity = it },
+                                    // Фокус гасим только живым жестом (см. DragGatedScrollIntensity).
+                                    onUserScroll = {
+                                        if (isSearchFocused) {
                                             isSearchFocused = false
                                             focusManager.clearFocus()
                                         }
@@ -996,7 +1053,7 @@ fun HomeScreen(
                             }
                         }
 
-                        MainSection.MORE -> {
+                        MainSection.PROFILE -> {
                             MoreContent(
                                 query = state.query.trim(),
                                 onOpenProfile = onOpenProfile,
@@ -1057,6 +1114,11 @@ fun HomeScreen(
             // Секция ленты: полноэкранный слот вместо домашнего Column.
             if (isFeedSection) {
                 feedContent { target -> handleNav(target) }
+            }
+            // Секция профиля: слот платформы вместо домашнего Column.
+            // Без слота (desktop) профиль рисуется запасным меню в общем Column выше.
+            if (isProfileSection) {
+                profileContent()
             }
 
         }
@@ -1396,7 +1458,7 @@ private fun SearchRow(
                     }
                 }
             }
-        } else if (section == MainSection.MORE) {
+        } else if (section == MainSection.PROFILE) {
             Spacer(modifier = Modifier.width(6.dp))
             Surface(
                 modifier = Modifier
@@ -1684,6 +1746,153 @@ private fun LibraryTabs(
 }
 
 @OptIn(ExperimentalFoundationApi::class)
+/**
+ * Интенсивность скролла + отдельный колбэк живого жеста пользователя.
+ * ScrollIntensityEffect срабатывает на ЛЮБОЕ смещение позиции — включая программные:
+ * сброс списка при фильтрации/поиске, scrollToItem. Гасить фокус поиска и клавиатуру
+ * по таким «скроллам» нельзя: каждый введённый символ перестраивал сетку, позиция
+ * прыгала — и клавиатура сворачивалась на каждый символ. [onUserScroll] стреляет
+ * только пока палец реально тянет список (dragged); rememberUpdatedState — чтобы
+ * эффект видел свежее значение, а не захваченное при последнем рестарте.
+ */
+@Composable
+private fun DragGatedScrollIntensity(
+    positionIndex: Int,
+    positionOffset: Int,
+    dragging: Boolean,
+    onIntensity: (Float) -> Unit,
+    onUserScroll: () -> Unit = {}
+) {
+    val draggingNow by rememberUpdatedState(dragging)
+    ScrollIntensityEffect(
+        positionIndex = positionIndex,
+        positionOffset = positionOffset,
+        onIntensity = {
+            onIntensity(it)
+            if (it > 0f && draggingNow) onUserScroll()
+        }
+    )
+}
+
+/**
+ * Сияние pull-to-refresh Библиотеки: ФОН за контентом (первый ребёнок корня),
+ * от самой верхней кромки и от края до края. Сверху сильный цвет, вниз —
+ * слабее: яркая кромка + шторы сияния с рваным нижним краем, фаза бежит
+ * как у северного сияния. Сила свечения следует за жестом (distanceFraction),
+ * в refresh — полная яркость.
+ *
+ * Стиль Material 3: палитра — из colorScheme темы (primary/secondary/tertiary),
+ * поэтому сияние подстраивается под светлую/тёмную/AMOLED-тему и dynamic color,
+ * а не захардкожено.
+ */
+@Composable
+private fun BoxScope.AuroraRefreshOverlay(
+    pullState: PullToRefreshState,
+    isRefreshing: Boolean,
+    onHaptic: (Float) -> Unit = {}
+) {
+    val pull = pullState.distanceFraction.coerceIn(0f, 1f)
+    // Отзывчивая вибрация от слабой к сильной: тики по мере натяжения,
+    // мощный — в момент срыва обновления, мягкий — по его концу.
+    val level = if (isRefreshing) 5 else (pull * 5).toInt().coerceIn(0, 4)
+    var firedLevel by remember { mutableStateOf(-1) }
+    var wasRefreshing by remember { mutableStateOf(false) }
+    // Тихий пульс, пока обновление длится: сияние «дышит» и в руке.
+    // Цикл гасится сам при смене ключа (конец refresh).
+    LaunchedEffect(isRefreshing) {
+        if (isRefreshing) {
+            while (true) {
+                kotlinx.coroutines.delay(1400)
+                onHaptic(0.18f)
+            }
+        }
+    }
+    LaunchedEffect(level, isRefreshing) {
+        if (isRefreshing && !wasRefreshing) {
+            onHaptic(1f)
+            wasRefreshing = true
+            firedLevel = 5
+        } else if (!isRefreshing) {
+            if (wasRefreshing) {
+                onHaptic(0.25f)
+                wasRefreshing = false
+            }
+            if (level > firedLevel) {
+                onHaptic(0.12f + 0.14f * level)
+            }
+            firedLevel = level
+        }
+    }
+    if (!isRefreshing && pull <= 0.01f) return
+    // Плавное появление/угасание вместо резкого скачка distanceFraction.
+    val glow by animateFloatAsState(
+        targetValue = if (isRefreshing) 1f else pull,
+        animationSpec = tween(if (isRefreshing) 450 else 120),
+        label = "auroraGlow"
+    )
+    if (glow <= 0.01f) return
+    // Цвета темы читаем здесь (в DrawScope компоуз-чтения недоступны).
+    val scheme = MaterialTheme.colorScheme
+    val bandColors = remember(scheme) { arrayOf(scheme.primary, scheme.secondary, scheme.tertiary) }
+    // Бегущая фаза волн — только пока сияние видно, в простое Canvas не трогаем.
+    val infinite = rememberInfiniteTransition(label = "aurora")
+    val phase by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = (2 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(3800, easing = LinearEasing)),
+        label = "auroraPhase"
+    )
+    // Зона сияния ужата кверху: рваный низ штор ложится на ряд вкладок
+    // (История/Смотрю/В планах — ~100–145dp от верха: инсет + 10dp + шапка 56dp).
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(160.dp)
+            .align(Alignment.TopCenter)
+            .graphicsLayer { alpha = glow }
+    ) {
+        val w = size.width
+        val h = size.height
+        // Яркая кромка у самого верха: сильный цвет → слабее вниз.
+        drawRect(
+            Brush.verticalGradient(
+                0f to Color.White.copy(alpha = 0.55f),
+                0.12f to bandColors[0].copy(alpha = 0.55f),
+                0.45f to bandColors[1].copy(alpha = 0.20f),
+                1f to Color.Transparent
+            )
+        )
+        // Шторы сияния: висят от верхней кромки, низ рваный и еле видимый.
+        val strengths = floatArrayOf(0.65f, 0.55f, 0.50f)
+        val offsets = floatArrayOf(0f, 2.1f, 4.2f)
+        bandColors.forEachIndexed { i, color ->
+            val bottom = h * (0.66f + 0.12f * i)
+            val amplitude = h * 0.08f * (0.6f + 0.4f * glow)
+            val waves = 2.2f
+            val offset = offsets[i]
+            val path = Path().apply {
+                moveTo(0f, 0f)
+                lineTo(w, 0f)
+                lineTo(w, (bottom + amplitude * sin(waves * 2 * PI + phase + offset)).toFloat())
+                var x = w - w / 72f
+                while (x >= 0f) {
+                    lineTo(x, (bottom + amplitude * sin(x / w * waves * 2 * PI + phase + offset)).toFloat())
+                    x -= w / 72f
+                }
+                close()
+            }
+            drawPath(
+                path = path,
+                brush = Brush.verticalGradient(
+                    0f to color.copy(alpha = strengths[i] * glow),
+                    0.7f to color.copy(alpha = strengths[i] * glow * 0.35f),
+                    1f to Color.Transparent
+                )
+            )
+        }
+    }
+}
+
 @Composable
 private fun LibraryPageGrid(
     items: List<LibraryUiItem>,
@@ -1698,16 +1907,21 @@ private fun LibraryPageGrid(
     gridState: LazyGridState,
     scrollToTopSignal: Int = 0,
     onScrollActivity: (Float) -> Unit = {},
+    onUserScroll: () -> Unit = {},
     group: LibraryGroupType = LibraryGroupType.NONE
 ) {
     var pendingDeleteId by remember { mutableIntStateOf(0) }
     // Интенсивность скролла по фактическому смещению активной сетки.
     val activeIndex = if (metrics.columns == 1) listState.firstVisibleItemIndex else gridState.firstVisibleItemIndex
     val activeOffset = if (metrics.columns == 1) listState.firstVisibleItemScrollOffset else gridState.firstVisibleItemScrollOffset
-    ScrollIntensityEffect(
+    val listDragged by listState.interactionSource.collectIsDraggedAsState()
+    val gridDragged by gridState.interactionSource.collectIsDraggedAsState()
+    DragGatedScrollIntensity(
         positionIndex = activeIndex,
         positionOffset = activeOffset,
-        onIntensity = onScrollActivity
+        dragging = if (metrics.columns == 1) listDragged else gridDragged,
+        onIntensity = onScrollActivity,
+        onUserScroll = onUserScroll
     )
     // Клик по вкладке или смена сортировки: список всегда показываем с начала. Lazy-контейнер
     // с ключами иначе «якорится» за первым видимым элементом и остаётся на старой позиции.
@@ -1965,6 +2179,7 @@ private fun DiscoverContent(
     // поэтому состояние хранится выше, а не внутри ленты.
     feedListState: LazyListState,
     onScrollActivity: (Float) -> Unit = {},
+    onUserScroll: () -> Unit = {},
     // ПК-оболочка: рисовать плоскую сетку даже когда лента секций доступна
     // (локальные пункты меню — «Фильмы» и т.п. поверх популярного списка).
     forceGrid: Boolean = false
@@ -2023,6 +2238,7 @@ private fun DiscoverContent(
             onOpenFeed = onOpenFeed,
             onOpenTopic = onOpenTopic,
             onScrollActivity = onScrollActivity,
+            onUserScroll = onUserScroll,
             heroItems = if (state.contentType == ContentType.ANIME) {
                 animeHero.first
             } else {
@@ -2040,10 +2256,14 @@ private fun DiscoverContent(
     // Интенсивность скролла по фактическому смещению активной сетки.
     val activeIndex = if (metrics.columns == 1) listState.firstVisibleItemIndex else gridState.firstVisibleItemIndex
     val activeOffset = if (metrics.columns == 1) listState.firstVisibleItemScrollOffset else gridState.firstVisibleItemScrollOffset
-    ScrollIntensityEffect(
+    val discoverListDragged by listState.interactionSource.collectIsDraggedAsState()
+    val discoverGridDragged by gridState.interactionSource.collectIsDraggedAsState()
+    DragGatedScrollIntensity(
         positionIndex = activeIndex,
         positionOffset = activeOffset,
-        onIntensity = onScrollActivity
+        dragging = if (metrics.columns == 1) discoverListDragged else discoverGridDragged,
+        onIntensity = onScrollActivity,
+        onUserScroll = onUserScroll
     )
     // Сетка раздела/поиска. Шапка с названием живёт в верхней панели
     // (вместо строки поиска), здесь только контент.
@@ -2363,14 +2583,18 @@ private fun OverviewFeed(
     // в раздел, детали и смена вкладок позицию не сносят.
     listState: LazyListState,
     onScrollActivity: (Float) -> Unit = {},
+    onUserScroll: () -> Unit = {},
     // Витрина сверху: широкие карточки без дублей каруселей (пусто — не показываем).
     heroItems: List<FilmItem> = emptyList(),
     heroTitle: String = ""
 ) {
-    ScrollIntensityEffect(
+    val feedDragged by listState.interactionSource.collectIsDraggedAsState()
+    DragGatedScrollIntensity(
         positionIndex = listState.firstVisibleItemIndex,
         positionOffset = listState.firstVisibleItemScrollOffset,
-        onIntensity = onScrollActivity
+        dragging = feedDragged,
+        onIntensity = onScrollActivity,
+        onUserScroll = onUserScroll
     )
     val isAnime = state.contentType == ContentType.ANIME
     when {
@@ -2872,7 +3096,7 @@ private fun MoreContent(
             item {
                 EmptyCard(
                     title = "Ничего не найдено",
-                    message = "По запросу \"$query\" в разделе Ещё ничего не найдено."
+                    message = "По запросу \"$query\" в этом меню ничего не найдено."
                 )
             }
         } else {
@@ -2986,7 +3210,7 @@ private fun DiscoverGridCard(
     }
     val isAnime = film.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
     val metaText = remember(film.year, film.countries, film.kinopoiskId) {
-        val extra = film.countries.getOrNull(1)?.country
+        val extra = film.countries.orEmpty().getOrNull(1)?.country
         listOfNotNull(
             film.year?.toString().takeUnless { isAnime },
             extra.takeIf { isAnime }
@@ -3084,7 +3308,7 @@ private fun LibraryGridCard(
     }
     val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME"
     // Мета — в стиле плиток Обзора: текст строки + рейтинг отдельным чипом со звездой
-    val metaText = remember(item.type, item.totalEpisodes, item.subtitle, isAnime) {
+    val metaText = remember(item.type, item.totalEpisodes, item.subtitle, item.animeKind, isAnime) {
         item.libraryMetaParts().joinToString(" • ")
     }
     val ratingValue = remember(item.ratingText) { item.libraryRating() }
@@ -3181,7 +3405,7 @@ private fun LibraryVerticalRow(
     }
     val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME"
     // Та же мета, что у сеточной плитки и Обзора: текст · текст + чип рейтинга
-    val metaText = remember(item.type, item.totalEpisodes, item.subtitle, isAnime) {
+    val metaText = remember(item.type, item.totalEpisodes, item.subtitle, item.animeKind, isAnime) {
         item.libraryMetaParts().joinToString(" · ")
     }
     val ratingValue = remember(item.ratingText) { item.libraryRating() }
@@ -3290,7 +3514,7 @@ private fun DiscoverVerticalRow(
     }
     val isAnime = film.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET
     val metaText = remember(film.year, film.countries, film.kinopoiskId) {
-        val extra = film.countries.getOrNull(1)?.country
+        val extra = film.countries.orEmpty().getOrNull(1)?.country
         listOfNotNull(
             film.year?.toString().takeUnless { isAnime },
             extra.takeIf { isAnime }
@@ -3400,7 +3624,18 @@ internal fun LibraryUiItem.libraryMetaParts(): List<String> {
     val episodes = totalEpisodes
     val isAnime = kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || type == "ANIME"
     return if (isAnime) {
-        val typeStr = if (episodes != null && episodes > 1) "ТВ" else "Фильм"
+        // Тип — из kind Shikimori (тот же маппинг, что в libraryTypeLabel); эвристик
+        // по числу эпизодов — только когда kind нет (онгоинги без total, старые записи).
+        val typeStr = when (animeKind?.lowercase()) {
+            "tv" -> "ТВ"
+            "movie" -> "Фильм"
+            "ova" -> "OVA"
+            "ona" -> "ONA"
+            "special", "tv_special" -> "Спешл"
+            "music" -> "Музыка"
+            null -> if ((episodes ?: 0) > 1) "ТВ" else "Фильм"
+            else -> "Аниме"
+        }
         listOfNotNull(typeStr, episodes?.takeIf { it > 1 }?.let { "$it эп." })
     } else {
         listOfNotNull(subtitle?.takeIf { it.isNotBlank() })
@@ -3819,6 +4054,16 @@ internal fun List<LibraryUiItem>.filterByTab(tab: LibraryTab): List<LibraryUiIte
     }
 }
 
+/** Статус библиотеки -> вкладка раздела (для deep-link из Профиля). */
+internal fun UserFilmStatus.toLibraryTab(): LibraryTab = when (this) {
+    UserFilmStatus.WATCHING -> LibraryTab.WATCHING
+    UserFilmStatus.PLANNED -> LibraryTab.PLANNED
+    UserFilmStatus.COMPLETED -> LibraryTab.WATCHED
+    UserFilmStatus.REWATCHING -> LibraryTab.REWATCHING
+    UserFilmStatus.ON_HOLD -> LibraryTab.ON_HOLD
+    UserFilmStatus.DROPPED -> LibraryTab.DROPPED
+}
+
 private fun UserFilmStatus.toUiLabel(): String {
     return when (this) {
         UserFilmStatus.WATCHING -> "Смотрю"
@@ -3938,7 +4183,7 @@ private fun List<LibraryUiItem>.groupByFixedOrder(
 }
 
 internal fun FilmItem.isRussianContent(): Boolean {
-    return countries.any { country ->
+    return countries.orEmpty().any { country ->
         when (country.country?.trim()?.lowercase(Locale.forLanguageTag("ru"))) {
             "россия", "ссср" -> true
             else -> false
@@ -3956,8 +4201,9 @@ private fun FilmTileSize.toGridMetrics(): GridMetrics {
 }
 
 /**
- * Запись внутреннего раздела для поиска на странице «Ещё»: попадает в выдачу
- * по названию/подразделу/описанию, тап открывает свою страницу.
+ * Запись внутреннего раздела для поиска в запасном меню (desktop, без слота
+ * профиля): попадает в выдачу по названию/подразделу/описанию, тап открывает
+ * свою страницу.
  */
 private data class MoreSearchEntry(
     val page: String,
@@ -3968,7 +4214,7 @@ private data class MoreSearchEntry(
 )
 
 /**
- * Индекс пунктов внутри страниц Ещё: Загрузки, Профиль, Настройки,
+ * Индекс пунктов запасного меню: Загрузки, Профиль, Настройки,
  * О приложении. Держим рядом с выдачей поиска (MoreContent).
  */
 private fun moreSearchEntries(

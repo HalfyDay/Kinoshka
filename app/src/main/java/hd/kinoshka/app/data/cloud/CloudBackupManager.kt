@@ -123,6 +123,49 @@ object CloudBackupManager {
         appScope.launch { runRestore(app) }
     }
 
+    @Volatile
+    private var lastCloudPullMs = 0L
+    private const val CLOUD_PULL_THROTTLE_MS = 15 * 60_000L
+
+    /**
+     * Автостягивание облака при старте/возврате в приложение (троттлинг 15 минут):
+     * копия ОБЪЕДИНЯЕТСЯ с локальной (новее побеждает, см. mergeLibraryJson),
+     * а не затирает её. Ручное «Восстановить» по-прежнему заменяет целиком —
+     * это осознанное действие. [onMerged] вызывается на main для пересборки UI.
+     */
+    fun syncFromCloudIfNeeded(context: Context, onMerged: () -> Unit) {
+        val app = context.applicationContext
+        val now = System.currentTimeMillis()
+        if (now - lastCloudPullMs < CLOUD_PULL_THROTTLE_MS) return
+        lastCloudPullMs = now
+        val cfg = CloudSyncStore(app).getConfig()
+        if (!cfg.autoSync || !cfg.isConnected || _status.value.busy) return
+        appScope.launch {
+            val json = runCatching {
+                when (cfg.type) {
+                    hd.kinoshka.app.data.local.CloudSyncType.YANDEX ->
+                        downloadYandex(app, cfg.yandexToken!!)
+                    hd.kinoshka.app.data.local.CloudSyncType.WEBDAV ->
+                        downloadWebDav(cfg)
+                    hd.kinoshka.app.data.local.CloudSyncType.NONE -> null
+                }
+            }.getOrNull() ?: return@launch
+            val report = runCatching {
+                UserStateStore(app).mergeLibraryJson(json).getOrThrow()
+            }.getOrNull() ?: return@launch
+            val mergedTotal = report.profilesApplied + report.historyApplied + report.extrasApplied
+            if (mergedTotal > 0) {
+                _status.value = _status.value.copy(
+                    lastResult = "Объединено с облаком: $mergedTotal"
+                )
+                withContext(Dispatchers.Main) { runCatching { onMerged() } }
+                // Сходимость: объединённое состояние выгружаем обратно, чтобы второе
+                // устройство подтянуло его следующим синком.
+                onLibraryChanged(app)
+            }
+        }
+    }
+
     /**
      * Debounced auto-upload after library mutations (episode watched, title completed).
      * Called fire-and-forget from the player; no-op unless auto-sync is on.

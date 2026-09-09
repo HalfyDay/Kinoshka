@@ -4,8 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,7 +45,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import hd.kinoshka.app.data.local.ShikimoriAuthState
-import hd.kinoshka.app.data.local.UserFilmStatus
+import hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+import hd.kinoshka.app.ui.screens.WatchTimeSummary
+import hd.kinoshka.app.ui.screens.calcWatchStreak
+import hd.kinoshka.app.ui.screens.calcWatchTime
+import hd.kinoshka.app.ui.screens.formatStreak
+import hd.kinoshka.app.ui.screens.formatWatchTime
+import hd.kinoshka.app.ui.screens.statusSegments
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.ui.tv.tvFocusable
 import kotlinx.coroutines.Dispatchers
@@ -191,23 +200,35 @@ fun ProfileScreen(
             }
         }
         item {
-            // Статистика библиотеки
+            // Статистика библиотеки: разбивка аниме/фильмы, как на мобиле —
+            // тонкая полоса долей без цифр внутри + легенда с цветными точками.
+            val watchStreak = remember(library) { library.calcWatchStreak() }
+            val watchTime = remember(library) { library.calcWatchTime() }
             Surface(shape = RoundedCornerShape(24.dp), color = cs.surfaceContainer.copy(alpha = 0.7f), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Статистика библиотеки", style = MaterialTheme.typography.titleMedium, color = cs.onBackground)
-                    val counts = library.countsByStatus()
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                        StatTile("Смотрю", counts[UserFilmStatus.WATCHING] ?: 0, Modifier.weight(1f))
-                        StatTile("В планах", counts[UserFilmStatus.PLANNED] ?: 0, Modifier.weight(1f))
-                        StatTile("Просмотрено", counts[UserFilmStatus.COMPLETED] ?: 0, Modifier.weight(1f))
-                        StatTile("Отложено", counts[UserFilmStatus.ON_HOLD] ?: 0, Modifier.weight(1f))
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Статистика библиотеки", style = MaterialTheme.typography.titleMedium, color = cs.onBackground, modifier = Modifier.weight(1f))
+                        if (watchStreak >= 2) {
+                            Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFFEF8E3C).copy(alpha = 0.15f)) {
+                                Text(
+                                    formatStreak(watchStreak),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFEF8E3C),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                        StatTile("Пересматриваю", counts[UserFilmStatus.REWATCHING] ?: 0, Modifier.weight(1f))
-                        StatTile("Брошено", counts[UserFilmStatus.DROPPED] ?: 0, Modifier.weight(1f))
-                        StatTile("История", library.count { it.viewedAtMillis != null }, Modifier.weight(1f))
-                        StatTile("Всего", library.size, Modifier.weight(1f))
-                    }
+                    DesktopLibraryStatusStrip(
+                        title = "Список аниме",
+                        items = library.filter { it.kinopoiskId >= ANIME_ID_OFFSET }
+                    )
+                    DesktopLibraryStatusStrip(
+                        title = "Список фильмов",
+                        items = library.filter { it.kinopoiskId < ANIME_ID_OFFSET }
+                    )
+                    DesktopWatchTimeBlock(summary = watchTime)
                 }
             }
         }
@@ -239,14 +260,80 @@ fun ProfileScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun StatTile(label: String, count: Int, modifier: Modifier = Modifier) {
+private fun DesktopLibraryStatusStrip(
+    title: String,
+    items: List<hd.kinoshka.app.ui.screens.LibraryUiItem>
+) {
     val cs = MaterialTheme.colorScheme
-    Surface(shape = RoundedCornerShape(14.dp), color = cs.surfaceContainerHigh.copy(alpha = 0.6f), modifier = modifier) {
-        Column(modifier = Modifier.padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(count.toString(), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = cs.onBackground)
-            Text(label, fontSize = 11.sp, color = cs.onSurfaceVariant, maxLines = 1)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val total = items.size
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = cs.onBackground, modifier = Modifier.weight(1f))
+            Surface(shape = RoundedCornerShape(10.dp), color = cs.surfaceContainerHigh.copy(alpha = 0.6f)) {
+                Text(
+                    text = if (total == 0) "пусто" else "всего $total",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
         }
+        if (total == 0) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(cs.surfaceContainerHigh.copy(alpha = 0.6f))
+            )
+            Text("Пока ничего нет", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            return@Column
+        }
+        val segments = remember(items) { items.statusSegments() }
+        // Полоса — только доли, без цифр внутри: узкие сегменты больше ничего не режут.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(14.dp)
+                .clip(RoundedCornerShape(7.dp))
+                .background(cs.surfaceContainerHigh.copy(alpha = 0.6f))
+        ) {
+            segments.forEach { segment ->
+                Box(
+                    modifier = Modifier
+                        .weight(segment.count.toFloat() / total)
+                        .fillMaxHeight()
+                        .background(Color(segment.colorArgb))
+                )
+            }
+        }
+        // Легенда с цветными точками: цвет точки = цвет сегмента полосы.
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            segments.forEach { segment ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(Color(segment.colorArgb)))
+                    Text(segment.label, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                    Text("${segment.count}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = cs.onBackground)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DesktopWatchTimeBlock(summary: WatchTimeSummary) {
+    if (summary.totalMinutes <= 0) return
+    val cs = MaterialTheme.colorScheme
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Потрачено на просмотр", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = cs.onBackground, modifier = Modifier.weight(1f))
+        Text("≈ ${formatWatchTime(summary.totalMinutes)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = cs.primary)
     }
 }
 
@@ -273,6 +360,3 @@ private fun LinkRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label
         }
     }
 }
-
-private fun List<hd.kinoshka.app.ui.screens.LibraryUiItem>.countsByStatus(): Map<UserFilmStatus, Int> =
-    groupBy { it.status }.mapValues { (_, items) -> items.size }.filterKeys { it != null }.mapKeys { it.key!! }

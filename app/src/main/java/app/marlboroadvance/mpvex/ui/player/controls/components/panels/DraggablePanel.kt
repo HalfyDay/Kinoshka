@@ -79,7 +79,7 @@ fun DraggablePanel(
             modifier = Modifier
                 .offset { IntOffset(offsetX.roundToInt(), 0) }
                 .onSizeChanged { panelWidth = it.width }
-                .widthIn(max = 380.dp)
+                .widthIn(max = 340.dp)
                 .heightIn(max = panelMaxHeight),
             shape = MaterialTheme.shapes.extraLarge,
             color = colors.containerColor,
@@ -88,11 +88,11 @@ fun DraggablePanel(
         ) {
             Column {
                  // Drag Handle & Indicator
-                 Box(
-                     modifier = Modifier
-                         .fillMaxWidth()
-                         .height(18.dp) // Good touch target size
-                         .pointerInput(maxOffset, minOffset) {
+                  Box(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .height(12.dp) // Good touch target size
+                          .pointerInput(maxOffset, minOffset) {
                              detectDragGestures { change, dragAmount ->
                                  change.consume()
                                  val newOffset = offsetX + dragAmount.x

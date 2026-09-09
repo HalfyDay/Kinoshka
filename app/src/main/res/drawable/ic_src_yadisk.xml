@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:height="40dp" android:viewportHeight="40" android:viewportWidth="40" android:width="40dp">
+    <!-- Яндекс Диск: упрощение офиц. логотипа под VectorDrawable (без масок и блюра):
+         голубой круг + синяя «тарелка» + белый блик. Мелкие размеры — узнаваемо. -->
+    <path android:fillColor="#89A7FF" android:pathData="M40,20A20,20 0 1,1 0,20A20,20 0 1,1 40,20Z"/>
+    <path android:fillColor="#005EFA" android:pathData="M36.13,14.93c1.57,3.34 -4.2,8.68 -12.57,12.63C15.19,31.51 7.39,32.56 5.82,29.22c-1.57,-3.34 3.68,-9.8 12.05,-13.74 8.37,-3.95 16.69,-3.88 18.26,-0.55Z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M28.98,20.46c0.67,1.42 -2.17,3.87 -6.21,5.77 -4.03,1.9 -7.73,2.53 -8.4,1.11 -0.67,-1.42 2.05,-4.35 6.08,-6.25 4.03,-1.9 7.86,-2.05 8.53,-0.63Z"/>
+</vector>

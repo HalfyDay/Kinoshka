@@ -57,7 +57,7 @@ object AnimeStreamResolver {
         "https://api.anilibria.tv"
     )
 
-    // AniLib (animelib.org) — отдельный источник, НЕ путать с AniLiberty (anilibria.top, v1 API выше).
+    // AnimeLib (animelib.org) — отдельный источник, НЕ путать с AniLiberty (anilibria.top, v1 API выше).
     // Старый домен anilib.me закрыт в РФ на TLS-уровне, зеркала anilib.top/anilib.club мертвы,
     // а сам сайт переехал на animelib.org. Его Cloudflare WAF гео-блокирует РФ, но API-домен
     // api.animelib.org живёт на DDoS-Guard и отвечает (проверено 2026-08).
@@ -102,7 +102,7 @@ object AnimeStreamResolver {
     private val sourceMediaCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<FlatTranslation>>>()
     private val resolveStreamCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<AnimeMediaStream>>()
     private val aniLibertyReleaseCache = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
-    // AniLib: episode details (/api/v2/episode) fetched during prefetch. resolveStream reads the
+    // AnimeLib: episode details (/api/v2/episode) fetched during prefetch. resolveStream reads the
     // SAME cached json, so "v<i>|<label>"/"s<i>|<label>" translation ids stay aligned with the
     // players array that produced them.
     private val anilibEpisodeCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<JSONObject>>()
@@ -1317,8 +1317,13 @@ object AnimeStreamResolver {
                     is String -> value
                     else -> ""
                 }
-                // Только http: JSON-null "src" даёт literal "null", который не должен попадать в лестницу.
-                if (url.isNotBlank() && url.startsWith("http")) map[normalizeQuality(key) ?: key] = decodeKodikUrl(url)
+                // src обычно закодирован ROT+base64 (напр. "Tg9rjO91..."), а JSON-null даёт
+                // буквальную строку "null" — её отбрасываем, остальное декодируем.
+                if (url.isBlank() || url == "null") return@forEach
+                val decoded = decodeKodikUrl(url)
+                if (decoded.startsWith("http") || decoded.contains(".m3u8") || decoded.contains("mp4")) {
+                    map[normalizeQuality(key) ?: key] = decoded
+                }
             }
             map
         }.getOrDefault(emptyMap())
@@ -1807,7 +1812,7 @@ object AnimeStreamResolver {
     }
 
     // ============================================================
-    // AniLib (animelib.org) — отдельный источник, НЕ путать с AniLiberty/AniLibria.
+    // AnimeLib (animelib.org) — отдельный источник, НЕ путать с AniLiberty/AniLibria.
     // Новое REST API на api.animelib.org (DDoS-Guard, доступен из РФ, в отличие от
     // Cloudflare-фронта animelib.org и мёртвого anilib.me):
     //   /api/anime?search=<q>        → тайтлы c shikimori_href (id Shikimori внутри)
@@ -1821,7 +1826,7 @@ object AnimeStreamResolver {
     private val anilibEpisodesCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<List<AnimeEpisode>>>()
 
     // ------------------------------------------------------------
-    // AniLib legacy (api.anilib.me v3) — прямые HLS-ссылки команд с
+    // AnimeLib legacy (api.anilib.me v3) — прямые HLS-ссылки команд с
     // качествами до 4K, в отличие от Kodik-эмбедов нового API.
     // Домен TLS-блокирован в РФ без VPN, поэтому каждый запрос короткий
     // по таймауту, а любой сбой откатывает на новый api.animelib.org.
@@ -1868,7 +1873,7 @@ object AnimeStreamResolver {
             ?: entry.optCleanString("studio_name").ifBlank {
                 entry.optCleanString("team_name").ifBlank { entry.optCleanString("name") }
             })
-            .ifBlank { "Озвучка AniLib" }
+            .ifBlank { "Озвучка AnimeLib" }
     }
 
     private fun legacyEntryIsSub(entry: JSONObject): Boolean {
@@ -2132,7 +2137,7 @@ object AnimeStreamResolver {
         }
     }
 
-    /** Episode list of an AniLib title: GET /api/episodes?anime_id=<id>. */
+    /** Episode list of an AnimeLib title: GET /api/episodes?anime_id=<id>. */
     private suspend fun fetchAniLibEpisodeList(base: String, animeId: Int): List<AnimeEpisode> {
         anilibEpisodesCache[animeId]?.let { entry ->
             if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) return entry.data
@@ -2157,7 +2162,7 @@ object AnimeStreamResolver {
     }
 
     private fun getAniLibTitle(release: JSONObject): String =
-        release.optString("ruTitle").ifBlank { release.optString("name") }.ifBlank { "AniLib" }
+        release.optString("ruTitle").ifBlank { release.optString("name") }.ifBlank { "AnimeLib" }
 
     /** players[] of an episode-detail json; tolerates a {"data": {...}} wrapper. */
     private fun aniLibPlayers(detail: JSONObject): List<JSONObject> {

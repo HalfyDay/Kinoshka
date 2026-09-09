@@ -29,5 +29,13 @@ data class UserFilmProfile(
     val totalEpisodesInSeason: Int?,
     val totalSeasons: Int?,
     val totalEpisodes: Int?,
-    val updatedAt: Long
+    val updatedAt: Long,
+    /**
+     * Провенанс оболочки: "anixart" — создана импортом пула (серверное содержимое,
+     * пользователь не трогал). Такие оболочки пуши не отправляют никуда, пока их
+     * не коснётся явная правка (редактор/плеер/adopt) — иначе restore эхом давил бы
+     * сервер (инцидент 09.09: 9 тайтлов уехали из «Завершено» в «Смотрю»).
+     * null — локальное/пользовательское, пушится как раньше.
+     */
+    val importSource: String? = null
 )

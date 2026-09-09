@@ -24,12 +24,20 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -58,6 +66,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -66,13 +76,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
@@ -122,6 +133,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -131,6 +143,8 @@ import androidx.core.view.WindowCompat
 import coil.compose.AsyncImage
 import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.BuildConfig
+import hd.kinoshka.app.data.download.DownloadPhase
+import hd.kinoshka.app.data.download.EpisodeDownloadManager
 import hd.kinoshka.app.data.diagnostics.AppDiagnostics
 import hd.kinoshka.app.R
 import hd.kinoshka.app.data.local.AppThemeMode
@@ -160,12 +174,21 @@ fun ProfileScreen(
     onSaveShikimoriToken: (String) -> Unit = {},
     onSaveShikimoriSession: (token: String, userId: Int, nickname: String, avatarUrl: String?) -> Unit = { _, _, _, _ -> },
     onLogoutShikimori: () -> Unit = {},
+    anixartAuthState: hd.kinoshka.app.data.local.AnixartAuthState = hd.kinoshka.app.data.local.AnixartAuthState(),
+    onLoginAnixart: (String, String, (Boolean, String?) -> Unit) -> Unit = { _, _, _ -> },
+    onLogoutAnixart: () -> Unit = {},
+    onOpenLibraryStatus: (UserFilmStatus, Boolean) -> Unit = { _, _ -> },
+    onOpenSettings: () -> Unit = {},
+    onOpenDownloads: () -> Unit = {},
+    showBack: Boolean = true,
+    sectionBottomPadding: Dp = 0.dp,
     isAmoled: Boolean = false
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var cropSourceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var showWebLoginDialog by remember { mutableStateOf(false) }
+    var showAnixartLoginDialog by remember { mutableStateOf(false) }
 
     // Cloud library backup (Yandex Disk / WebDAV) — reinstall survival for the whole library.
     LaunchedEffect(context) { hd.kinoshka.app.data.cloud.CloudBackupManager.init(context) }
@@ -184,6 +207,18 @@ fun ProfileScreen(
                 // With OAuth2 flow, 'code' is actually the authorization code
                 // Call the proper handler to exchange it for tokens
                 onSaveShikimoriToken(code)
+            }
+        )
+    }
+
+    if (showAnixartLoginDialog) {
+        AnixartLoginDialog(
+            onDismiss = { showAnixartLoginDialog = false },
+            onLogin = { login, password, onResult ->
+                onLoginAnixart(login, password) { ok, message ->
+                    if (ok) showAnixartLoginDialog = false
+                    onResult(ok, message)
+                }
             }
         )
     }
@@ -232,24 +267,92 @@ fun ProfileScreen(
     }
 
     val activity = remember(library) { buildActivityBars(library) }
+    val watchStreak = remember(library) { library.calcWatchStreak() }
+    val watchTime = remember(library) { library.calcWatchTime() }
+
+    // Поиск по профилю и настройкам (как строка поиска на Обзоре):
+    // фильтрует блоки страницы, совпадения в настройках открывают их экран.
+    var profileQuery by remember { mutableStateOf("") }
+    val isSearching = profileQuery.isNotBlank()
+    val showHero = matchesSearchQuery(
+        profileQuery,
+        "Профиль Аватар",
+        "Аватар, имя пользователя, Shikimori",
+        "аватар фото профиль имя пользователь шикимори shikimori"
+    )
+    val showStats = matchesSearchQuery(
+        profileQuery,
+        "Статистика Активность",
+        "Списки аниме и фильмов, активность за 14 дней, время просмотра",
+        "статистика список аниме фильмы статусы активность график серия время просмотр потрачено запланировано смотрю пересматриваю просмотрено отложено брошено без статуса"
+    )
+    val showAccounts = matchesSearchQuery(
+        profileQuery,
+        "Аккаунт Копии",
+        "Shikimori, облако, резервная копия, экспорт, импорт",
+        "аккаунт шикимори shikimori синхронизация вход облако яндекс диск webdav копия экспорт импорт файл json библиотека восстановить сохранить"
+    )
+    val settingsMatches = remember(profileQuery) {
+        if (profileQuery.isBlank()) {
+            emptyList()
+        } else {
+            settingsSearchEntries(hasPlayerSettings = true, showDebugSettings = BuildConfig.DEBUG)
+                .filter { matchesSearchQuery(profileQuery, it.title, it.subtitle, it.keywords) }
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = 16.dp,
+            end = 16.dp,
+            bottom = 16.dp + sectionBottomPadding
+        ),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            HeaderCard(
-                title = "Профиль пользователя",
-                subtitle = "Настройки аккаунта, синхронизация и статистика",
-                onBack = onBack
+            ProfileHeader(
+                query = profileQuery,
+                onQueryChange = { profileQuery = it },
+                showBack = showBack,
+                onBack = onBack,
+                onOpenSettings = onOpenSettings,
+                onOpenDownloads = onOpenDownloads
             )
         }
 
+        if (isSearching && !showHero && !showStats && !showAccounts && settingsMatches.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Ничего не найдено",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "По запросу «$profileQuery» на этой странице ничего нет",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
         // Hero Profile Header Card
-        item {
+        if (showHero) {
+            item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(28.dp),
@@ -334,9 +437,11 @@ fun ProfileScreen(
                 }
             }
         }
+        }
 
         // Статистика библиотеки + активность одной карточкой под шапкой профиля
-        item {
+        if (showStats) {
+            item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
@@ -351,28 +456,54 @@ fun ProfileScreen(
                     LibraryStatusStrip(
                         title = "Список аниме",
                         icon = Icons.Filled.SmartToy,
-                        items = library.filter { it.kinopoiskId >= ANIME_ID_OFFSET }
+                        items = library.filter { it.kinopoiskId >= ANIME_ID_OFFSET },
+                        onStatusClick = { onOpenLibraryStatus(it, true) }
                     )
                     LibraryStatusStrip(
                         title = "Список фильмов",
                         icon = Icons.Filled.Movie,
-                        items = library.filter { it.kinopoiskId < ANIME_ID_OFFSET }
+                        items = library.filter { it.kinopoiskId < ANIME_ID_OFFSET },
+                        onStatusClick = { onOpenLibraryStatus(it, false) }
                     )
+                    WatchTimeBlock(summary = watchTime)
                     HorizontalDivider()
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = "Активность за 14 дней",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Активность за 14 дней",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            // Серия дней подряд: видна, только когда есть чем гордиться.
+                            if (watchStreak >= 2) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color(0xFFEF8E3C).copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = formatStreak(watchStreak),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFFEF8E3C),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                        }
                         ActivityBars(activity)
                     }
                 }
             }
         }
+        }
 
         // Accounts & backups: Shikimori binding, cloud sync and local file backup in one place
-        item {
+        if (showAccounts) {
+            item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
@@ -385,57 +516,66 @@ fun ProfileScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     ProfileSectionHeader(
-                        icon = Icons.Filled.AccountCircle,
-                        title = "Аккаунт Shikimori",
-                        action = if (shikimoriAuthState.isLoggedIn) {
-                            {
-                                OutlinedButton(
-                                    onClick = onLogoutShikimori,
-                                    shape = RoundedCornerShape(14.dp)
-                                ) {
-                                    Text("Отключить")
-                                }
-                            }
-                        } else null
-                    )
-                    if (shikimoriAuthState.isLoggedIn) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            KinoshkaAsyncImage(
-                                // Та же офлайн-копия, что в шапке: без интернета грузится файл.
-                                model = rememberShikimoriAvatarModel(shikimoriAuthState.avatarUrl),
-                                contentDescription = shikimoriAuthState.nickname,
+                        brandIcon = {
+                            Image(
+                                painter = painterResource(hd.kinoshka.app.R.drawable.ic_src_shikimori),
+                                contentDescription = null,
                                 modifier = Modifier
-                                    .size(52.dp)
+                                    .size(20.dp)
                                     .clip(CircleShape)
                             )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = shikimoriAuthState.nickname ?: "Пользователь",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Списки и оценки аниме синхронизируются",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                        },
+                        title = "Аккаунт Shikimori"
+                    )
+                    // Только широкая кнопка: кто подключён — видно в шапке профиля выше.
+                    if (shikimoriAuthState.isLoggedIn) {
+                        OutlinedButton(
+                            onClick = onLogoutShikimori,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Выйти из Shikimori")
                         }
                     } else {
-                        Text(
-                            text = "Авторизуйтесь через официальный сайт Shikimori для автоматической синхронизации ваших списков просмотров.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                         Button(
                             onClick = { showWebLoginDialog = true },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp)
                         ) {
-                            Text("Войти через сайт Shikimori", fontWeight = FontWeight.SemiBold)
+                            Text("Войти через Shikimori", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    ProfileSectionHeader(
+                        brandIcon = {
+                            Image(
+                                painter = painterResource(hd.kinoshka.app.R.drawable.ic_src_anixart),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .clip(CircleShape)
+                            )
+                        },
+                        title = "Аккаунт Anixart"
+                    )
+                    // Так же только кнопка; списки синхронизируются, серии — нет (v1).
+                    if (anixartAuthState.isLoggedIn) {
+                        OutlinedButton(
+                            onClick = onLogoutAnixart,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Выйти из Anixart")
+                        }
+                    } else {
+                        Button(
+                            onClick = { showAnixartLoginDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Войти в Anixart", fontWeight = FontWeight.SemiBold)
                         }
                     }
 
@@ -474,27 +614,80 @@ fun ProfileScreen(
                         icon = Icons.Filled.Backup,
                         title = "Резервная копия в файл"
                     )
-                    Text(
-                        text = "Экспорт сохраняет историю, статусы, оценки, заметки, прогресс, аватар и настройки.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Button(
-                        onClick = {
-                            val fileName = "kinoshka-library-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.json"
-                            createExportFile.launch(fileName)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Экспорт библиотеки")
+                        Button(
+                            onClick = {
+                                val fileName = "kinoshka-library-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.json"
+                                createExportFile.launch(fileName)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Экспорт")
+                        }
+                        OutlinedButton(
+                            onClick = { openImportFile.launch(arrayOf("application/json", "text/plain")) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Импорт")
+                        }
                     }
-                    OutlinedButton(
-                        onClick = { openImportFile.launch(arrayOf("application/json", "text/plain")) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp)
+                }
+            }
+        }
+        }
+
+        // Совпадения в настройках: тап открывает экран настроек.
+        if (settingsMatches.isNotEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text("Импорт библиотеки")
+                        Text(
+                            text = "Настройки",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                        settingsMatches.forEach { entry ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable(onClick = onOpenSettings)
+                                    .padding(horizontal = 4.dp, vertical = 8.dp)
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = entry.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = entry.subtitle,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -577,53 +770,176 @@ fun ProfileScreen(
 
 
 @Composable
-private fun HeaderCard(
-    title: String,
-    subtitle: String,
-    onBack: () -> Unit
+private fun ProfileHeader(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    showBack: Boolean,
+    onBack: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenDownloads: () -> Unit
 ) {
-    Card(
+    // Активные загрузки: кнопка крутится, пока что-то качается.
+    val downloadTasks by EpisodeDownloadManager.tasks.collectAsState()
+    val isDownloading = downloadTasks.values.any {
+        it.phase == DownloadPhase.QUEUED ||
+            it.phase == DownloadPhase.RESOLVING ||
+            it.phase == DownloadPhase.DOWNLOADING
+    }
+    // Без фона-карточки — как шапки Библиотеки и Обзора: поле + круглые кнопки.
+    Row(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(14.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        if (showBack) {
+                Surface(
+                    modifier = Modifier.size(48.dp).clickable(onClick = onBack),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Назад",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+            }
+            // Строка поиска по профилю и настройкам — как поле поиска на Обзоре.
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .padding(horizontal = 14.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = "Поиск",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                        if (query.isEmpty()) {
+                            Text(
+                                text = "Поиск",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        BasicTextField(
+                            value = query,
+                            onValueChange = onQueryChange,
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (query.isNotEmpty()) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Очистить",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clickable { onQueryChange("") }
+                        )
+                    }
+                }
+            }
+            // Загрузки — круглая кнопка в стиле фильтров; крутится при активной загрузке.
             Surface(
-                modifier = Modifier.size(40.dp).clickable(onClick = onBack),
+                modifier = Modifier.size(48.dp).clickable(onClick = onOpenDownloads),
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh
+                color = if (isDownloading) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                }
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    if (isDownloading) {
+                        DownloadingArrowIcon(
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.Download,
+                            contentDescription = "Загрузки",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+            }
+            // Настройки — круглая кнопка в стиле переключателя Кино/Аниме.
+            Surface(
+                modifier = Modifier.size(48.dp).clickable(onClick = onOpenSettings),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Назад",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(20.dp)
+                        imageVector = Icons.Filled.Settings,
+                        contentDescription = "Настройки",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(text = title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
         }
-    }
 }
 
-// Один сегмент стековой полосы статусов библиотеки (как списки Shikimori)
-private data class LibraryStatusSegment(val count: Int, val color: Color, val label: String)
+/**
+ * Анимация скачивания кнопки загрузок в шапке профиля — той же иконкой
+ * (Icons.Rounded.Download): она съезжает вниз и гаснет, затем цикл заново.
+ * Отдельно отрисованная стрелка выглядела слишком худой; вращение всей иконки
+ * целиком — сломанно. Это компромисс: родной глиф + классическое движение вниз.
+ */
+@Composable
+private fun DownloadingArrowIcon(
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    val transition = rememberInfiniteTransition(label = "downloadsArrow")
+    val fraction by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1100), RepeatMode.Restart),
+        label = "downloadsArrowFraction"
+    )
+    Icon(
+        imageVector = Icons.Rounded.Download,
+        contentDescription = "Загрузки",
+        tint = tint.copy(alpha = 1f - fraction * 0.45f),
+        modifier = modifier.graphicsLayer { translationY = fraction * 7.dp.toPx() }
+    )
+}
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LibraryStatusStrip(
     title: String,
     icon: ImageVector,
-    items: List<LibraryUiItem>
+    items: List<LibraryUiItem>,
+    onStatusClick: ((UserFilmStatus) -> Unit)? = null
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val total = items.size
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -637,16 +953,29 @@ private fun LibraryStatusStrip(
             Text(
                 title,
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
             )
+            // Итог всегда виден: масштаб списков считывается без подсчёта сегментов.
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh
+            ) {
+                Text(
+                    text = if (total == 0) "пусто" else "всего $total",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
         }
-        val total = items.size
         if (total == 0) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(26.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(7.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             )
             Text(
@@ -656,19 +985,15 @@ private fun LibraryStatusStrip(
             )
             return@Column
         }
-        val segments = listOf(
-            LibraryStatusSegment(items.count { it.status == UserFilmStatus.PLANNED }, Color(0xFF8E7CE0), "Запланировано"),
-            LibraryStatusSegment(items.count { it.status == UserFilmStatus.WATCHING }, Color(0xFFE0485C), "Смотрю"),
-            LibraryStatusSegment(items.count { it.status == UserFilmStatus.REWATCHING }, Color(0xFFEF8E3C), "Пересматриваю"),
-            LibraryStatusSegment(items.count { it.status == UserFilmStatus.COMPLETED }, Color(0xFF4CAF50), "Просмотрено"),
-            LibraryStatusSegment(items.count { it.status == UserFilmStatus.ON_HOLD }, Color(0xFF4A90E2), "Отложено"),
-            LibraryStatusSegment(items.count { it.status == UserFilmStatus.DROPPED }, Color(0xFF8E8E93), "Брошено")
-        ).filter { it.count > 0 }
+        val segments = remember(items) { items.statusSegments() }
+        // Полоса — только доли, без цифр внутри: узкие сегменты больше ничего не режут.
+        // Все числа живут в легенде ниже, где для них всегда есть место.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(26.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .height(14.dp)
+                .clip(RoundedCornerShape(7.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
         ) {
             segments.forEach { segment ->
                 val fraction = segment.count.toFloat() / total
@@ -676,32 +1001,88 @@ private fun LibraryStatusStrip(
                     modifier = Modifier
                         .weight(fraction)
                         .fillMaxHeight()
-                        .background(segment.color),
-                    contentAlignment = Alignment.Center
-                ) {
-                    // Число рисуем только если сегмент достаточно широкий для текста
-                    if (fraction >= 0.12f) {
-                        Text(
-                            text = "${segment.count}",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White
+                        .background(Color(segment.colorArgb))
+                )
+            }
+        }
+        // Легенда с цветными точками: цвет точки = цвет сегмента полосы.
+        // Тап открывает Библиотеку на этом статусе (Кино/Аниме подставляется сама);
+        // «Без статуса» никуда не ведёт — такой вкладки в Библиотеке нет.
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            segments.forEach { segment ->
+                val status = segment.status
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .then(
+                            if (onStatusClick != null && status != null) {
+                                Modifier.clickable { onStatusClick(status) }
+                            } else Modifier
                         )
-                    }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(Color(segment.colorArgb))
+                    )
+                    Text(
+                        text = segment.label,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "${segment.count}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
             }
         }
+    }
+}
+
+/**
+ * Примерное время за просмотрами: эпизоды по средним длительностям,
+ * полные метры — поштучно. Точных хронометражей тайтлов нет,
+ * поэтому подпись честно говорит «примерно».
+ */
+@Composable
+private fun WatchTimeBlock(summary: WatchTimeSummary) {
+    if (summary.totalMinutes <= 0) return
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         Text(
-            text = segments.joinToString(", ") { "${it.label} ${it.count}" },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            text = "Потрачено на просмотр",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "≈ ${formatWatchTime(summary.totalMinutes)}",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
         )
     }
 }
 
 @Composable
 private fun ProfileSectionHeader(
-    icon: ImageVector,
+    icon: ImageVector? = null,
+    // Фирменная иконка раздела (логотип Shikimori и т.п.) вместо material-иконки.
+    brandIcon: (@Composable () -> Unit)? = null,
+    iconTint: Color? = null,
     title: String,
     action: (@Composable () -> Unit)? = null
 ) {
@@ -715,12 +1096,21 @@ private fun ProfileSectionHeader(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.weight(1f)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
-            )
+            if (brandIcon != null) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.size(20.dp)
+                ) {
+                    brandIcon()
+                }
+            } else if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconTint ?: MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
             // Длинный заголовок («Резервная копия в облаке») переносится, а не
             // выдавливает кнопку действия за край экрана.
             Text(
@@ -1408,34 +1798,50 @@ private fun CloudBackupSection(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         ProfileSectionHeader(
-            icon = Icons.Filled.Cloud,
-            title = "Резервная копия в облаке",
-            action = if (config.isConnected) {
+            // Логотип Яндекс Диска вместо облака, когда подключён именно он.
+            brandIcon = if (config.type == hd.kinoshka.app.data.local.CloudSyncType.YANDEX) {
                 {
-                    OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(12.dp)) {
-                        Text("Отключить")
-                    }
+                    Image(
+                        painter = painterResource(hd.kinoshka.app.R.drawable.ic_src_yadisk),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                    )
                 }
-            } else null
-        )
-        Text(
-            text = "Вся библиотека (статусы, просмотренные эпизоды, оценки, история) выгружается одним файлом. После переустановки приложения прогресс восстанавливается из облака.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            } else null,
+            icon = Icons.Filled.Cloud,
+            title = "Резервная копия в облаке"
         )
 
         when {
             config.type == hd.kinoshka.app.data.local.CloudSyncType.YANDEX -> {
                 Text(
-                    text = "Хранилище: Яндекс Диск (папка приложения Kinoshka)",
+                    text = "Яндекс Диск • папка Kinoshka",
                     style = MaterialTheme.typography.bodyMedium
                 )
+                OutlinedButton(
+                    onClick = onDisconnect,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Отключить")
+                }
             }
             config.type == hd.kinoshka.app.data.local.CloudSyncType.WEBDAV -> {
                 Text(
-                    text = "Хранилище: WebDAV — ${config.webDavUrl.orEmpty()}",
-                    style = MaterialTheme.typography.bodyMedium
+                    text = "WebDAV • ${config.webDavUrl.orEmpty()}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
+                OutlinedButton(
+                    onClick = onDisconnect,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Отключить")
+                }
             }
             else -> {
                 // Same one-tap UX as the Shikimori login: the button is always visible,
@@ -1445,6 +1851,14 @@ private fun CloudBackupSection(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp)
                 ) {
+                    Image(
+                        painter = painterResource(hd.kinoshka.app.R.drawable.ic_src_yadisk),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text("Подключить Яндекс Диск", fontWeight = FontWeight.SemiBold)
                 }
                 OutlinedButton(
@@ -1530,26 +1944,63 @@ private fun WebDavConfigDialog(
     onDismiss: () -> Unit,
     onSave: (url: String, user: String, password: String) -> Unit
 ) {
-    var url by remember { mutableStateOf("https://") }
+    // Как хосты в Termius: адрес, порт, путь и доступ — URL собирается сам.
+    var host by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf("443") }
+    var path by remember { mutableStateOf("/") }
+    var useHttps by remember { mutableStateOf(true) }
     var user by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    val portNumber = port.toIntOrNull()?.takeIf { it in 1..65535 }
+    val cleanHost = host.trim().trimEnd('/')
+    val cleanPath = path.trim().trim('/').let { if (it.isEmpty()) "" else "/$it" }
+    val previewUrl = if (cleanHost.isEmpty()) {
+        ""
+    } else {
+        "${if (useHttps) "https" else "http"}://$cleanHost${if (portNumber != null) ":$portNumber" else ""}$cleanPath"
+    }
+    val canSave = cleanHost.isNotEmpty() && portNumber != null && user.isNotBlank() && password.isNotBlank()
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Подключение WebDAV") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Файл копии будет сохранён как <адрес>/Kinoshka/library_backup.json",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = { Text("Адрес сервера") },
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text("Адрес (IP или домен)") },
+                    placeholder = { Text("192.168.1.10") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = port,
+                        onValueChange = { port = it.filter(Char::isDigit).take(5) },
+                        label = { Text("Порт") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = path,
+                        onValueChange = { path = it },
+                        label = { Text("Папка") },
+                        placeholder = { Text("/") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = "HTTPS", style = MaterialTheme.typography.bodyMedium)
+                    Switch(checked = useHttps, onCheckedChange = { useHttps = it })
+                }
                 OutlinedTextField(
                     value = user,
                     onValueChange = { user = it },
@@ -1565,16 +2016,90 @@ private fun WebDavConfigDialog(
                     visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (previewUrl.isNotEmpty()) {
+                    Text(
+                        text = "Копия: $previewUrl/Kinoshka/library_backup.json",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onSave(url, user, password) },
-                enabled = url.trim().length > "https://".length && user.isNotBlank() && password.isNotBlank()
+                onClick = { onSave(previewUrl, user, password) },
+                enabled = canSave && previewUrl.isNotEmpty()
             ) { Text("Подключить") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
+}
+
+@Composable
+private fun AnixartLoginDialog(
+    onDismiss: () -> Unit,
+    onLogin: (login: String, password: String, onResult: (Boolean, String?) -> Unit) -> Unit
+) {
+    var login by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Вход в Anixart") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Синхронизируются списки (статусы). Пароль нигде не сохраняется.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = login,
+                    onValueChange = { login = it; error = null },
+                    label = { Text("Логин") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it; error = null },
+                    label = { Text("Пароль") },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                error?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    busy = true
+                    error = null
+                    onLogin(login, password) { ok, message ->
+                        busy = false
+                        if (!ok) error = message ?: "Вход не удался"
+                    }
+                },
+                enabled = !busy && login.isNotBlank() && password.isNotEmpty()
+            ) { Text("Войти") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Отмена") }
         }
     )
 }

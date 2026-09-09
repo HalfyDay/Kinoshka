@@ -40,6 +40,21 @@ interface ShikimoriApi {
         @Query("page") page: Int = 1
     ): List<ShikimoriAnimeItem>
 
+    /**
+     * Батч кратких объектов по id (1 запрос вместо десятков поштучных details):
+     * вердикты 18+ и добивка рейтов. censored=false — иначе хентай-тайтлы выпадают
+     * из выдачи именно там, где нужны. limit = размеру пачки (дефолт 20 обрезал бы).
+     */
+    @GET("api/animes")
+    suspend fun getByIds(
+        @Query("ids") ids: String,
+        @Query("censored") censored: Boolean = false,
+        @Query("limit") limit: Int = 50,
+        // Фильтр жанром режет и ids-выборку (проверено живьём): вернувшиеся id входят
+        // в жанр. null — без фильтра (обычный батч кратких объектов).
+        @Query("genre") genre: Int? = null
+    ): List<ShikimoriAnimeItem>
+
     @GET("api/animes/{id}")
     suspend fun details(
         @Path("id") id: Int
