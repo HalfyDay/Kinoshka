@@ -435,6 +435,34 @@ class FilmsViewModel(
      */
     private val anixartSyncMutex = kotlinx.coroutines.sync.Mutex()
 
+    /**
+     * Офлайн-индекс Shikimori (бандл assets): ленивая загрузка один раз за
+     * жизнь VM. Нет бандла — null, пул идёт старым живым поиском.
+     */
+    private var offlineIndex: hd.kinoshka.app.data.source.ShikiOfflineIndex? = null
+    private var offlineIndexTried = false
+
+    private suspend fun loadOfflineIndex(): hd.kinoshka.app.data.source.ShikiOfflineIndex? {
+        offlineIndex?.let { return it }
+        if (offlineIndexTried) return null
+        offlineIndexTried = true
+        val t0 = System.nanoTime() / 1_000_000L
+        val bytes = withContext(Dispatchers.IO) {
+            runCatching {
+                hd.kinoshka.app.data.source.ShikiIndexBridge.provider?.invoke()
+            }.getOrNull()
+        } ?: return null
+        val parsed = withContext(Dispatchers.Default) {
+            hd.kinoshka.app.data.source.ShikiOfflineIndex.parse(bytes)
+        } ?: return null
+        offlineIndex = parsed
+        KLog.i(
+            "AnixartSync",
+            "offline-index: loaded in ${System.nanoTime() / 1_000_000L - t0}ms"
+        )
+        return parsed
+    }
+
     /** In-flight job вердиктов (до init — его трогает добрасывающий проход из refresh). */
     private var adultVerdictJob: kotlinx.coroutines.Job? = null
     private var animeMetaJob: kotlinx.coroutines.Job? = null
@@ -2967,6 +2995,68 @@ class FilmsViewModel(
         var consecutiveNetFail = 0
         // Резолвы поиска: фолбэк 1.5 ниже добирает только НЕ покрытые поиском.
         val searchResolvedIds = mutableSetOf<Int>()
+        // Фаза 0 (офлайн): локальный индекс Shikimori вместо сотен поисковых
+        // запросов (лимит 5rps/90rpm — потолок живого поиска, ~9 мин catch-up).
+        // Сверки те же (общий tryPullHit по brief-записям); непокрытое уходит
+        // в живой поиск ниже как раньше.
+        var offlineHits = 0
+        val offlineIndex = loadOfflineIndex()
+        if (offlineIndex != null && unmatchedReleases.isNotEmpty()) {
+            if (catchUp) setImportProgress("Быстрое сопоставление", 0, remainingUnmatched)
+            val matcher = hd.kinoshka.app.data.source.TitleMatching
+            data class OfflinePlan(
+                val listId: Int,
+                val release: hd.kinoshka.app.data.model.AnixartRelease,
+                val entryIds: List<Int>,
+                val level: String
+            )
+            val plan = mutableListOf<OfflinePlan>()
+            for ((listId, release) in unmatchedReleases) {
+                if (release.id in anixartPullUnresolvable) continue
+                val queries = listOfNotNull(release.titleOriginal, release.titleRu, release.titleEn)
+                    .map { it.trim() }.filter { it.isNotEmpty() }.distinct().take(3)
+                val norms = queries.map { matcher.normalizeTitle(it) }.filter { it.isNotEmpty() }
+                if (norms.isEmpty()) continue
+                val solids = norms.map { it.replace(" ", "") }
+                    .filter { it.length >= 8 }.toSet()
+                val cores = norms.map { matcher.stripDecorativeMarkers(it) }.toSet()
+                val m = offlineIndex.match(norms, solids, cores) ?: continue
+                plan.add(OfflinePlan(listId, release, m.entryIds, m.level))
+            }
+            if (plan.isNotEmpty()) {
+                // Brief-записи батчами ids= (50/chunk): постеры/названия для
+                // оболочек едут отсюда же, отдельным добором не нужны.
+                val briefById = mutableMapOf<Int, hd.kinoshka.app.data.model.ShikimoriAnimeItem>()
+                for (ids in plan.flatMap { it.entryIds }.distinct().chunked(500)) {
+                    briefById += fetchAnimeBrief(ids)
+                }
+                for ((listId, release, entryIds, level) in plan) {
+                    val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: continue
+                    val year = release.releaseYear()
+                    val (relSeason, relKind, _) = anixartReleaseSKY(release)
+                    val hit = entryIds.firstNotNullOfOrNull { id ->
+                        briefById[id]?.let { tryPullHit(release, year, vetoes, relSeason, relKind, it) }
+                    } ?: continue
+                    resolved++
+                    offlineHits++
+                    searchResolvedIds.add(release.id)
+                    if (catchUp) setImportProgress("Быстрое сопоставление", resolved, remainingUnmatched)
+                    KLog.d(
+                        "AnixartSync",
+                        "pull-resolve: release=${release.id} shikimoriId=${hit.shikimoriId} via offline-$level"
+                    )
+                    reconcilePulledRelease(
+                        release.id, hit.shikimoriId, status, "offline-index",
+                        hit.title, hit.subtitle, hit.poster, tally2
+                    )
+                    if (++sinceFlush >= 50) {
+                        flushPullProgress()
+                        sinceFlush = 0
+                    }
+                }
+            }
+            KLog.i("AnixartSync", "pull: offline-index hits=$offlineHits of ${plan.size} planned")
+        }
         for ((listId, release) in unmatchedReleases.take(pullResolveLimit)) {
             if (release.id <= 0) continue
             val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: continue
@@ -3198,6 +3288,55 @@ class FilmsViewModel(
      * в [anixartPullUnresolvable] (сессия), ошибки сети — нет, их повторит синк.
      * Вызывать под anixartSyncMutex; сеть — на IO.
      */
+    /**
+     * Единая воронка всех проходов каскада (живой поиск, офлайн-индекс):
+     * годовая + сезонно-видовая сверка кандидата. null — кандидат отклонён.
+     */
+    private fun tryPullHit(
+        release: hd.kinoshka.app.data.model.AnixartRelease,
+        expectedYear: Int?,
+        vetoes: YearVetoes?,
+        relSeason: Int?,
+        relKind: String?,
+        item: hd.kinoshka.app.data.model.ShikimoriAnimeItem
+    ): ShikiPullHit? {
+        val matcher = hd.kinoshka.app.data.source.TitleMatching
+        // Годовая сверка: Anixart год выхода знает (17/17 сверенных), Shikimori
+        // aired_on — тоже. Известное расхождение = разные сезоны/записи:
+        // пропускаем кандидата (veto), а не импортируем чужое. Неизвестный
+        // год с любой стороны — не вето (пропускаем).
+        val itemYear = item.airedOn?.take(4)?.toIntOrNull()
+        if (expectedYear != null && itemYear != null && itemYear != expectedYear) {
+            vetoes?.veto(release.id)
+            KLog.d(
+                "AnixartSync",
+                "pull-resolve: release=${release.id} shikimoriId=${item.id} " +
+                    "year-veto (anixart=$expectedYear shiki=$itemYear)"
+            )
+            return null
+        }
+        // Сезонно-видовая сверка (09.09): точность строк склейки сезонов не ловит
+        // («Space Dandy TV-2»→S1 при совпадении годов), маркеры — ловят.
+        val (candSeason, candKind) = shikiCandidateSK(item.name, item.russian, item.kind)
+        if (matcher.seasonKindVeto(relSeason, relKind, expectedYear, candSeason, candKind, itemYear)) {
+            KLog.d(
+                "AnixartSync",
+                "pull-resolve: release=${release.id} shikimoriId=${item.id} " +
+                    "season-kind-veto (rel=$relSeason/$relKind/$expectedYear " +
+                    "cand=$candSeason/$candKind/$itemYear)"
+            )
+            return null
+        }
+        return ShikiPullHit(
+            shikimoriId = item.id,
+            title = item.russian?.takeIf { it.isNotBlank() }
+                ?: item.name?.takeIf { it.isNotBlank() }
+                ?: release.titleRu ?: release.titleOriginal ?: release.titleEn ?: "Без названия",
+            subtitle = item.name,
+            poster = item.posterUrl
+        )
+    }
+
     private suspend fun searchShikimoriForAnixart(
         release: hd.kinoshka.app.data.model.AnixartRelease,
         expectedYear: Int? = null,
@@ -3218,43 +3357,8 @@ class FilmsViewModel(
             .filter { it.length >= 8 }.toSet()
         // Сезон/вид/год релиза один раз на вызов: все проходы ниже сверяются с ними.
         val (relSeason, relKind, _) = anixartReleaseSKY(release)
-        fun tryHit(item: hd.kinoshka.app.data.model.ShikimoriAnimeItem): ShikiPullHit? {
-            // Годовая сверка: Anixart год выхода знает (17/17 сверенных), Shikimori
-            // aired_on — тоже. Известное расхождение = разные сезоны/записи:
-            // пропускаем кандидата (veto), а не импортируем чужое. Неизвестный
-            // год с любой стороны — не вето (пропускаем).
-            val itemYear = item.airedOn?.take(4)?.toIntOrNull()
-            if (expectedYear != null && itemYear != null && itemYear != expectedYear) {
-                vetoes?.veto(release.id)
-                KLog.d(
-                    "AnixartSync",
-                    "pull-resolve: release=${release.id} shikimoriId=${item.id} " +
-                        "year-veto (anixart=$expectedYear shiki=$itemYear)"
-                )
-                return null
-            }
-            // Сезонно-видовая сверка (09.09): точность строк склейки сезонов не ловит
-            // («Space Dandy TV-2»→S1 при совпадении годов), маркеры — ловят.
-            // Единственная воронка всех проходов каскада: покрывает их все разом.
-            val (candSeason, candKind) = shikiCandidateSK(item.name, item.russian, item.kind)
-            if (matcher.seasonKindVeto(relSeason, relKind, expectedYear, candSeason, candKind, itemYear)) {
-                KLog.d(
-                    "AnixartSync",
-                    "pull-resolve: release=${release.id} shikimoriId=${item.id} " +
-                        "season-kind-veto (rel=$relSeason/$relKind/$expectedYear " +
-                        "cand=$candSeason/$candKind/$itemYear)"
-                )
-                return null
-            }
-            return ShikiPullHit(
-                shikimoriId = item.id,
-                title = item.russian?.takeIf { it.isNotBlank() }
-                    ?: item.name?.takeIf { it.isNotBlank() }
-                    ?: release.titleRu ?: release.titleOriginal ?: release.titleEn ?: "Без названия",
-                subtitle = item.name,
-                poster = item.posterUrl
-            )
-        }
+        fun tryHit(item: hd.kinoshka.app.data.model.ShikimoriAnimeItem): ShikiPullHit? =
+            tryPullHit(release, expectedYear, vetoes, relSeason, relKind, item)
         var searchedOk = false
         // Проход 1: полное точное по всем запросам (результаты копим для прохода 2).
         val seenHits = linkedMapOf<Int, hd.kinoshka.app.data.model.ShikimoriAnimeItem>()
