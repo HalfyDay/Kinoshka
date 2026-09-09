@@ -450,6 +450,45 @@ class FilmsViewModel(
          *  не сматчившихся с библиотекой, — 1 запрос на тайтл с паузой 300мс). */
         const val MAX_ANIXART_PULL_RESOLVE_PER_SYNC = 40
 
+        /** Ручные склейки релиз Anixart -> shikimoriId (разбор 09.09: сезоны/фильмы
+         *  под одинаковыми названиями + синонимы честных промахов). Все id сверены
+         *  с shikimori.io/api 09.09. Пин поверх id-карты и мемоизации промахов. */
+        val ANIXART_PINNED_MAP: Map<Int, Int> = mapOf(
+            // Сезоны, склеенные в S1-запись.
+            1275 to 21881, // SAO TV-2 (2014)
+            2625 to 36474, // SAO Alicization TV-1 (2018)
+            467 to 8937, // Index II (2010)
+            444 to 7791, // K-On! 2 = S2 (2010)
+            637 to 10495, // Yuru Yuri S1 (2011)
+            1095 to 16894, // Kuroko TV-2 = S2 (2013)
+            1251 to 23327, // Space Dandy TV-2 = S2 (2014)
+            2605 to 37510, // Mob Psycho TV-2 = S2 (2019)
+            2034 to 5341, // Spice and Wolf II (2009)
+            2611 to 37999, // Kaguya S1 (2019)
+            // Фильмы/OVA, склеенные в TV-запись.
+            390 to 7059, // Black Rock Shooter OVA (2010)
+            1047 to 11577, // Steins;Gate Deja vu (2013)
+            1522 to 28675, // Kyoukai no Kanata Mirai-hen (2015)
+            1842 to 31989, // Euphonium Movie 1 (2016)
+            16291 to 40080, // Quanzhi Gaoshou: Dianfeng Rongyao (2019)
+            2984 to 38329, // Bunny Girl film (2019)
+            1689 to 32380, // KonoSuba OVA (2016)
+            2060 to 34626, // KonoSuba OVA-2 (2017)
+            3009 to 38040, // KonoSuba Kurenai Densetsu (2019)
+            2101 to 9260, // Kizumonogatari лотом (3 эп.) -> часть 1
+            // Честные промахи поиска (синонимы/релевантность).
+            379 to 1575, // Code Geass S1
+            2774 to 1575, // Code Geass S1 (дубль релиза на Anixart)
+            1173 to 13659, // OreImo TV-2 = S2 (2013)
+            1185 to 19111, // Love Live TV-2 = S2 (2014)
+            2275 to 32, // End of Evangelion (1997)
+            2301 to 34612, // Saiki S2 (2018)
+            2637 to 38249, // Saiki Kanketsuhen (финал, 2018)
+            1919 to 30016, // Nanbaka TV-1 (2016)
+            889 to 8769, // OreImo TV-1 = S1 (2010); был склеен с S2 через exact-путь без сверки года
+            // 18913 Rick and Morty: The Anime — записи в Shikimori нет, честный пропуск.
+        )
+
         /** Бюджет сетевых правок списков Anixart за один синк (перенос/добавление).
          *  Проверка «уже на месте» сети не требует и в бюджет не входит. */
         const val MAX_ANIXART_PUSH_OPS_PER_SYNC = 200
@@ -2275,6 +2314,42 @@ class FilmsViewModel(
                     "AnixartSync",
                     "pull: dropped ${poisoned.size} contested idmap entrie(s) for re-resolve"
                 )
+            }
+        }
+        // Ручные пины поверх карты и мемоизации промахов: сезоны/синонимы,
+        // разобранные вручную (см. ANIXART_PINNED_MAP). Расходящиеся записи карты
+        // переписываем, из промахов вычищаем — иначе поиск не отработает.
+        if (ANIXART_PINNED_MAP.isNotEmpty()) {
+            val seeded = anixartIdToShiki.toMutableMap()
+            var seededChanged = false
+            ANIXART_PINNED_MAP.forEach { (rel, shiki) ->
+                if (seeded[rel] != shiki) {
+                    seeded[rel] = shiki
+                    seededChanged = true
+                }
+                anixartPullUnresolvable.remove(rel)
+            }
+            if (seededChanged) {
+                anixartIdToShiki = seeded
+                KLog.i(
+                    "AnixartSync",
+                    "pull: seeded ${ANIXART_PINNED_MAP.size} pinned release->shiki entrie(s)"
+                )
+            }
+            // Одноразовый ремонт названия: профиль OreImo S2 (13659) создан из
+            // релиза 889 (S1), который пином уехал на 8769. Чиним название
+            // с релиза 1173 (S2); сходится само, дальше молчит.
+            val oreimoS2Title = lists.values.flatten().firstOrNull { it.id == 1173 }
+                ?.let { it.titleRu ?: it.titleOriginal ?: it.titleEn }
+            if (oreimoS2Title != null) {
+                val renamed = withContext(Dispatchers.IO) {
+                    userStateStore.renameImportedProfileTitle(
+                        13659 + ANIME_ID_OFFSET, oreimoS2Title
+                    )
+                }
+                if (renamed) {
+                    KLog.i("AnixartSync", "pull: renamed shell 13659 to S2 title")
+                }
             }
         }
         // Счётчик годовых вето (фазы 1.5 и 2).

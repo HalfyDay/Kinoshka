@@ -729,12 +729,28 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     }
 
     /**
+     * Точечный ремонт названия импортной оболочки (статус/метку/время не трогаем —
+     * для LWW и пуша это невидимка). Только importSource != null, иначе молча нет.
+     */
+    fun renameImportedProfileTitle(kinopoiskId: Int, title: String): Boolean =
+        synchronized(BLOB_LOCK) {
+            val current = readProfilesOrNull() ?: return false
+            val idx = current.indexOfFirst { it.kinopoiskId == kinopoiskId }
+            if (idx < 0) return false
+            val p = current[idx]
+            if (p.importSource == null || p.title == title) return false
+            val updated = current.toMutableList()
+            updated[idx] = p.copy(title = title)
+            writeProfiles(updated)
+            true
+        }
+
+    /**
      * Разовая чистка пустой шелухи без статуса (снятия пометок и сиды до фикса):
      * такие записи невидимы ни в одной вкладке библиотеки, но раздували итоги.
      * Возвращает число удалённых.
      */
-    fun pruneEmptyStatuslessProfiles(): Int = synchronized(BLOB_LOCK) {
-        val current = readProfilesOrNull() ?: return@synchronized 0
+    fun pruneEmptyStatuslessProfiles(): Int = synchronized(BLOB_LOCK) {        val current = readProfilesOrNull() ?: return@synchronized 0
         val historyIds = readHistory().mapTo(mutableSetOf()) { it.kinopoiskId }
         val doomed = current.filter { isProfileEmpty(it) && it.kinopoiskId !in historyIds }
         if (doomed.isEmpty()) return@synchronized 0
