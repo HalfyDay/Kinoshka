@@ -26,6 +26,17 @@ data class AnixartLoginResponse(
     val profileToken: AnixartToken? = null
 )
 
+/**
+ * Ответ регистрации / восстановления (auth/signUp, auth/restore):
+ * code 0 — код отправлен на почту, hash — для verify-шага.
+ * codeTimestampExpires — время жизни кода (не используем, только диагностика).
+ */
+data class AnixartSignUpResponse(
+    @SerializedName("code") val code: Int = -1,
+    @SerializedName("hash") val hash: String? = null,
+    @SerializedName("codeTimestampExpires") val codeTimestampExpires: Long = 0L
+)
+
 data class AnixartDefaultResponse(
     @SerializedName("code") val code: Int = -1
 )

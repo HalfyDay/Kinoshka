@@ -97,6 +97,14 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Foreground-сервис импорта Anixart: catch-up после входа живёт в фоне
+             с системным уведомлением (фаза + счётчик из AnixartImportBus). -->
+        <service
+            android:name="hd.kinoshka.app.data.sync.AnixartImportService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <receiver
             android:name="androidx.media.session.MediaButtonReceiver"
             android:exported="true">

@@ -7,10 +7,15 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import okhttp3.Cache
 import okhttp3.OkHttpClient
+import kotlinx.coroutines.launch
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.context.startKoin
 
 class KinoApplication : Application(), ImageLoaderFactory {
+
+    private val appScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -60,6 +65,18 @@ class KinoApplication : Application(), ImageLoaderFactory {
 
         // Офлайн-библиотека: подхват персистентного списка скачанных серий.
         hd.kinoshka.app.data.download.EpisodeDownloadManager.init(this)
+
+        // Импорт Anixart: детерминированный прогресс catch-up (total>0; фаза
+        // «Добираем обложки» неопределённая и сервиса не требует) поднимает
+        // foreground-сервис с системным уведомлением. Гасится сервис сам —
+        // по опустевшей шине, с итоговым «завершено».
+        appScope.launch {
+            hd.kinoshka.app.ui.screens.AnixartImportBus.flow.collect { p ->
+                if (p != null && p.total > 0) {
+                    hd.kinoshka.app.data.sync.AnixartImportService.start(this@KinoApplication)
+                }
+            }
+        }
 
         // Initialize FastThumbnails from mpv-android-lib
         `is`.xyz.mpv.FastThumbnails.initialize(this)

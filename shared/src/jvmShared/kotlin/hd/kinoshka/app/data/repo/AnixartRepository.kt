@@ -35,6 +35,95 @@ class AnixartRepository(private val api: AnixartApi) {
         Session(token!!, resp.profile?.id ?: 0, resp.profile?.login)
     }
 
+    /** Шаг 1 регистрации: код на почту. Успех — hash для шага verify. */
+    suspend fun signUp(login: String, email: String, password: String): Result<String> = runCatching {
+        val cleanLogin = login.trim()
+        val cleanEmail = email.trim()
+        val resp = api.signUp(cleanLogin, cleanLogin, cleanEmail, password)
+        KLog.d("AnixartSync", "signUp: code=${resp.code} hasHash=${!resp.hash.isNullOrBlank()}")
+        when (resp.code) {
+            2 -> error("Некорректный логин")
+            3 -> error("Некорректный email")
+            4 -> error("Некорректный пароль")
+            5 -> error("Логин уже занят")
+            6 -> error("Email уже занят")
+            7 -> error("Код уже отправлен — проверьте почту")
+            8 -> error("Не удалось отправить код")
+            9 -> error("Этот почтовый сервис запрещён — используйте другую почту")
+            10 -> error("Слишком много регистраций — попробуйте позже")
+            0 -> resp.hash.takeUnless { it.isNullOrBlank() } ?: error("Сервер не вернул hash")
+            else -> error("Регистрация не удалась (код ${resp.code})")
+        }
+    }
+
+    /** Шаг 2 регистрации: код из письма — сразу возвращает сессию (автовход). */
+    suspend fun verifySignUp(
+        login: String,
+        email: String,
+        password: String,
+        hash: String,
+        code: String
+    ): Result<Session> = runCatching {
+        val cleanLogin = login.trim()
+        val resp = api.verifySignUp(cleanLogin, cleanLogin, email.trim(), password, hash, code.trim())
+        val token = resp.profileToken?.token.takeUnless { it.isNullOrBlank() }
+        KLog.d("AnixartSync", "verifySignUp: code=${resp.code} hasToken=${token != null}")
+        when (resp.code) {
+            2 -> error("Некорректный логин")
+            3 -> error("Некорректный email")
+            4 -> error("Некорректный пароль")
+            5 -> error("Логин уже занят")
+            6 -> error("Email уже занят")
+            7 -> error("Код уже отправлен — проверьте почту")
+            8 -> error("Не удалось отправить код")
+            9 -> error("Код устарел — запросите новый")
+            10 -> error("Этот почтовый сервис запрещён — используйте другую почту")
+            11 -> error("Слишком много регистраций — попробуйте позже")
+            0 -> Unit
+            else -> error("Подтверждение не удалось (код ${resp.code})")
+        }
+        if (token == null) error("Подтверждение не удалось (код ${resp.code})")
+        Session(token!!, resp.profile?.id ?: 0, resp.profile?.login)
+    }
+
+    /** Шаг 1 восстановления: код на почту по логину. Успех — hash для шага verify. */
+    suspend fun restore(login: String): Result<String> = runCatching {
+        val cleanLogin = login.trim()
+        val resp = api.restore(cleanLogin, cleanLogin)
+        KLog.d("AnixartSync", "restore: code=${resp.code} hasHash=${!resp.hash.isNullOrBlank()}")
+        when (resp.code) {
+            2 -> error("Профиль не найден")
+            3 -> error("Код уже отправлен — проверьте почту")
+            4 -> error("Не удалось отправить код")
+            0 -> resp.hash.takeUnless { it.isNullOrBlank() } ?: error("Сервер не вернул hash")
+            else -> error("Не удалось отправить код (${resp.code})")
+        }
+    }
+
+    /** Шаг 2 восстановления: код + новый пароль — сразу возвращает сессию (автовход). */
+    suspend fun verifyRestore(
+        login: String,
+        newPassword: String,
+        hash: String,
+        code: String
+    ): Result<Session> = runCatching {
+        val cleanLogin = login.trim()
+        val resp = api.verifyRestore(cleanLogin, cleanLogin, newPassword, hash, code.trim())
+        val token = resp.profileToken?.token.takeUnless { it.isNullOrBlank() }
+        KLog.d("AnixartSync", "verifyRestore: code=${resp.code} hasToken=${token != null}")
+        when (resp.code) {
+            2 -> error("Профиль не найден")
+            3 -> error("Некорректный пароль")
+            4 -> error("Неверный код")
+            5 -> error("Код истёк — запросите новый")
+            6 -> error("Сессия устарела — запросите код заново")
+            0 -> Unit
+            else -> error("Смена пароля не удалась (код ${resp.code})")
+        }
+        if (token == null) error("Смена пароля не удалась (код ${resp.code})")
+        Session(token!!, resp.profile?.id ?: 0, resp.profile?.login)
+    }
+
     /** Все 5 списков разом (постранично, с потолком — защита от гонок пагинации). */
     suspend fun getLists(token: String): Result<Map<Int, List<AnixartRelease>>> = runCatching {
         val lists = listOf(

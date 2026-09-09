@@ -238,6 +238,15 @@ data class AnixartImportProgress(
     val total: Int
 )
 
+/**
+ * Шина прогресса импорта для платформенного слоя: системное уведомление и
+ * foreground-сервис живут в app-модуле и ViewModel не видят — читают отсюда.
+ * Дублирует uiState.anixartImportProgress (баннер внутри приложения).
+ */
+object AnixartImportBus {
+    val flow = kotlinx.coroutines.flow.MutableStateFlow<AnixartImportProgress?>(null)
+}
+
 data class DetailsUiState(
     val loading: Boolean = false,
     val error: String? = null,
@@ -2135,28 +2144,8 @@ class FilmsViewModel(
             // Сеть — вне Main (иначе вход вешает UI на время signIn).
             withContext(Dispatchers.IO) { repo.signIn(login, password) }
                 .onSuccess { session ->
-                    anixartAuthStore?.saveSession(session.token, session.userId, session.nickname)
-                    uiState = uiState.copy(
-                        anixartAuthState = hd.kinoshka.app.data.local.AnixartAuthState(
-                            isLoggedIn = true,
-                            token = session.token,
-                            userId = session.userId,
-                            nickname = session.nickname
-                        )
-                    )
+                    applyAnixartSession(session, caller = "login")
                     onDone(true, null)
-                    // Чужой baseline (прошлый аккаунт) первому синку не товарищ:
-                    // иначе расхождения решались бы против свежего сервера.
-                    anixartIdToShiki = emptyMap()
-                    anixartReleaseLists = emptyMap()
-                    anixartUnresolvable.clear()
-                    anixartPullUnresolvable.clear()
-                    // Только baseline: карты знаний (idmap, промахи) — глобальная истина,
-                    // переживают вход и ускоряют restore.
-                    userStateStore.clearAnixartBaselineOnly()
-                    anixartSyncMutex.withLock {
-                        syncAnixartLists(session.token, pushLocalNewer = true, caller = "login")
-                    }
                 }
                 .onFailure { e ->
                     onDone(false, e.message ?: "Вход не удался")
@@ -2164,8 +2153,156 @@ class FilmsViewModel(
         }
     }
 
+    /**
+     * Общая финализация входа (логин / подтверждение регистрации / восстановление):
+     * сохранение сессии — быстро, возврат сразу (диалог входа закрывается
+     * onDone(true) без ожидания); тяжёлый первый синк — фоном под мьютексом.
+     * Раньше sync src=login жил внутри onDone и держал диалог все ~9 минут
+     * catch-up (кейс 09.09). Гард от протухшей сессии: разлогин/смена аккаунта
+     * во время импорта отменяют фоновый синк, а не пишут чужие профили.
+     */
+    @Volatile
+    private var anixartLoginToken: String? = null
+
+    private suspend fun applyAnixartSession(
+        session: hd.kinoshka.app.data.repo.AnixartRepository.Session,
+        caller: String
+    ) {
+        anixartAuthStore?.saveSession(session.token, session.userId, session.nickname)
+        anixartLoginToken = session.token
+        uiState = uiState.copy(
+            anixartAuthState = hd.kinoshka.app.data.local.AnixartAuthState(
+                isLoggedIn = true,
+                token = session.token,
+                userId = session.userId,
+                nickname = session.nickname
+            )
+        )
+        // Чужой baseline (прошлый аккаунт) первому синку не товарищ:
+        // иначе расхождения решались бы против свежего сервера.
+        anixartIdToShiki = emptyMap()
+        anixartReleaseLists = emptyMap()
+        anixartUnresolvable.clear()
+        anixartPullUnresolvable.clear()
+        // Только baseline: карты знаний (idmap, промахи) — глобальная истина,
+        // переживают вход и ускоряют restore.
+        withContext(Dispatchers.IO) { userStateStore.clearAnixartBaselineOnly() }
+        val token = session.token
+        viewModelScope.launch {
+            if (anixartLoginToken != token) {
+                KLog.i("AnixartSync", "login sync skipped: session changed before start")
+                return@launch
+            }
+            anixartSyncMutex.withLock {
+                if (anixartLoginToken != token) {
+                    KLog.i("AnixartSync", "login sync skipped: session changed while waiting")
+                    return@withLock
+                }
+                syncAnixartLists(token, pushLocalNewer = true, caller = caller)
+            }
+        }
+    }
+
+    /** Регистрация Anixart, шаг 1: отправка кода на почту. Успех — hash для verify. */
+    fun signUpAnixart(
+        login: String,
+        email: String,
+        password: String,
+        onDone: (ok: Boolean, message: String?, hash: String?) -> Unit
+    ) {
+        val repo = anixartRepository
+        if (repo == null) {
+            onDone(false, "Anixart недоступен на этой платформе", null)
+            return
+        }
+        if (login.isBlank() || email.isBlank() || password.isEmpty()) {
+            onDone(false, "Заполните логин, почту и пароль", null)
+            return
+        }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { repo.signUp(login, email, password) }
+                .onSuccess { hash -> onDone(true, null, hash) }
+                .onFailure { e -> onDone(false, e.message ?: "Регистрация не удалась", null) }
+        }
+    }
+
+    /** Регистрация Anixart, шаг 2: код из письма — автовход и синк. */
+    fun verifyAnixartSignUp(
+        login: String,
+        email: String,
+        password: String,
+        hash: String,
+        code: String,
+        onDone: (ok: Boolean, message: String?) -> Unit
+    ) {
+        val repo = anixartRepository
+        if (repo == null) {
+            onDone(false, "Anixart недоступен на этой платформе")
+            return
+        }
+        if (code.isBlank()) {
+            onDone(false, "Введите код из письма")
+            return
+        }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { repo.verifySignUp(login, email, password, hash, code) }
+                .onSuccess { session ->
+                    applyAnixartSession(session, caller = "register")
+                    onDone(true, null)
+                }
+                .onFailure { e -> onDone(false, e.message ?: "Подтверждение не удалось") }
+        }
+    }
+
+    /** Восстановление пароля, шаг 1: отправка кода на почту по логину. */
+    fun restoreAnixart(login: String, onDone: (ok: Boolean, message: String?, hash: String?) -> Unit) {
+        val repo = anixartRepository
+        if (repo == null) {
+            onDone(false, "Anixart недоступен на этой платформе", null)
+            return
+        }
+        if (login.isBlank()) {
+            onDone(false, "Введите логин", null)
+            return
+        }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { repo.restore(login) }
+                .onSuccess { hash -> onDone(true, null, hash) }
+                .onFailure { e -> onDone(false, e.message ?: "Не удалось отправить код", null) }
+        }
+    }
+
+    /** Восстановление пароля, шаг 2: код + новый пароль — автовход и синк. */
+    fun verifyAnixartRestore(
+        login: String,
+        newPassword: String,
+        hash: String,
+        code: String,
+        onDone: (ok: Boolean, message: String?) -> Unit
+    ) {
+        val repo = anixartRepository
+        if (repo == null) {
+            onDone(false, "Anixart недоступен на этой платформе")
+            return
+        }
+        if (code.isBlank() || newPassword.isEmpty()) {
+            onDone(false, "Введите код и новый пароль")
+            return
+        }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { repo.verifyRestore(login, newPassword, hash, code) }
+                .onSuccess { session ->
+                    applyAnixartSession(session, caller = "restore")
+                    onDone(true, null)
+                }
+                .onFailure { e -> onDone(false, e.message ?: "Смена пароля не удалась") }
+        }
+    }
+
     fun logoutAnixart() {
         anixartAuthStore?.clearSession()
+        // Гасим и фоновый синк входа, если он ещё ждёт мьютекса.
+        anixartLoginToken = null
         anixartIdToShiki = emptyMap()
         anixartReleaseLists = emptyMap()
         anixartPullUnresolvable.clear()
@@ -2823,6 +2960,11 @@ class FilmsViewModel(
         val tally2 = PullTally()
         var firstSearch = true
         var sinceFlush = 0
+        // Жертвы шторма 429: ни один запрос не получил ответа — не промахи,
+        // а отложенный повтор после прохода (иначе троттлинг тихо хоронит
+        // десятки резолвящихся тайтлов: кейс 09.09, 17 штук за один catch-up).
+        val rateLimited = mutableListOf<Pair<Int, hd.kinoshka.app.data.model.AnixartRelease>>()
+        var consecutiveNetFail = 0
         // Резолвы поиска: фолбэк 1.5 ниже добирает только НЕ покрытые поиском.
         val searchResolvedIds = mutableSetOf<Int>()
         for ((listId, release) in unmatchedReleases.take(pullResolveLimit)) {
@@ -2830,7 +2972,22 @@ class FilmsViewModel(
             val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: continue
             if (!firstSearch) kotlinx.coroutines.delay(300L)
             firstSearch = false
-            val hit = searchShikimoriForAnixart(release, release.releaseYear(), vetoes) ?: continue
+            val outcome = searchShikimoriForAnixart(release, release.releaseYear(), vetoes)
+            if (outcome.hit == null && !outcome.searchedOk) {
+                rateLimited.add(listId to release)
+                // Шторм подряд: новые запросы всё равно упрутся в то же окно
+                // лимита — одна длинная пауза дешевле цепочки ретраев 1+2+4с
+                // на каждом запросе.
+                if (++consecutiveNetFail >= 2) {
+                    consecutiveNetFail = 0
+                    KLog.i("AnixartSync", "pull: 429-storm cooldown 10s")
+                    if (catchUp) setImportProgress("Пауза (лимит Shikimori)", resolved, remainingUnmatched)
+                    kotlinx.coroutines.delay(10_000L)
+                }
+                continue
+            }
+            consecutiveNetFail = 0
+            val hit = outcome.hit ?: continue
             resolved++
             searchResolvedIds.add(release.id)
             if (catchUp) setImportProgress("Сопоставление", resolved, remainingUnmatched)
@@ -2848,6 +3005,37 @@ class FilmsViewModel(
                 flushPullProgress()
                 sinceFlush = 0
             }
+        }
+        // Отложенный повтор жертв 429: окно лимита уже провернулось, шаг мягче
+        // (2с) — добираем поиском, а не деталями (у деталей id франшизного
+        // уровня, каскад им не товарищ). Неудача здесь — не мемоизируется:
+        // следующий синк попробует снова, как и раньше.
+        var deferredHits = 0
+        if (rateLimited.isNotEmpty()) {
+            KLog.i("AnixartSync", "pull: deferred retry for ${rateLimited.size} rate-limited release(s)")
+            if (catchUp) setImportProgress("Повторные запросы", resolved, remainingUnmatched)
+            for ((listId, release) in rateLimited) {
+                val status = hd.kinoshka.app.data.repo.anixartListToStatus(listId) ?: continue
+                kotlinx.coroutines.delay(2_000L)
+                val hit = searchShikimoriForAnixart(release, release.releaseYear(), vetoes).hit ?: continue
+                resolved++
+                deferredHits++
+                searchResolvedIds.add(release.id)
+                if (catchUp) setImportProgress("Повторные запросы", resolved, remainingUnmatched)
+                KLog.d(
+                    "AnixartSync",
+                    "pull-resolve: release=${release.id} shikimoriId=${hit.shikimoriId} via shiki-search-retry"
+                )
+                reconcilePulledRelease(
+                    release.id, hit.shikimoriId, status, "shiki-search-retry",
+                    hit.title, hit.subtitle, hit.poster, tally2
+                )
+                if (++sinceFlush >= 50) {
+                    flushPullProgress()
+                    sinceFlush = 0
+                }
+            }
+            KLog.i("AnixartSync", "pull: deferred retry hits=$deferredHits of ${rateLimited.size}")
         }
         // Фолбэк 1.5: детали только для остатков поиска (см. выше) — upfront
         // он держал старт ~50 c при hits=0.
@@ -2929,6 +3117,17 @@ class FilmsViewModel(
         val poster: String?
     )
 
+    /**
+     * Исход searchShikimoriForAnixart: hit=null при searchedOk=true — честный
+     * промах (мемоизируется в pullUnresolvable); searchedOk=false — сеть/429
+     * не дали ни одного ответа, релиз идёт в отложенный повтор, а не в промахи
+     * (иначе шторм 429 тихо хоронил бы десятки резолвящихся тайтлов).
+     */
+    private data class ShikiSearchOutcome(
+        val hit: ShikiPullHit?,
+        val searchedOk: Boolean
+    )
+
     /** Сезон/вид/год релиза Anixart: консенсус по всем названиям (ru/orig/en) —
      *  маркер обычно лишь в одном («...: Фильм» vs bare orig). Разные номера
      *  в разных названиях → неоднозначность (null): не знаем — не мешаем. */
@@ -2959,13 +3158,18 @@ class FilmsViewModel(
     /** Живой прогресс catch-up: баннер Библиотеки. Дешёвый state-copy,
      *  список под ним не перестраивается (тот же reference). */
     private fun setImportProgress(phase: String, done: Int, total: Int) {
-        uiState = uiState.copy(anixartImportProgress = AnixartImportProgress(phase, done, total))
+        val p = AnixartImportProgress(phase, done, total)
+        uiState = uiState.copy(anixartImportProgress = p)
+        AnixartImportBus.flow.value = p
     }
 
     /** Гасим баннер (no-op, если его нет). */
     private fun clearImportProgress() {
         if (uiState.anixartImportProgress != null) {
             uiState = uiState.copy(anixartImportProgress = null)
+        }
+        if (AnixartImportBus.flow.value != null) {
+            AnixartImportBus.flow.value = null
         }
     }
 
@@ -2998,14 +3202,14 @@ class FilmsViewModel(
         release: hd.kinoshka.app.data.model.AnixartRelease,
         expectedYear: Int? = null,
         vetoes: YearVetoes? = null
-    ): ShikiPullHit? {
-        if (release.id in anixartPullUnresolvable) return null
+    ): ShikiSearchOutcome {
+        if (release.id in anixartPullUnresolvable) return ShikiSearchOutcome(null, true)
         val matcher = hd.kinoshka.app.data.source.TitleMatching
         val queries = listOfNotNull(release.titleOriginal, release.titleRu, release.titleEn)
             .map { it.trim() }.filter { it.isNotEmpty() }.distinct().take(3)
-        if (queries.isEmpty()) return null
+        if (queries.isEmpty()) return ShikiSearchOutcome(null, true)
         val normed = queries.map { matcher.normalizeTitle(it) }.filter { it.isNotEmpty() }
-        if (normed.isEmpty()) return null
+        if (normed.isEmpty()) return ShikiSearchOutcome(null, true)
         val normedCores = normed.map { matcher.stripDecorativeMarkers(it) }
             .filter { it.isNotEmpty() }.toSet()
         // Беспробельные слепки для класса «To aru»→«Toaru»: точное равенство
@@ -3067,7 +3271,7 @@ class FilmsViewModel(
                 val itemTitles = listOfNotNull(item.name, item.russian)
                     .map { matcher.normalizeTitle(it) }
                 if (itemTitles.any { it.isNotEmpty() && it in normed }) {
-                    tryHit(item)?.let { return it }
+                    tryHit(item)?.let { return ShikiSearchOutcome(it, true) }
                 }
             }
         }
@@ -3085,7 +3289,7 @@ class FilmsViewModel(
                         "AnixartSync",
                         "pull-resolve: release=${release.id} shikimoriId=${item.id} via season-alias match"
                     )
-                    tryHit(item)?.let { return it }
+                    tryHit(item)?.let { return ShikiSearchOutcome(it, true) }
                 }
             }
         }
@@ -3099,7 +3303,7 @@ class FilmsViewModel(
                     "AnixartSync",
                     "pull-resolve: release=${release.id} shikimoriId=${item.id} via spaceless match"
                 )
-                tryHit(item)?.let { return it }
+                tryHit(item)?.let { return ShikiSearchOutcome(it, true) }
             }
         }
         // Проход 2в: обратный префикс (запрос — начало имени: «Maou Gakuin» vs
@@ -3121,7 +3325,7 @@ class FilmsViewModel(
                     "AnixartSync",
                     "pull-resolve: release=${release.id} shikimoriId=${item.id} via reverse-prefix match"
                 )
-                tryHit(item)?.let { return it }
+                tryHit(item)?.let { return ShikiSearchOutcome(it, true) }
             }
         }
         // Проход 2г: алиас в кавычках официального имени («… "Shomin Sample" …»).
@@ -3139,7 +3343,7 @@ class FilmsViewModel(
                     "AnixartSync",
                     "pull-resolve: release=${release.id} shikimoriId=${item.id} via quoted-alias match"
                 )
-                tryHit(item)?.let { return it }
+                tryHit(item)?.let { return ShikiSearchOutcome(it, true) }
             }
         }
         // Проход 2д: ядро без декоративных маркеров — только по уже найденному.
@@ -3151,7 +3355,7 @@ class FilmsViewModel(
                     "AnixartSync",
                     "pull-resolve: release=${release.id} shikimoriId=${item.id} via stripped-core match"
                 )
-                tryHit(item)?.let { return it }
+                tryHit(item)?.let { return ShikiSearchOutcome(it, true) }
             }
         }
         // Проход 2е: префикс (кандидат — начало запроса: «Sakugan» vs
@@ -3169,7 +3373,7 @@ class FilmsViewModel(
                     "AnixartSync",
                     "pull-resolve: release=${release.id} shikimoriId=${item.id} via prefix match"
                 )
-                tryHit(item)?.let { return it }
+                tryHit(item)?.let { return ShikiSearchOutcome(it, true) }
             }
         }
         if (searchedOk) {
@@ -3185,7 +3389,7 @@ class FilmsViewModel(
                     "queries=$normed top=$topRaw topNorm=$topNorm"
             )
         }
-        return null
+        return ShikiSearchOutcome(null, searchedOk)
     }
 
     /**

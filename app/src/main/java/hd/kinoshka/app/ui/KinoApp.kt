@@ -638,6 +638,10 @@ fun KinoApp() {
                                         onLoginAnixart = { login, password, onResult ->
                                             vm.loginAnixart(login, password, onResult)
                                         },
+                                        onSignUpAnixart = vm::signUpAnixart,
+                                        onVerifySignUpAnixart = vm::verifyAnixartSignUp,
+                                        onRestoreAnixart = vm::restoreAnixart,
+                                        onVerifyRestoreAnixart = vm::verifyAnixartRestore,
                                         onLogoutAnixart = vm::logoutAnixart,
                                         anixartImportProgress = vm.uiState.anixartImportProgress,
                                         onOpenSettings = { navController.navigate("settings") },
@@ -1006,6 +1010,10 @@ fun KinoApp() {
                                     onLoginAnixart = { login, password, onResult ->
                                         vm.loginAnixart(login, password, onResult)
                                     },
+                                    onSignUpAnixart = vm::signUpAnixart,
+                                    onVerifySignUpAnixart = vm::verifyAnixartSignUp,
+                                    onRestoreAnixart = vm::restoreAnixart,
+                                    onVerifyRestoreAnixart = vm::verifyAnixartRestore,
                                     onLogoutAnixart = vm::logoutAnixart,
                                     anixartImportProgress = vm.uiState.anixartImportProgress,
                                     onOpenSettings = { navController.navigate("settings") },

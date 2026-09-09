@@ -67,6 +67,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
@@ -145,6 +147,7 @@ import hd.kinoshka.app.ui.components.KinoshkaAsyncImage
 import hd.kinoshka.app.BuildConfig
 import hd.kinoshka.app.data.download.DownloadPhase
 import hd.kinoshka.app.data.download.EpisodeDownloadManager
+import hd.kinoshka.app.data.download.tryRequestNotificationPermission
 import hd.kinoshka.app.data.diagnostics.AppDiagnostics
 import hd.kinoshka.app.R
 import hd.kinoshka.app.data.local.AppThemeMode
@@ -176,6 +179,10 @@ fun ProfileScreen(
     onLogoutShikimori: () -> Unit = {},
     anixartAuthState: hd.kinoshka.app.data.local.AnixartAuthState = hd.kinoshka.app.data.local.AnixartAuthState(),
     onLoginAnixart: (String, String, (Boolean, String?) -> Unit) -> Unit = { _, _, _ -> },
+    onSignUpAnixart: (String, String, String, (Boolean, String?, String?) -> Unit) -> Unit = { _, _, _, _ -> },
+    onVerifySignUpAnixart: (String, String, String, String, String, (Boolean, String?) -> Unit) -> Unit = { _, _, _, _, _, _ -> },
+    onRestoreAnixart: (String, (Boolean, String?, String?) -> Unit) -> Unit = { _, _ -> },
+    onVerifyRestoreAnixart: (String, String, String, String, (Boolean, String?) -> Unit) -> Unit = { _, _, _, _, _ -> },
     onLogoutAnixart: () -> Unit = {},
     onOpenLibraryStatus: (UserFilmStatus, Boolean) -> Unit = { _, _ -> },
     anixartImportProgress: hd.kinoshka.app.ui.screens.AnixartImportProgress? = null,
@@ -216,7 +223,30 @@ fun ProfileScreen(
         AnixartLoginDialog(
             onDismiss = { showAnixartLoginDialog = false },
             onLogin = { login, password, onResult ->
+                // Длинный импорт после входа показывает системное уведомление —
+                // разрешение просим тут, пока диалог в руках пользователя.
+                context.tryRequestNotificationPermission()
                 onLoginAnixart(login, password) { ok, message ->
+                    if (ok) showAnixartLoginDialog = false
+                    onResult(ok, message)
+                }
+            },
+            onSignUp = { login, email, password, onResult ->
+                onSignUpAnixart(login, email, password, onResult)
+            },
+            onVerifySignUp = { login, email, password, hash, code, onResult ->
+                context.tryRequestNotificationPermission()
+                onVerifySignUpAnixart(login, email, password, hash, code) { ok, message ->
+                    if (ok) showAnixartLoginDialog = false
+                    onResult(ok, message)
+                }
+            },
+            onRestore = { login, onResult ->
+                onRestoreAnixart(login, onResult)
+            },
+            onVerifyRestore = { login, newPassword, hash, code, onResult ->
+                context.tryRequestNotificationPermission()
+                onVerifyRestoreAnixart(login, newPassword, hash, code) { ok, message ->
                     if (ok) showAnixartLoginDialog = false
                     onResult(ok, message)
                 }
@@ -2048,43 +2078,312 @@ private fun WebDavConfigDialog(
     )
 }
 
+private enum class AnixartAuthMode {
+    LOGIN,
+    SIGN_UP_FORM,
+    SIGN_UP_CODE,
+    RESTORE_FORM,
+    RESTORE_CODE
+}
+
 @Composable
 private fun AnixartLoginDialog(
     onDismiss: () -> Unit,
-    onLogin: (login: String, password: String, onResult: (Boolean, String?) -> Unit) -> Unit
+    onLogin: (login: String, password: String, onResult: (Boolean, String?) -> Unit) -> Unit,
+    onSignUp: (login: String, email: String, password: String, onResult: (Boolean, String?, String?) -> Unit) -> Unit = { _, _, _, _ -> },
+    onVerifySignUp: (login: String, email: String, password: String, hash: String, code: String, onResult: (Boolean, String?) -> Unit) -> Unit = { _, _, _, _, _, _ -> },
+    onRestore: (login: String, onResult: (Boolean, String?, String?) -> Unit) -> Unit = { _, _ -> },
+    onVerifyRestore: (login: String, newPassword: String, hash: String, code: String, onResult: (Boolean, String?) -> Unit) -> Unit = { _, _, _, _, _ -> }
 ) {
+    var mode by remember { mutableStateOf(AnixartAuthMode.LOGIN) }
     var login by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var pendingHash by remember { mutableStateOf<String?>(null) }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var newPasswordVisible by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+
+    fun switchMode(next: AnixartAuthMode) {
+        mode = next
+        error = null
+        busy = false
+    }
+
+    val titleText = when (mode) {
+        AnixartAuthMode.LOGIN -> "Вход в Anixart"
+        AnixartAuthMode.SIGN_UP_FORM -> "Регистрация в Anixart"
+        AnixartAuthMode.SIGN_UP_CODE -> "Подтверждение почты"
+        AnixartAuthMode.RESTORE_FORM -> "Восстановление пароля"
+        AnixartAuthMode.RESTORE_CODE -> "Новый пароль"
+    }
+    val subtitleText = when (mode) {
+        AnixartAuthMode.LOGIN -> "Синхронизируются списки (статусы). Пароль нигде не сохраняется."
+        AnixartAuthMode.SIGN_UP_FORM -> "Придумайте логин и пароль, код подтверждения придёт на почту."
+        AnixartAuthMode.SIGN_UP_CODE -> "Введите код из письма, отправленного на $email."
+        AnixartAuthMode.RESTORE_FORM -> "Введите логин аккаунта — код придёт на привязанную почту."
+        AnixartAuthMode.RESTORE_CODE -> "Введите код из письма и придумайте новый пароль."
+    }
+    val primaryText = when (mode) {
+        AnixartAuthMode.LOGIN -> "Войти"
+        AnixartAuthMode.SIGN_UP_FORM -> "Продолжить"
+        AnixartAuthMode.SIGN_UP_CODE -> "Подтвердить"
+        AnixartAuthMode.RESTORE_FORM -> "Отправить код"
+        AnixartAuthMode.RESTORE_CODE -> "Сменить пароль и войти"
+    }
+    val primaryEnabled = !busy && when (mode) {
+        AnixartAuthMode.LOGIN -> login.isNotBlank() && password.isNotEmpty()
+        AnixartAuthMode.SIGN_UP_FORM -> login.isNotBlank() && email.isNotBlank() && password.isNotEmpty()
+        AnixartAuthMode.SIGN_UP_CODE -> code.isNotBlank() && pendingHash != null
+        AnixartAuthMode.RESTORE_FORM -> login.isNotBlank()
+        AnixartAuthMode.RESTORE_CODE -> code.isNotBlank() && newPassword.isNotEmpty() && pendingHash != null
+    }
+
+    fun onPrimary() {
+        busy = true
+        error = null
+        when (mode) {
+            AnixartAuthMode.LOGIN -> onLogin(login, password) { ok, message ->
+                busy = false
+                if (!ok) error = message ?: "Вход не удался"
+            }
+            AnixartAuthMode.SIGN_UP_FORM -> onSignUp(login, email, password) { ok, message, hash ->
+                busy = false
+                if (ok && hash != null) {
+                    pendingHash = hash
+                    code = ""
+                    switchMode(AnixartAuthMode.SIGN_UP_CODE)
+                } else {
+                    error = message ?: "Регистрация не удалась"
+                }
+            }
+            AnixartAuthMode.SIGN_UP_CODE -> {
+                val hash = pendingHash
+                if (hash == null) {
+                    busy = false
+                    error = "Сессия устарела — запросите код заново"
+                } else {
+                    onVerifySignUp(login, email, password, hash, code) { ok, message ->
+                        busy = false
+                        if (!ok) error = message ?: "Подтверждение не удалось"
+                    }
+                }
+            }
+            AnixartAuthMode.RESTORE_FORM -> onRestore(login) { ok, message, hash ->
+                busy = false
+                if (ok && hash != null) {
+                    pendingHash = hash
+                    code = ""
+                    newPassword = ""
+                    switchMode(AnixartAuthMode.RESTORE_CODE)
+                } else {
+                    error = message ?: "Не удалось отправить код"
+                }
+            }
+            AnixartAuthMode.RESTORE_CODE -> {
+                val hash = pendingHash
+                if (hash == null) {
+                    busy = false
+                    error = "Сессия устарела — запросите код заново"
+                } else {
+                    onVerifyRestore(login, newPassword, hash, code) { ok, message ->
+                        busy = false
+                        if (!ok) error = message ?: "Смена пароля не удалась"
+                    }
+                }
+            }
+        }
+    }
+
     androidx.compose.material3.AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Вход в Anixart") },
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Image(
+                    painter = painterResource(hd.kinoshka.app.R.drawable.ic_src_anixart),
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp)
+                )
+                Text(
+                    text = titleText,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Синхронизируются списки (статусы). Пароль нигде не сохраняется.",
+                    text = subtitleText,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                OutlinedTextField(
-                    value = login,
-                    onValueChange = { login = it; error = null },
-                    label = { Text("Логин") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it; error = null },
-                    label = { Text("Пароль") },
-                    singleLine = true,
-                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                when (mode) {
+                    AnixartAuthMode.LOGIN -> {
+                        OutlinedTextField(
+                            value = login,
+                            onValueChange = { login = it; error = null },
+                            label = { Text("Логин") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it; error = null },
+                            label = { Text("Пароль") },
+                            singleLine = true,
+                            visualTransformation = if (passwordVisible) {
+                                androidx.compose.ui.text.input.VisualTransformation.None
+                            } else {
+                                androidx.compose.ui.text.input.PasswordVisualTransformation()
+                            },
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
+                            ),
+                            trailingIcon = {
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        contentDescription = if (passwordVisible) "Скрыть пароль" else "Показать пароль"
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Box(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.CenterEnd
+                        ) {
+                            TextButton(
+                                onClick = { switchMode(AnixartAuthMode.RESTORE_FORM) },
+                                enabled = !busy
+                            ) { Text("Забыли пароль?") }
+                        }
+                    }
+                    AnixartAuthMode.SIGN_UP_FORM -> {
+                        OutlinedTextField(
+                            value = login,
+                            onValueChange = { login = it; error = null },
+                            label = { Text("Логин") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = email,
+                            onValueChange = { email = it; error = null },
+                            label = { Text("Email") },
+                            placeholder = { Text("you@example.com") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Email
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it; error = null },
+                            label = { Text("Пароль") },
+                            singleLine = true,
+                            visualTransformation = if (passwordVisible) {
+                                androidx.compose.ui.text.input.VisualTransformation.None
+                            } else {
+                                androidx.compose.ui.text.input.PasswordVisualTransformation()
+                            },
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
+                            ),
+                            trailingIcon = {
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        contentDescription = if (passwordVisible) "Скрыть пароль" else "Показать пароль"
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    AnixartAuthMode.SIGN_UP_CODE -> {
+                        OutlinedTextField(
+                            value = code,
+                            onValueChange = { code = it.filter(Char::isDigit).take(8); error = null },
+                            label = { Text("Код из письма") },
+                            placeholder = { Text("0000") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        TextButton(
+                            onClick = {
+                                busy = true
+                                error = null
+                                onSignUp(login, email, password) { ok, message, hash ->
+                                    busy = false
+                                    if (ok && hash != null) {
+                                        pendingHash = hash
+                                        error = null
+                                    } else {
+                                        error = message ?: "Не удалось отправить код повторно"
+                                    }
+                                }
+                            },
+                            enabled = !busy
+                        ) { Text("Отправить код повторно") }
+                    }
+                    AnixartAuthMode.RESTORE_FORM -> {
+                        OutlinedTextField(
+                            value = login,
+                            onValueChange = { login = it; error = null },
+                            label = { Text("Логин") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    AnixartAuthMode.RESTORE_CODE -> {
+                        OutlinedTextField(
+                            value = code,
+                            onValueChange = { code = it.filter(Char::isDigit).take(8); error = null },
+                            label = { Text("Код из письма") },
+                            placeholder = { Text("0000") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = newPassword,
+                            onValueChange = { newPassword = it; error = null },
+                            label = { Text("Новый пароль") },
+                            singleLine = true,
+                            visualTransformation = if (newPasswordVisible) {
+                                androidx.compose.ui.text.input.VisualTransformation.None
+                            } else {
+                                androidx.compose.ui.text.input.PasswordVisualTransformation()
+                            },
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
+                            ),
+                            trailingIcon = {
+                                IconButton(onClick = { newPasswordVisible = !newPasswordVisible }) {
+                                    Icon(
+                                        imageVector = if (newPasswordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        contentDescription = if (newPasswordVisible) "Скрыть пароль" else "Показать пароль"
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
                 error?.let {
                     Text(
                         text = it,
@@ -2092,20 +2391,27 @@ private fun AnixartLoginDialog(
                         color = MaterialTheme.colorScheme.error
                     )
                 }
+                if (mode == AnixartAuthMode.LOGIN) {
+                    HorizontalDivider()
+                    OutlinedButton(
+                        onClick = { switchMode(AnixartAuthMode.SIGN_UP_FORM) },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)
+                    ) { Text("Создать аккаунт") }
+                } else {
+                    TextButton(
+                        onClick = { switchMode(AnixartAuthMode.LOGIN) },
+                        enabled = !busy
+                    ) { Text("Назад к входу") }
+                }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = {
-                    busy = true
-                    error = null
-                    onLogin(login, password) { ok, message ->
-                        busy = false
-                        if (!ok) error = message ?: "Вход не удался"
-                    }
-                },
-                enabled = !busy && login.isNotBlank() && password.isNotEmpty()
-            ) { Text("Войти") }
+                onClick = ::onPrimary,
+                enabled = primaryEnabled
+            ) { Text(primaryText) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss, enabled = !busy) { Text("Отмена") }
