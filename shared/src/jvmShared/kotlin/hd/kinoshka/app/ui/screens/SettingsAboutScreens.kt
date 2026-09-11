@@ -356,13 +356,10 @@ private fun storageShareText(bytes: Long, total: Long): String {
     return "${Math.round(percent)}%"
 }
 
-/** «1,8 ГБ» → ("1,8" to "ГБ") для крупного центра диаграммы. */
-private fun formatStorageParts(bytes: Long): Pair<String, String> {
-    if (bytes <= 0) return "0" to "Б"
-    val text = formatStorageBytes(bytes)
-    val split = text.indexOf(' ')
-    if (split < 0) return text to ""
-    return text.substring(0, split) to text.substring(split + 1)
+/** Центр диаграммы всегда в МБ (не прыгает в КБ/Б при снятии галочек). */
+private fun formatStorageCenterMb(bytes: Long): String {
+    val mb = bytes.coerceAtLeast(0L) / 1024.0 / 1024.0
+    return "%.1f".format(mb)
 }
 
 /**
@@ -737,16 +734,15 @@ private fun StorageDonut(
                 }
                 labelAngle += sweep
             }
-            // Центр: общий объём.
-            val (value, unit) = formatStorageParts(animatedTotal.toLong().coerceAtLeast(0L))
+            // Центр: выбранное для очистки, всегда в МБ (не прыгает в КБ при снятии галочек).
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = value,
-                    style = MaterialTheme.typography.displaySmall,
+                    text = formatStorageCenterMb(animatedTotal.toLong().coerceAtLeast(0L)),
+                    style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = unit,
+                    text = "МБ",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

@@ -138,6 +138,9 @@ dependencies {
     implementation("androidx.media3:media3-ui:$media3Version")
     implementation("androidx.media3:media3-datasource-okhttp:$media3Version")
 
+    // Chromecast: отправка текущего потока на ТВ (тянет mediarouter для диалога выбора).
+    implementation("com.google.android.gms:play-services-cast-framework:21.4.0")
+
     implementation("androidx.media:media:1.8.0")
     implementation(files("libs/mpv-android-lib-v0.0.1.aar"))
 
@@ -187,6 +190,11 @@ dependencies {
 
     // Unit tests
     testImplementation("junit:junit:4.13.2")
+
+    // Instrumented: CastRelayServer гоняем на устройстве с фейковым апстримом.
+    androidTestImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test:core:1.5.0")
     // Real org.json instead of the mockable Android stub: resolvers parse JSON responses
     // (ddbb/kinobox player lists) and their tests assert on the parsed output.
     testImplementation("org.json:json:20240303")

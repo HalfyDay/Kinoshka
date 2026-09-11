@@ -115,6 +115,9 @@ fun TitleDownloadSheet(
     val displayTitle = item.nameRu ?: item.nameOriginal ?: item.nameEn ?: "Без названия"
 
     var tab by remember { mutableStateOf(0) }
+    // Отложенное действие скачивания, ждущее выбора качества в диалоге.
+    var qualityAsk by remember { mutableStateOf<((String?) -> Unit)?>(null) }
+    val askQuality: ((String?) -> Unit) -> Unit = { action -> qualityAsk = action }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -151,10 +154,19 @@ fun TitleDownloadSheet(
                 if (tab == 0) {
                     TorrentsTab(item = item, isAnime = isAnime, shikimoriId = shikimoriId, displayTitle = displayTitle)
                 } else {
-                    OfflineTab(item = item, isAnime = isAnime, shikimoriId = shikimoriId, itemKey = itemKey, displayTitle = displayTitle)
+                    OfflineTab(item = item, isAnime = isAnime, shikimoriId = shikimoriId, itemKey = itemKey, displayTitle = displayTitle, askQuality = askQuality)
                 }
             }
         }
+    }
+    qualityAsk?.let { ask ->
+        DownloadQualityDialog(
+            onDismiss = { qualityAsk = null },
+            onConfirm = { quality ->
+                qualityAsk = null
+                ask(quality)
+            }
+        )
     }
 }
 
@@ -565,7 +577,8 @@ private fun OfflineTab(
     isAnime: Boolean,
     shikimoriId: Int,
     itemKey: String,
-    displayTitle: String
+    displayTitle: String,
+    askQuality: ((String?) -> Unit) -> Unit
 ) {
     val tasks by EpisodeDownloadManager.tasks.collectAsState()
     val itemTasks = tasks.values.filter { it.itemKey == itemKey }.sortedBy { it.episodeNumber }
@@ -584,13 +597,15 @@ private fun OfflineTab(
                 shikimoriId = shikimoriId,
                 kinopoiskId = item.kinopoiskId,
                 itemKey = itemKey,
-                displayTitle = displayTitle
+                displayTitle = displayTitle,
+                askQuality = askQuality
             )
         } else {
             MovieOfflineSection(
                 item = item,
                 itemKey = itemKey,
-                displayTitle = displayTitle
+                displayTitle = displayTitle,
+                askQuality = askQuality
             )
         }
     }
@@ -689,7 +704,8 @@ private fun AnimeOfflineSection(
     shikimoriId: Int,
     kinopoiskId: Int,
     itemKey: String,
-    displayTitle: String
+    displayTitle: String,
+    askQuality: ((String?) -> Unit) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -804,10 +820,12 @@ private fun AnimeOfflineSection(
                     expanded = expandedKey == trKey,
                     onToggleExpand = { expandedKey = if (expandedKey == trKey) null else trKey },
                     onDownloadAll = {
-                        context.tryRequestNotificationPermission()
-                        EpisodeDownloadManager.enqueueAll(
-                            DownloadBridges.animeRequests(shikimoriId, kinopoiskId, displayTitle, tr)
-                        )
+                        askQuality { quality ->
+                            context.tryRequestNotificationPermission()
+                            EpisodeDownloadManager.enqueueAll(
+                                DownloadBridges.animeRequests(shikimoriId, kinopoiskId, displayTitle, tr, preferredQuality = quality)
+                            )
+                        }
                     },
                     episodes = tr.episodes,
                     itemKey = itemKey,
@@ -818,7 +836,8 @@ private fun AnimeOfflineSection(
                     animeTitle = displayTitle,
                     translationTitle = tr.title,
                     tasks = tasks,
-                    downloadedKeys = downloadedKeys
+                    downloadedKeys = downloadedKeys,
+                    askQuality = askQuality
                 )
             }
         }
@@ -846,7 +865,8 @@ private fun VoiceoverDownloadRow(
     animeTitle: String,
     translationTitle: String,
     tasks: Map<String, DownloadTaskState>,
-    downloadedKeys: Set<String>
+    downloadedKeys: Set<String>,
+    askQuality: ((String?) -> Unit) -> Unit
 ) {
     val context = LocalContext.current
     val allDownloaded = episodeCount in 1..downloadedCount
@@ -929,23 +949,25 @@ private fun VoiceoverDownloadRow(
                         downloaded = key in downloadedKeys,
                         task = tasks[key],
                         onDownload = {
-                            context.tryRequestNotificationPermission()
-                            EpisodeDownloadManager.enqueue(
-                                EpisodeDownloadManager.EpisodeDownloadRequest(
-                                    itemKey = itemKey,
-                                    title = animeTitle,
-                                    source = sourceName,
-                                    translationId = translationId,
-                                    translationTitle = translationTitle,
-                                    episodeNumber = ep.number,
-                                    episodeLabel = ep.title?.takeIf { it.isNotBlank() } ?: "Серия ${ep.number}",
-                                    resolve = {
-                                        AnimeStreamResolver.resolveStream(
-                                            shikimoriId, animeTitle, sourceType, translationId, ep.number
-                                        )?.let { DownloadBridges.mediaSource(it) }
-                                    }
+                            askQuality { quality ->
+                                context.tryRequestNotificationPermission()
+                                EpisodeDownloadManager.enqueue(
+                                    EpisodeDownloadManager.EpisodeDownloadRequest(
+                                        itemKey = itemKey,
+                                        title = animeTitle,
+                                        source = sourceName,
+                                        translationId = translationId,
+                                        translationTitle = translationTitle,
+                                        episodeNumber = ep.number,
+                                        episodeLabel = ep.title?.takeIf { it.isNotBlank() } ?: "Серия ${ep.number}",
+                                        resolve = {
+                                            AnimeStreamResolver.resolveStream(
+                                                shikimoriId, animeTitle, sourceType, translationId, ep.number
+                                            )?.let { DownloadBridges.mediaSource(it, quality) }
+                                        }
+                                    )
                                 )
-                            )
+                            }
                         },
                         onCancel = { EpisodeDownloadManager.cancel(key) },
                         onRetry = { EpisodeDownloadManager.retry(key) }
@@ -1048,7 +1070,8 @@ private fun buildMovieRequest(item: FilmDetails): MoviePlaybackRequest {
 private fun MovieOfflineSection(
     item: FilmDetails,
     itemKey: String,
-    displayTitle: String
+    displayTitle: String,
+    askQuality: ((String?) -> Unit) -> Unit
 ) {
     val uiContext = LocalContext.current
     var state by remember(item.kinopoiskId) { mutableStateOf<MovieOfflineState>(MovieOfflineState.Loading) }
@@ -1106,16 +1129,19 @@ private fun MovieOfflineSection(
                             downloaded = library.any { it.itemKey == itemKey && it.translationId == trId },
                             task = tasks[key],
                             onDownload = {
-                                uiContext.tryRequestNotificationPermission()
-                                // Строго выбранная озвучка: каждый ряд качает свой поток, а не
-                                // весь каталог (фильм — не «озвучка×серия»).
-                                EpisodeDownloadManager.enqueue(
-                                    DownloadBridges.qomRequest(
-                                        item.kinopoiskId, displayTitle, trId,
-                                        payload.preparedStreams.getValue(trId), titles[trId] ?: trId,
-                                        posterUrl = item.posterUrlPreview ?: item.posterUrl
+                                askQuality { quality ->
+                                    uiContext.tryRequestNotificationPermission()
+                                    // Строго выбранная озвучка: каждый ряд качает свой поток, а не
+                                    // весь каталог (фильм — не «озвучка×серия»).
+                                    EpisodeDownloadManager.enqueue(
+                                        DownloadBridges.qomRequest(
+                                            item.kinopoiskId, displayTitle, trId,
+                                            payload.preparedStreams.getValue(trId), titles[trId] ?: trId,
+                                            posterUrl = item.posterUrlPreview ?: item.posterUrl,
+                                            preferredQuality = quality
+                                        )
                                     )
-                                )
+                                }
                             },
                             onCancel = { EpisodeDownloadManager.cancel(key) },
                             onRetry = { EpisodeDownloadManager.retry(key) }
@@ -1155,17 +1181,20 @@ private fun MovieOfflineSection(
                             onToggleExpand = { expandedSeriesKey = if (expandedSeriesKey == trId) null else trId },
                             onDownloadAll = {
                                 if (eps.isNotEmpty()) {
-                                    uiContext.tryRequestNotificationPermission()
-                                    EpisodeDownloadManager.enqueueAll(
-                                        DownloadBridges.seriesRequests(
-                                            item.kinopoiskId, displayTitle, context.request,
-                                            context.candidates, trId,
-                                            candidate.translationTitle ?: "Озвучка", eps,
-                                            isDirectSource = context.isDirectSource,
-                                            directHeaders = context.directHeaders,
-                                            posterUrl = item.posterUrlPreview ?: item.posterUrl
+                                    askQuality { quality ->
+                                        uiContext.tryRequestNotificationPermission()
+                                        EpisodeDownloadManager.enqueueAll(
+                                            DownloadBridges.seriesRequests(
+                                                item.kinopoiskId, displayTitle, context.request,
+                                                context.candidates, trId,
+                                                candidate.translationTitle ?: "Озвучка", eps,
+                                                isDirectSource = context.isDirectSource,
+                                                directHeaders = context.directHeaders,
+                                                posterUrl = item.posterUrlPreview ?: item.posterUrl,
+                                                preferredQuality = quality
+                                            )
                                         )
-                                    )
+                                    }
                                 }
                             },
                             episodes = eps,
@@ -1174,15 +1203,18 @@ private fun MovieOfflineSection(
                             itemKey = itemKey,
                             trId = trId,
                             onDownloadEpisode = { ep ->
-                                uiContext.tryRequestNotificationPermission()
-                                DownloadBridges.seriesRequests(
-                                    item.kinopoiskId, displayTitle, context.request,
-                                    context.candidates, trId,
-                                    candidate.translationTitle ?: "Озвучка", listOf(ep),
-                                    isDirectSource = context.isDirectSource,
-                                    directHeaders = context.directHeaders,
-                                    posterUrl = item.posterUrlPreview ?: item.posterUrl
-                                ).firstOrNull()?.let { EpisodeDownloadManager.enqueue(it) }
+                                askQuality { quality ->
+                                    uiContext.tryRequestNotificationPermission()
+                                    DownloadBridges.seriesRequests(
+                                        item.kinopoiskId, displayTitle, context.request,
+                                        context.candidates, trId,
+                                        candidate.translationTitle ?: "Озвучка", listOf(ep),
+                                        isDirectSource = context.isDirectSource,
+                                        directHeaders = context.directHeaders,
+                                        posterUrl = item.posterUrlPreview ?: item.posterUrl,
+                                        preferredQuality = quality
+                                    ).firstOrNull()?.let { EpisodeDownloadManager.enqueue(it) }
+                                }
                             }
                         )
                     }

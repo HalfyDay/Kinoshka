@@ -39,6 +39,7 @@ import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeQualityDropd
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeSeriesDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeShaderControl
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeTranslationDropdown
+import app.marlboroadvance.mpvex.ui.player.controls.components.CastButton
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
 import app.marlboroadvance.mpvex.ui.theme.controlColor
 import app.marlboroadvance.mpvex.ui.theme.spacing
@@ -199,6 +200,7 @@ fun TopRightPlayerControlsLandscape(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),
   ) {
+    CastButton(hideBackground = hideBackground)
     AnimeShaderControl(hideBackground = hideBackground, viewModel = viewModel)
     
     buttons.forEach { button ->

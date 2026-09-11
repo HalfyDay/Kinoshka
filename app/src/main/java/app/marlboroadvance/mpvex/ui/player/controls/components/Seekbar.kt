@@ -80,6 +80,8 @@ fun SeekbarWithTimers(
   seekbarStyle: SeekbarStyle = SeekbarStyle.Wavy,
   loopStart: Float? = null,
   loopEnd: Float? = null,
+  /** Отрезки опенинга/эндинга (сек): янтарная подложка на линии прогресса. */
+  skipRanges: ImmutableList<Pair<Float, Float>> = persistentListOf(),
   modifier: Modifier = Modifier,
 ) {
   val clickEvent = LocalPlayerButtonsClickEvent.current
@@ -210,6 +212,7 @@ fun SeekbarWithTimers(
             },
             loopStart = loopStart,
             loopEnd = loopEnd,
+            skipRanges = skipRanges,
           )
         }
         SeekbarStyle.Wavy -> {
@@ -225,6 +228,7 @@ fun SeekbarWithTimers(
             onSeekFinished = { }, // Touch handled by parent
             loopStart = loopStart,
             loopEnd = loopEnd,
+            skipRanges = skipRanges,
           )
         }
         SeekbarStyle.Thick -> {
@@ -247,6 +251,7 @@ fun SeekbarWithTimers(
             },
             loopStart = loopStart,
             loopEnd = loopEnd,
+            skipRanges = skipRanges,
           )
         }
       }
@@ -278,10 +283,13 @@ private fun SquigglySeekbar(
   onSeekFinished: () -> Unit,
   loopStart: Float? = null,
   loopEnd: Float? = null,
+  skipRanges: ImmutableList<Pair<Float, Float>> = persistentListOf(),
   modifier: Modifier = Modifier,
 ) {
   val primaryColor = MaterialTheme.colorScheme.primary
   val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
+  // Метки скипов — tertiary палитры плеера (не жёлтый), полупрозрачные.
+  val skipMarkColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f)
 
   // Manual Interaction State Tracking
   var isPressed by remember { mutableStateOf(false) }
@@ -509,6 +517,24 @@ private fun SquigglySeekbar(
         )
       }
     }
+
+    // Метки опенинга/эндинга: скруглённая пилюля в цвете tertiary палитры плеера,
+    // высота — как линия прогресса.
+    if (skipRanges.isNotEmpty() && duration > 0f) {
+      val barH = (lineAmplitude + strokeWidth) * 2
+      skipRanges.forEach { (start, end) ->
+        val x0 = (start / duration).coerceIn(0f, 1f) * totalWidth
+        val x1 = (end / duration).coerceIn(0f, 1f) * totalWidth
+        if (x1 - x0 >= 1f) {
+          drawRoundRect(
+            color = skipMarkColor,
+            topLeft = Offset(x0, centerY - barH / 2),
+            size = Size(x1 - x0, barH),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(barH / 2),
+          )
+        }
+      }
+    }
   }
 }
 
@@ -549,9 +575,11 @@ fun StandardSeekbar(
     onSeekFinished: () -> Unit,
     loopStart: Float? = null,
     loopEnd: Float? = null,
+    skipRanges: ImmutableList<Pair<Float, Float>> = persistentListOf(),
     modifier: Modifier = Modifier,
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
+    val skipMarkColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f)
     val interactionSource = remember { MutableInteractionSource() }
     
     // Animation state (same as SquigglySeekbar)
@@ -735,6 +763,24 @@ fun StandardSeekbar(
                             topLeft = Offset(minPx, 0f),
                             size = Size(maxPx - minPx, size.height)
                         )
+                    }
+                }
+
+                // Метки опенинга/эндинга: скруглённая пилюля в цвете tertiary,
+                // высота — как трек прогресса.
+                if (skipRanges.isNotEmpty()) {
+                    val radius = size.height / 2
+                    skipRanges.forEach { (start, end) ->
+                        val x0 = (start / duration).coerceIn(0f, 1f) * size.width
+                        val x1 = (end / duration).coerceIn(0f, 1f) * size.width
+                        if (x1 - x0 >= 0.5f) {
+                            drawRoundRect(
+                                color = skipMarkColor,
+                                topLeft = Offset(x0, 0f),
+                                size = Size(x1 - x0, size.height),
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius)
+                            )
+                        }
                     }
                 }
             }

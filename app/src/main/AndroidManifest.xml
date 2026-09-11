@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Chromecast: LAN-IP реле для трансляции (обычное разрешение, без запроса). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -73,6 +75,28 @@
             android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
             android:theme="@style/Theme.mpvex" />
+
+        <!-- Chromecast: выбор устройства (кнопка в плеере), уведомление и expanded-контроллер из SDK. -->
+        <meta-data
+            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="hd.kinoshka.app.data.cast.CastOptionsProvider" />
+
+        <activity
+            android:name="com.google.android.gms.cast.framework.media.widget.ExpandedControllerActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="hd.kinoshka.app.ui.player.CastRemoteActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Kino" />
 
         <activity
             android:name="app.marlboroadvance.mpvex.presentation.crash.CrashActivity"

@@ -34,7 +34,9 @@ data class OfflineEpisode(
     val downloadedAt: Long,
     val isHls: Boolean,
     /** Обложка тайтла для экрана загрузок; у старых записей отсутствует (null). */
-    val posterUrl: String? = null
+    val posterUrl: String? = null,
+    /** Выбранный ранг качества («720p»); null — максимум/одиночный файл/старые записи. */
+    val quality: String? = null
 ) {
     val key: String get() = offlineKey(itemKey, source, translationId, episodeNumber)
 }

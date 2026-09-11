@@ -76,6 +76,36 @@ fun qualityRank(quality: String?): Int =
     quality?.substringBefore("p")?.takeIf { it.length <= 4 }?.toIntOrNull() ?: 0
 
 /**
+ * Ключ лестницы под потолок [preferred]: null/blank = лучший ранг;
+ * иначе лучший доступный ранг не выше выбранного, а если такого нет —
+ * минимальный доступный выше потолка (ближе к выбранному, чем максимум).
+ * Пустая лестница → null.
+ */
+fun pickCappedQualityKey(ladder: Map<String, String>, preferred: String?): String? {
+    if (ladder.isEmpty()) return null
+    val best = QUALITY_PREFERENCE_DESC.firstOrNull { ladder.containsKey(it) }
+    val cap = qualityRank(preferred)
+    if (preferred.isNullOrBlank() || cap <= 0) return best ?: ladder.keys.firstOrNull()
+    QUALITY_PREFERENCE_DESC
+        .filter { qualityRank(it) in 1..cap }
+        .firstOrNull { ladder.containsKey(it) }
+        ?.let { return it }
+    return ladder.keys
+        .filter { qualityRank(it) > 0 }
+        .minByOrNull { qualityRank(it) }
+        ?: best ?: ladder.keys.firstOrNull()
+}
+
+/**
+ * URL из лестницы под потолок [preferred] (см. [pickCappedQualityKey]).
+ * Пустая лестница → null (брать [AnimeMediaStream.url]).
+ */
+fun pickCappedQualityUrl(ladder: Map<String, String>, preferred: String?): String? {
+    val key = pickCappedQualityKey(ladder, preferred) ?: return null
+    return ladder[key]
+}
+
+/**
  * Short badge label for the selection sheets: 2160p→"4К", 1440p→"2К", 1080p→"FHD", 720p→"HD";
  * всё, что ниже 720p, →"SD", ниже 240p →"LD"; нестандартные высоты выше 720 — как "Np".
  */
@@ -101,6 +131,28 @@ data class AnimeMediaStream(
     val quality: String = "Auto",
     val title: String = ""
 )
+
+/** Отрезок опенинга/эндинга в секундах (тайминги AniLiberty). */
+@Serializable
+data class SkipRange(
+    val startSec: Int,
+    val endSec: Int
+)
+
+/**
+ * Тайминги серии от AniLiberty: опенинг/эндинг + длительность серии у источника
+ * таймингов (сек). Плеер показывает «Пропустить» только при совпавшем хронометраже
+ * (см. SKIP_DURATION_TOLERANCE_SEC) — иначе тайминги чужого источника могут врать.
+ */
+@Serializable
+data class EpisodeSkips(
+    val opening: SkipRange? = null,
+    val ending: SkipRange? = null,
+    val sourceDurationSec: Int? = null
+)
+
+/** Допуск расхождения хронометража серии с источником таймингов (сек). */
+const val SKIP_DURATION_TOLERANCE_SEC = 15
 
 @Serializable
 enum class SelectionStep {

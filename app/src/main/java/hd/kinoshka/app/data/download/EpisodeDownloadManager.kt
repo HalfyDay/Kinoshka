@@ -382,8 +382,26 @@ object EpisodeDownloadManager {
         }
     }
 
-    private fun taskState(request: EpisodeDownloadRequest, phase: DownloadPhase) = DownloadTaskState(
-        key = itKey(request),
+    /**
+     * Свежие резолвы (подписанные URL живут часы): resume/retry подхватывают ссылку
+     * без повторной сети — продолжение мгновенное, а не «поиск ссылки…» по полминуты.
+     * Протухшие подписи самолечатся: сегментные 401/403/404 чистят запись (см. runTask).
+     */
+    private data class ResolvedEntry(val data: MediaDownloader.MediaSource, val timestamp: Long)
+    private val resolvedCache = java.util.concurrent.ConcurrentHashMap<String, ResolvedEntry>()
+    private const val RESOLVED_TTL_MS = 30 * 60_000L
+
+    private suspend fun resolveCached(key: String, request: EpisodeDownloadRequest): MediaDownloader.MediaSource? {
+        resolvedCache[key]?.let {
+            if (System.currentTimeMillis() - it.timestamp < RESOLVED_TTL_MS) return it.data
+            resolvedCache.remove(key)
+        }
+        val media = request.resolve() ?: return null
+        resolvedCache[key] = ResolvedEntry(media, System.currentTimeMillis())
+        return media
+    }
+
+    private fun taskState(request: EpisodeDownloadRequest, phase: DownloadPhase) = DownloadTaskState(        key = itKey(request),
         itemKey = request.itemKey,
         title = request.title,
         source = request.source,
@@ -497,6 +515,7 @@ object EpisodeDownloadManager {
             }
             var attempt = 0
             var downloaded: MediaDownloader.MediaFile? = null
+            var doneQuality: String? = null
             while (attempt < MAX_ATTEMPTS) {
                 attempt += 1
                 // Новая попытка после обрыва: замер скорости начинаем заново.
@@ -505,8 +524,9 @@ object EpisodeDownloadManager {
                 sampleBytes = 0L
                 try {
                     update { it.copy(phase = DownloadPhase.RESOLVING) }
-                    val media = request.resolve()
+                    val media = resolveCached(key, request)
                         ?: throw MediaDownloader.DownloadException("Не удалось получить ссылку на видео")
+                    doneQuality = media.quality
                     update { it.copy(phase = DownloadPhase.DOWNLOADING) }
                     val dir = MediaDownloader.episodeDir(
                         appContext, request.itemKey, request.source, request.translationId, request.episodeNumber
@@ -538,6 +558,9 @@ object EpisodeDownloadManager {
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "attempt $attempt/$MAX_ATTEMPTS failed for $key: ${e.message}")
+                    // Протухшая подпись CDN (401/403/404 на сегментах/плейлисте): следующий
+                    // заход резолвит свежую ссылку вместо повтора по мёртвой из кэша.
+                    if ((e.message ?: "").contains("HTTP 40")) resolvedCache.remove(key)
                     if (attempt >= MAX_ATTEMPTS) {
                         failedRequests.value = failedRequests.value + (key to request)
                         update { it.copy(phase = DownloadPhase.FAILED, error = e.message ?: "Ошибка скачивания") }
@@ -585,11 +608,13 @@ object EpisodeDownloadManager {
                 sizeBytes = file.sizeBytes,
                 downloadedAt = System.currentTimeMillis(),
                 isHls = file.isHls,
-                posterUrl = request.posterUrl ?: cachedAnimePoster(request.itemKey)
+                posterUrl = request.posterUrl ?: cachedAnimePoster(request.itemKey),
+                quality = doneQuality
             )
             _tasks.value = _tasks.value - key
             _library.value = (_library.value.filter { it.key != key } + entry).sortedBy { it.key }
             saveLibrary(_library.value)
+            resolvedCache.remove(key)
             Log.i(TAG, "downloaded $key (${formatBytes(file.sizeBytes)})")
             // Отдельное завершающееся уведомление (не foreground-прогресс): одно на задачу.
             if (notifiedDone.add(key)) {

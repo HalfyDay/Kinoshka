@@ -555,6 +555,7 @@ class PlayerActivity :
     setQualityOnlyMovieExtras(intent.extras)
     setPendingMovieExtras(intent.extras)
     startPlaybackProgressLoop()
+    setupCast()
 
     playlistId = intent.getIntExtra("playlist_id", -1).takeIf { it != -1 }
     playlistIndex = intent.getIntExtra("playlist_index", 0)
@@ -837,6 +838,7 @@ class PlayerActivity :
       cleanupMPV()
       cleanupAudio()
       cleanupReceivers()
+      cleanupCast()
       releaseMediaSession()
 
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1184,6 +1186,104 @@ class PlayerActivity :
     MPVLib.setPropertyString("http-proxy", hd.kinoshka.app.data.source.StreamProxyConfig.mpvProxyFor(loadUrl ?: ""))
     AppDiagnostics.event("loadfile: ${args.firstOrNull()?.take(160) ?: "?"}")
     MPVLib.command("loadfile", *args)
+  }
+
+  // ==================== Chromecast ====================
+
+  private fun setupCast() {
+    hd.kinoshka.app.data.cast.CastPlayback.init(
+      this,
+      this,
+      onSessionStarted = { onCastSessionStarted() },
+      onSessionEnded = { onCastSessionEnded() }
+    )
+  }
+
+  private fun cleanupCast() {
+    // Реле гасим только когда сессии нет вообще. hasSession проверяем ДО release
+    // (release чужого слушателя не трогает, менеджер не nullит — см. CastPlayback).
+    // Пульт живёт в отдельной activity и льёт через это же реле.
+    val keepRelay = hd.kinoshka.app.data.cast.CastPlayback.hasSession()
+    hd.kinoshka.app.data.cast.CastPlayback.release(this)
+    if (!keepRelay) {
+      hd.kinoshka.app.data.cast.CastRelayServer.stopInstance()
+    }
+  }
+
+  /**
+   * Каст подключён: льём текущий поток на ТВ с текущей позиции, плеер закрываем —
+   * дальше управляет вертикальная страница пульта.
+   */
+  private fun onCastSessionStarted() {
+    castCurrentStream()
+    val remote = android.content.Intent(this, hd.kinoshka.app.ui.player.CastRemoteActivity::class.java).apply {
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_SHIKIMORI_ID,
+        intent.getIntExtra("anime_shikimori_id", 0)
+      )
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_ANIME_TITLE,
+        intent.getStringExtra("anime_title").orEmpty()
+      )
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_EPISODE,
+        viewModel.currentAnimeEpisodeNumber.value ?: intent.getIntExtra("anime_current_episode", 1)
+      )
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_TRANSLATION_ID,
+        viewModel.currentAnimeTranslationId.value
+      )
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_QUALITY,
+        viewModel.currentAnimeQualityId.value
+      )
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_DISPLAY_TITLE,
+        getTitleForControls().takeIf { it.isNotBlank() } ?: "Видео"
+      )
+    }
+    startActivity(remote)
+    Toast.makeText(this, "Трансляция на ТВ", Toast.LENGTH_SHORT).show()
+    finish()
+  }
+
+  /** Льёт (qomActiveStream ?: currentAnimeStream) на ТВ с текущей позиции. */
+  private fun castCurrentStream() {
+    val stream = qomActiveStream ?: currentAnimeStream ?: run {
+      Log.w(TAG, "cast: no active stream")
+      return
+    }
+    // Выбранный рунг качества (Auto → мастер с ABR, иначе пиннинг ранга).
+    val qId = viewModel.currentAnimeQualityId.value
+      ?.takeIf { it != "Auto" && stream.qualities.containsKey(it) }
+    val relay = hd.kinoshka.app.data.cast.CastRelayServer.getInstance()
+      .register(this, stream.url, stream.headers, stream.qualities, qId)
+    if (relay == null) {
+      Toast.makeText(this, "Каст: подключите телефон к Wi-Fi", Toast.LENGTH_SHORT).show()
+      return
+    }
+    val pos = (viewModel.pos ?: 0).toLong()
+    val duration = viewModel.duration?.toLong()
+    hd.kinoshka.app.data.cast.CastPlayback.load(
+      relay,
+      getTitleForControls().takeIf { it.isNotBlank() } ?: "Видео",
+      pos,
+      duration
+    )
+    Log.i(TAG, "cast load @ $pos sec (local paused)")
+  }
+
+  /** Каст завершён: реле гасим, локальный плеер продолжает с позиции ТВ. */
+  private fun onCastSessionEnded() {
+    hd.kinoshka.app.data.cast.CastRelayServer.getInstance().unregisterAll()
+    if (!hd.kinoshka.app.data.cast.CastPlayback.hasSession()) {
+      hd.kinoshka.app.data.cast.CastRelayServer.stopInstance()
+    }
+    lifecycleScope.launch {
+      val pos = hd.kinoshka.app.data.cast.CastPlayback.lastPositionSec()
+      if (pos > 0) viewModel.seekTo(pos.toInt())
+      viewModel.unpause()
+    }
   }
 
   /**

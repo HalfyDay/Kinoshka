@@ -118,7 +118,7 @@ internal fun HentaiDownloadButton(
  * серий в плеере (Kodik — HLS-резолв, прямые — готовые CDN-url); резолв ленивый,
  * выполняется очередью в момент скачивания.
  */
-fun enqueueMovieDownload(context: Context, target: MovieDownloadTarget) {
+fun enqueueMovieDownload(context: Context, target: MovieDownloadTarget, preferredQuality: String? = null) {
     context.tryRequestNotificationPermission()
     if (target.kinopoiskId <= 0) {
         Toast.makeText(context, "Нет id тайтла для скачивания", Toast.LENGTH_SHORT).show()
@@ -135,7 +135,8 @@ fun enqueueMovieDownload(context: Context, target: MovieDownloadTarget) {
             target.episodes,
             target.isDirect,
             target.directHeaders,
-            target.posterUrl
+            target.posterUrl,
+            preferredQuality = preferredQuality
         )
         if (all.isEmpty()) {
             Toast.makeText(context, "Нет серий для скачивания", Toast.LENGTH_SHORT).show()
@@ -167,7 +168,7 @@ fun enqueueMovieDownload(context: Context, target: MovieDownloadTarget) {
                 posterUrl = target.posterUrl,
                 resolve = {
                     MovieStreamResolver.resolveMovieUrls(target.movieUrls)
-                        ?.let(DownloadBridges::mediaSource)
+                        ?.let { DownloadBridges.mediaSource(it, preferredQuality) }
                 }
             )
         )

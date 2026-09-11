@@ -117,6 +117,9 @@ import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
 import app.marlboroadvance.mpvex.ui.player.controls.components.MultipleSpeedPlayerUpdate
 import app.marlboroadvance.mpvex.ui.player.controls.components.SeekPlayerUpdate
 import app.marlboroadvance.mpvex.ui.player.controls.components.SeekbarWithTimers
+import app.marlboroadvance.mpvex.ui.player.controls.components.SkipIntroOverlay
+import app.marlboroadvance.mpvex.ui.player.controls.components.rememberEpisodeSkips
+import hd.kinoshka.app.data.model.SKIP_DURATION_TOLERANCE_SEC
 import app.marlboroadvance.mpvex.ui.player.controls.components.SlideToUnlock
 import app.marlboroadvance.mpvex.ui.player.controls.components.SpeedControlSlider
 import app.marlboroadvance.mpvex.ui.player.controls.components.TextPlayerUpdate
@@ -316,6 +319,7 @@ fun PlayerControls(
         val loadingOverlay = createRef()
         val pendingOverlay = createRef()
         val nextEpisodeOverlayRef = createRef()
+        val skipIntroRef = createRef()
 
         val isBrightnessSliderShown by viewModel.isBrightnessSliderShown.collectAsState()
         val isVolumeSliderShown by viewModel.isVolumeSliderShown.collectAsState()
@@ -439,6 +443,50 @@ fun PlayerControls(
             )
           }
         }
+
+        // Тайминги опенинга/эндинга от AniLiberty для любого источника. Гвард хронометража:
+        // чужой монтаж (расхождение с источником таймингов) гасит и пилюлю, и метки.
+        val skipShikimoriId = activity.intent.getIntExtra("anime_shikimori_id", 0)
+        val skipEpisode = currentAnimeEpisodeNumber
+          ?: activity.intent.getIntExtra("anime_current_episode", 1)
+        val episodeSkips = rememberEpisodeSkips(
+          skipShikimoriId,
+          activity.intent.getStringExtra("anime_title").orEmpty(),
+          skipEpisode
+        )
+        val skipTimingsOk = remember(episodeSkips, duration) {
+          val libDuration = episodeSkips?.sourceDurationSec
+          val mediaDuration = duration ?: 0
+          libDuration != null && libDuration > 0 && mediaDuration > 0 &&
+            kotlin.math.abs(mediaDuration - libDuration) <= SKIP_DURATION_TOLERANCE_SEC
+        }
+        val skipRanges = remember(episodeSkips, skipTimingsOk) {
+          if (!skipTimingsOk) persistentListOf<Pair<Float, Float>>()
+          else buildList {
+            episodeSkips?.opening?.let { add(it.startSec.toFloat() to it.endSec.toFloat()) }
+            episodeSkips?.ending?.let { add(it.startSec.toFloat() to it.endSec.toFloat()) }
+          }.toImmutableList()
+        }
+        if (skipShikimoriId > 0) {
+          SkipIntroOverlay(
+            viewModel = viewModel,
+            skips = episodeSkips,
+            timingsOk = skipTimingsOk,
+            position = position ?: 0,
+            modifier = Modifier.constrainAs(skipIntroRef) {
+              // По центру над таймлайном (углы заняты качеством/PiP); при видимой
+              // плашке следующей серии встаёт выше неё.
+              bottom.linkTo(
+                if (nextEpisode != null) nextEpisodeOverlayRef.top else seekbar.top,
+                spacing.small
+              )
+              start.linkTo(parent.start)
+              end.linkTo(parent.end)
+            }
+          )
+        }
+
+        // Пульт каста — отдельная страница (CastRemoteActivity), здесь только пилюля скипа.
 
         // PENDING_MOVIE: background stream resolve failed — retry from here.
         val pendingResolveError by viewModel.pendingResolveError.collectAsState()
@@ -1127,6 +1175,7 @@ fun PlayerControls(
             seekbarStyle = seekbarStyle,
             loopStart = abLoopA?.toFloat(),
             loopEnd = abLoopB?.toFloat(),
+            skipRanges = skipRanges,
           )
         
           }

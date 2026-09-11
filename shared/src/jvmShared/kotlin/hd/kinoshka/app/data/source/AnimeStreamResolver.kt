@@ -6,8 +6,10 @@ import hd.kinoshka.app.data.model.AnimeMediaStream
 import hd.kinoshka.app.data.model.AnimeSource
 import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.AnimeTranslation
+import hd.kinoshka.app.data.model.EpisodeSkips
 import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
+import hd.kinoshka.app.data.model.SkipRange
 import hd.kinoshka.app.data.model.qualityRank
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -147,6 +149,70 @@ object AnimeStreamResolver {
             AnimeEpisode(number = number, title = title, id = episode.optInt("id").takeIf { it > 0 }, maxQuality = maxQuality)
         }.distinctBy { it.number }.sortedBy { it.number }.toList()
     }
+
+    // ---------- Тайминги опенинга/эндинга (AniLiberty) ----------
+
+    /** Тайминги релиза по shikimori id: номер серии → скипы. Греется пикером, читается плеером. */
+    private val anilibSkipsCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<Map<Int, EpisodeSkips>>>()
+    private const val SKIPS_CACHE_TTL_MS = 24 * 60 * 60_000L
+
+    private fun parseSkipRange(episode: JSONObject, key: String): SkipRange? {
+        val o = episode.optJSONObject(key) ?: return null
+        if (o.isNull("start") || o.isNull("stop")) return null
+        val start = o.optInt("start", -1)
+        val stop = o.optInt("stop", -1)
+        if (start < 0 || stop <= start) return null
+        return SkipRange(start, stop)
+    }
+
+    /**
+     * Складывает тайминги релиза в кэш. Вызывается везде, где detail релиза уже
+     * есть в руках (пикер, резолв, торренты), — отдельной сети не требует.
+     */
+    private fun cacheAnilibSkips(shikimoriId: Int, release: JSONObject) {
+        if (shikimoriId <= 0) return
+        val episodes = release.optJSONArray("episodes") ?: return
+        val map = HashMap<Int, EpisodeSkips>()
+        episodes.asSequenceObjects().forEach { episode ->
+            val number = episode.optInt("ordinal").takeIf { it > 0 }
+                ?: episode.optInt("sort_order").takeIf { it > 0 }
+                ?: return@forEach
+            val opening = parseSkipRange(episode, "opening")
+            val ending = parseSkipRange(episode, "ending")
+            if (opening == null && ending == null) return@forEach
+            map[number] = EpisodeSkips(
+                opening = opening,
+                ending = ending,
+                sourceDurationSec = episode.optInt("duration").takeIf { it > 0 }
+            )
+        }
+        if (map.isNotEmpty()) {
+            anilibSkipsCache[shikimoriId] = CacheEntry(map, System.currentTimeMillis())
+        }
+    }
+
+    /** Тайминги серии из кэша; null — нет данных (не AniLiberty-релиз или серия без разметки). */
+    fun episodeSkips(shikimoriId: Int, episodeNumber: Int): EpisodeSkips? {
+        val entry = anilibSkipsCache[shikimoriId] ?: return null
+        if (System.currentTimeMillis() - entry.timestamp > SKIPS_CACHE_TTL_MS) {
+            anilibSkipsCache.remove(shikimoriId)
+            return null
+        }
+        return entry.data[episodeNumber]
+    }
+
+    /**
+     * Тайминги серии для плеера (любой источник): сначала кэш, иначе догрузка
+     * релиза AniLiberty (обычно уже закэширован пикером — сети нет).
+     */
+    suspend fun prefetchEpisodeSkips(shikimoriId: Int, animeTitle: String, episodeNumber: Int): EpisodeSkips? =
+        withContext(Dispatchers.IO) {
+            episodeSkips(shikimoriId, episodeNumber)?.let { return@withContext it }
+            if (shikimoriId <= 0) return@withContext null
+            val release = findAniLibertyRelease(shikimoriId, animeTitle) ?: return@withContext null
+            cacheAnilibSkips(shikimoriId, release)
+            episodeSkips(shikimoriId, episodeNumber)
+        }
 
     /**
      * Best-quality hint carried in a Kodik player link path ("…/seria/…/720p"): the tag is
@@ -296,6 +362,7 @@ object AnimeStreamResolver {
             KLog.i(TAG, "[Aniliberty] Starting search...")
             val release = findAniLibertyRelease(shikimoriId, animeTitle)
             if (release != null) {
+                cacheAnilibSkips(shikimoriId, release)
                 val episodes = parseAniLibertyEpisodes(release)
                 val title = getAniLibertyTitle(release)
                 KLog.i(TAG, "[Aniliberty] Found: \"$title\" (${episodes.size} episodes), alias=${release.optString("alias")}, type=${release.optString("type")}")
@@ -934,6 +1001,7 @@ object AnimeStreamResolver {
 
     private suspend fun fetchAniLibertyEpisodes(shikimoriId: Int, animeTitle: String, translationId: String = "default"): List<AnimeEpisode> = withContext(Dispatchers.IO) {
         val release = findAniLibertyRelease(shikimoriId, animeTitle, translationId) ?: return@withContext emptyList()
+        cacheAnilibSkips(shikimoriId, release)
         parseAniLibertyEpisodes(release)
     }
 

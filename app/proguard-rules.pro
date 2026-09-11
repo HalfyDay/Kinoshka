@@ -113,3 +113,7 @@
     java.lang.Object writeReplace();
     java.lang.Object readResolve();
 }
+
+# Chromecast: OptionsProvider ищетс€ по имени из манифеста Ч не переименовывать.
+-keep class hd.kinoshka.app.data.cast.CastOptionsProvider { *; }
+-keep class com.google.android.gms.cast.framework.media.widget.ExpandedControllerActivity { *; }

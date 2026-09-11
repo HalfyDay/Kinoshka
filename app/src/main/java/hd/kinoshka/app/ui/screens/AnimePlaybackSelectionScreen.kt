@@ -240,6 +240,9 @@ fun AnimePlaybackSelectionScreen(
     }
     val library by EpisodeDownloadManager.library.collectAsState()
     val downloadTasks by EpisodeDownloadManager.tasks.collectAsState()
+    // Отложенное действие скачивания, ждущее выбора качества в диалоге.
+    var qualityAsk by remember { mutableStateOf<((String?) -> Unit)?>(null) }
+    val askQuality: ((String?) -> Unit) -> Unit = { action -> qualityAsk = action }
     val offlineTranslations = remember(library, allTranslations, itemKey) {
         EpisodeDownloadManager.offlineTranslations(itemKey, animeTitle).filter { off ->
             allTranslations.none { it.source == off.source && it.translationId == off.translationId }
@@ -257,7 +260,7 @@ fun AnimePlaybackSelectionScreen(
     fun activeCountFor(tr: FlatTranslation): Int = downloadTasks.values.count {
         it.itemKey == itemKey && it.translationId == tr.translationId && it.phase != DownloadPhase.FAILED
     }
-    fun downloadSingleEpisode(episode: AnimeEpisode, tr: FlatTranslation) {
+    fun downloadSingleEpisode(episode: AnimeEpisode, tr: FlatTranslation, quality: String? = null) {
         context.tryRequestNotificationPermission()
         EpisodeDownloadManager.enqueue(
             EpisodeDownloadManager.EpisodeDownloadRequest(
@@ -270,21 +273,23 @@ fun AnimePlaybackSelectionScreen(
                 episodeLabel = episode.title?.takeIf { it.isNotBlank() } ?: "Серия ${episode.number}",
                 resolve = {
                     AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, tr.source, tr.translationId, episode.number)
-                        ?.let { DownloadBridges.mediaSource(it) }
+                        ?.let { DownloadBridges.mediaSource(it, quality) }
                 }
             )
         )
     }
     fun downloadTranslationAll(tr: FlatTranslation) {
-        context.tryRequestNotificationPermission()
-        // «Сначала серии»: серия уже выбрана — качаем только её, а не всю озвучку.
-        val only = selectedEpisode?.let { sel -> tr.episodes.firstOrNull { it.number == sel.number } }
-        if (only != null) {
-            downloadSingleEpisode(only, tr)
-        } else {
-            EpisodeDownloadManager.enqueueAll(
-                DownloadBridges.animeRequests(shikimoriId, kinopoiskId, animeTitle, tr)
-            )
+        askQuality { quality ->
+            context.tryRequestNotificationPermission()
+            // «Сначала серии»: серия уже выбрана — качаем только её, а не всю озвучку.
+            val only = selectedEpisode?.let { sel -> tr.episodes.firstOrNull { it.number == sel.number } }
+            if (only != null) {
+                downloadSingleEpisode(only, tr, quality)
+            } else {
+                EpisodeDownloadManager.enqueueAll(
+                    DownloadBridges.animeRequests(shikimoriId, kinopoiskId, animeTitle, tr, preferredQuality = quality)
+                )
+            }
         }
     }
 
@@ -846,7 +851,7 @@ fun AnimePlaybackSelectionScreen(
                                             // Кнопка «скачать» на серии видна, когда озвучка уже выбрана —
                                             // иначе непонятно, какую озвучку качать.
                                             onDownloadEpisode = selectedTranslation?.let { tr ->
-                                                { ep: AnimeEpisode -> downloadSingleEpisode(ep, tr) }
+                                                { ep: AnimeEpisode -> askQuality { quality -> downloadSingleEpisode(ep, tr, quality) } }
                                             },
                                             isEpisodeDownloaded = { num ->
                                                 selectedTranslation?.let { tr ->
@@ -871,6 +876,15 @@ fun AnimePlaybackSelectionScreen(
                     }
                 }
             }
+        }
+        qualityAsk?.let { ask ->
+            DownloadQualityDialog(
+                onDismiss = { qualityAsk = null },
+                onConfirm = { quality ->
+                    qualityAsk = null
+                    ask(quality)
+                }
+            )
         }
     }
 }

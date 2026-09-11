@@ -27,6 +27,7 @@ import hd.kinoshka.app.data.model.AnimeSourceType
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -650,13 +651,16 @@ fun AnimeShaderControl(
         border = null,
         modifier = Modifier
             .size(45.dp)
+            // clip ДО clickable: иначе ripple рисуется прямоугольником поверх круга.
+            .clip(CircleShape)
             .clickable { showDialog = true }
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = if (!isOff) Icons.Default.AutoFixHigh else Icons.Default.AutoFixNormal,
-                contentDescription = "Anime4K",
-                modifier = Modifier.size(24.dp)
+            Text(
+                text = "4K",
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 15.sp,
+                maxLines = 1
             )
         }
     }

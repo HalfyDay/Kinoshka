@@ -138,19 +138,20 @@ fun DownloadsScreen(
             } else null
         )
 
-        val grouped = library
-            .groupBy { it.itemKey to it.title }
-            .map { (key, episodes) ->
-                Triple(key, key.second, episodes.sortedBy { it.episodeNumber })
-            }
-            .sortedByDescending { it.third.maxOf { it.downloadedAt } }
-
-        val activeGrouped = activeTasks
-            .groupBy { it.itemKey to it.title }
-            .map { (key, episodes) ->
-                Triple(key, key.second, episodes.sortedBy { it.episodeNumber })
-            }
-            .sortedBy { it.second }
+        val libraryGroups = library
+            .groupBy { it.itemKey }
+            .mapValues { (_, episodes) -> episodes.sortedBy { it.episodeNumber } }
+        val activeGroups = activeTasks
+            .groupBy { it.itemKey }
+            .mapValues { (_, episodes) -> episodes.sortedBy { it.episodeNumber } }
+        fun groupTitle(itemKey: String): String =
+            (libraryGroups[itemKey]?.firstOrNull()?.title
+                ?: activeGroups[itemKey]?.firstOrNull()?.title).orEmpty()
+        // Общий заголовок тайтла для качающегося и скачанного: сначала тайтлы
+        // с активными задачами (по названию), затем только скачанные (по дате).
+        val orderedKeys = (activeGroups.keys.sortedBy { groupTitle(it) } +
+            libraryGroups.keys.sortedByDescending { key -> libraryGroups.getValue(key).maxOf { it.downloadedAt } })
+            .distinct()
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -179,11 +180,18 @@ fun DownloadsScreen(
                         }
                     }
                 }
-                activeGrouped.forEach { (key, title, episodes) ->
-                    item(key = "active-group:${key.first}") {
-                        val filmId = downloadItemFilmId(key.first)
-                        val poster = episodes.firstOrNull { it.posterUrl != null }?.posterUrl
-                        val pausedCount = episodes.count { it.phase == DownloadPhase.PAUSED }
+            }
+            // Один общий заголовок тайтла (вне if(active): скачанное видно и без очереди):
+            // сначала качающиеся серии, под ними скачанные.
+            orderedKeys.forEach { itemKey ->
+                    val active = activeGroups[itemKey].orEmpty()
+                    val done = libraryGroups[itemKey].orEmpty()
+                    val title = groupTitle(itemKey)
+                    item(key = "group:$itemKey") {
+                        val filmId = downloadItemFilmId(itemKey)
+                        val poster = done.firstOrNull { it.posterUrl != null }?.posterUrl
+                            ?: active.firstOrNull { it.posterUrl != null }?.posterUrl
+                        val pausedCount = active.count { it.phase == DownloadPhase.PAUSED }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -212,16 +220,38 @@ fun DownloadsScreen(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "${episodes.size} сер." +
-                                        if (pausedCount == episodes.size) " · на паузе" else "",
+                                    text = buildList {
+                                        if (done.isNotEmpty()) {
+                                            add("${done.size} сер. · ${formatBytes(done.sumOf { it.sizeBytes })}")
+                                        }
+                                        if (active.isNotEmpty()) {
+                                            add(
+                                                if (pausedCount == active.size) "на паузе · ${active.size} сер."
+                                                else "качается · ${active.size} сер."
+                                            )
+                                        }
+                                    }.joinToString(" · "),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            if (done.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { EpisodeDownloadManager.deleteItem(itemKey) },
+                                    modifier = Modifier.size(30.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Удалить тайтл из загрузок",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
                         }
                     }
-                    items(episodes.size, key = { "task:${episodes[it].key}" }) { index ->
-                        val task = episodes[index]
+                    items(active.size, key = { "task:${active[it].key}" }) { index ->
+                        val task = active[index]
                         ActiveDownloadRow(
                             title = task.episodeLabel,
                             subtitle = "${task.translationTitle} · " + when (task.phase) {
@@ -248,11 +278,70 @@ fun DownloadsScreen(
                             }
                         )
                     }
+                    items(done.size, key = { "ep:${done[it].key}" }) { index ->
+                        val entry = done[index]
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 3.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    IconButton(onClick = { play(entry) }, modifier = Modifier.size(34.dp)) {
+                                        Icon(
+                                            Icons.Default.PlayArrow,
+                                            contentDescription = "Играть офлайн",
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(19.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = entry.episodeLabel,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${entry.translationTitle}" +
+                                            (entry.quality?.let { " · $it" } ?: "") +
+                                            " · ${formatBytes(entry.sizeBytes)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { EpisodeDownloadManager.delete(entry.key) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Удалить серию",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
-            }
 
-            if (grouped.isEmpty() && activeTasks.isEmpty()) {
-                item(key = "empty") {
+            if (orderedKeys.isEmpty()) {                item(key = "empty") {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(top = 96.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -280,116 +369,6 @@ fun DownloadsScreen(
                 }
             }
 
-            grouped.forEach { (key, title, episodes) ->
-                item(key = "group:${key.first}") {
-                    val filmId = downloadItemFilmId(key.first)
-                    val poster = episodes.firstOrNull { it.posterUrl != null }?.posterUrl
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 2.dp)
-                            .let { m -> if (filmId != null) m.clickable { onOpenTitle(filmId) } else m },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (poster != null) {
-                            KinoshkaAsyncImage(
-                                model = poster,
-                                contentDescription = title,
-                                modifier = Modifier
-                                    .size(width = 44.dp, height = 66.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${episodes.size} сер. · ${formatBytes(episodes.sumOf { it.sizeBytes })}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        IconButton(
-                            onClick = { EpisodeDownloadManager.deleteItem(key.first) },
-                            modifier = Modifier.size(30.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "Удалить тайтл из загрузок",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                }
-                items(episodes.size, key = { "ep:${episodes[it].key}" }) { index ->
-                    val entry = episodes[index]
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 3.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                IconButton(onClick = { play(entry) }, modifier = Modifier.size(34.dp)) {
-                                    Icon(
-                                        Icons.Default.PlayArrow,
-                                        contentDescription = "Играть офлайн",
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier.size(19.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = entry.episodeLabel,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "${entry.translationTitle} · ${formatBytes(entry.sizeBytes)}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            IconButton(
-                                onClick = { EpisodeDownloadManager.delete(entry.key) },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = "Удалить серию",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 

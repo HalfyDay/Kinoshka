@@ -8,7 +8,7 @@ import hd.kinoshka.app.data.model.MovieEpisodeRef
 import hd.kinoshka.app.data.model.MoviePlaybackRequest
 import hd.kinoshka.app.data.model.KodikMovieCandidate
 import hd.kinoshka.app.data.model.MovieStreamResult
-import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
+import hd.kinoshka.app.data.model.pickCappedQualityKey
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.HentaiProvider
@@ -24,16 +24,18 @@ object DownloadBridges {
 
     /**
      * Резолвер отдаёт свой дефолт в url (у Kodik и AniLiberty это 720p — так настроен
-     * онлайн-плей) и полную лестницу в qualities. Скачивание должно брать максимум
-     * лестницы, а не дефолт.
+     * онлайн-плей) и полную лестницу в qualities. Без [preferredQuality] скачивание
+     * берёт максимум лестницы; с ним — лучший ранг не выше выбранного
+     * (см. pickCappedQualityUrl).
      */
-    fun mediaSource(stream: AnimeMediaStream): MediaDownloader.MediaSource {
-        val bestKey = QUALITY_PREFERENCE_DESC.firstOrNull { stream.qualities.containsKey(it) }
-        val url = bestKey?.let { stream.qualities[it] } ?: stream.url
-        return MediaDownloader.MediaSource(url = url, headers = stream.headers)
+    fun mediaSource(stream: AnimeMediaStream, preferredQuality: String? = null): MediaDownloader.MediaSource {
+        val key = pickCappedQualityKey(stream.qualities, preferredQuality)
+        val url = key?.let { stream.qualities[it] } ?: stream.url
+        return MediaDownloader.MediaSource(url = url, headers = stream.headers, quality = key)
     }
 
-    private fun fromStream(stream: AnimeMediaStream) = mediaSource(stream)
+    private fun fromStream(stream: AnimeMediaStream, preferredQuality: String? = null) =
+        mediaSource(stream, preferredQuality)
 
     // ------------------------------------------------------------------
     // Аниме (Kodik / AniLiberty / AnimeLib / AniStar)
@@ -44,6 +46,20 @@ object DownloadBridges {
         kinopoiskId: Int,
         animeTitle: String,
         translation: FlatTranslation
+    ): List<EpisodeDownloadManager.EpisodeDownloadRequest> {
+        return animeRequests(shikimoriId, kinopoiskId, animeTitle, translation, preferredQuality = null)
+    }
+
+    /**
+     * То же, но с потолком качества из диалога «Качество загрузки»
+     * (null = максимальное доступное).
+     */
+    fun animeRequests(
+        shikimoriId: Int,
+        kinopoiskId: Int,
+        animeTitle: String,
+        translation: FlatTranslation,
+        preferredQuality: String?
     ): List<EpisodeDownloadManager.EpisodeDownloadRequest> {
         val itemKey = animeItemKey(shikimoriId, kinopoiskId)
         return translation.episodes
@@ -61,7 +77,7 @@ object DownloadBridges {
                         AnimeStreamResolver.resolveStream(
                             shikimoriId, animeTitle, translation.source,
                             translation.translationId, ep.number
-                        )?.let(::fromStream)
+                        )?.let { fromStream(it, preferredQuality) }
                     }
                 )
             }
@@ -124,7 +140,8 @@ object DownloadBridges {
         translationId: String,
         stream: AnimeMediaStream,
         voiceoverTitle: String,
-        posterUrl: String? = null
+        posterUrl: String? = null,
+        preferredQuality: String? = null
     ): EpisodeDownloadManager.EpisodeDownloadRequest {
         val itemKey = animeItemKey(0, kinopoiskId)
         return EpisodeDownloadManager.EpisodeDownloadRequest(
@@ -136,7 +153,7 @@ object DownloadBridges {
             episodeNumber = 1,
             episodeLabel = "Фильм",
             posterUrl = posterUrl,
-            resolve = { fromStream(stream) }
+            resolve = { fromStream(stream, preferredQuality) }
         )
     }
 
@@ -156,7 +173,8 @@ object DownloadBridges {
         episodes: List<MovieEpisodeRef>,
         isDirectSource: Boolean = false,
         directHeaders: Map<String, String> = emptyMap(),
-        posterUrl: String? = null
+        posterUrl: String? = null,
+        preferredQuality: String? = null
     ): List<EpisodeDownloadManager.EpisodeDownloadRequest> {
         val itemKey = animeItemKey(0, kinopoiskId)
         val headers = directHeaders.ifEmpty { DdbbStreamResolver.directHeaders(kinopoiskId) }
@@ -180,7 +198,7 @@ object DownloadBridges {
                                 ?.let { MediaDownloader.MediaSource(it, headers) }
                         } else {
                             when (val result = MovieStreamResolver.resolveEpisode(request, ep, candidates, translationId)) {
-                                is MovieStreamResult.Success -> fromStream(result.stream)
+                                is MovieStreamResult.Success -> fromStream(result.stream, preferredQuality)
                                 is MovieStreamResult.Unavailable -> null
                             }
                         }

@@ -80,6 +80,7 @@ import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
 import hd.kinoshka.app.ui.screens.AnimeFeedScreen
 import hd.kinoshka.app.ui.screens.AnimeTopicScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
+import hd.kinoshka.app.ui.screens.DownloadQualityDialog
 import hd.kinoshka.app.ui.screens.HentaiDownloadButton
 import hd.kinoshka.app.ui.screens.TitleDownloadSheet
 import hd.kinoshka.app.ui.screens.AnimePlaybackSelectionScreen
@@ -104,6 +105,7 @@ import hd.kinoshka.app.ui.screens.StorageSettingsScreen
 import hd.kinoshka.app.ui.screens.ProgressEditorSeed
 import hd.kinoshka.app.ui.screens.UserProfileEditorSheet
 import hd.kinoshka.app.ui.components.DebugPerformanceOverlay
+import hd.kinoshka.app.ui.components.MovieDownloadTarget
 import hd.kinoshka.app.ui.components.ProfileEditorCoverBackdrop
 import hd.kinoshka.app.ui.components.UpdateAvailableSheet
 import hd.kinoshka.app.ui.theme.KinoTheme
@@ -940,6 +942,9 @@ fun KinoApp() {
                                     .groupingBy { it.translationId }.eachCount()
                             }
                             val detailsContext = LocalContext.current
+                            // Kodik-цель ждёт выбора качества в диалоге; прямые одиночные
+                            // файлы без лестницы ставятся в очередь сразу.
+                            var pendingMovieDownload by remember { mutableStateOf<MovieDownloadTarget?>(null) }
                             DetailsScreen(
                                 filmId = id,
                                 state = vm.detailsState,
@@ -1005,9 +1010,19 @@ fun KinoApp() {
                                 movieDownloadedEpisodes = movieDownloadedEpisodes,
                                 movieDownloadedByTranslation = movieDownloadedByTranslation,
                                 onMovieDownload = { target ->
-                                    enqueueMovieDownload(detailsContext, target)
+                                    if (target.isKodik) pendingMovieDownload = target
+                                    else enqueueMovieDownload(detailsContext, target)
                                 }
                             )
+                            pendingMovieDownload?.let { target ->
+                                DownloadQualityDialog(
+                                    onDismiss = { pendingMovieDownload = null },
+                                    onConfirm = { quality ->
+                                        pendingMovieDownload = null
+                                        enqueueMovieDownload(detailsContext, target, quality)
+                                    }
+                                )
+                            }
                         }
                         composable(
                             route = "profile",

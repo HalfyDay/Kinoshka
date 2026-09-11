@@ -4,6 +4,10 @@ import android.content.Context
 import android.util.Log
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -28,7 +32,9 @@ object MediaDownloader {
 
     data class MediaSource(
         val url: String,
-        val headers: Map<String, String> = emptyMap()
+        val headers: Map<String, String> = emptyMap(),
+        /** Выбранный ранг лестницы («720p»); null — максимум/одиночный файл. */
+        val quality: String? = null
     )
 
     data class MediaProgress(
@@ -238,7 +244,7 @@ object MediaDownloader {
 
     private data class Variant(val url: String, val height: Int, val bandwidth: Long)
 
-    private fun downloadHls(
+    private suspend fun downloadHls(
         playlistBody: String,
         playlistUrl: String,
         source: MediaSource,
@@ -248,8 +254,8 @@ object MediaDownloader {
         // Мастер-плейлист → вариант; сегменты резолвим против url ИМЕННО варианта: он может
         // сам уйти в редирект, и его финальный url — единственная верная база.
         val (body, segmentBase) = if (playlistBody.contains("#EXT-X-STREAM-INF")) {
-            val variantUrl = pickVariant(playlistBody, playlistUrl)
-            Log.i(TAG, "HLS master → variant $variantUrl")
+            val variantUrl = pickVariant(playlistBody, playlistUrl, source.quality)
+            Log.i(TAG, "HLS master → variant $variantUrl (pref=${source.quality})")
             fetchPlaylist(variantUrl, source.headers)
         } else {
             playlistBody to playlistUrl
@@ -259,65 +265,99 @@ object MediaDownloader {
 
         // Ключ шифрования скачивается один раз на весь плейлист (в наших источниках ключ единый).
         val keyCache = HashMap<String, ByteArray>()
-        var totalBytes = 0L
-        val written = ArrayList<Pair<String, Double>>(segments.size)
-
+        // Параллельно в 4 потока: последовательная докачка 146 сегментов 1080p на медленном
+        // CDN ползла десятками минут и выглядела зависшей. Порядок в плейлисте держит индекс.
+        val totalBytes = java.util.concurrent.atomic.AtomicLong(0L)
+        val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val writtenArr = arrayOfNulls<Pair<String, Double>>(segments.size)
+        // Существующие partials учитываем сразу — прогресс монотонен между попытками и паузами,
+        // resume не «начинается сначала».
         segments.forEachIndexed { index, seg ->
             val name = "seg_%04d%s".format(index, seg.ext)
-            val target = File(dir, name)
-            // Докачка HLS: готовый сегмент прошлой попытки пропускаем (перезапуск с места обрыва).
-            if (target.exists() && target.length() > 0) {
-                totalBytes += target.length()
-                written += name to seg.durationSec
-                onProgress(
-                    MediaProgress(
-                        bytesDone = totalBytes,
-                        bytesTotal = -1,
-                        segmentsDone = index + 1,
-                        segmentsTotal = segments.size
-                    )
-                )
-                return@forEachIndexed
+            val f = File(dir, name)
+            if (f.exists() && f.length() > 0) {
+                totalBytes.addAndGet(f.length())
+                doneCount.incrementAndGet()
+                writtenArr[index] = name to seg.durationSec
             }
-            var lastError: Exception? = null
-            var attempt = 0
-            while (attempt < 3) {
-                attempt += 1
-                try {
-                    httpGet(seg.url, source.headers, seg.rangeHeader).use { resp ->
-                        if (!resp.isSuccessful) throw DownloadException("Сегмент $index: HTTP ${resp.code}")
-                        var bytes = resp.body.bytes()
-                        if (bytes.isEmpty()) throw DownloadException("Сегмент $index пуст")
-                        val key = seg.key
-                        if (key != null) {
-                            bytes = decryptSegment(bytes, key, seg.iv, keyCache)
-                        }
-                        target.writeBytes(bytes)
-                    }
-                    lastError = null
-                    break
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    lastError = e
-                    Log.w(TAG, "segment $index attempt $attempt failed: ${e.message}")
-                }
-            }
-            lastError?.let {
-                target.delete()
-                throw DownloadException("Сегмент ${index + 1}/${segments.size}: ${it.message}")
-            }
-            totalBytes += target.length()
-            written += name to seg.durationSec
-            onProgress(
-                MediaProgress(
-                    bytesDone = totalBytes,
-                    bytesTotal = -1,
-                    segmentsDone = index + 1,
-                    segmentsTotal = segments.size
-                )
-            )
         }
+        // onProgress считает EMA по дельтам — с 4 потоков вызываем строго по очереди.
+        val progressMutex = kotlinx.coroutines.sync.Mutex()
+        suspend fun reportProgress() {
+            val snapshot = MediaProgress(
+                bytesDone = totalBytes.get(),
+                bytesTotal = -1,
+                segmentsDone = doneCount.get(),
+                segmentsTotal = segments.size
+            )
+            progressMutex.withLock { onProgress(snapshot) }
+        }
+        reportProgress()
+        val permits = kotlinx.coroutines.sync.Semaphore(4)
+        var firstFailure: Pair<Int, Exception>? = null
+        val failureLock = Any()
+        kotlinx.coroutines.coroutineScope {
+            segments.mapIndexed { index, seg ->
+                async {
+                    val scope = this
+                    permits.withPermit {
+                        scope.ensureActive()
+                        val name = "seg_%04d%s".format(index, seg.ext)
+                        val target = File(dir, name)
+                        if (!(target.exists() && target.length() > 0)) {
+                            var lastError: Exception? = null
+                            var attempt = 0
+                            while (attempt < 3) {
+                                attempt += 1
+                                try {
+                                    scope.ensureActive()
+                                    httpGet(seg.url, source.headers, seg.rangeHeader).use { resp ->
+                                        if (!resp.isSuccessful) throw DownloadException("Сегмент $index: HTTP ${resp.code}")
+                                        var bytes = resp.body.bytes()
+                                        if (bytes.isEmpty()) throw DownloadException("Сегмент $index пуст")
+                                        val key = seg.key
+                                        if (key != null) {
+                                            bytes = decryptSegment(bytes, key, seg.iv, keyCache)
+                                        }
+                                        // Каталог мог пропасть между mkdirs и записью (чистильщики,
+                                        // отмена соседней задачи) — пересоздаём вместо падения с ENOENT.
+                                        if (!dir.exists()) {
+                                            Log.w(TAG, "episode dir vanished mid-download, recreating: $dir")
+                                            dir.mkdirs()
+                                        }
+                                        target.writeBytes(bytes)
+                                    }
+                                    lastError = null
+                                    break
+                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    lastError = e
+                                    Log.w(TAG, "segment $index attempt $attempt failed: ${e.message} " +
+                                        "(dirExists=${dir.exists()} files=${dir.listFiles()?.size})")
+                                    if (attempt < 3) kotlinx.coroutines.delay(500L * attempt)
+                                }
+                            }
+                            if (lastError != null) {
+                                target.delete()
+                                synchronized(failureLock) {
+                                    if (firstFailure == null) firstFailure = index to lastError
+                                }
+                            } else {
+                                totalBytes.addAndGet(target.length())
+                                doneCount.incrementAndGet()
+                                writtenArr[index] = name to seg.durationSec
+                                reportProgress()
+                            }
+                        }
+                    }
+                }
+            }.forEach { it.await() }
+        }
+        firstFailure?.let { (index, e) ->
+            throw DownloadException("Сегмент ${index + 1}/${segments.size}: ${e.message}")
+        }
+        val written = writtenArr.filterNotNull()
 
         val initName = segments.first().mapUrl?.let {
             val initFile = File(dir, "init${segments.first().ext}")
@@ -338,7 +378,7 @@ object MediaDownloader {
                     (indexOfSeg(it.name) >= segments.size || it.length() == 0L) -> it.delete()
             }
         }
-        return MediaFile(playlistFile.absolutePath, dir.absolutePath, totalBytes, isHls = true)
+        return MediaFile(playlistFile.absolutePath, dir.absolutePath, totalBytes.get(), isHls = true)
     }
 
     private fun downloadInitSegment(seg: Segment, source: MediaSource, target: File) {
@@ -352,7 +392,7 @@ object MediaDownloader {
         }
     }
 
-    private fun pickVariant(masterBody: String, baseUrl: String): String {
+    private fun pickVariant(masterBody: String, baseUrl: String, preferredQuality: String? = null): String {
         val variants = ArrayList<Variant>()
         val lines = masterBody.lines()
         var i = 0
@@ -377,6 +417,16 @@ object MediaDownloader {
             i++
         }
         if (variants.isEmpty()) throw DownloadException("Мастер-плейлист без вариантов")
+        // Выбор пользователя из диалога качества: точная высота ранга, иначе лучший
+        // вариант не выше выбранного, иначе ближайший выше. Без выбора — как раньше:
+        // точное совпадение по QUALITY_PREFERENCE_DESC, иначе максимум.
+        val capHeight = preferredQuality?.substringBefore("p")?.toIntOrNull() ?: 0
+        val capped = if (capHeight > 0) {
+            variants.firstOrNull { it.height == capHeight }
+                ?: variants.filter { it.height in 1..capHeight }.maxWithOrNull(compareBy({ it.height }, { it.bandwidth }))
+                ?: variants.filter { it.height > 0 }.minWithOrNull(compareBy({ it.height }, { it.bandwidth }))
+        } else null
+        if (capped != null) return capped.url
         // Лестница качества общая с плеером: точное совпадение по высоте из QUALITY_PREFERENCE_DESC,
         // иначе максимум по высоте, затем по bandwidth.
         val byPref = QUALITY_PREFERENCE_DESC.firstNotNullOfOrNull { pref ->

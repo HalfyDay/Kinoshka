@@ -37,6 +37,7 @@ import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeSeriesDropdo
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeQualityDropdown
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeShaderControl
 import app.marlboroadvance.mpvex.ui.player.controls.components.AnimeTranslationDropdown
+import app.marlboroadvance.mpvex.ui.player.controls.components.CastButton
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsGroup
 import app.marlboroadvance.mpvex.ui.theme.controlColor
@@ -152,7 +153,13 @@ fun TopPlayerControlsPortrait(
         }
       }
       
-      AnimeShaderControl(hideBackground = hideBackground, viewModel = viewModel)
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        CastButton(hideBackground = hideBackground)
+        AnimeShaderControl(hideBackground = hideBackground, viewModel = viewModel)
+      }
     }
     
     if (animeEpisodes.isNotEmpty() || animeTranslations.isNotEmpty() || animeQualities.isNotEmpty()) {
