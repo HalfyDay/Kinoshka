@@ -225,6 +225,32 @@ object MovieStreamResolver {
     private fun movieReferences(candidate: KodikMovieCandidate): List<String> =
         (listOfNotNull(candidate.topLevelPlayerUrl) + candidate.episodes.map { it.playerUrl }).distinct()
 
+    /**
+     * Резолв одного даба фильма по его сырым player-url (Kodik HLS-извлечение по очереди,
+     * первый живой побеждает). Публичный для кино-пикера и очереди скачивания: оба
+     * резолвят конкретный даб, а не весь каталог.
+     */
+    suspend fun resolveMovieUrls(urls: List<String>): AnimeMediaStream? = withContext(Dispatchers.IO) {
+        for (raw in urls) {
+            val qualities = runCatching {
+                AnimeStreamResolver.resolveKodikHls(AnimeStreamResolver.absoluteKodikUrl(raw))
+            }.onFailure {
+                KLog.w(TAG, "Movie dub url extraction failed: ${it.javaClass.simpleName}")
+            }.getOrDefault(emptyMap())
+            if (qualities.isNotEmpty()) {
+                val bestKey = QUALITY_PREFERENCE_DESC.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
+                KLog.i(TAG, "Resolved movie dub url at $bestKey")
+                return@withContext AnimeMediaStream(
+                    url = qualities.getValue(bestKey),
+                    qualities = qualities,
+                    headers = AnimeStreamResolver.kodikPlaybackHeaders(),
+                    quality = bestKey
+                )
+            }
+        }
+        null
+    }
+
     private suspend fun resolveReferences(
         references: List<Pair<KodikMovieCandidate, String>>,
         episode: MovieEpisodeRef?

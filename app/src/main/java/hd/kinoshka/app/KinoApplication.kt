@@ -66,6 +66,17 @@ class KinoApplication : Application(), ImageLoaderFactory {
         // Офлайн-библиотека: подхват персистентного списка скачанных серий.
         hd.kinoshka.app.data.download.EpisodeDownloadManager.init(this)
 
+        // Rutracker: восстановление сессии трекера для шита «Торренты» (без входа
+        // раздачи Rutracker не ищутся; пароль не хранится — только кука сессии).
+        hd.kinoshka.app.data.source.RutrackerResolver.attachPrefs(
+            hd.kinoshka.app.data.local.KinoPrefs.from(this)
+        )
+
+        // Авточистка временных файлов по лимитам из «Память и хранилище» (фоном, no-op при выкл. тумблере).
+        appScope.launch {
+            runCatching { hd.kinoshka.app.data.storage.StorageUsageManager.enforceLimits(this@KinoApplication) }
+        }
+
         // Офлайн-индекс Shikimori для импорта Anixart: ридер бандла
         // (ленивый — читается только при первом catch-up; в APK лежит
         // распакованным shiki_index.json — пайплайн ассетов сам разжал .gz).
@@ -90,7 +101,10 @@ class KinoApplication : Application(), ImageLoaderFactory {
     }
 
     override fun newImageLoader(): ImageLoader {
-        val imageHttpCache = Cache(cacheDir.resolve("http_image_cache"), 80L * 1024L * 1024L)
+        // Лимит дискового кэша изображений выбирается в «Настройки → Память и хранилище»
+        // (применяется после перезапуска: Coil строит синглтон один раз на процесс).
+        val imageLimitMb = hd.kinoshka.app.data.storage.StorageUsageManager.getImageLimitMb(this)
+        val imageHttpCache = Cache(cacheDir.resolve("http_image_cache"), 32L * 1024L * 1024L)
         val imageClient = OkHttpClient.Builder()
             // Тот же DNS, что у стрим-резолверов: на РФ-сетях системный DNS отравлен
             // для части хостов с картинками (зеркала каталогов, shikimori-CDN) — без DoH
@@ -103,13 +117,13 @@ class KinoApplication : Application(), ImageLoaderFactory {
             .okHttpClient(imageClient)
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.25)
+                    .maxSizePercent(0.15)
                     .build()
             }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(120L * 1024L * 1024L)
+                    .maxSizeBytes(imageLimitMb * 1024L * 1024L)
                     .build()
             }
             .respectCacheHeaders(false)

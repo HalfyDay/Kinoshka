@@ -1,5 +1,7 @@
 package hd.kinoshka.app.ui.screens
 
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -15,13 +17,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import hd.kinoshka.app.data.download.DownloadBridges
 import hd.kinoshka.app.data.download.DownloadPhase
 import hd.kinoshka.app.data.download.EpisodeDownloadManager
 import hd.kinoshka.app.data.download.MediaDownloader
 import hd.kinoshka.app.data.download.animeItemKey
 import hd.kinoshka.app.data.download.offlineKey
 import hd.kinoshka.app.data.download.tryRequestNotificationPermission
+import hd.kinoshka.app.data.model.AnimeSourceType
+import hd.kinoshka.app.data.model.MovieContentKind
 import hd.kinoshka.app.data.source.HentaiProvider
+import hd.kinoshka.app.data.source.MovieStreamResolver
+import hd.kinoshka.app.ui.components.MovieDownloadTarget
 
 /**
  * Кнопка скачивания хентай-серии в офлайн-библиотеку (состояние: скачать/прогресс/скачано/ошибка).
@@ -102,5 +109,87 @@ internal fun HentaiDownloadButton(
                 modifier = Modifier.size(19.dp)
             )
         }
+    }
+}
+
+/**
+ * Постановка целей кино-пикера ([MovieDownloadTarget]) в очередь загрузок.
+ * Сериалы идут через DownloadBridges.seriesRequests тем же путём, что переключение
+ * серий в плеере (Kodik — HLS-резолв, прямые — готовые CDN-url); резолв ленивый,
+ * выполняется очередью в момент скачивания.
+ */
+fun enqueueMovieDownload(context: Context, target: MovieDownloadTarget) {
+    context.tryRequestNotificationPermission()
+    if (target.kinopoiskId <= 0) {
+        Toast.makeText(context, "Нет id тайтла для скачивания", Toast.LENGTH_SHORT).show()
+        return
+    }
+    if (target.kind == MovieContentKind.SERIES) {
+        val all = DownloadBridges.seriesRequests(
+            target.kinopoiskId,
+            target.displayTitle,
+            target.request,
+            target.candidates,
+            target.translationId,
+            target.dubTitle,
+            target.episodes,
+            target.isDirect,
+            target.directHeaders,
+            target.posterUrl
+        )
+        if (all.isEmpty()) {
+            Toast.makeText(context, "Нет серий для скачивания", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // Офлайн-номер пакует сезон (зеркало DownloadBridges.offlineEpisodeNumber).
+        val want = if (target.season > 0) target.season * 1000 + target.number else target.number
+        val reqs = if (target.wholeDub) all else all.filter { it.episodeNumber == want }
+        if (reqs.isEmpty()) {
+            Toast.makeText(context, "Серия не найдена", Toast.LENGTH_SHORT).show()
+            return
+        }
+        EpisodeDownloadManager.enqueueAll(reqs)
+        Toast.makeText(
+            context,
+            if (target.wholeDub) "Озвучка добавлена в загрузки (${reqs.size} сер.)" else "Серия добавлена в загрузки",
+            Toast.LENGTH_SHORT
+        ).show()
+    } else if (target.isKodik) {
+        EpisodeDownloadManager.enqueue(
+            EpisodeDownloadManager.EpisodeDownloadRequest(
+                itemKey = animeItemKey(0, target.kinopoiskId),
+                title = target.displayTitle,
+                source = AnimeSourceType.KODIK.name,
+                translationId = target.translationId,
+                translationTitle = target.dubTitle,
+                episodeNumber = 1,
+                episodeLabel = "Фильм",
+                posterUrl = target.posterUrl,
+                resolve = {
+                    MovieStreamResolver.resolveMovieUrls(target.movieUrls)
+                        ?.let(DownloadBridges::mediaSource)
+                }
+            )
+        )
+        Toast.makeText(context, "Фильм добавлен в загрузки", Toast.LENGTH_SHORT).show()
+    } else {
+        if (target.directUrl.isBlank()) {
+            Toast.makeText(context, "Нет ссылки для скачивания", Toast.LENGTH_SHORT).show()
+            return
+        }
+        EpisodeDownloadManager.enqueue(
+            EpisodeDownloadManager.EpisodeDownloadRequest(
+                itemKey = animeItemKey(0, target.kinopoiskId),
+                title = target.displayTitle,
+                source = AnimeSourceType.DDBB.name,
+                translationId = target.translationId,
+                translationTitle = target.dubTitle,
+                episodeNumber = 1,
+                episodeLabel = "Фильм",
+                posterUrl = target.posterUrl,
+                resolve = { MediaDownloader.MediaSource(target.directUrl, target.headers) }
+            )
+        )
+        Toast.makeText(context, "Фильм добавлен в загрузки", Toast.LENGTH_SHORT).show()
     }
 }

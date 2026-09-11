@@ -65,6 +65,9 @@ import hd.kinoshka.app.data.api.ApiClient
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
 import hd.kinoshka.app.data.local.UserStateStore
+import hd.kinoshka.app.data.storage.StorageUsageManager
+import hd.kinoshka.app.ui.screens.StorageLimits
+import hd.kinoshka.app.ui.screens.StorageUsageRow
 import hd.kinoshka.app.data.repo.AnimeRepository
 import hd.kinoshka.app.data.repo.FilmsRepository
 import hd.kinoshka.app.data.update.AppUpdateManager
@@ -82,6 +85,7 @@ import hd.kinoshka.app.ui.screens.TitleDownloadSheet
 import hd.kinoshka.app.ui.screens.AnimePlaybackSelectionScreen
 import hd.kinoshka.app.data.download.EpisodeDownloadManager
 import hd.kinoshka.app.data.download.toPlayableUriString
+import hd.kinoshka.app.ui.screens.enqueueMovieDownload
 import hd.kinoshka.app.ui.screens.FeedViewModel
 import hd.kinoshka.app.ui.screens.FeedViewModelFactory
 import hd.kinoshka.app.ui.screens.FilmsViewModel
@@ -95,6 +99,8 @@ import hd.kinoshka.app.ui.screens.MpvExPreferencesHost
 import hd.kinoshka.app.ui.screens.ProfileScreen
 import hd.kinoshka.app.ui.screens.RecommendationFeedScreen
 import hd.kinoshka.app.ui.screens.SettingsScreen
+import hd.kinoshka.app.ui.screens.SourcesSettingsScreen
+import hd.kinoshka.app.ui.screens.StorageSettingsScreen
 import hd.kinoshka.app.ui.screens.ProgressEditorSeed
 import hd.kinoshka.app.ui.screens.UserProfileEditorSheet
 import hd.kinoshka.app.ui.components.DebugPerformanceOverlay
@@ -107,6 +113,7 @@ import hd.kinoshka.app.data.model.FlatTranslation
 import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
 import hd.kinoshka.app.data.model.NativePlaybackMode
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class NativePlayerArgs(
     val streamUrl: String,
@@ -918,6 +925,21 @@ fun KinoApp() {
                             }
                         ) { backStackEntry ->
                             val id = backStackEntry.arguments?.getInt("id") ?: return@composable
+                            // Пометки скачанного для кино-пикера: серии (сезон×1000+номер,
+                            // зеркало упаковки DownloadBridges) и счётчики по дабам.
+                            val movieItemKey = hd.kinoshka.app.data.download.animeItemKey(0, id)
+                            val downloadLibrary by EpisodeDownloadManager.library.collectAsState()
+                            val movieDownloadedEpisodes = remember(downloadLibrary, movieItemKey) {
+                                downloadLibrary.filter { it.itemKey == movieItemKey }.mapNotNull { entry ->
+                                    val n = entry.episodeNumber
+                                    if (n >= 1000) (n / 1000) to (n % 1000) else null
+                                }.toSet()
+                            }
+                            val movieDownloadedByTranslation = remember(downloadLibrary, movieItemKey) {
+                                downloadLibrary.filter { it.itemKey == movieItemKey }
+                                    .groupingBy { it.translationId }.eachCount()
+                            }
+                            val detailsContext = LocalContext.current
                             DetailsScreen(
                                 filmId = id,
                                 state = vm.detailsState,
@@ -979,6 +1001,11 @@ fun KinoApp() {
                                     EpisodeDownloadManager.findLocal(
                                         0, kinopoiskId, providerName, translationId, episodeNumber
                                     )?.toPlayableUriString()
+                                },
+                                movieDownloadedEpisodes = movieDownloadedEpisodes,
+                                movieDownloadedByTranslation = movieDownloadedByTranslation,
+                                onMovieDownload = { target ->
+                                    enqueueMovieDownload(detailsContext, target)
                                 }
                             )
                         }
@@ -1045,8 +1072,8 @@ fun KinoApp() {
                             }
                         ) {
                             TvAdaptiveSecondary {
-                                // Контекст для писателя прокси: лямбда onProxyUrlChanged
-                                // некомпозабельна, LocalContext.current внутри неё нельзя.
+                                // Контекст для писателей настроек: лямбды некомпозабельны,
+                                // LocalContext.current внутри них нельзя.
                                 val settingsContext = LocalContext.current.applicationContext
                                 SettingsScreen(
                                     onBack = { navController.popBackStack() },
@@ -1072,7 +1099,147 @@ fun KinoApp() {
                                             .edit().putString("stream_proxy_url", trimmed).apply()
                                     },
                                     onOpenPlayerSettings = { navController.navigate("player_settings") },
-                                    onOpenAbout = { navController.navigate("about") }
+                                    onOpenAbout = { navController.navigate("about") },
+                                    onOpenSources = { navController.navigate("sources") },
+                                    onOpenStorage = { navController.navigate("storage") }
+                                )
+                            }
+                        }
+                        composable(
+                            route = "storage",
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
+                        ) {
+                            TvAdaptiveSecondary {
+                                val storageContext = LocalContext.current.applicationContext
+                                // Замер — фоном при входе, пересчёт после каждой очистки.
+                                var storageRows by remember { mutableStateOf<List<StorageUsageRow>?>(null) }
+                                var storageLimits by remember { mutableStateOf<StorageLimits?>(null) }
+                                var storageClearingKeys by remember { mutableStateOf(emptySet<String>()) }
+                                fun refreshStorage() {
+                                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                        val breakdown = runCatching {
+                                            StorageUsageManager.scan(storageContext)
+                                        }.getOrNull()
+                                        val rows = breakdown?.let {
+                                            listOf(
+                                                StorageUsageRow(StorageUsageManager.CAT_OFFLINE, "Загрузки", it.bytesOf(StorageUsageManager.CAT_OFFLINE), destructive = true),
+                                                StorageUsageRow(StorageUsageManager.CAT_IMAGES, "Изображения", it.bytesOf(StorageUsageManager.CAT_IMAGES)),
+                                                StorageUsageRow(StorageUsageManager.CAT_API, "Кэш API", it.bytesOf(StorageUsageManager.CAT_API)),
+                                                StorageUsageRow(StorageUsageManager.CAT_HENTAI, "Кадры и каталог 18+", it.bytesOf(StorageUsageManager.CAT_HENTAI)),
+                                                StorageUsageRow(StorageUsageManager.CAT_UPDATES, "Файлы обновлений", it.bytesOf(StorageUsageManager.CAT_UPDATES)),
+                                                StorageUsageRow(StorageUsageManager.CAT_THUMBS, "Миниатюры видео", it.bytesOf(StorageUsageManager.CAT_THUMBS)),
+                                                StorageUsageRow(StorageUsageManager.CAT_WEBVIEW, "WebView", it.bytesOf(StorageUsageManager.CAT_WEBVIEW)),
+                                                StorageUsageRow(StorageUsageManager.CAT_DATA, "Данные и история", it.bytesOf(StorageUsageManager.CAT_DATA), destructive = true)
+                                            )
+                                        }
+                                        val limits = StorageLimits(
+                                            imageLimitMb = StorageUsageManager.getImageLimitMb(storageContext),
+                                            retentionDays = StorageUsageManager.getRetentionDays(storageContext),
+                                            autoCleanup = StorageUsageManager.isAutoCleanup(storageContext),
+                                            imageOptions = StorageUsageManager.IMAGE_LIMIT_OPTIONS_MB
+                                        )
+                                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                            storageRows = rows
+                                            storageLimits = limits
+                                        }
+                                    }
+                                }
+                                // Пакетная очистка выбранных разделов: спиннеры идут по строкам
+                                // по мере удаления, один пересчёт в конце.
+                                fun clearStorages(keys: List<String>) {
+                                    if (storageClearingKeys.isNotEmpty() || keys.isEmpty()) return
+                                    storageClearingKeys = keys.toSet()
+                                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                        var ok = true
+                                        keys.forEach { key ->
+                                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                storageClearingKeys = setOf(key)
+                                            }
+                                            ok = runCatching {
+                                                StorageUsageManager.clearCategory(storageContext, key)
+                                            }.isSuccess && ok
+                                        }
+                                        refreshStorage()
+                                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                            storageClearingKeys = emptySet()
+                                            Toast.makeText(
+                                                storageContext,
+                                                if (ok) "Очищено" else "Не удалось очистить",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                }
+                                LaunchedEffect(Unit) { refreshStorage() }
+                                StorageSettingsScreen(
+                                    onBack = { navController.popBackStack() },
+                                    rows = storageRows,
+                                    limits = storageLimits,
+                                    clearingKeys = storageClearingKeys,
+                                    onClearSelected = ::clearStorages,
+                                    onImageLimitSelected = { mb ->
+                                        StorageUsageManager.setImageLimitMb(storageContext, mb)
+                                        refreshStorage()
+                                    },
+                                    onRetentionSelected = { days ->
+                                        StorageUsageManager.setRetentionDays(storageContext, days)
+                                        refreshStorage()
+                                    },
+                                    onAutoCleanupChanged = { enabled ->
+                                        StorageUsageManager.setAutoCleanup(storageContext, enabled)
+                                        refreshStorage()
+                                    }
+                                )
+                            }
+                        }
+                        composable(
+                            route = "sources",
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
+                        ) {
+                            TvAdaptiveSecondary {
+                                val sourcesContext = LocalContext.current.applicationContext
+                                val sourcesStore = remember(sourcesContext) {
+                                    UserStateStore(sourcesContext)
+                                }
+                                var disabledSources by remember { mutableStateOf(emptySet<String>()) }
+                                LaunchedEffect(sourcesStore) {
+                                    disabledSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        sourcesStore.getDisabledSources()
+                                    }
+                                }
+                                SourcesSettingsScreen(
+                                    onBack = { navController.popBackStack() },
+                                    disabledSources = disabledSources,
+                                    onSourceEnabledChanged = { id, enabled ->
+                                        sourcesStore.setSourceEnabled(id, enabled)
+                                        scope.launch {
+                                            disabledSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.getDisabledSources()
+                                            }
+                                        }
+                                    }
                                 )
                             }
                         }

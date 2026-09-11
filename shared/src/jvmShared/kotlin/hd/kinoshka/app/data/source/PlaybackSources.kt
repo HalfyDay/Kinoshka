@@ -1,0 +1,188 @@
+package hd.kinoshka.app.data.source
+
+import hd.kinoshka.app.data.model.AnimeSourceType
+
+/**
+ * Единый реестр всех источников видео: аниме-пикер, прямые ссылки для кино/сериалов
+ * и 18+-провайдеры. Идентификаторы стабильны (пишутся в настройки и кэши):
+ * для аниме/хентая совпадают с [AnimeSourceType.name], для прямых — верхнерегистрные
+ * имена провайдеров ("TURBO", "VIDEOCDN", ...).
+ */
+/**
+ * Категории страницы «Источники»: один источник может обслуживать несколько
+ * разделов (Kodik — и кино, и аниме; AniStar/Smarthard — аниме и 18+).
+ */
+enum class SourceCategory(val title: String) {
+    FILMS("Фильмы"),
+    ANIME("Аниме"),
+    ADULT("18+")
+}
+
+data class PlaybackSourceInfo(
+    val id: String,
+    val displayName: String,
+    val description: String,
+    val categories: Set<SourceCategory>,
+    val needsVpn: Boolean = false,
+    val animeSourceType: AnimeSourceType? = null
+)
+
+object PlaybackSources {
+    const val KODIK = "KODIK"
+    const val SHIKIMORI = "SHIKIMORI"
+    const val ANILIBERTY = "ANILIBERTY"
+    const val ANILIB = "ANILIB"
+    const val ANISTAR = "ANISTAR"
+    const val ANIXART = "ANIXART"
+    const val SMARTHARD = "SMARTHARD"
+
+    const val TURBO = "TURBO"
+    const val VIDEOCDN = "VIDEOCDN"
+    const val COLLAPS = "COLLAPS"
+    const val VOIDBOOST = "VOIDBOOST"
+    const val ALLOHA = "ALLOHA"
+    const val VEOVEO = "VEOVEO"
+
+    const val HENTAI_ALLHENTAI = "HENTAI_ALLHENTAI"
+    const val HENTAI_HENTAIDREAM = "HENTAI_HENTAIDREAM"
+    const val HENTAI_HENTAIZ = "HENTAI_HENTAIZ"
+    const val HENTAI_HANIME1 = "HENTAI_HANIME1"
+    const val HENTAI_OPPAI = "HENTAI_OPPAI"
+
+    val ALL: List<PlaybackSourceInfo> = listOf(
+        PlaybackSourceInfo(
+            KODIK, "Kodik",
+            "Большой каталог озвучек и субтитров — аниме, фильмы и сериалы",
+            setOf(SourceCategory.FILMS, SourceCategory.ANIME), animeSourceType = AnimeSourceType.KODIK
+        ),
+        PlaybackSourceInfo(
+            SHIKIMORI, "Shikimori",
+            "Плеер Shikimori: озвучки и субтитры, HLS до 1080p",
+            setOf(SourceCategory.ANIME), animeSourceType = AnimeSourceType.SHIKIMORI
+        ),
+        PlaybackSourceInfo(
+            ANILIBERTY, "AniLiberty",
+            "Релизы AniLiberty с качествами 1080p/720p/480p",
+            setOf(SourceCategory.ANIME), animeSourceType = AnimeSourceType.ANILIBERTY
+        ),
+        PlaybackSourceInfo(
+            ANILIB, "AnimeLib",
+            "Каталог AnimeLib (animelib.org), озвучки по командам",
+            setOf(SourceCategory.ANIME), animeSourceType = AnimeSourceType.ANILIB
+        ),
+        PlaybackSourceInfo(
+            ANISTAR, "AniStar",
+            "Свои озвучки AniStar, MP4/HLS 360–720p",
+            setOf(SourceCategory.ANIME, SourceCategory.ADULT), animeSourceType = AnimeSourceType.ANISTAR
+        ),
+        PlaybackSourceInfo(
+            ANIXART, "Anixart",
+            "Озвучки Anixart: Kodik, Sibnet, Libria и другие",
+            setOf(SourceCategory.ANIME), animeSourceType = AnimeSourceType.ANIXART
+        ),
+        PlaybackSourceInfo(
+            SMARTHARD, "Smarthard",
+            "Архив shikicinema для 18+: озвучки и субтитры; часть ссылок требует VPN",
+            setOf(SourceCategory.ADULT), needsVpn = true,
+            animeSourceType = AnimeSourceType.SMARTHARD
+        ),
+        PlaybackSourceInfo(
+            TURBO, "Turbo",
+            "Прямые ссылки Turbo (ddbb): MP4 до 1080p, много озвучек",
+            setOf(SourceCategory.FILMS)
+        ),
+        PlaybackSourceInfo(
+            VIDEOCDN, "VideoCDN",
+            "Каталог VideoCDN: фильмы и сериалы по kinopoisk id",
+            setOf(SourceCategory.FILMS)
+        ),
+        PlaybackSourceInfo(
+            COLLAPS, "Collaps",
+            "Встраиваемый плеер Collaps: HLS на серию/фильм",
+            setOf(SourceCategory.FILMS)
+        ),
+        PlaybackSourceInfo(
+            VOIDBOOST, "Voidboost",
+            "Бэкенд Rezka: озвучки Voidboost",
+            setOf(SourceCategory.FILMS)
+        ),
+        PlaybackSourceInfo(
+            ALLOHA, "Alloha",
+            "Прямые ссылки Alloha (ddbb)",
+            setOf(SourceCategory.FILMS)
+        ),
+        PlaybackSourceInfo(
+            VEOVEO, "Veoveo",
+            "Прямые ссылки Veoveo (ddbb)",
+            setOf(SourceCategory.FILMS)
+        ),
+        PlaybackSourceInfo(
+            HENTAI_ALLHENTAI, "AllHentai",
+            "Хентай-источник: русские озвучки",
+            setOf(SourceCategory.ADULT), needsVpn = true, animeSourceType = AnimeSourceType.HENTAI_ALLHENTAI
+        ),
+        PlaybackSourceInfo(
+            HENTAI_HENTAIDREAM, "HentaiDream",
+            "Хентай-источник: русские озвучки",
+            setOf(SourceCategory.ADULT), animeSourceType = AnimeSourceType.HENTAI_HENTAIDREAM
+        ),
+        PlaybackSourceInfo(
+            HENTAI_HENTAIZ, "HentaiZ",
+            "Хентай-источник: оригинал и озвучки",
+            setOf(SourceCategory.ADULT), animeSourceType = AnimeSourceType.HENTAI_HENTAIZ
+        ),
+        PlaybackSourceInfo(
+            HENTAI_HANIME1, "Hanime1.me",
+            "Хентай-источник: оригинал с японскими титрами",
+            setOf(SourceCategory.ADULT), animeSourceType = AnimeSourceType.HENTAI_HANIME1
+        ),
+        PlaybackSourceInfo(
+            HENTAI_OPPAI, "Oppai.Stream",
+            "Хентай-источник: MP4 720/1080p",
+            setOf(SourceCategory.ADULT), needsVpn = true, animeSourceType = AnimeSourceType.HENTAI_OPPAI
+        )
+    )
+
+    /** Источники аниме-страницы выбора (порядок как в ANIME_PICKER_SOURCES). */
+    val ANIME_IDS: List<String> = listOf(KODIK, SHIKIMORI, ANILIBERTY, ANILIB, ANISTAR, ANIXART)
+
+    /** Источники кино-страницы выбора: Kodik + все прямые. */
+    val MOVIE_IDS: List<String> =
+        listOf(KODIK, TURBO, VIDEOCDN, COLLAPS, VOIDBOOST, ALLOHA, VEOVEO)
+
+    val ADULT_IDS: List<String> = listOf(
+        HENTAI_ALLHENTAI, HENTAI_HENTAIDREAM, HENTAI_HENTAIZ, HENTAI_HANIME1, HENTAI_OPPAI
+    )
+
+    private val byId: Map<String, PlaybackSourceInfo> = ALL.associateBy { it.id }
+
+    fun info(id: String): PlaybackSourceInfo? = byId[id.uppercase()]
+
+    fun displayName(id: String): String = info(id)?.displayName ?: id
+
+    fun isKnown(id: String): Boolean = byId.containsKey(id.uppercase())
+
+    /** Нормализация пользовательского/сериализованного id к каноническому (верхний регистр). */
+    fun canonical(id: String): String = id.trim().uppercase()
+
+    /**
+     * Имя источника из [DdbbStreamResolver.SourceParse]/[WebmasterStreamSources]
+     * ("Turbo", "VideoCDN", "Voidboost", ...) → id реестра. Null для неизвестных.
+     */
+    fun ddbbSourceNameToId(sourceName: String): String? = when (sourceName.trim().lowercase()) {
+        "turbo" -> TURBO
+        "videocdn" -> VIDEOCDN
+        "collaps" -> COLLAPS
+        "voidboost" -> VOIDBOOST
+        "alloha" -> ALLOHA
+        "veoveo" -> VEOVEO
+        "kodik" -> KODIK
+        else -> null
+    }
+
+    /** Обратное отображение: id реестра → имя для [DdbbStreamResolver.sourceRank]. */
+    fun idToDdbbSourceName(id: String): String = when (canonical(id)) {
+        VIDEOCDN -> "videocdn"
+        else -> canonical(id).lowercase()
+    }
+}

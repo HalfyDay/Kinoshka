@@ -127,7 +127,7 @@ class AnimeRepository(
         search(kind = kind, order = "ranked", censored = false, page = page)
 
     suspend fun byGenreId(genreId: Int, page: Int = 1): List<ShikimoriAnimeItem> =
-        search(genreId = genreId, order = "ranked", censored = false, page = page)
+        search(genreIds = setOf(genreId), order = "ranked", censored = false, page = page)
 
     suspend fun search(
         query: String? = null,
@@ -135,6 +135,8 @@ class AnimeRepository(
         status: String? = null,
         rating: String? = null,
         genreId: Int? = null,
+        /** Мультиселект жанров: Shikimori принимает список через запятую (AND). */
+        genreIds: Set<Int> = emptySet(),
         studioId: Int? = null,
         order: String? = "popularity",
         scoreFrom: Int? = null,
@@ -144,7 +146,7 @@ class AnimeRepository(
         page: Int = 1
     ): List<ShikimoriAnimeItem> {
         val cleanQuery = query?.trim()?.ifEmpty { null }
-        val genreStr = genreId?.toString()
+        val genreStr = (genreIds + listOfNotNull(genreId)).sorted().joinToString(",").takeIf { it.isNotEmpty() }
         val key = "$cleanQuery:$kind:$status:$rating:$genreStr:$studioId:$order:$scoreFrom:$season:$censored:$limit:$page"
         searchCache.get(key)?.let { return it }
         val loaded = api.search(

@@ -208,6 +208,25 @@ fun AnimePlaybackSelectionScreen(
         sourceStates.values.filterIsInstance<SourceLoadState.Ready>().flatMap { it.translations }
     }
 
+    // Выключенные/скрытые источники из настроек («Настройки → Источники»):
+    // выключенные не запрашиваются вовсе, скрытые грузятся фоном (фолбэк плеера
+    // через кэш префетча), но не показываются в списках.
+    val sourcePrefs by androidx.compose.runtime.produceState<Pair<Set<String>, Set<String>>?>(
+        initialValue = null,
+        key1 = shikimoriId
+    ) {
+        withContext(Dispatchers.IO) {
+            val store = hd.kinoshka.app.data.local.UserStateStore(context)
+            value = store.getDisabledSources() to store.getHiddenSources()
+        }
+    }
+    val disabledPickerSources = sourcePrefs?.first.orEmpty()
+    val hiddenPickerSources = sourcePrefs?.second.orEmpty()
+    val pickerPrefsReady = sourcePrefs != null
+    val queriedPickerSources = remember(disabledPickerSources) {
+        ANIME_PICKER_SOURCES.filter { it.name !in disabledPickerSources }
+    }
+
     // Офлайн-озвучки: скачанные серии видны в пикере всегда, даже когда сеть недоступна.
     // Дубликаты по (source, translationId) прячутся за сетевой строкой — local-first резолв
     // всё равно играет локальный файл.
@@ -226,8 +245,8 @@ fun AnimePlaybackSelectionScreen(
             allTranslations.none { it.source == off.source && it.translationId == off.translationId }
         }
     }
-    val effectiveTranslations = remember(allTranslations, offlineTranslations) {
-        allTranslations + offlineTranslations
+    val effectiveTranslations = remember(allTranslations, offlineTranslations, hiddenPickerSources) {
+        allTranslations.filter { it.source.name !in hiddenPickerSources } + offlineTranslations
     }
 
     // Скачивание из пикера: кнопка на серии качает одну; кнопка на озвучке —
@@ -296,7 +315,9 @@ fun AnimePlaybackSelectionScreen(
 
     /** Launches sources that are neither loading nor loaded — initial open and «Повторить». */
     fun startPendingSources() {
-        ANIME_PICKER_SOURCES.forEach { src ->
+        // Настройки ещё не прочитаны — ждём, иначе выключенные источники успеют запроситься.
+        val disabled = sourcePrefs?.first ?: return
+        ANIME_PICKER_SOURCES.filter { it.name !in disabled }.forEach { src ->
             val state = sourceStatesFlow.value[src]
             if (state !is SourceLoadState.Loading && state !is SourceLoadState.Ready) {
                 startSource(src)
@@ -304,8 +325,8 @@ fun AnimePlaybackSelectionScreen(
         }
     }
 
-    LaunchedEffect(shikimoriId) {
-        startPendingSources()
+    LaunchedEffect(shikimoriId, pickerPrefsReady) {
+        if (pickerPrefsReady) startPendingSources()
     }
 
     // Global preference memory: which sources/dubs the user launches most recently and often.
@@ -648,7 +669,7 @@ fun AnimePlaybackSelectionScreen(
 
                 // Slim progress strip: the page is usable while sources are still resolving.
                 androidx.compose.animation.AnimatedVisibility(visible = isLoadingSources) {
-                    val settled = ANIME_PICKER_SOURCES.count {
+                    val settled = queriedPickerSources.count {
                         sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Empty || sourceStates[it] is SourceLoadState.Failed
                     }
                     Row(
@@ -663,7 +684,7 @@ fun AnimePlaybackSelectionScreen(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "Загрузка источников… $settled/${ANIME_PICKER_SOURCES.size}",
+                            text = "Загрузка источников… $settled/${queriedPickerSources.size}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -747,7 +768,9 @@ fun AnimePlaybackSelectionScreen(
                                                 currentStepIndex++
                                             },
                                             playbackUsage = playbackUsage,
-                                            dubMediaKey = dubMediaKey
+                                            dubMediaKey = dubMediaKey,
+                                            disabledSources = disabledPickerSources,
+                                            hiddenSources = hiddenPickerSources
                                         )
                                     }
                                     SelectionStep.TRANSLATION -> {
@@ -884,7 +907,10 @@ private fun SelectTranslationStep(
     onDubSelected: (DubGroup) -> Unit,
     playbackUsage: hd.kinoshka.app.data.local.PlaybackUsageStats = hd.kinoshka.app.data.local.PlaybackUsageStats(),
     // Per-title ключ памяти озвучек: любимая озвучка тайтла поднимается по его собственной истории.
-    dubMediaKey: String? = null
+    dubMediaKey: String? = null,
+    // Выключенные/скрытые источники не показываются в pending-строках.
+    disabledSources: Set<String> = emptySet(),
+    hiddenSources: Set<String> = emptySet()
 ) {
     var filterMode by remember { mutableStateOf(FilterMode.VOICE) }
 
@@ -1150,6 +1176,17 @@ private fun SourceIcon(source: AnimeSourceType, size: Dp = 36.dp) {
         AnimeSourceType.ANILIB -> Color(0xFF20232A)
         AnimeSourceType.ANISTAR -> Color.White
         else -> null
+    }
+    // Логотип Anixart — полноэкранный (диск + «ушки» до краёв вьюпорта):
+    // круглая обрезка режет его, поэтому рисуем как есть, без круга и подложки.
+    if (source == AnimeSourceType.ANIXART) {
+        Image(
+            painter = painterResource(R.drawable.ic_src_anixart),
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(size)
+        )
+        return
     }
     if (bg == null) {
         Box(

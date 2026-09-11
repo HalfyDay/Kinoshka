@@ -304,7 +304,12 @@ fun DetailsScreen(
         episodeUrl: String?,
         headers: Map<String, String>
     ) -> Unit)? = null,
-    findLocalHentai: ((kinopoiskId: Int, providerName: String, translationId: String, episodeNumber: Int) -> String?)? = null
+    findLocalHentai: ((kinopoiskId: Int, providerName: String, translationId: String, episodeNumber: Int) -> String?)? = null,
+    // Скачивание из кино-пикера (Android-слот; null — кнопки скрыты, как на desktop):
+    // пометки скачанного и постановка целей MovieDownloadTarget в очередь.
+    movieDownloadedEpisodes: Set<Pair<Int, Int>> = emptySet(),
+    movieDownloadedByTranslation: Map<String, Int> = emptyMap(),
+    onMovieDownload: ((hd.kinoshka.app.ui.components.MovieDownloadTarget) -> Unit)? = null
 ) {
     val platformActions = rememberKinoPlatformActions()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -315,6 +320,8 @@ fun DetailsScreen(
     var selectedCharacterId by remember(filmId) { mutableStateOf<Int?>(null) }
     var isInteractive by remember { mutableStateOf(true) }
     var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
+    // Фильмы/сериалы: та же страница выбора сезона/серии/озвучки/источника, что у аниме.
+    var activeMovieSelection by remember(filmId) { mutableStateOf(false) }
     // 18+ titles open a full-screen source page (like the anime selection screen): every provider
     // resolves in parallel — loading spinners, retry buttons and episode lists per source.
     var activeHentaiSelection by remember(filmId) { mutableStateOf(false) }
@@ -337,6 +344,7 @@ fun DetailsScreen(
                 activeHentaiSelection = false
             }
             activePlaybackSelection -> activePlaybackSelection = false
+            activeMovieSelection -> activeMovieSelection = false
             selectedCharacterId != null -> selectedCharacterId = null
             previewPosterUrl != null -> {
                 previewPosterUrl = null
@@ -531,17 +539,27 @@ fun DetailsScreen(
                     onWatch(filmDetails)
                     // 18+ titles (хентай/эротика) have no selection-sheet sources: neither
                     // the Kodik API nor AniLiberty indexes them, so skip the sheet.
-                    val isAdult = item.genres.orEmpty().any { genre ->
-                        val n = genre.genre?.lowercase().orEmpty()
-                        n.contains("хентай") || n.contains("hentai") || n.contains("эротик") ||
-                            n.contains("для взрослых") || n.contains("18+") || n.contains("adult") ||
-                            n.contains("ecchi") || n.contains("этти")
-                    } ||
-                        item.ratingMpaa?.lowercase() in setOf("nc17", "x", "r18+", "18+", "nr") ||
-                        item.ratingAgeLimits?.contains("18") == true ||
-                        hd.kinoshka.app.data.source.HentaiStreamResolver.isKnownHentai(
-                            item.nameOriginal ?: item.nameEn, item.nameRu
+                    // Для аниме с данными Shikimori вердикт — ТОЛЬКО по ним (жанр Hentai /
+                    // рейтинг rx): вся информация по аниме идёт из Shikimori, а данные
+                    // Кинопоиска (возраст 18+) и общие слова в названиях («Акира» —
+                    // персонаж хентая Yuuwaku Countdown) давали ложные вердикты.
+                    // Без данных Shikimori — запасной путь по Кинопоиску.
+                    val anime = state.animeDetails
+                    val isAdult = if (anime != null) {
+                        hd.kinoshka.app.data.source.HentaiStreamResolver.isHentaiShikimori(
+                            rating = anime.rating,
+                            genreNames = anime.genres.orEmpty().map { it.russian ?: it.name },
+                            originalTitle = item.nameOriginal ?: item.nameEn,
+                            russianTitle = item.nameRu
                         )
+                    } else {
+                        hd.kinoshka.app.data.source.HentaiStreamResolver.isHentaiTitle(
+                            genreNames = item.genres.orEmpty().mapNotNull { it.genre },
+                            ratingMpaa = item.ratingMpaa,
+                            originalTitle = item.nameOriginal ?: item.nameEn,
+                            russianTitle = item.nameRu
+                        )
+                    }
                     if (isAdult) {
                         if (
                             playerMode == hd.kinoshka.app.data.local.PlayerMode.MPVEX &&
@@ -619,58 +637,9 @@ fun DetailsScreen(
                         playerMode == hd.kinoshka.app.data.local.PlayerMode.MPVEX &&
                         onOpenNativePlayer != null
                     ) {
-                        val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
-                        val request = item.toMoviePlaybackRequest()
-                        if (item.kinopoiskId > 0) {
-                            // Instant open: PlayerActivity starts NOW under its loading
-                            // overlay and runs the Kodik↔ddbb race itself (PENDING_MOVIE).
-                            // Blocking on the full resolve here left the details page
-                            // frozen behind a dead button for seconds.
-                            hd.kinoshka.app.data.model.PendingMovieRequestStore.put(
-                                item.kinopoiskId,
-                                hd.kinoshka.app.data.model.PendingMovieRequestStore.PendingMovieLaunch(
-                                    request = request,
-                                    displayTitle = filmTitle
-                                )
-                            )
-                            onOpenNativePlayer.invoke(
-                                "", emptyMap(), emptyMap(),
-                                filmTitle, 1, filmTitle, 0, item.kinopoiskId, "PENDING",
-                                emptyList(), emptyList(), "", null
-                            )
-                        } else {
-                            // No lookup id: PendingMovieRequestStore cannot hand off the
-                            // request, so fall back to the blocking pre-resolve.
-                            scope.launch {
-                                when (val payload = withContext(Dispatchers.IO) {
-                                    MovieNativeLauncher.resolve(
-                                        request,
-                                        state.userProfile,
-                                        userStateStore
-                                    )
-                                }) {
-                                    is MovieNativeLauncher.NativeLaunchPayload.QualityOnlyMovie -> {
-                                        MovieVoiceoverStreamStore.put(item.kinopoiskId, payload.preparedStreams)
-                                        val selected = payload.translations.firstOrNull()?.translationId.orEmpty()
-                                        onOpenNativePlayer.invoke(
-                                            payload.stream.url, payload.stream.headers, payload.stream.qualities,
-                                            filmTitle, 1, filmTitle, 0, item.kinopoiskId, "MOVIE",
-                                            emptyList(), payload.translations, selected, null
-                                        )
-                                    }
-                                    is MovieNativeLauncher.NativeLaunchPayload.MovieSeries -> {
-                                        val episode = payload.context.currentEpisode
-                                        onOpenNativePlayer.invoke(
-                                            payload.stream.url, payload.stream.headers, payload.stream.qualities,
-                                            filmTitle, episode.playerEpisodeKey, episode.title.orEmpty(), 0,
-                                            item.kinopoiskId, "MOVIE", emptyList(), emptyList(), "",
-                                            payload.context
-                                        )
-                                    }
-                                    is MovieNativeLauncher.NativeLaunchPayload.Failed -> onOpenUrl(item.toWatchUrl())
-                                }
-                            }
-                        }
+                        // Как у аниме: сначала страница выбора сезона/серии/озвучки/источника,
+                        // плеер открывается уже с явным выбором пользователя (без PENDING-гонки).
+                        activeMovieSelection = true
                     } else {
                         onWatch(item)
                         onOpenUrl(item.toWatchUrl())
@@ -1101,8 +1070,43 @@ fun DetailsScreen(
                     }
                 }
 
+                // Кино-пикер поверх любого макета (телефон/TV): сезон/серия/озвучка/источник,
+                // как страница выбора у аниме. Плеер открывается уже с явным выбором.
+                if (activeMovieSelection && !isAnime) {
+                    val movieRequest = item.toMoviePlaybackRequest()
+                    hd.kinoshka.app.ui.components.MoviePlaybackSelectionScreen(
+                        request = movieRequest,
+                        displayTitle = item.nameRu ?: item.nameOriginal ?: "Фильм",
+                        isSeries = movieRequest.kind != hd.kinoshka.app.data.model.MovieContentKind.MOVIE,
+                        profile = state.userProfile,
+                        seasons = state.seasons,
+                        posterUrl = item.posterUrl ?: item.posterUrlPreview,
+                        userStateStore = userStateStore,
+                        downloadedEpisodeKeys = movieDownloadedEpisodes,
+                        downloadedByTranslation = movieDownloadedByTranslation,
+                        onDownloadTarget = onMovieDownload,
+                        onDismissRequest = { activeMovieSelection = false }
+                    ) { result ->
+                        val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
+                        if (result.seriesContext != null && result.episode != null) {
+                            onOpenNativePlayer?.invoke(
+                                result.stream.url, result.stream.headers, result.stream.qualities,
+                                filmTitle, result.episode.playerEpisodeKey, result.episode.title.orEmpty(), 0,
+                                item.kinopoiskId, "MOVIE", emptyList(), emptyList(), "",
+                                result.seriesContext
+                            )
+                        } else {
+                            onOpenNativePlayer?.invoke(
+                                result.stream.url, result.stream.headers, result.stream.qualities,
+                                filmTitle, 1, filmTitle, 0, item.kinopoiskId, "MOVIE",
+                                emptyList(), result.translations, result.currentTranslationId, null
+                            )
+                        }
+                    }
+                }
+
                 // TV-макет рисует свою кнопку «Назад» — телефонный топ-бар там лишний.
-                if (!tvLayout && (!isAnime || !activePlaybackSelection)) {
+                if (!tvLayout && (!isAnime || !activePlaybackSelection) && !activeMovieSelection) {
                     DetailsTopBar(
                         item = item,
                         isAnime = isAnime,
@@ -4440,7 +4444,7 @@ private fun DetailsTopBar(
         }
     }
 
-    // Шит загрузки: торренты (AniLiberty/AniStar/Rutor) + скачивание серий в офлайн-библиотеку.
+    // Шит загрузки: торренты (AniLiberty/AniStar/Rutor/Rutracker) + скачивание серий в офлайн-библиотеку.
     if (showTorrentSheet) {
         downloadSheet?.invoke(item, isAnime) { showTorrentSheet = false }
     }

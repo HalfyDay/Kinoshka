@@ -27,6 +27,7 @@ import hd.kinoshka.app.ui.screens.AnimeFeedScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.FilmsViewModel
 import hd.kinoshka.app.ui.screens.SettingsScreen
+import hd.kinoshka.app.ui.screens.SourcesSettingsScreen
 import hd.kinoshka.app.ui.tv.LocalKeyboardNavigation
 import hd.kinoshka.app.ui.tv.TvSecondaryContainer
 import hd.kinoshka.app.ui.tv.inputModeTracker
@@ -43,6 +44,7 @@ const val DESKTOP_VERSION = "desktop"
 sealed interface Screen {
     data object Home : Screen
     data object Settings : Screen
+    data object Sources : Screen
     data object About : Screen
     data object Calendar : Screen
     data object Feed : Screen
@@ -185,8 +187,6 @@ fun main(args: Array<String>) = application {
                                 selectedDiscoverTileSize = viewModel.uiState.discoverTileSize,
                                 selectedLibraryTileSize = viewModel.uiState.libraryTileSize,
                                 selectedShowFpsCounter = viewModel.uiState.showFpsCounter,
-                                selectedPlaybackSequence = viewModel.uiState.playbackSequence,
-                                onPlaybackSequenceSelected = viewModel::setPlaybackSequence,
                                 selectedPlayerMode = viewModel.uiState.playerMode,
                                 onPlayerModeSelected = viewModel::setPlayerMode,
                                 onThemeModeSelected = viewModel::setThemeMode,
@@ -195,7 +195,19 @@ fun main(args: Array<String>) = application {
                                 onLibraryTileSizeSelected = viewModel::setLibraryTileSize,
                                 onShowFpsCounterChanged = viewModel::setShowFpsCounter,
                                 showDebugSettings = false,
-                                onOpenAbout = { screen = Screen.About }
+                                onOpenAbout = { screen = Screen.About },
+                                onOpenSources = { screen = Screen.Sources }
+                            )
+                        }
+                        is Screen.Sources -> TvSecondaryContainer {
+                            var disabledSources by remember { mutableStateOf(userStateStore.getDisabledSources()) }
+                            SourcesSettingsScreen(
+                                onBack = { screen = Screen.Settings },
+                                disabledSources = disabledSources,
+                                onSourceEnabledChanged = { id, enabled ->
+                                    userStateStore.setSourceEnabled(id, enabled)
+                                    disabledSources = userStateStore.getDisabledSources()
+                                }
                             )
                         }
                         is Screen.About -> TvSecondaryContainer {
@@ -278,6 +290,7 @@ private fun initialScreenAndPlayer(args: Array<String>, repository: FilmsReposit
     // (или первым аргументом).
     when (flag(args)) {
         "settings" -> return Screen.Settings to null
+        "sources" -> return Screen.Sources to null
         "about" -> return Screen.About to null
         "calendar" -> return Screen.Calendar to null
         "feed" -> return Screen.Feed to null

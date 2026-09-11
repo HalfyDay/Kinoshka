@@ -21,6 +21,13 @@ data class FilmItem(
 
 const val ANIME_GENRE_NAME = "аниме"
 
+/** Жанр «мультфильм» у Кинопоиска: отдельного типа контента в API нет,
+ *  мультфильмы выбираются клиентским фильтром по этому жанру. */
+const val CARTOON_GENRE_NAME = "мультфильм"
+
+/** Псевдо-тип контента «Мультфильмы» в фильтрах: на сервер уходит ALL + клиентский фильтр. */
+const val CARTOON_CONTENT_TYPE = "CARTOON"
+
 /** Аниме у Kinopoisk помечается жанром «аниме» (в старых карточках встречается латиница). */
 fun List<NameOnly>?.containsAnimeGenre(): Boolean {
     if (this == null) return false
@@ -31,7 +38,10 @@ fun List<NameOnly>?.containsAnimeGenre(): Boolean {
 }
 
 data class FilmsResponse(
-    @SerializedName("items") val items: List<FilmItem>? = null
+    @SerializedName("items") val items: List<FilmItem>? = null,
+    /** Всего найдено (для пагинации: hasMore по totalPages, а не по пустоте страницы). */
+    @SerializedName("total") val total: Int = 0,
+    @SerializedName("totalPages") val totalPages: Int = 0
 )
 
 data class FilmSeasonsResponse(

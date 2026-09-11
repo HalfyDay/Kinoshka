@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.BlurOn
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.material3.*
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -27,6 +28,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -620,6 +622,7 @@ private fun effectiveAutoRung(resolution: Pair<Int, Int>?): String? {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AnimeShaderControl(
     hideBackground: Boolean,
@@ -703,10 +706,11 @@ fun AnimeShaderControl(
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.Bold
                                 )
-                                Text(
-                                    text = "⏳",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                Icon(
+                                    imageVector = Icons.Default.HourglassEmpty,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                             TextButton(
@@ -749,13 +753,13 @@ fun AnimeShaderControl(
                         // --- Тип улучшения ---
                         val modes = remember {
                             listOf(
-                                ShaderModeInfo("OFF", "Выкл", "Оригинальное изображение без обработки", null),
-                                ShaderModeInfo("A", "Чёткость", "Универсальное улучшение для большинства аниме", null),
-                                ShaderModeInfo("B", "Баланс", "Мягкое восстановление, баланс деталей и шума", "👍"),
-                                ShaderModeInfo("C", "Очистка", "Сглаживает шум и мыло, может быть полезно для 480p и 720p", null),
-                                ShaderModeInfo("A_PLUS", "Чёткость+", "Усиленная чёткость и восстановление деталей", "🔥"),
-                                ShaderModeInfo("B_PLUS", "Баланс+", "Глубокое восстановление мягких линий", "🔥"),
-                                ShaderModeInfo("C_PLUS", "Восстановление", "Максимальное восстановление контуров", "🔥"),
+                                ShaderModeInfo("OFF", "Выкл", "Оригинальное изображение без обработки", Icons.Default.Block),
+                                ShaderModeInfo("A", "Чёткость", "Универсальное улучшение для большинства аниме", Icons.Default.CenterFocusStrong),
+                                ShaderModeInfo("B", "Баланс", "Мягкое восстановление, баланс деталей и шума", Icons.Default.ThumbUp, LightLoadTint),
+                                ShaderModeInfo("C", "Очистка", "Сглаживает шум и мыло, может быть полезно для 480p и 720p", Icons.Default.CleaningServices),
+                                ShaderModeInfo("A_PLUS", "Чёткость+", "Усиленная чёткость и восстановление деталей", Icons.Default.Whatshot, HeavyLoadTint),
+                                ShaderModeInfo("B_PLUS", "Баланс+", "Глубокое восстановление мягких линий", Icons.Default.Whatshot, HeavyLoadTint),
+                                ShaderModeInfo("C_PLUS", "Восстановление", "Максимальное восстановление контуров", Icons.Default.Whatshot, HeavyLoadTint),
                             )
                         }
                         val selectedModeInfo = modes.firstOrNull { it.id == anime4kMode } ?: modes[0]
@@ -773,11 +777,12 @@ fun AnimeShaderControl(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        LazyRow(
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            items(modes) { mode ->
+                            modes.forEach { mode ->
                                 val isSelected = anime4kMode == mode.id
                                 FilterChip(
                                     selected = isSelected,
@@ -791,8 +796,15 @@ fun AnimeShaderControl(
                                             style = MaterialTheme.typography.labelMedium
                                         )
                                     },
-                                    leadingIcon = mode.icon?.let { e ->
-                                        { Text(text = e, fontSize = 12.sp) }
+                                    leadingIcon = mode.icon?.let { image ->
+                                        {
+                                            Icon(
+                                                imageVector = image,
+                                                contentDescription = null,
+                                                tint = mode.iconTint ?: LocalContentColor.current,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
                                     }
                                 )
                             }
@@ -803,9 +815,9 @@ fun AnimeShaderControl(
                         // --- Режим обработки ---
                         val qualities = remember {
                             listOf(
-                                ShaderQualityInfo("FAST", "Легко", "Минимальная нагрузка на устройство", "👍"),
-                                ShaderQualityInfo("BALANCED", "Оптимально", "Лучшее качество при умеренной нагрузке", null),
-                                ShaderQualityInfo("HIGH", "Максимум", "Максимальное качество, высокая нагрузка", "🔥"),
+                                ShaderQualityInfo("FAST", "Легко", "Минимальная нагрузка на устройство", Icons.Default.ThumbUp, LightLoadTint),
+                                ShaderQualityInfo("BALANCED", "Оптимально", "Лучшее качество при умеренной нагрузке", Icons.Default.Speed),
+                                ShaderQualityInfo("HIGH", "Максимум", "Максимальное качество, высокая нагрузка", Icons.Default.Whatshot, HeavyLoadTint),
                             )
                         }
                         val selectedQualityInfo =
@@ -824,11 +836,12 @@ fun AnimeShaderControl(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        LazyRow(
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            items(qualities) { q ->
+                            qualities.forEach { q ->
                                 val isSelected = anime4kQuality == q.id
                                 FilterChip(
                                     selected = isSelected,
@@ -842,8 +855,15 @@ fun AnimeShaderControl(
                                             style = MaterialTheme.typography.labelMedium
                                         )
                                     },
-                                    leadingIcon = q.icon?.let { e ->
-                                        { Text(text = e, fontSize = 12.sp) }
+                                    leadingIcon = q.icon?.let { image ->
+                                        {
+                                            Icon(
+                                                imageVector = image,
+                                                contentDescription = null,
+                                                tint = q.iconTint ?: LocalContentColor.current,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
                                     }
                                 )
                             }
@@ -856,18 +876,23 @@ fun AnimeShaderControl(
     }
 }
 
+private val LightLoadTint = Color(0xFF4CAF50)
+private val HeavyLoadTint = Color(0xFFE53935)
+
 private data class ShaderModeInfo(
     val id: String,
     val title: String,
     val description: String,
-    val icon: String?
+    val icon: ImageVector? = null,
+    val iconTint: Color? = null,
 )
 
 private data class ShaderQualityInfo(
     val id: String,
     val title: String,
     val description: String,
-    val icon: String?
+    val icon: ImageVector? = null,
+    val iconTint: Color? = null,
 )
 
 private fun applyShaders(

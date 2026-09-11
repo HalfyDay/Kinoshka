@@ -201,6 +201,16 @@ object AnixartVideoResolver {
     // ---- резолюция anixart id ----
 
     /**
+     * Проверка живости для экрана «Источники»: поиск заведомо существующего тайтла.
+     * Важен сам факт parseable-ответа API (code == 0), а не нахождение: пустая выдача —
+     * тоже ответ, а не авария.
+     */
+    suspend fun ping(): Boolean = withContext(Dispatchers.IO) {
+        val resp = runCatching { postSearchJson("наруто") }.getOrNull() ?: return@withContext false
+        resp.optInt("code", -1) == 0
+    }
+
+    /**
      * Точный нормализованный матч названия (пуш пишет в чужой аккаунт — тут тоже
      * не гадаем: только точное совпадение ru/original/en с кандидатом).
      */

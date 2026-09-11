@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -625,6 +626,66 @@ object DdbbStreamResolver {
             // A still-running shared resolve would hand its in-progress result to the retry via
             // the join path — cancel it so the next resolve starts fresh.
             inFlightResolves.remove(kinopoiskId)?.cancel()
+        }
+    }
+
+    /** Snapshot of the ddbb players list (health checks, picker diagnostics). */
+    fun fetchPlayersSnapshot(kinopoiskId: Int): List<Pair<String, String>> =
+        fetchPlayers(kinopoiskId)
+
+    /**
+     * Per-source parses for the movie selection page: every ddbb embed (Turbo/Collaps/
+     * Alloha/Veoveo) plus the webmaster trio (VideoCDN/Collaps/Voidboost) resolved
+     * CONCURRENTLY, returned unmerged and unprobed — the picker groups dub/episode rows
+     * by [SourceParse.sourceName] itself. Sources in [disabledIds] (PlaybackSources ids)
+     * are skipped outright.
+     */
+    suspend fun fetchSourceParses(
+        kinopoiskId: Int,
+        disabledIds: Set<String> = emptySet(),
+    ): List<SourceParse> = withContext(Dispatchers.IO) {
+        if (kinopoiskId <= 0) return@withContext emptyList()
+        val disabled = disabledIds.map { it.trim().lowercase() }.toSet()
+        fun isDisabled(vararg names: String): Boolean =
+            names.any { it.trim().lowercase() in disabled }
+
+        val players = fetchPlayers(kinopoiskId)
+        KLog.i(TAG, "picker parses: ddbb offered ${players.size} sources for kp=$kinopoiskId")
+        coroutineScope {
+            val jobs = mutableListOf<Deferred<SourceParse?>>()
+            for ((type, iframeUrl) in players) {
+                if (isDisabled(type, PlaybackSources.idToDdbbSourceName(type))) continue
+                jobs += async {
+                    val html = fetchHtml(iframeUrl)
+                    if (html == null) {
+                        KLog.w(TAG, "${type.lowercase()}: embed fetch failed (picker)")
+                        return@async null
+                    }
+                    parseDdbbSource(kinopoiskId, type, iframeUrl, html)
+                }
+            }
+            if (!isDisabled("videocdn", PlaybackSources.VIDEOCDN)) {
+                jobs += async {
+                    runCatching { WebmasterStreamSources.resolveVideoCdn(kinopoiskId) }
+                        .onFailure { KLog.w(TAG, "videocdn: picker resolve failed", it) }
+                        .getOrNull()
+                }
+            }
+            if (!isDisabled("collaps", PlaybackSources.COLLAPS)) {
+                jobs += async {
+                    runCatching { WebmasterStreamSources.resolveCollaps(kinopoiskId) }
+                        .onFailure { KLog.w(TAG, "collaps: picker resolve failed", it) }
+                        .getOrNull()
+                }
+            }
+            if (!isDisabled("voidboost", PlaybackSources.VOIDBOOST)) {
+                jobs += async {
+                    runCatching { WebmasterStreamSources.resolveVoidboost(kinopoiskId) }
+                        .onFailure { KLog.w(TAG, "voidboost: picker resolve failed", it) }
+                        .getOrNull()
+                }
+            }
+            jobs.awaitAll().filterNotNull().sortedBy { sourceRank(it.sourceName) }
         }
     }
 

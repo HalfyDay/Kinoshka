@@ -810,11 +810,15 @@ class FeedViewModel(
     /** Прогрев картинок в кэшах Coil (память+диск); [itemId] — ловим битые ссылки. */
     private fun preloadImages(urls: List<String?>, itemId: Int? = null) {
         val dm = appContext.resources.displayMetrics
+        // Пол-экрана достаточно для превью карточек: полный размер жрёт декод/RAM,
+        // а дисковый оригинал Coil и так хранит один на URL.
+        val w = (dm.widthPixels / 2).coerceIn(360, 720)
+        val h = (dm.heightPixels / 2).coerceIn(480, 960)
         urls.filterNotNull().forEach { url ->
             runCatching {
                 val builder = ImageRequest.Builder(appContext)
                     .data(url)
-                    .size(dm.widthPixels, dm.heightPixels)
+                    .size(w, h)
                     .memoryCachePolicy(CachePolicy.ENABLED)
                     .diskCachePolicy(CachePolicy.ENABLED)
                 if (itemId != null) {

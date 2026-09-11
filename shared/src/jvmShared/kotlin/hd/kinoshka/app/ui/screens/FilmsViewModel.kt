@@ -13,6 +13,9 @@ import hd.kinoshka.app.data.local.FilmTileSize
 import hd.kinoshka.app.data.local.HistoryRecord
 import hd.kinoshka.app.data.local.UserFilmProfile
 import hd.kinoshka.app.data.repo.anixartListToStatus
+import hd.kinoshka.app.data.repo.FilmSearchPage
+import hd.kinoshka.app.data.repo.GenreFanoutPaginator
+import hd.kinoshka.app.data.repo.hasMorePages
 import hd.kinoshka.app.data.repo.toAnixartList
 import hd.kinoshka.app.data.local.isCurated
 import hd.kinoshka.app.data.local.UserFilmStatus
@@ -92,7 +95,8 @@ data class LibraryUiItem(
 
 data class SearchFilterState(
     val selectedCountryId: Int? = null,
-    val selectedGenreId: Int? = null,
+    /** Мультиселект жанров кино: повторный тап по чипу снимает выбор. */
+    val selectedGenreIds: Set<Int> = emptySet(),
     val selectedOrder: String = "RATING",
     val selectedType: String = "ALL",
     val ratingFrom: Int? = null,
@@ -103,7 +107,8 @@ data class SearchFilterState(
     val animeKind: String? = null,
     val animeStatus: String? = null,
     val animeRating: String? = null,
-    val animeGenreId: Int? = null,
+    /** Мультиселект жанров аниме: повторный тап по чипу снимает выбор. */
+    val animeGenreIds: Set<Int> = emptySet(),
     val animeOrder: String = "popularity",
     val animeScoreFrom: Int? = null,
     /** Студия Shikimori (id из ссылок /animes/studio/{id} в новостях). */
@@ -112,12 +117,19 @@ data class SearchFilterState(
     val animeSeason: String? = null
 ) {
     val isActive: Boolean
-        get() = selectedCountryId != null || selectedGenreId != null || selectedOrder != "RATING" ||
+        get() = selectedCountryId != null || selectedGenreIds.isNotEmpty() || selectedOrder != "RATING" ||
                 selectedType != "ALL" || ratingFrom != null || ratingTo != null || yearFrom != null || yearTo != null ||
-                animeKind != null || animeStatus != null || animeRating != null || animeGenreId != null ||
+                animeKind != null || animeStatus != null || animeRating != null || animeGenreIds.isNotEmpty() ||
                 animeOrder != "popularity" || animeScoreFrom != null || animeSeason != null ||
                 animeStudioId != null
 }
+
+/** Тоггл жанра в мультиселекте фильтров: повторный тап снимает выбор. */
+fun toggleGenreId(current: Set<Int>, id: Int): Set<Int> =
+    if (id in current) current - id else current + id
+
+/** Id жанра «Хентай» в Shikimori (проверено по /api/genres). */
+internal const val SHIKIMORI_HENTAI_GENRE_ID = 12
 
 val shikimoriGenres = listOf(
     FilterItem(id = 1, genre = "Экшен"),
@@ -133,15 +145,17 @@ val shikimoriGenres = listOf(
     FilterItem(id = 30, genre = "Спорт"),
     FilterItem(id = 37, genre = "Сверхъестественное"),
     FilterItem(id = 41, genre = "Триллер"),
-    FilterItem(id = 62, genre = "Исэкай"),
     FilterItem(id = 18, genre = "Меха"),
     FilterItem(id = 19, genre = "Музыка"),
     FilterItem(id = 23, genre = "Школа"),
-    FilterItem(id = 27, genre = "Сёнэн"),
+    FilterItem(id = 27, genre = "Сёнен"),
     FilterItem(id = 25, genre = "Сёдзе"),
     FilterItem(id = 42, genre = "Сэйнэн"),
-    FilterItem(id = 24, genre = "Этти"),
-    FilterItem(id = 64, genre = "Хентай")
+    // Этти — id 9 (было 24, дубль с Фантастикой: выбор одного подсвечивал оба).
+    FilterItem(id = 9, genre = "Этти"),
+    // Хентай — id 12 (было 64 — это «Вампиры» для манги).
+    // «Исэкай» убран: такого жанра в Shikimori нет (genre=62 отдаёт пусто).
+    FilterItem(id = SHIKIMORI_HENTAI_GENRE_ID, genre = "Хентай")
 )
 
 /**
@@ -1409,7 +1423,13 @@ class FilmsViewModel(
             }
             userStateStore.saveShikimoriAnimeInfos(stageEntries)
             totalSaved += stageEntries.size
-            // Этап 1.5: жанровая разметка 18+ (см. markAdultByGenre).
+            // Этап 1.5: жанровая разметка 18+ (см. markAdultByGenre). Перед ней —
+            // разовый сброс старой разметки: вердикты эпохи нечёткого матчинга
+            // («Акира» — хентай) иначе залипли бы навсегда (см. resetAdultGenreChecks).
+            if (userStateStore.needsAdultRecheckV2()) {
+                userStateStore.resetAdultGenreChecks()
+                userStateStore.markAdultRecheckV2Done()
+            }
             totalSaved += markAdultByGenre(libraryIds)
             // Этап 2: поштучный добор непокрытых батчем (порезка ids, цензура, провал запроса).
             val leftovers = pending
@@ -1547,7 +1567,7 @@ class FilmsViewModel(
     private val overviewAnimeGenres = listOf(
         "Экшен" to 1,
         "Романтика" to 22,
-        "Исэкай" to 62,
+        "Фэнтези" to 10,
         "Повседневность" to 36,
         "Спорт" to 30
     )
@@ -3939,7 +3959,7 @@ class FilmsViewModel(
                 tab = HomeTab.CATALOG,
                 contentType = ContentType.ANIME,
                 query = if (matchedGenre == null) genreName else "",
-                filterState = SearchFilterState(animeGenreId = matchedGenre?.id),
+                filterState = SearchFilterState(animeGenreIds = matchedGenre?.let { setOf(it.id) }.orEmpty()),
                 discoverTitle = title ?: genreName
             )
         } else {
@@ -3949,7 +3969,7 @@ class FilmsViewModel(
                 tab = HomeTab.CATALOG,
                 contentType = ContentType.FILMS,
                 query = if (matchedGenre == null) genreName else "",
-                filterState = SearchFilterState(selectedGenreId = matchedGenre?.id),
+                filterState = SearchFilterState(selectedGenreIds = matchedGenre?.let { setOf(it.id) }.orEmpty()),
                 discoverTitle = title ?: genreName
             )
         }
@@ -4042,7 +4062,10 @@ class FilmsViewModel(
     fun loadMore() {
         val snapshot = uiState
         if (snapshot.loading || snapshot.loadingMore || !snapshot.hasMore) return
-
+        // Синхронно гасим дублетриггеры хвоста сетки (последние айтемы шлют
+        // onLoadMore почти одновременно): иначе уходит пачка одинаковых
+        // запросов одной страницы — лишняя нагрузка на квоту КП.
+        uiState = snapshot.copy(loadingMore = true)
         if (snapshot.isSearchResult || snapshot.filterState.isActive) {
             val query = snapshot.query.trim()
             loadSearchNextPage(query)
@@ -4790,7 +4813,10 @@ class FilmsViewModel(
         val genreEntries = unchecked.mapNotNull { id ->
             val prev = fresh[id]
             if (prev == null && id !in adultIds) return@mapNotNull null
-            val adult = id in adultIds || prev?.isAdult == true
+            // Батч — авторитетный источник: при полном успехе его вердикт затирает
+            // и старые (в т.ч. ложные от нечёткого матчинга названий) isAdult.
+            // При частичном провале старые true сохраняем, чтобы не открыть хентай.
+            val adult = if (allOk) id in adultIds else (id in adultIds || prev?.isAdult == true)
             if (prev != null && prev.isAdult == adult && prev.genreChecked == allOk) return@mapNotNull null
             val base = prev ?: hd.kinoshka.app.data.local.ShikimoriAnimeCache(
                 shikimoriId = id,
@@ -4876,14 +4902,50 @@ class FilmsViewModel(
             kind = filters.animeKind,
             status = filters.animeStatus,
             rating = filters.animeRating,
-            genreId = filters.animeGenreId,
+            genreIds = filters.animeGenreIds,
             studioId = filters.animeStudioId,
             order = filters.animeOrder,
             scoreFrom = filters.animeScoreFrom,
             season = filters.animeSeason,
+            // Хентай по умолчанию вырезан цензурой API: снимаем её только при явном
+            // выборе жанра — иначе чип «Хентай» отдавал бы пусто.
+            censored = if (SHIKIMORI_HENTAI_GENRE_ID in filters.animeGenreIds) false else null,
             page = page
         ).map { it.toFilmItem() }.dedupe()
     }
+
+    /** Имена выбранных жанров КП по id — для клиентского AND-фильтра мультиселекта. */
+    private fun genreNamesFor(ids: Set<Int>): Set<String> {
+        if (ids.isEmpty()) return emptySet()
+        val byId = uiState.availableGenres.associate { it.id to it.genre.orEmpty().lowercase() }
+        return ids.mapNotNull { byId[it]?.takeIf { name -> name.isNotEmpty() } }.toSet()
+    }
+
+    /** Активный добор по десятилетиям (см. [GenreFanoutPaginator]) + ключ его поиска. */
+    private var fanout: GenreFanoutPaginator? = null
+    private var fanoutKey: String? = null
+
+    /**
+     * Fan-out по десятилетиям: жанр выбран, годы не заданы, текст пуст, порядок
+     * склеиваемый. NUM_VOTE исключён осознанно: числа голосов в выдаче нет,
+     * глобальный порядок клиентом не восстановить — остаётся серверный запрос.
+     */
+    private fun fanoutGate(filters: SearchFilterState, query: String): Boolean =
+        filters.selectedGenreIds.isNotEmpty() &&
+            filters.yearFrom == null &&
+            filters.yearTo == null &&
+            query.isBlank() &&
+            (filters.selectedOrder == "RATING" || filters.selectedOrder == "YEAR")
+
+    private fun fanoutKeyFor(filters: SearchFilterState, query: String): String =
+        (listOf<Any?>(
+            filters.selectedCountryId,
+            filters.selectedGenreIds.sorted(),
+            filters.selectedOrder,
+            filters.selectedType,
+            filters.ratingFrom,
+            filters.ratingTo
+        ) + query.trim()).joinToString("|")
 
     private fun loadDiscoverFirstPage(category: DiscoverCategory) {
         // Cancel any in-flight search so a slow older request can't clobber the discover feed
@@ -4946,6 +5008,7 @@ class FilmsViewModel(
                     val merged = (uiState.items + nextItems).distinctBy { it.kinopoiskId }
                     uiState = uiState.copy(
                         loadingMore = false,
+                        error = null,
                         items = merged,
                         currentPage = if (nextItems.isEmpty()) uiState.currentPage else nextPage,
                         hasMore = nextItems.isNotEmpty()
@@ -4976,35 +5039,99 @@ class FilmsViewModel(
             )
             val filters = uiState.filterState
             val cleanQuery = query.trim()
-            runCatching {
-                if (uiState.contentType == ContentType.ANIME) {
-                    fetchAnime(cleanQuery, 1)
-                } else {
-                    repository.search(
+            // Fan-out по десятилетиям (см. GenreFanoutPaginator): один запрос с жанром
+            // отдаёт лишь ~сотню тайтлов — добираем каждое десятилетие отдельно.
+            if (uiState.contentType != ContentType.ANIME) {
+                KLog.i(
+                    "FilmSearch",
+                    "gate genres=${filters.selectedGenreIds} years=${filters.yearFrom}-${filters.yearTo} " +
+                        "blankQuery=${cleanQuery.isBlank()} order=${filters.selectedOrder} type=${filters.selectedType} " +
+                        "fanout=${fanoutGate(filters, cleanQuery)}"
+                )
+            }
+            if (uiState.contentType != ContentType.ANIME && fanoutGate(filters, cleanQuery)) {
+                val key = fanoutKeyFor(filters, cleanQuery)
+                val paginator = GenreFanoutPaginator(order = filters.selectedOrder) { yf, yt, p ->
+                    repository.searchPaged(
                         query = cleanQuery.ifEmpty { null },
                         countryId = filters.selectedCountryId,
-                        genreId = filters.selectedGenreId,
+                        genreIds = filters.selectedGenreIds,
+                        genreNames = genreNamesFor(filters.selectedGenreIds),
                         order = filters.selectedOrder,
                         type = filters.selectedType,
                         ratingFrom = filters.ratingFrom,
                         ratingTo = filters.ratingTo,
-                        yearFrom = filters.yearFrom,
-                        yearTo = filters.yearTo,
-                        page = 1
+                        yearFrom = yf,
+                        yearTo = yt,
+                        page = p
                     )
                 }
-            }.onSuccess { items ->
+                fanout = paginator
+                fanoutKey = key
+                var chunk = paginator.nextChunk()
+                var guard = 0
+                while (chunk.isEmpty() && paginator.hasMore && guard < 3) {
+                    chunk = paginator.nextChunk()
+                    guard++
+                }
+                uiState = uiState.copy(
+                    loading = false,
+                    items = chunk.dedupe(),
+                    isSearchResult = true,
+                    isInstantSearch = instant,
+                    currentPage = 1,
+                    hasMore = chunk.isNotEmpty() && paginator.hasMore
+                )
+                return@launch
+            }
+            fanout = null
+            fanoutKey = null
+            // Одна страница кино (замыкание для добора пустых страниц ниже).
+            suspend fun fetchKinoPage(p: Int): FilmSearchPage = repository.searchPaged(
+                query = cleanQuery.ifEmpty { null },
+                countryId = filters.selectedCountryId,
+                genreIds = filters.selectedGenreIds,
+                genreNames = genreNamesFor(filters.selectedGenreIds),
+                order = filters.selectedOrder,
+                type = filters.selectedType,
+                ratingFrom = filters.ratingFrom,
+                ratingTo = filters.ratingTo,
+                yearFrom = filters.yearFrom,
+                yearTo = filters.yearTo,
+                page = p
+            )
+            runCatching {
+                if (uiState.contentType == ContentType.ANIME) {
+                    FilmSearchPage(items = fetchAnime(cleanQuery, 1))
+                } else {
+                    fetchKinoPage(1)
+                }
+            }.onSuccess { first ->
+                // Добор пустых страниц: разреженный клиентский фильтр даёт пустой чанк,
+                // а без новых айтемов триггер догрузки не перевыстрелит — список встал
+                // бы при hasMore=true. Тянем дальше сами, но ограниченно; если и так
+                // пусто — останавливаемся, а не висим в тупике.
+                var page = first
+                var pageNum = 1
+                var guard = 0
+                while (page.items.isEmpty() && hasMorePages(pageNum, page.totalPages, false) && guard < 4) {
+                    pageNum++
+                    page = runCatching { fetchKinoPage(pageNum) }.getOrNull() ?: break
+                    guard++
+                }
+                val items = page.items
                 if (items.isEmpty() && cleanQuery.isNotBlank()) {
                     val fixedQuery = SearchQueryUtils.fixKeyboardLayout(cleanQuery)
                     if (fixedQuery != cleanQuery) {
-                        val fallbackItems = runCatching {
+                        val fallbackPage = runCatching {
                             if (uiState.contentType == ContentType.ANIME) {
-                                fetchAnime(fixedQuery, 1)
+                                FilmSearchPage(items = fetchAnime(fixedQuery, 1))
                             } else {
-                                repository.search(
+                                repository.searchPaged(
                                     query = fixedQuery,
                                     countryId = filters.selectedCountryId,
-                                    genreId = filters.selectedGenreId,
+                                    genreIds = filters.selectedGenreIds,
+                                    genreNames = genreNamesFor(filters.selectedGenreIds),
                                     order = filters.selectedOrder,
                                     type = filters.selectedType,
                                     ratingFrom = filters.ratingFrom,
@@ -5014,16 +5141,15 @@ class FilmsViewModel(
                                     page = 1
                                 )
                             }
-                        }.getOrDefault(emptyList())
-                        if (fallbackItems.isNotEmpty()) {
+                        }.getOrDefault(FilmSearchPage())
+                        if (fallbackPage.items.isNotEmpty()) {
                             uiState = uiState.copy(
                                 loading = false,
-                                items = rankResults(fallbackItems, cleanQuery).dedupe(),
+                                items = rankResults(fallbackPage.items, cleanQuery).dedupe(),
                                 isSearchResult = true,
                                 isInstantSearch = instant,
                                 currentPage = 1,
-                                // hasMore — по сырой странице сервера, а не по дедуплицированной.
-                                hasMore = fallbackItems.isNotEmpty()
+                                hasMore = hasMorePages(1, fallbackPage.totalPages, true)
                             )
                             return@launch
                         }
@@ -5034,9 +5160,10 @@ class FilmsViewModel(
                     items = rankResults(items, cleanQuery).dedupe(),
                     isSearchResult = true,
                     isInstantSearch = instant,
-                    currentPage = 1,
-                    // hasMore — по сырой странице сервера, а не по дедуплицированной.
-                    hasMore = items.isNotEmpty()
+                    currentPage = pageNum,
+                    // hasMore — по счётчику страниц сервера (см. hasMorePages);
+                    // пусто после добора — останавливаемся, а не висим в тупике.
+                    hasMore = if (items.isEmpty()) false else hasMorePages(pageNum, page.totalPages, true)
                 )
                 // Persist non-blank successful searches to history (only for explicit submits,
                 // not every instant keystroke — instant calls go through onSearchQueryChanged).
@@ -5074,30 +5201,70 @@ class FilmsViewModel(
             uiState = uiState.copy(loadingMore = true, error = null)
             val filters = uiState.filterState
             val cleanQuery = query.trim()
+            // Одна страница кино (замыкание для добора пустых страниц ниже).
+            suspend fun fetchKinoPage(p: Int): FilmSearchPage = repository.searchPaged(
+                query = cleanQuery.ifEmpty { null },
+                countryId = filters.selectedCountryId,
+                genreIds = filters.selectedGenreIds,
+                genreNames = genreNamesFor(filters.selectedGenreIds),
+                order = filters.selectedOrder,
+                type = filters.selectedType,
+                ratingFrom = filters.ratingFrom,
+                ratingTo = filters.ratingTo,
+                yearFrom = filters.yearFrom,
+                yearTo = filters.yearTo,
+                page = p
+            )
+            // Активный fan-out того же поиска продолжает вёдрами, а не query-страницами.
+            // Чужой (фильтры сменились без нового поиска) — выкидываем, идём обычным путём.
+            val activeFanout = fanout?.takeIf { fanoutKey == fanoutKeyFor(filters, cleanQuery) }
+            if (uiState.contentType != ContentType.ANIME && activeFanout != null) {
+                var chunk = activeFanout.nextChunk()
+                var guard = 0
+                while (chunk.isEmpty() && activeFanout.hasMore && guard < 3) {
+                    chunk = activeFanout.nextChunk()
+                    guard++
+                }
+                val merged = (uiState.items + chunk).distinctBy { it.kinopoiskId }
+                uiState = uiState.copy(
+                    loadingMore = false,
+                    error = null,
+                    items = merged,
+                    // currentPage не трогаем: серверные страницы живут в вёдрах.
+                    hasMore = chunk.isNotEmpty() && activeFanout.hasMore
+                )
+                return@launch
+            }
+            fanout = null
+            fanoutKey = null
             runCatching {
                 if (uiState.contentType == ContentType.ANIME) {
-                    fetchAnime(cleanQuery, nextPage)
+                    FilmSearchPage(items = fetchAnime(cleanQuery, nextPage))
                 } else {
-                    repository.search(
-                        query = cleanQuery.ifEmpty { null },
-                        countryId = filters.selectedCountryId,
-                        genreId = filters.selectedGenreId,
-                        order = filters.selectedOrder,
-                        type = filters.selectedType,
-                        ratingFrom = filters.ratingFrom,
-                        ratingTo = filters.ratingTo,
-                        yearFrom = filters.yearFrom,
-                        yearTo = filters.yearTo,
-                        page = nextPage
-                    )
+                    fetchKinoPage(nextPage)
                 }
-            }.onSuccess { nextItems ->
+            }.onSuccess { first ->
+                var page = first
+                var pageNum = nextPage
+                var guard = 0
+                while (page.items.isEmpty() && hasMorePages(pageNum, page.totalPages, false) && guard < 5) {
+                    pageNum++
+                    page = runCatching { fetchKinoPage(pageNum) }.getOrNull() ?: break
+                    guard++
+                }
+                val nextItems = page.items
                 val merged = (uiState.items + nextItems).distinctBy { it.kinopoiskId }
                 uiState = uiState.copy(
                     loadingMore = false,
+                    // Успешная догрузка гасит залипшую ошибку: иначе одна упавшая
+                    // страница навсегда заменяла сетку ErrorCard.
+                    error = null,
                     items = merged,
-                    currentPage = if (nextItems.isEmpty()) uiState.currentPage else nextPage,
-                    hasMore = nextItems.isNotEmpty()
+                    currentPage = if (nextItems.isEmpty()) uiState.currentPage else pageNum,
+                    // Конец выдачи — по счётчику сервера: пустая после клиентских
+                    // фильтров страница концом не является (см. hasMorePages).
+                    // Пусто после добора — останавливаемся, а не висим в тупике.
+                    hasMore = if (nextItems.isEmpty()) false else hasMorePages(pageNum, page.totalPages, true)
                 )
             }.onFailure { ex ->
                 uiState = uiState.copy(
@@ -5624,6 +5791,7 @@ private fun Throwable.toUiMessage(): String {
     return if (this is HttpException) {
         when (code()) {
             401 -> "Ошибка 401: проверьте валидность KP_API_KEY в local.properties"
+            402 -> "Дневной лимит запросов к Кинопоиску исчерпан. Попробуйте позже."
             429 -> "Слишком много запросов к API. Подождите и повторите попытку."
             else -> "Ошибка API (${code()})"
         }

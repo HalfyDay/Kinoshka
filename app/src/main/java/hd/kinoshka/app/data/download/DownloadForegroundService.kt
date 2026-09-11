@@ -40,7 +40,10 @@ class DownloadForegroundService : Service() {
             watching = true
             scope.launch {
                 EpisodeDownloadManager.tasks.collect { tasks ->
-                    val active = tasks.values.filter { it.phase != DownloadPhase.FAILED }
+                    // FAILED не держит сервис; PAUSED — тоже нет (скачивание стоит, прогресса нет).
+                    val active = tasks.values.filter {
+                        it.phase != DownloadPhase.FAILED && it.phase != DownloadPhase.PAUSED
+                    }
                     if (active.isEmpty()) {
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf()
@@ -56,7 +59,9 @@ class DownloadForegroundService : Service() {
     private fun startAsForeground() {
         val notification = DownloadNotifications.build(
             this,
-            EpisodeDownloadManager.tasks.value.values.filter { it.phase != DownloadPhase.FAILED }
+            EpisodeDownloadManager.tasks.value.values.filter {
+                it.phase != DownloadPhase.FAILED && it.phase != DownloadPhase.PAUSED
+            }
         )
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(
@@ -160,17 +165,6 @@ object DownloadNotifications {
 
     fun build(context: Context, activeTasks: List<DownloadTaskState>): Notification {
         ensureChannel(context)
-        val current = activeTasks.firstOrNull { it.phase == DownloadPhase.DOWNLOADING }
-            ?: activeTasks.first()
-        val queued = activeTasks.count { it.phase == DownloadPhase.QUEUED }
-
-        val phaseText = when (current.phase) {
-            DownloadPhase.QUEUED -> "в очереди"
-            DownloadPhase.RESOLVING -> "поиск ссылки…"
-            DownloadPhase.DOWNLOADING -> downloadProgressText(current)
-            else -> ""
-        }
-
         // Тап по уведомлению открывает страницу «Загрузки»; SINGLE_TOP доставляет интент
         // в живую MainActivity через onNewIntent вместо стека копий активити.
         val contentIntent = PendingIntent.getActivity(
@@ -181,6 +175,26 @@ object DownloadNotifications {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        // Пауза сняла все активные задачи, а сервис ещё останавливается: заглушка вместо краша first().
+        val current = activeTasks.firstOrNull { it.phase == DownloadPhase.DOWNLOADING }
+            ?: activeTasks.firstOrNull()
+            ?: return Notification.Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentTitle("Загрузки на паузе")
+                .setContentText("Нажмите «Продолжить все» на странице загрузок")
+                .setContentIntent(contentIntent)
+                .build()
+        val queued = activeTasks.count { it.phase == DownloadPhase.QUEUED }
+
+        val phaseText = when (current.phase) {
+            DownloadPhase.QUEUED -> "в очереди"
+            DownloadPhase.RESOLVING -> "поиск ссылки…"
+            DownloadPhase.DOWNLOADING -> downloadProgressText(current)
+            DownloadPhase.PAUSED -> "на паузе"
+            else -> ""
+        }
 
         val builder = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)

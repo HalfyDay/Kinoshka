@@ -28,11 +28,16 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -57,6 +62,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.download.DownloadBridges
@@ -83,13 +89,16 @@ import hd.kinoshka.app.data.playback.MovieNativeLauncher.NativeLaunchPayload
 import hd.kinoshka.app.data.source.AniStarResolver
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.KodikMovieParser
+import hd.kinoshka.app.data.source.RutrackerResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
  * Шит загрузки на странице тайтла. Две вкладки:
- *  «Торренты» — агрегатор раздач (AniLiberty + AniStar для аниме, Rutor для фильмов/сериалов)
+ *  «Торренты» — агрегатор раздач (AniLiberty + AniStar + Rutor для аниме,
+ *  Rutor + Rutracker для фильмов/сериалов; Rutracker требует входа — логин
+ *  прямо в шите, пароль не хранится)
  *  с подробной информацией (диапазон серий, качество, вес, сиды, дата) и отдачей magnet/.torrent
  *  во внешний клиент;
  *  «В приложение» — скачивание серий/озвучек в офлайн-библиотеку приложения (EpisodeDownloadManager).
@@ -161,11 +170,18 @@ private fun TorrentsTab(
     displayTitle: String
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var anilibertyLinks by remember { mutableStateOf<List<AnimeStreamResolver.TorrentLink>>(emptyList()) }
     var anistarLinks by remember { mutableStateOf<List<AnimeStreamResolver.TorrentLink>>(emptyList()) }
     var rutorLinks by remember { mutableStateOf<List<AnimeStreamResolver.TorrentLink>>(emptyList()) }
+    var rutrackerLinks by remember { mutableStateOf<List<AnimeStreamResolver.TorrentLink>>(emptyList()) }
     var anilibertyDone by remember { mutableStateOf(false) }
     var anistarDone by remember { mutableStateOf(false) }
+    var rutorDone by remember { mutableStateOf(false) }
+    var rutrackerDone by remember { mutableStateOf(false) }
+    var rutrackerLoggedIn by remember { mutableStateOf(RutrackerResolver.isLoggedIn()) }
+    var rutrackerUser by remember { mutableStateOf(RutrackerResolver.savedUsername()) }
+    var showRutrackerLogin by remember { mutableStateOf(false) }
 
     // Результаты показываются по мере готовности источников, как в пикере озвучек.
     LaunchedEffect(item.kinopoiskId, isAnime) {
@@ -195,46 +211,214 @@ private fun TorrentsTab(
                         }
                     anistarDone = true
                 }
+                launch {
+                    rutorLinks = AnimeStreamResolver.fetchFilmTorrents(displayTitle, null)
+                    rutorDone = true
+                }
             } else {
-                rutorLinks = AnimeStreamResolver.fetchFilmTorrents(displayTitle, item.year?.toString())
+                launch {
+                    rutorLinks = AnimeStreamResolver.fetchFilmTorrents(displayTitle, item.year?.toString())
+                    rutorDone = true
+                }
             }
         }
     }
 
-    val links = if (isAnime) anilibertyLinks + anistarLinks else rutorLinks
-    val settled = if (isAnime) anilibertyDone && anistarDone else true
+    // Rutracker отдельно: требует логин, перезапускается после входа/выхода
+    // без дёргания остальных источников.
+    LaunchedEffect(item.kinopoiskId, isAnime, rutrackerLoggedIn) {
+        rutrackerDone = false
+        withContext(Dispatchers.IO) {
+            if (RutrackerResolver.isLoggedIn()) {
+                val queries = if (isAnime) {
+                    AnimeStreamResolver.buildAnimeSearchQueries(displayTitle)
+                } else {
+                    val yearQuery = item.year?.let { "$displayTitle $it" }
+                    listOfNotNull(yearQuery, displayTitle)
+                }
+                rutrackerLinks = RutrackerResolver.searchAll(queries)
+            } else {
+                rutrackerLinks = emptyList()
+            }
+            rutrackerDone = true
+        }
+    }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        if (links.isEmpty()) {
-            item {
-                EmptyTorrentsHint(isAnime = isAnime, settled = settled)
-            }
-        } else {
-            items(
-                links,
-                key = { "${it.source}:${it.torrentUrl ?: it.magnet}:${it.quality}:${it.size}" }
-            ) { link ->
-                TorrentRow(
-                    link = link,
-                    onOpen = { uri ->
-                        runCatching {
-                            context.startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            )
+    val links = if (isAnime) anilibertyLinks + anistarLinks + rutorLinks + rutrackerLinks
+    else rutorLinks + rutrackerLinks
+    val settled = if (isAnime) anilibertyDone && anistarDone && rutorDone && rutrackerDone
+    else rutorDone && rutrackerDone
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (rutrackerLoggedIn) {
+            RutrackerStatusRow(
+                username = rutrackerUser,
+                onLogout = {
+                    scope.launch(Dispatchers.IO) { RutrackerResolver.logout() }
+                    rutrackerLoggedIn = false
+                    rutrackerUser = null
+                    rutrackerLinks = emptyList()
+                }
+            )
+        } else if (rutrackerDone) {
+            RutrackerLoginHint(onLoginClick = { showRutrackerLogin = true })
+        }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (links.isEmpty()) {
+                item {
+                    EmptyTorrentsHint(
+                        isAnime = isAnime,
+                        settled = settled,
+                        rutrackerLoggedIn = rutrackerLoggedIn
+                    )
+                }
+            } else {
+                items(
+                    links,
+                    key = { "${it.source}:${it.torrentUrl ?: it.magnet}:${it.quality}:${it.size}" }
+                ) { link ->
+                    TorrentRow(
+                        link = link,
+                        onOpen = { uri ->
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }
                         }
-                    }
-                )
+                    )
+                }
+                item { Spacer(modifier = Modifier.height(24.dp)) }
             }
-            item { Spacer(modifier = Modifier.height(24.dp)) }
+        }
+    }
+
+    if (showRutrackerLogin) {
+        RutrackerLoginDialog(
+            initialLogin = rutrackerUser.orEmpty(),
+            onDismiss = { showRutrackerLogin = false },
+            onLoggedIn = { username ->
+                showRutrackerLogin = false
+                rutrackerLoggedIn = true
+                rutrackerUser = username
+            }
+        )
+    }
+}
+
+@Composable
+private fun RutrackerLoginHint(onLoginClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Rutracker — раздачи после входа",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onLoginClick) { Text("Войти") }
         }
     }
 }
 
 @Composable
-private fun EmptyTorrentsHint(isAnime: Boolean, settled: Boolean) {
+private fun RutrackerStatusRow(username: String?, onLogout: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "Rutracker · ${username ?: "вход выполнен"}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        TextButton(onClick = onLogout) { Text("Выйти") }
+    }
+}
+
+@Composable
+private fun RutrackerLoginDialog(
+    initialLogin: String,
+    onDismiss: () -> Unit,
+    onLoggedIn: (String) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var login by remember { mutableStateOf(initialLogin) }
+    var password by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Вход в Rutracker") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Логин нужен только трекеру: пароль не хранится, сохраняется лишь сессия.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = login,
+                    onValueChange = { login = it; error = null },
+                    label = { Text("Логин") },
+                    singleLine = true,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it; error = null },
+                    label = { Text("Пароль") },
+                    singleLine = true,
+                    enabled = !busy,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                error?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy && login.isNotBlank() && password.isNotEmpty(),
+                onClick = {
+                    busy = true
+                    error = null
+                    val u = login.trim()
+                    val p = password
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) { RutrackerResolver.login(u, p) }
+                        busy = false
+                        if (result.ok) onLoggedIn(u) else error = result.message
+                    }
+                }
+            ) { Text(if (busy) "Входим…" else "Войти") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Отмена") }
+        }
+    )
+}
+
+@Composable
+private fun EmptyTorrentsHint(isAnime: Boolean, settled: Boolean, rutrackerLoggedIn: Boolean) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = 40.dp, start = 8.dp, end = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -255,7 +439,13 @@ private fun EmptyTorrentsHint(isAnime: Boolean, settled: Boolean) {
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = if (isAnime) "Источники: AniLiberty, AniStar" else "Источник: Rutor",
+                text = if (isAnime) {
+                    "Источники: AniLiberty, AniStar, Rutor" +
+                        if (rutrackerLoggedIn) ", Rutracker" else " · Rutracker — нужен вход выше"
+                } else {
+                    "Источники: Rutor" +
+                        if (rutrackerLoggedIn) ", Rutracker" else " · Rutracker — нужен вход выше"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -421,6 +611,7 @@ private fun DownloadTaskRow(task: DownloadTaskState) {
                         DownloadPhase.QUEUED -> "В очереди"
                         DownloadPhase.RESOLVING -> "Поиск ссылки…"
                         DownloadPhase.DOWNLOADING -> "Скачивание"
+                        DownloadPhase.PAUSED -> "На паузе"
                         DownloadPhase.DONE -> "Готово"
                         DownloadPhase.FAILED -> "Ошибка"
                     } + " · ${task.episodeLabel} · ${task.translationTitle}",
@@ -441,6 +632,15 @@ private fun DownloadTaskRow(task: DownloadTaskState) {
                         }
                     }
                     else -> {
+                        if (task.phase == DownloadPhase.PAUSED) {
+                            IconButton(onClick = { EpisodeDownloadManager.resume(task.key) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = "Продолжить", modifier = Modifier.size(18.dp))
+                            }
+                        } else {
+                            IconButton(onClick = { EpisodeDownloadManager.pause(task.key) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Pause, contentDescription = "Приостановить", modifier = Modifier.size(18.dp))
+                            }
+                        }
                         IconButton(onClick = { EpisodeDownloadManager.cancel(task.key) }, modifier = Modifier.size(28.dp)) {
                             Icon(Icons.Default.Close, contentDescription = "Отменить", modifier = Modifier.size(18.dp))
                         }

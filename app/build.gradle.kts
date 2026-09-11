@@ -85,6 +85,12 @@ android {
         viewBinding = true
     }
 
+    testOptions {
+        // android.util.Log в JVM-тестах: возвращать дефолты вместо "not mocked"
+        // (KLog дёргается из тестируемого кода — пагинатор, резолверы).
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

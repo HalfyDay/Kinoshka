@@ -40,7 +40,7 @@ data class OfflineEpisode(
 }
 
 /** Фаза активной задачи скачивания (список активных задач живёт только в памяти процесса). */
-enum class DownloadPhase { QUEUED, RESOLVING, DOWNLOADING, DONE, FAILED }
+enum class DownloadPhase { QUEUED, RESOLVING, DOWNLOADING, PAUSED, DONE, FAILED }
 
 /** Снимок активной задачи для UI (прогресс, отмена). */
 data class DownloadTaskState(
@@ -61,7 +61,9 @@ data class DownloadTaskState(
     val speedBytesPerSec: Long = 0,
     /** true, когда bytesTotal для HLS оценён по среднему размеру сегмента, а не отдан сервером. */
     val sizeEstimated: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    /** Обложка тайтла для группировки активных загрузок; null — плейсхолдер. */
+    val posterUrl: String? = null
 )
 
 /** Процент выполнения 0..100: по сегментам (точнее на старте), иначе по байтам; null — total неизвестен. */

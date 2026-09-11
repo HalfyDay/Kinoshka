@@ -372,6 +372,36 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         prefs.putString(shikimoriRatesSnapshotKey, gson.toJson(snapshot)).apply()
     }
 
+    private val adultRecheckV2Key = "adult_recheck_v2_done"
+
+    /** Разовый перепрогон жанровой разметки 18+ уже выполнялся. */
+    fun needsAdultRecheckV2(): Boolean = !prefs.getBoolean(adultRecheckV2Key, false)
+
+    fun markAdultRecheckV2Done() {
+        prefs.putBoolean(adultRecheckV2Key, true).apply()
+    }
+
+    /**
+     * Разовый сброс жанровой разметки 18+: записи с genreChecked=true пропускаются
+     * проверками навсегда, а старые вердикты могли быть ложными (нечёткий матчинг
+     * названий — «Акира»). Сбрасываем только флаг (isAdult живёт до пересчёта),
+     * батч markAdultByGenre в том же прогоне выставит вердикты авторитетно.
+     * Возвращает число затронутых записей.
+     */
+    fun resetAdultGenreChecks(): Int = synchronized(BLOB_LOCK) {
+        val cache = getShikimoriAnimeCache()
+        if (cache.isEmpty()) return 0
+        var touched = 0
+        val updated = cache.mapValues { (_, entry) ->
+            if (entry.genreChecked) {
+                touched++
+                entry.copy(genreChecked = false)
+            } else entry
+        }
+        if (touched > 0) saveShikimoriAnimeCache(updated)
+        touched
+    }
+
     /**
      * Кулдаун фоновой добивки деталей Shikimori (wall-clock мс): после серии 429 префетч
      * останавливается и молчит до метки — иначе отравленные тайтлы (429 → ничего не
@@ -611,6 +641,55 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     fun setFpsCounterEnabled(enabled: Boolean) {
         prefs.putBoolean(showFpsCounterKey, enabled).apply()
     }
+
+    // ---- Источники видео: один выключатель (экран «Источники»): выключен —
+    // значит не запрашивается и не показывается. Отдельного «скрыть, но оставить
+    // работать» больше нет: старые скрытые записи при чтении считаются выключенными.
+
+    private val disabledSourcesKey = "disabled_sources_csv"
+    private val hiddenSourcesKey = "hidden_sources_csv"
+
+    private fun readIdSet(key: String): MutableSet<String> =
+        (prefs.getString(key, null) ?: "")
+            .split(',')
+            .map { it.trim().uppercase() }
+            .filter { it.isNotEmpty() }
+            .toMutableSet()
+
+    private fun writeIdSet(key: String, ids: Set<String>) {
+        val canonical = ids.map { it.trim().uppercase() }.filter { it.isNotEmpty() }.sorted()
+        if (canonical.isEmpty()) prefs.remove(key).apply()
+        else prefs.putString(key, canonical.joinToString(",")).apply()
+    }
+
+    /** Источники, чья работа выключена (не запрашиваются и не показываются). */
+    fun getDisabledSources(): Set<String> =
+        readIdSet(disabledSourcesKey) + readIdSet(hiddenSourcesKey)
+
+    /** Устарело: скрытие сложено в выключение, метод оставлен для совместимости. */
+    fun getHiddenSources(): Set<String> = readIdSet(hiddenSourcesKey)
+
+    fun isSourceEnabled(id: String): Boolean =
+        getDisabledSources().none { it == id.trim().uppercase() }
+
+    /** Устарело: видимость теперь совпадает с работой. */
+    fun isSourceVisible(id: String): Boolean = isSourceEnabled(id)
+
+    fun setSourceEnabled(id: String, enabled: Boolean) = synchronized(BLOB_LOCK) {
+        val key = id.trim().uppercase()
+        if (key.isEmpty()) return
+        val ids = readIdSet(disabledSourcesKey)
+        if (enabled) ids.remove(key) else ids.add(key)
+        writeIdSet(disabledSourcesKey, ids)
+        // Чистим устаревший флаг скрытия, чтобы сеты не расходились.
+        if (enabled) {
+            val hidden = readIdSet(hiddenSourcesKey)
+            if (hidden.remove(key)) writeIdSet(hiddenSourcesKey, hidden)
+        }
+    }
+
+    /** Устарело: перенаправлено на [setSourceEnabled] (один выключатель). */
+    fun setSourceVisible(id: String, visible: Boolean) = setSourceEnabled(id, visible)
 
     fun getSavedContentType(): hd.kinoshka.app.ui.screens.ContentType {
         val name = prefs.getString("saved_content_type", null) ?: return hd.kinoshka.app.ui.screens.ContentType.FILMS

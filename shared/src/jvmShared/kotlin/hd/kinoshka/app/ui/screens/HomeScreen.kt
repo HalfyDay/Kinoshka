@@ -144,6 +144,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import hd.kinoshka.app.data.model.FilterItem
 import hd.kinoshka.app.data.model.ANIME_GENRE_NAME
+import hd.kinoshka.app.data.model.CARTOON_CONTENT_TYPE
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.outlined.List
@@ -2209,13 +2210,16 @@ private fun DiscoverContent(
     // Витрина аниме: «Продолжить просмотр» из библиотеки (дубли каруселей
     // вычитаем, как в VM для «Скоро выйдет»); нечего продолжать — фолбэк
     // на «Скоро выйдет». У кино витрина без изменений («Обсуждаемое»).
+    // «Скрывать российские» действует и здесь, и в секциях ниже — иначе
+    // настройка не работала на главной странице Обзор.
     val animeHero: Pair<List<FilmItem>, String> = remember(
-        state.library, state.overviewAnimeSections, state.overviewAnimeHero
+        state.library, state.overviewAnimeSections, state.overviewAnimeHero, state.hideRussianContent
     ) {
         val exclude = state.overviewAnimeSections.flatMapTo(mutableSetOf()) { s ->
             s.items.map { it.kinopoiskId }
         }
         val watching = state.library
+            .filterByRussian(state.hideRussianContent)
             .filter {
                 (it.status == UserFilmStatus.WATCHING || it.status == UserFilmStatus.REWATCHING) &&
                     it.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET &&
@@ -2225,12 +2229,29 @@ private fun DiscoverContent(
             .take(5)
             .map { it.toHeroFilmItem() }
         if (watching.isNotEmpty()) watching to "Продолжить просмотр"
-        else state.overviewAnimeHero to "Скоро выйдет"
+        else {
+            val fallback = if (state.hideRussianContent) {
+                state.overviewAnimeHero.filterNot { it.isRussianContent() }
+            } else state.overviewAnimeHero
+            fallback to "Скоро выйдет"
+        }
     }
-    if (!isSearchMode && !isCategoryBrowse && !isNamedSection && (overviewSections.isNotEmpty() || overviewLoading || overviewError != null)) {
+    val filmHero = remember(state.overviewFilmHero, state.hideRussianContent) {
+        if (state.hideRussianContent) state.overviewFilmHero.filterNot { it.isRussianContent() }
+        else state.overviewFilmHero
+    }
+    // Пустые после фильтра секции выкидываем, чтобы не оставалось пустых каруселей.
+    val visibleSections = remember(overviewSections, state.hideRussianContent) {
+        if (!state.hideRussianContent) overviewSections
+        else overviewSections.mapNotNull { section ->
+            val items = section.items.filterNot { it.isRussianContent() }
+            if (items.isEmpty()) null else section.copy(items = items)
+        }
+    }
+    if (!isSearchMode && !isCategoryBrowse && !isNamedSection && (visibleSections.isNotEmpty() || overviewLoading || overviewError != null)) {
         OverviewFeed(
             state = state,
-            sections = overviewSections,
+            sections = visibleSections,
             listState = feedListState,
             loading = overviewLoading,
             error = overviewError,
@@ -2250,7 +2271,7 @@ private fun DiscoverContent(
             heroItems = if (state.contentType == ContentType.ANIME) {
                 animeHero.first
             } else {
-                state.overviewFilmHero
+                filmHero
             },
             heroTitle = if (state.contentType == ContentType.ANIME) animeHero.second else "Обсуждаемое"
         )
@@ -4375,7 +4396,7 @@ private fun SearchFilterBottomSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = if (contentType == ContentType.ANIME) "Фильтры аниме" else "Фильтры поиска",
+                    text = "Фильтры поиска",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -4509,35 +4530,31 @@ private fun SearchFilterBottomSheet(
                         }
                     }
 
-                    // 6. Жанр
+                    // 6. Жанры (мультиселект: повторный тап снимает выбор)
                     Column(modifier = Modifier.animateContentSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Жанр", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Text("Жанры", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                             TextButton(onClick = { isGenresExpanded = !isGenresExpanded }, contentPadding = PaddingValues(0.dp)) {
                                 Text(if (isGenresExpanded) "Свернуть ▲" else "Все (${shikimoriGenres.size}) ▼", style = MaterialTheme.typography.labelSmall)
                             }
-                        }
-                        val sortedShikimoriGenres = remember(shikimoriGenres, tempState.animeGenreId) {
-                            if (tempState.animeGenreId == null) shikimoriGenres
-                            else shikimoriGenres.sortedByDescending { it.id == tempState.animeGenreId }
                         }
                         if (!isGenresExpanded) {
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 item {
                                     FilterChip(
-                                        selected = tempState.animeGenreId == null,
-                                        onClick = { tempState = tempState.copy(animeGenreId = null) },
+                                        selected = tempState.animeGenreIds.isEmpty(),
+                                        onClick = { tempState = tempState.copy(animeGenreIds = emptySet()) },
                                         label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
                                     )
                                 }
-                                items(sortedShikimoriGenres) { genre ->
+                                items(shikimoriGenres) { genre ->
                                     FilterChip(
-                                        selected = tempState.animeGenreId == genre.id,
-                                        onClick = { tempState = tempState.copy(animeGenreId = genre.id) },
+                                        selected = genre.id in tempState.animeGenreIds,
+                                        onClick = { tempState = tempState.copy(animeGenreIds = toggleGenreId(tempState.animeGenreIds, genre.id)) },
                                         label = { Text(genre.genre.orEmpty(), style = MaterialTheme.typography.bodySmall) }
                                     )
                                 }
@@ -4545,14 +4562,14 @@ private fun SearchFilterBottomSheet(
                         } else {
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 FilterChip(
-                                    selected = tempState.animeGenreId == null,
-                                    onClick = { tempState = tempState.copy(animeGenreId = null) },
+                                    selected = tempState.animeGenreIds.isEmpty(),
+                                    onClick = { tempState = tempState.copy(animeGenreIds = emptySet()) },
                                     label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
                                 )
-                                sortedShikimoriGenres.forEach { genre ->
+                                shikimoriGenres.forEach { genre ->
                                     FilterChip(
-                                        selected = tempState.animeGenreId == genre.id,
-                                        onClick = { tempState = tempState.copy(animeGenreId = genre.id) },
+                                        selected = genre.id in tempState.animeGenreIds,
+                                        onClick = { tempState = tempState.copy(animeGenreIds = toggleGenreId(tempState.animeGenreIds, genre.id)) },
                                         label = { Text(genre.genre.orEmpty(), style = MaterialTheme.typography.bodySmall) }
                                     )
                                 }
@@ -4563,7 +4580,9 @@ private fun SearchFilterBottomSheet(
                     // Фильмы / Сериалы
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("Тип контента", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        val rawTypes = listOf("ALL" to "Все", "FILM" to "Фильмы", "TV_SERIES" to "Сериалы")
+                        // Мультфильмы — псевдо-тип: API его не знает, репозиторий
+                        // подменяет серверу ALL и отбирает по жанру (см. filterCartoons).
+                        val rawTypes = listOf("ALL" to "Все", "FILM" to "Фильмы", "TV_SERIES" to "Сериалы", CARTOON_CONTENT_TYPE to "Мультфильмы")
                         val types = remember(tempState.selectedType) {
                             listOf(rawTypes.first { it.first == tempState.selectedType }) + rawTypes.filter { it.first != tempState.selectedType }
                         }
@@ -4663,28 +4682,24 @@ private fun SearchFilterBottomSheet(
                     if (sortedGenres.isNotEmpty()) {
                         Column(modifier = Modifier.animateContentSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("Жанр", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                Text("Жанры", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                 TextButton(onClick = { isGenresExpanded = !isGenresExpanded }, contentPadding = PaddingValues(0.dp)) {
                                     Text(if (isGenresExpanded) "Свернуть ▲" else "Все (${sortedGenres.size}) ▼", style = MaterialTheme.typography.labelSmall)
                                 }
-                            }
-                            val displayGenres = remember(sortedGenres, tempState.selectedGenreId) {
-                                if (tempState.selectedGenreId == null) sortedGenres
-                                else sortedGenres.sortedByDescending { it.id == tempState.selectedGenreId }
                             }
                             if (!isGenresExpanded) {
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     item {
                                         FilterChip(
-                                            selected = tempState.selectedGenreId == null,
-                                            onClick = { tempState = tempState.copy(selectedGenreId = null) },
+                                            selected = tempState.selectedGenreIds.isEmpty(),
+                                            onClick = { tempState = tempState.copy(selectedGenreIds = emptySet()) },
                                             label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
                                         )
                                     }
-                                    items(displayGenres) { genre ->
+                                    items(sortedGenres) { genre ->
                                         FilterChip(
-                                            selected = tempState.selectedGenreId == genre.id,
-                                            onClick = { tempState = tempState.copy(selectedGenreId = genre.id) },
+                                            selected = genre.id in tempState.selectedGenreIds,
+                                            onClick = { tempState = tempState.copy(selectedGenreIds = toggleGenreId(tempState.selectedGenreIds, genre.id)) },
                                             label = { Text(genre.genre.orEmpty().replaceFirstChar { char -> char.uppercase() }, style = MaterialTheme.typography.bodySmall) }
                                         )
                                     }
@@ -4692,14 +4707,14 @@ private fun SearchFilterBottomSheet(
                             } else {
                                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     FilterChip(
-                                        selected = tempState.selectedGenreId == null,
-                                        onClick = { tempState = tempState.copy(selectedGenreId = null) },
+                                        selected = tempState.selectedGenreIds.isEmpty(),
+                                        onClick = { tempState = tempState.copy(selectedGenreIds = emptySet()) },
                                         label = { Text("Все", style = MaterialTheme.typography.bodySmall) }
                                     )
-                                    displayGenres.forEach { genre ->
+                                    sortedGenres.forEach { genre ->
                                         FilterChip(
-                                            selected = tempState.selectedGenreId == genre.id,
-                                            onClick = { tempState = tempState.copy(selectedGenreId = genre.id) },
+                                            selected = genre.id in tempState.selectedGenreIds,
+                                            onClick = { tempState = tempState.copy(selectedGenreIds = toggleGenreId(tempState.selectedGenreIds, genre.id)) },
                                             label = { Text(genre.genre.orEmpty().replaceFirstChar { char -> char.uppercase() }, style = MaterialTheme.typography.bodySmall) }
                                         )
                                     }

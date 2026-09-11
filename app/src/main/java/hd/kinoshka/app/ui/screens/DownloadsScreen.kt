@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -75,7 +76,9 @@ fun DownloadsScreen(
     val context = LocalContext.current
     val tasks by EpisodeDownloadManager.tasks.collectAsState()
     val library by EpisodeDownloadManager.library.collectAsState()
+    val pausedAll by EpisodeDownloadManager.paused.collectAsState()
     var confirmClearAll by remember { mutableStateOf(false) }
+    var confirmCancelAll by remember { mutableStateOf(false) }
 
     fun play(entry: OfflineEpisode) {
         val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -92,31 +95,62 @@ fun DownloadsScreen(
             .fillMaxSize()
             .statusBarsPadding()
     ) {
+        val activeTasks = tasks.values.sortedBy { it.title + it.episodeNumber.toString() }
         SettingsHeaderCard(
             title = "Загрузки",
             subtitle = "${library.size} сер. · ${formatBytes(library.sumOf { it.sizeBytes })}",
             onBack = onBack,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-            action = if (library.isNotEmpty()) {
+            action = if (activeTasks.isNotEmpty() || library.isNotEmpty()) {
                 {
-                    IconButton(onClick = { confirmClearAll = true }) {
-                        Icon(
-                            Icons.Default.DeleteSweep,
-                            contentDescription = "Очистить всё",
-                            tint = MaterialTheme.colorScheme.error
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (activeTasks.isNotEmpty()) {
+                            IconButton(
+                                onClick = {
+                                    if (pausedAll) EpisodeDownloadManager.resumeAll()
+                                    else EpisodeDownloadManager.pauseAll()
+                                }
+                            ) {
+                                Icon(
+                                    if (pausedAll) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                    contentDescription = if (pausedAll) "Продолжить все" else "Остановить все"
+                                )
+                            }
+                            IconButton(onClick = { confirmCancelAll = true }) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Отменить все",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                        if (library.isNotEmpty()) {
+                            IconButton(onClick = { confirmClearAll = true }) {
+                                Icon(
+                                    Icons.Default.DeleteSweep,
+                                    contentDescription = "Очистить всё",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
                     }
                 }
             } else null
         )
 
-        val activeTasks = tasks.values.sortedBy { it.title + it.episodeNumber.toString() }
         val grouped = library
             .groupBy { it.itemKey to it.title }
             .map { (key, episodes) ->
                 Triple(key, key.second, episodes.sortedBy { it.episodeNumber })
             }
             .sortedByDescending { it.third.maxOf { it.downloadedAt } }
+
+        val activeGrouped = activeTasks
+            .groupBy { it.itemKey to it.title }
+            .map { (key, episodes) ->
+                Triple(key, key.second, episodes.sortedBy { it.episodeNumber })
+            }
+            .sortedBy { it.second }
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -125,32 +159,95 @@ fun DownloadsScreen(
         ) {
             if (activeTasks.isNotEmpty()) {
                 item(key = "active-header") {
-                    Text(
-                        text = "Скачиваются",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 2.dp)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 8.dp, bottom = 2.dp)
+                    ) {
+                        Text(
+                            text = "Скачиваются",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (pausedAll) {
+                            Text(
+                                text = "на паузе",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
-                items(activeTasks.size, key = { "task:${activeTasks[it].key}" }) { index ->
-                    val task = activeTasks[index]
-                    ActiveDownloadRow(
-                        title = "${task.title} · ${task.episodeLabel}",
-                        subtitle = "${task.translationTitle} · " + when (task.phase) {
-                            DownloadPhase.QUEUED -> "в очереди"
-                            DownloadPhase.RESOLVING -> "поиск ссылки…"
-                            DownloadPhase.DOWNLOADING -> downloadProgressText(task)
-                            DownloadPhase.DONE -> "готово"
-                            DownloadPhase.FAILED -> task.error ?: "ошибка"
-                        },
-                        progress = task.progressPercent?.let { it / 100f }
-                            .takeIf { task.phase == DownloadPhase.DOWNLOADING },
-                        downloading = task.phase == DownloadPhase.DOWNLOADING,
-                        failed = task.phase == DownloadPhase.FAILED,
-                        onCancel = { EpisodeDownloadManager.cancel(task.key) },
-                        onRetry = { EpisodeDownloadManager.retry(task.key) }
-                    )
+                activeGrouped.forEach { (key, title, episodes) ->
+                    item(key = "active-group:${key.first}") {
+                        val filmId = downloadItemFilmId(key.first)
+                        val poster = episodes.firstOrNull { it.posterUrl != null }?.posterUrl
+                        val pausedCount = episodes.count { it.phase == DownloadPhase.PAUSED }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 2.dp)
+                                .let { m -> if (filmId != null) m.clickable { onOpenTitle(filmId) } else m },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (poster != null) {
+                                KinoshkaAsyncImage(
+                                    model = poster,
+                                    contentDescription = title,
+                                    modifier = Modifier
+                                        .size(width = 44.dp, height = 66.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${episodes.size} сер." +
+                                        if (pausedCount == episodes.size) " · на паузе" else "",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    items(episodes.size, key = { "task:${episodes[it].key}" }) { index ->
+                        val task = episodes[index]
+                        ActiveDownloadRow(
+                            title = task.episodeLabel,
+                            subtitle = "${task.translationTitle} · " + when (task.phase) {
+                                DownloadPhase.QUEUED -> "в очереди"
+                                DownloadPhase.RESOLVING -> "поиск ссылки…"
+                                DownloadPhase.DOWNLOADING -> downloadProgressText(task)
+                                DownloadPhase.PAUSED -> "на паузе"
+                                DownloadPhase.DONE -> "готово"
+                                DownloadPhase.FAILED -> task.error ?: "ошибка"
+                            },
+                            progress = task.progressPercent?.let { it / 100f }
+                                .takeIf { task.phase == DownloadPhase.DOWNLOADING },
+                            downloading = task.phase == DownloadPhase.DOWNLOADING,
+                            failed = task.phase == DownloadPhase.FAILED,
+                            paused = task.phase == DownloadPhase.PAUSED,
+                            onCancel = { EpisodeDownloadManager.cancel(task.key) },
+                            onRetry = { EpisodeDownloadManager.retry(task.key) },
+                            onPauseResume = when (task.phase) {
+                                DownloadPhase.QUEUED,
+                                DownloadPhase.RESOLVING,
+                                DownloadPhase.DOWNLOADING -> ({ EpisodeDownloadManager.pause(task.key) })
+                                DownloadPhase.PAUSED -> ({ EpisodeDownloadManager.resume(task.key) })
+                                else -> null
+                            }
+                        )
+                    }
                 }
             }
 
@@ -312,6 +409,23 @@ fun DownloadsScreen(
             }
         )
     }
+
+    if (confirmCancelAll) {
+        AlertDialog(
+            onDismissRequest = { confirmCancelAll = false },
+            title = { Text("Отменить все загрузки?") },
+            text = { Text("Очередь будет очищена, недокачанные файлы удалены. Скачанные серии не тронуты.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    EpisodeDownloadManager.cancelAll()
+                    confirmCancelAll = false
+                }) { Text("Отменить всё", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmCancelAll = false }) { Text("Назад") }
+            }
+        )
+    }
 }
 
 /**
@@ -331,8 +445,10 @@ private fun ActiveDownloadRow(
     progress: Float?,
     downloading: Boolean,
     failed: Boolean,
+    paused: Boolean,
     onCancel: () -> Unit,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    onPauseResume: (() -> Unit)? = null
 ) {
     // Та же карточка, что у скачанной серии: круг play слева, тексты, действия
     // справа; прогресс — тонкой полосой снизу. Отличие только в иконке круга
@@ -360,7 +476,7 @@ private fun ActiveDownloadRow(
                         )
                     } else {
                         Icon(
-                            Icons.Rounded.Download,
+                            if (paused) Icons.Default.Pause else Icons.Rounded.Download,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(19.dp)
@@ -387,6 +503,14 @@ private fun ActiveDownloadRow(
                 if (failed) {
                     IconButton(onClick = onRetry, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.Refresh, contentDescription = "Повторить", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                    }
+                } else if (onPauseResume != null) {
+                    IconButton(onClick = onPauseResume, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            contentDescription = if (paused) "Продолжить" else "Приостановить",
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
                 IconButton(onClick = onCancel, modifier = Modifier.size(32.dp)) {

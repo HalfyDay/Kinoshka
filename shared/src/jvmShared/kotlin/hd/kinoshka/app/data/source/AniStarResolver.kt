@@ -65,6 +65,21 @@ object AniStarResolver {
     fun streamHeaders(): Map<String, String> =
         mapOf("User-Agent" to USER_AGENT, "Referer" to "${currentBaseKey()}/")
 
+    /**
+     * Проверка живости для экрана «Источники»: отвечает ли сам сайт (главная, HTTP 200).
+     * Полный поиск тайтла для пробы не годится — отсутствие статьи («Наруто» в каталоге
+     * может не быть) не означает мёртвый источник, а резолв при этом работает.
+     */
+    suspend fun ping(): Boolean = withContext(Dispatchers.IO) {
+        if (pingBase(currentBaseKey())) return@withContext true
+        if (refreshBase()) pingBase(currentBaseKey()) else false
+    }
+
+    private fun pingBase(base: String): Boolean {
+        val body = httpGet("$base/", referer = null) ?: return false
+        return body.isNotBlank()
+    }
+
     private fun currentBaseKey(): String = cachedBase ?: DEFAULT_BASE
 
     /**

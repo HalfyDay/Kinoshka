@@ -109,6 +109,22 @@ object HentaiStreamResolver {
         this.cacheDir = cacheDir
     }
 
+    /**
+     * Сброс in-memory кэшей 18+ (кадры, трейлеры, каталог, мемо матчинга).
+     * Вызывается экраном «Память и хранилище» после удаления дисковых файлов
+     * (hentai_frames, hanime_catalog.json) — иначе file://-кадры указывали бы
+     * на удалённые файлы до рестарта процесса.
+     */
+    fun evictMemoryCaches() {
+        trailerCache.clear()
+        framesCache.clear()
+        catalogCache = null
+        catalogFetchedAtMs = 0L
+        catalogIndex = emptyList()
+        knownHentaiMemo.clear()
+        tagsMemo.clear()
+    }
+
     /** Preferred rendition order; anything outside falls back to max height. */
     private val QUALITY_LADDER = listOf("1080p", "720p", "480p")
 
@@ -1021,13 +1037,80 @@ object HentaiStreamResolver {
         ).distinct()
         val result = queries.any { q ->
             val wanted = normalizeTitle(q)
-            wanted.isNotEmpty() && index.any { (normName, normAlt) ->
-                normalizedContains(normName, wanted) || normalizedContains(normAlt, wanted)
+            if (wanted.isEmpty()) return@any false
+            index.any { (normName, normAlt) ->
+                if (!isStrongCatalogQuery(wanted)) {
+                    // Слабое слово (имя персонажа вроде «akira», «time») — только
+                    // точное совпадение всего названия, иначе ложные хентай-вердикты.
+                    normName == wanted || normAlt == wanted
+                } else {
+                    normalizedContains(normName, wanted) || normalizedContains(normAlt, wanted)
+                }
             }
+        }
+        if (result) {
+            KLog.d(TAG, "isKnownHentai: \"${originalTitle ?: russianTitle}\" matched hentai catalog")
         }
         if (knownHentaiMemo.size > 512) knownHentaiMemo.clear()
         knownHentaiMemo[key] = result
         return result
+    }
+
+    /**
+     * Достаточно ли силён нормализованный запрос для нечёткого вхождения в каталог.
+     * Порог — как в [pickBest]: точное совпадение разрешено всегда, иначе нужна
+     * длинная фраза (≥6 latin-символов без пробелов или ≥3 CJK). Короткие одиночные
+     * слова («akira», «time», «ep») — это имена персонажей/общие слова, а не тайтлы:
+     * их containment давал ложные вердикты («Акира» — хентай).
+     */
+    fun isStrongCatalogQuery(wanted: String): Boolean {
+        if (wanted.isEmpty()) return false
+        return if (wanted.any { it.code >= 0x2E80 }) wanted.length >= 3
+        else wanted.replace(" ", "").length >= 6
+    }
+
+    /**
+     * Вердикт «это хентай» для карточки тайтла (кнопка «Смотреть»): только жанры,
+     * mpaa-категории для взрослых и каталог хентая. Возрастной ценз Кинопоиска
+     * (ratingAgeLimits 18+) маркером НЕ является — его несут и обычные R-фильмы
+     * аниме (Акира, Призрак в доспехах), которые должны идти в обычный пикер.
+     */
+    fun isHentaiTitle(
+        genreNames: List<String>,
+        ratingMpaa: String?,
+        originalTitle: String?,
+        russianTitle: String?
+    ): Boolean {
+        val hasAdultGenre = genreNames.any { genre ->
+            val n = genre.lowercase()
+            n.contains("хентай") || n.contains("hentai") || n.contains("эротик") ||
+                n.contains("для взрослых") || n.contains("18+") || n.contains("adult") ||
+                n.contains("ecchi") || n.contains("этти")
+        }
+        return hasAdultGenre ||
+            ratingMpaa?.lowercase()?.replace("-", "") in setOf("nc17", "x", "r18+", "18+", "nr") ||
+            isKnownHentai(originalTitle, russianTitle)
+    }
+
+    /**
+     * Вердикт для аниме с данными Shikimori (карточка тайтла): только сигналы
+     * Shikimori — жанр Hentai и рейтинг rx. Данные Кинопоиска (возраст 18+,
+     * R-рейтинги) и общие слова в названиях сюда не входят: R+ / 18+ носят
+     * и обычные фильмы (Акира), это не хентай.
+     */
+    fun isHentaiShikimori(
+        rating: String?,
+        genreNames: List<String>,
+        originalTitle: String?,
+        russianTitle: String?
+    ): Boolean {
+        val r = rating?.lowercase().orEmpty()
+        if (r.startsWith("rx") || r == "x" || r.contains("nc17")) return true
+        val hasAdultGenre = genreNames.any { genre ->
+            val n = genre.lowercase()
+            n.contains("хентай") || n.contains("hentai") || n.contains("эротик") || n.contains("ecchi")
+        }
+        return hasAdultGenre || isKnownHentai(originalTitle, russianTitle)
     }
 
     /** Целословное вхождение [wanted] в преднормализованной строке — без регэкспов на запись. */

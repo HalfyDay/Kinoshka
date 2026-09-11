@@ -33,7 +33,8 @@ class ThumbnailRepository(
     ) 
   }
   private val diskCacheDimension = 1024
-  private val diskJpegQuality = 100
+  // 85 вместо 100: визуально неотличимо на превью, минус ~40% веса каждого файла.
+  private val diskJpegQuality = 85
   private val memoryCache: LruCache<String, Bitmap>
   private val diskDir: File = File(context.filesDir, "thumbnails").apply { mkdirs() }
   private val ongoingOperations = ConcurrentHashMap<String, Deferred<Bitmap?>>()
