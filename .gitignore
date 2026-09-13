@@ -35,6 +35,14 @@ local.properties
 /graphify-out/
 /.kino-backup/
 /.opencode/
+# AI-агенты и локальный тулинг: в репозиторий не коммитить (приватность)
+/.claude/
+/.mimocode/
+/.zcode/
+# Убрано из трекинга: внутренние доки и дампы
+/raw/
+/kodik_extraction_method.txt
+/.zcode_ep1.bin
 # IDE-артефакты модуля desktopApp
 /desktopApp/bin/
 .tmp_decode_token.py
