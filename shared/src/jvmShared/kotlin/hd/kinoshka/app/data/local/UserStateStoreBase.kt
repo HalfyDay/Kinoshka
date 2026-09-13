@@ -446,12 +446,22 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 }
                 val key = rate.targetId + ANIME_ID_OFFSET
                 val existing = byId[key] ?: continue
+                // Пустая локалка (ни серий, ни оценки, ни заметки, ни повторов)
+                // никогда не «новее» сервера с содержимым: её updatedAt — время
+                // создания оболочки (Anixart-пул, restore, открытие карточки),
+                // а не правка. Иначе сотни оболочек 09.09 вечно перевешивали
+                // реальные серверные серии 2019–2025 и библиотека не показывала
+                // прогресс (кейс 13.09: local=0 битый новее server=14).
+                val localEp = existing.watchedEpisodes ?: 0
+                val localHasContent = localEp > 0 || (existing.userRating ?: 0) > 0 ||
+                    !existing.note.isNullOrBlank() || (existing.watchedSeasons ?: 0) > 0
+                val serverEp = rate.episodes.coerceAtLeast(0)
+                val serverHasContent = serverEp > 0 || rate.score > 0 || !rate.text.isNullOrBlank()
+                val emptyShellLoses = !localHasContent && serverHasContent
                 // Локальное новее или равно — побеждает локальное, серверное игнорируем.
-                if (rateTime <= existing.updatedAt) {
+                if (rateTime <= existing.updatedAt && !emptyShellLoses) {
                     skippedLocalNewer++
                     // Интересен только конфликт значений: молчаливое эхо пуша не логируем.
-                    val serverEp = rate.episodes.coerceAtLeast(0)
-                    val localEp = existing.watchedEpisodes ?: 0
                     if (serverEp != localEp) {
                         KLog.d(
                             "ShikimoriSync",
@@ -491,7 +501,8 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                     updated++
                     KLog.d(
                         "ShikimoriSync",
-                        "adopt: shikimoriId=${rate.targetId} ADOPT server-newer " +
+                        "adopt: shikimoriId=${rate.targetId} ADOPT " +
+                            (if (emptyShellLoses && rateTime <= existing.updatedAt) "empty-shell-fix " else "server-newer ") +
                             "ep(local=${existing.watchedEpisodes ?: 0} -> server=${rate.episodes}) " +
                             "status(${existing.status} -> $serverStatus) " +
                             "app=[${formatSyncTimeMs(existing.updatedAt)} ${existing.updatedAt}] " +
@@ -561,6 +572,57 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
     fun setHentaiVisibleInLibrary(visible: Boolean) {
         prefs.putBoolean(showHentaiInLibraryKey, visible).apply()
+    }
+
+    /**
+     * Нижнее навигационное меню (пилюля): порядок вкладок, скрытые вкладки
+     * и вибрация pull-to-refresh. Имена секций — MainSection.name (UI-слой),
+     * здесь только сырые строки: data-слой UI-тип не знает.
+     */
+    private val navOrderKey = "nav_order_csv"
+    private val navHiddenKey = "nav_hidden_csv"
+    private val navHapticsEnabledKey = "nav_haptics_enabled"
+    private val navHapticScaleKey = "nav_haptic_scale_pct"
+
+    /** Порядок вкладок по умолчанию (как исторически в пилюле). */
+    fun defaultNavOrder(): List<String> = listOf("LIBRARY", "DISCOVER", "FEED", "PROFILE")
+
+    fun getNavOrder(): List<String> {
+        val raw = prefs.getString(navOrderKey, null)?.split(",")
+            ?.map { it.trim() }?.filter { it.isNotEmpty() }
+        if (raw.isNullOrEmpty()) return defaultNavOrder()
+        // Чиним битые записи: дубли и мусор выкидываем, потерянные секции дописываем.
+        val deduped = raw.distinct().filter { it in defaultNavOrder() }
+        return deduped + defaultNavOrder().filter { it !in deduped }
+    }
+
+    fun setNavOrder(order: List<String>) {
+        val clean = order.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        prefs.putString(navOrderKey, clean.joinToString(",")).apply()
+    }
+
+    fun getNavHidden(): Set<String> {
+        return prefs.getString(navHiddenKey, null)?.split(",")
+            ?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet().orEmpty()
+    }
+
+    fun setNavHidden(hidden: Set<String>) {
+        prefs.putString(navHiddenKey, hidden.map { it.trim() }.filter { it.isNotEmpty() }.joinToString(",")).apply()
+    }
+
+    /** Вибрация сияния pull-to-refresh Библиотеки: мастер-тумблер (по умолчанию вкл). */
+    fun isNavHapticsEnabled(): Boolean = prefs.getBoolean(navHapticsEnabledKey, true)
+
+    fun setNavHapticsEnabled(enabled: Boolean) {
+        prefs.putBoolean(navHapticsEnabledKey, enabled).apply()
+    }
+
+    /** Сила вибрации 0..1 (слайдер настроек; KinoPrefs хранит проценты long). */
+    fun getNavHapticScale(): Float =
+        prefs.getLong(navHapticScaleKey, 100L).coerceIn(0L, 100L) / 100f
+
+    fun setNavHapticScale(scale: Float) {
+        prefs.putLong(navHapticScaleKey, (scale.coerceIn(0f, 1f) * 100).toLong()).apply()
     }
 
     /**
@@ -897,6 +959,9 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
      * shadow the server-side status/rating/progress everywhere the profile is read directly.
      * The `updatedAt` of an existing profile is preserved — pressing "Watch" is not a user
      * edit, and bumping it floated the title to the top of the DATE_ADDED library sort.
+     * The `importSource` is preserved for the same reason: merely opening details must not
+     * convert an Anixart/restore shell into a pushable profile (кейс 13.09: оболочка 63403
+     * стала importSource=null открытием и затёрла серверный прогресс 1 серией в 0).
      */
     fun addFromDetails(item: FilmDetails, seed: UserFilmProfile? = null) = synchronized(BLOB_LOCK) {
         val title = item.nameRu ?: item.nameOriginal ?: "Без названия"
@@ -922,6 +987,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
                 totalEpisodesInSeason = existing?.totalEpisodesInSeason ?: seed?.totalEpisodesInSeason,
                 totalSeasons = existing?.totalSeasons ?: seed?.totalSeasons,
                 totalEpisodes = existing?.totalEpisodes ?: seed?.totalEpisodes,
+                importSource = existing?.importSource,
                 updatedAt = existing?.updatedAt
                     ?: seed?.updatedAt?.takeIf { it > 0 }
                     ?: System.currentTimeMillis()

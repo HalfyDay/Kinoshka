@@ -34,6 +34,7 @@ actual fun KinoRemoteImage(
     useOriginalSize: Boolean,
     fadeDurationMs: Int,
     fallbackModel: Any?,
+    transparentWhileLoading: Boolean,
 ) {
     val context = LocalContext.current
 
@@ -64,7 +65,11 @@ actual fun KinoRemoteImage(
         modifier = modifier,
         contentScale = contentScale,
         loading = {
-            Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHigh))
+            if (transparentWhileLoading) {
+                Box(modifier = Modifier.fillMaxSize())
+            } else {
+                Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHigh))
+            }
         },
         success = { state: AsyncImagePainter.State.Success ->
             var visible by remember(state.painter) { mutableStateOf(false) }
@@ -91,8 +96,11 @@ actual fun KinoRemoteImage(
                     contentDescription = contentDescription,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = contentScale,
-                    fadeDurationMs = fadeDurationMs
+                    fadeDurationMs = fadeDurationMs,
+                    transparentWhileLoading = transparentWhileLoading
                 )
+            } else if (transparentWhileLoading) {
+                Box(modifier = Modifier.fillMaxSize())
             } else {
                 // Заглушка ошибки — фон-плейсхолдер (иконка Warning осталась в app-версии
                 // KinoshkaAsyncImage; здесь не тянем material-icons в общий граф).

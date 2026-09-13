@@ -38,6 +38,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -239,6 +240,13 @@ data class HomeUiState(
     val libraryDeepLink: LibraryDeepLink? = null,
     /** Pull-to-refresh Библиотеки в процессе (индикатор PullToRefreshBox). */
     val libraryRefreshing: Boolean = false,
+    /** Нижнее меню (пилюля): порядок вкладок = MainSection.name (см. sanitizeNavOrder). */
+    val navOrder: List<String> = listOf("LIBRARY", "DISCOVER", "FEED", "PROFILE"),
+    /** Скрытые вкладки пилюли (подмножество navOrder). */
+    val navHidden: Set<String> = emptySet(),
+    /** Вибрация сияния pull-to-refresh: мастер-тумблер и сила 0..1. */
+    val navHapticsEnabled: Boolean = true,
+    val navHapticScale: Float = 1f,
     /** Живой прогресс импорта библиотеки Anixart (catch-up после логина/вайпа).
      *  Null — тихо (steady-state). */
     val anixartImportProgress: AnixartImportProgress? = null
@@ -496,6 +504,11 @@ class FilmsViewModel(
         /** Пауза между точечными сверками одного тайтла при открытии карточки. */
         const val DETAILS_RATE_CHECK_THROTTLE_MS = 60_000L
 
+        /** Короткий дебаунс серверных пулов на явный свайп библиотеки (против
+         *  шторма повторных жестов; фоновый 15-минутный троттл на жест не
+         *  распространяется — иначе свайп после логина выглядел мёртвым). */
+        const val MANUAL_LIBRARY_SYNC_DEBOUNCE_MS = 10_000L
+
         /** Потолок пуша рейтов Shikimori: окно 25 голодало хвост (импортированные
          *  Anixart-оболочки append'ятся в конец и не доходили до сверки никогда).
          *  Дорога только сеть на различающихся (verify-GET/create), совпавшие —
@@ -574,6 +587,11 @@ class FilmsViewModel(
          *  не отъедать 5 rps Shikimori у секций первого экрана Обзора. Батч дешёвый
          *  (1 запрос на 50 тайтлов), поэтому пауза символическая. */
         const val ADULT_VERDICT_DEFER_MS = 3_000L
+
+        /** Кап проходов добра 18+-вердиктов за один запуск: каждый проход
+         *  покрывает следующие 500 без вердикта (в библиотеке их под две
+         *  тысячи). Хватает с запасом; остаток подберёт следующий триггер. */
+        const val ADULT_VERDICT_MAX_PASSES = 6
 
         /** «Новинки» кино: фильмы/сериалы начиная с этого года. */
         const val FRESH_YEAR_FROM = 2024
@@ -1290,6 +1308,26 @@ class FilmsViewModel(
                             upsertCached(eff)
                             continue
                         }
+                        // Пустой локальный прогресс никогда не затирает серверный:
+                        // updatedAt оболочки — время её создания, а не правка.
+                        // Кейс 13.09: local=0 (оболочка 09.09) затёр server=1.
+                        // Вместо пуша забираем серверное.
+                        val localPushEmpty = localEp <= 0 && localScore <= 0 &&
+                            (profile.watchedSeasons ?: 0) <= 0
+                        val serverPushFull = eff.episodes > 0 || eff.score > 0 || eff.rewatches > 0
+                        if (localPushEmpty && serverPushFull) {
+                            KLog.d(
+                                "ShikimoriSync",
+                                "push: shikimoriId=$shikimoriId SKIP empty-over-full, adopting " +
+                                    "ep(local=$localEp server=${eff.episodes}) " +
+                                    "score(local=$localScore server=${eff.score}) " +
+                                    "app=[${formatSyncTimeMs(profile.updatedAt)} ${profile.updatedAt}] " +
+                                    "site=[${formatSyncTimeMs(effTime)} raw='${eff.updatedAt}']"
+                            )
+                            withContext(Dispatchers.IO) { userStateStore.adoptShikimoriRates(listOf(eff)) }
+                            upsertCached(eff)
+                            continue
+                        }
                         if (localEp == eff.episodes &&
                             (localStatus == null || localStatus == eff.status.lowercase()) &&
                             localScore == eff.score
@@ -1407,22 +1445,6 @@ class FilmsViewModel(
                 userStateStore.getProfiles().forEach { if (it.kinopoiskId >= offset) add(it.kinopoiskId) }
                 cachedShikimoriRates.forEach { if (it.targetId > 0) add(it.targetId + offset) }
             }
-            val cache = userStateStore.getShikimoriAnimeCache()
-            val pending = libraryIds.filter { cache[it - offset]?.isAdult == null }
-            if (pending.isEmpty()) return@launch
-            var totalSaved = 0
-            // Этап 1: батч — весь pending чанками по 50 (одна запись кэша:
-            // поштучные read-modify-write сериализовали весь блоб на запись).
-            val ids = pending.take(500).map { it - offset }
-            val brief = fetchAnimeBrief(ids)
-            val stageEntries = mutableListOf<hd.kinoshka.app.data.local.ShikimoriAnimeCache>()
-            for (kpId in pending.take(500)) {
-                val id = kpId - offset
-                val item = brief[id] ?: continue
-                stageEntries.add(briefToCache(id, item, cache[id]))
-            }
-            userStateStore.saveShikimoriAnimeInfos(stageEntries)
-            totalSaved += stageEntries.size
             // Этап 1.5: жанровая разметка 18+ (см. markAdultByGenre). Перед ней —
             // разовый сброс старой разметки: вердикты эпохи нечёткого матчинга
             // («Акира» — хентай) иначе залипли бы навсегда (см. resetAdultGenreChecks).
@@ -1430,11 +1452,42 @@ class FilmsViewModel(
                 userStateStore.resetAdultGenreChecks()
                 userStateStore.markAdultRecheckV2Done()
             }
-            totalSaved += markAdultByGenre(libraryIds)
-            // Этап 2: поштучный добор непокрытых батчем (порезка ids, цензура, провал запроса).
-            val leftovers = pending
-                .filter { brief[it - offset] == null }
-                .take(40)
+            var totalSaved = 0
+            // Проходов может понадобиться несколько: каждый этап берёт первые 500
+            // без вердикта, а в библиотеке их под две тысячи (рейты + профили).
+            // Раньше хвост оставался с isAdult=null и светился при выключенном
+            // тумблере до следующего ручного рефреша. Цикл идёт до полного
+            // покрытия; стопор — пустой pending, отсутствие прогресса или кап.
+            var pass = 0
+            while (pass < ADULT_VERDICT_MAX_PASSES) {
+                ensureActive()
+                pass++
+                val cache = userStateStore.getShikimoriAnimeCache()
+                val pending = libraryIds.filter { cache[it - offset]?.isAdult == null }
+                if (pending.isEmpty()) break
+                var savedPass = 0
+                // Этап 1: батч — весь pending чанками по 50 (одна запись кэша:
+                // поштучные read-modify-write сериализовали весь блоб на запись).
+                val ids = pending.take(500).map { it - offset }
+                val brief = fetchAnimeBrief(ids)
+                val stageEntries = mutableListOf<hd.kinoshka.app.data.local.ShikimoriAnimeCache>()
+                for (kpId in pending.take(500)) {
+                    val id = kpId - offset
+                    val item = brief[id] ?: continue
+                    stageEntries.add(briefToCache(id, item, cache[id]))
+                }
+                userStateStore.saveShikimoriAnimeInfos(stageEntries)
+                // Прогресс прохода — только новые вердикты (isAdult=true из каталога):
+                // мета-записи с isAdult=null pending не уменьшают, иначе цикл
+                // гонял бы один и тот же батч до капа без продвижения.
+                val verdictHits = stageEntries.count { it.isAdult == true }
+                totalSaved += verdictHits
+                savedPass += verdictHits
+                savedPass += markAdultByGenre(libraryIds)
+                // Этап 2: поштучный добор непокрытых батчем (порезка ids, цензура, провал запроса).
+                val leftovers = pending
+                    .filter { brief[it - offset] == null }
+                    .take(40)
             if (leftovers.isNotEmpty()) {
                 val semaphore = kotlinx.coroutines.sync.Semaphore(4)
                 val leftoverEntries = leftovers.map { kpId ->
@@ -1482,7 +1535,12 @@ class FilmsViewModel(
                 // Одна запись кэша на всю добивку (уже на Dispatchers.IO).
                 userStateStore.saveShikimoriAnimeInfos(leftoverEntries)
                 totalSaved += leftoverEntries.size
+                savedPass += leftoverEntries.size
             }
+            // Проход ничего не сохранил — дальше не продвинется, выходим.
+            // Иначе следующий проход берёт следующие 500 без вердикта.
+            if (savedPass == 0) break
+        }
             if (totalSaved > 0) {
                 // Уже на Dispatchers.IO: сборку делаем здесь, на Main — только публикацию.
                 val library = buildLibraryItems()
@@ -4321,6 +4379,58 @@ class FilmsViewModel(
         uiState = uiState.copy(libraryGroupType = group)
     }
 
+    /**
+     * Порядок вкладок пилюли к каноническому виду: только известные секции,
+     * без дублей, потерянные дописываем в конец (переживёт добавление новых
+     * секций в будущих версиях и битые ручные правки).
+     */
+    fun sanitizeNavOrder(raw: List<String>): List<String> {
+        val known = MainSection.entries.map { it.name }
+        val ordered = raw.map { it.trim() }.filter { it in known }.distinct()
+        return ordered + known.filter { it !in ordered }
+    }
+
+    /** Перестановка вкладки в настройках меню (индексы — по текущему navOrder). */
+    fun moveNavSection(fromIndex: Int, toIndex: Int) {
+        val cur = uiState.navOrder.toMutableList()
+        if (fromIndex !in cur.indices || toIndex !in cur.indices || fromIndex == toIndex) return
+        val item = cur.removeAt(fromIndex)
+        cur.add(toIndex, item)
+        userStateStore.setNavOrder(cur)
+        uiState = uiState.copy(navOrder = cur)
+    }
+
+    /**
+     * Видимость вкладки. Отключается только Лента: Библиотека, Обзор и Профиль —
+     * несущие разделы, пилюля без них бессмысленна. Последнюю видимую
+     * спрятать нельзя — как страховка, даже для Ленты.
+     */
+    fun setNavSectionVisible(name: String, visible: Boolean) {
+        if (name != MainSection.FEED.name) return
+        if (name !in uiState.navOrder) return
+        val hidden = uiState.navHidden.toMutableSet()
+        if (visible) {
+            if (!hidden.remove(name)) return
+        } else {
+            if (name in hidden) return
+            if (uiState.navOrder.count { it !in hidden } <= 1) return
+            hidden.add(name)
+        }
+        userStateStore.setNavHidden(hidden)
+        uiState = uiState.copy(navHidden = hidden)
+    }
+
+    fun setNavHapticsEnabled(enabled: Boolean) {
+        userStateStore.setNavHapticsEnabled(enabled)
+        uiState = uiState.copy(navHapticsEnabled = enabled)
+    }
+
+    fun setNavHapticScale(scale: Float) {
+        val clean = scale.coerceIn(0f, 1f)
+        userStateStore.setNavHapticScale(clean)
+        uiState = uiState.copy(navHapticScale = clean)
+    }
+
     private fun resortLibrary(): List<LibraryUiItem> =
         libraryBaseCache?.let(::applyLibrarySort) ?: buildLibraryItems()
 
@@ -4328,6 +4438,17 @@ class FilmsViewModel(
         userStateStore.setHentaiVisibleInLibrary(visible)
         uiState = uiState.copy(showHentaiInLibrary = visible)
         viewModelScope.launch {
+            // Скрытие: синхронный фильтр зависит от каталога hanime — греем его
+            // до пересборки, иначе первый кадр после тоггла показывает хентай
+            // (isKnownHentai=false пока каталог не загружен), и прячет только
+            // второй проход вердиктов.
+            if (!visible) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        hd.kinoshka.app.data.source.HentaiStreamResolver.preloadCatalog()
+                    }
+                }
+            }
             val library = withContext(Dispatchers.Default) { buildLibraryItems() }
             uiState = uiState.copy(library = library)
         }
@@ -4767,8 +4888,19 @@ class FilmsViewModel(
             status = item.status ?: prev?.status,
             year = item.airedOn?.take(4)?.toIntOrNull() ?: prev?.year,
             // Краткий объект жанров не несёт: его false без жанрового сигнала
-            // недостоверен и не смеет затирать уже установленный true.
-            isAdult = if (prev?.isAdult == true) true else isAdultBrief(item),
+            // недостоверен и не смеет ни затирать уже установленный true,
+            // ни создавать ложный false из null (каталог hanime на момент
+            // первого пула ещё может грузиться — isKnownHentai тогда false,
+            // и «чистый» вердикт залипал бы в кэше: фильтр ниже видел
+            // cachedAdult=false вместо null, каталог уже не перепроверял,
+            // и хентай светился при выключенном тумблере до жанрового прохода).
+            // True из каталога — уверенный сигнал, его кэшируем. Чистый false
+            // ставит только жанровая разметка (markAdultByGenre) и полные details.
+            isAdult = when {
+                prev?.isAdult == true -> true
+                isAdultBrief(item) -> true
+                else -> prev?.isAdult
+            },
             genreChecked = prev?.genreChecked ?: false
         )
     }
@@ -5299,7 +5431,11 @@ class FilmsViewModel(
             librarySortType = userStateStore.getLibrarySortType(),
             libraryGroupType = userStateStore.getLibraryGroupType(),
             contentType = preferences.contentType,
-            playerMode = preferences.playerMode
+            playerMode = preferences.playerMode,
+            navOrder = sanitizeNavOrder(userStateStore.getNavOrder()),
+            navHidden = userStateStore.getNavHidden(),
+            navHapticsEnabled = userStateStore.isNavHapticsEnabled(),
+            navHapticScale = userStateStore.getNavHapticScale()
             // calendarItems is intentionally left default-empty: uiState is being constructed for
             // the first time here, and buildLibraryItems reads from cachedShikimoriCalendar (set
             // by loadCalendar) instead, so there is no read-during-init cycle.
@@ -5343,10 +5479,18 @@ class FilmsViewModel(
 
     /**
      * Pull-to-refresh Библиотеки (явный жест): локальная пересборка без троттла
-     * возврата + обычные фоновые синки Shikimori/Anixart с их троттлами (лимиты
-     * API штормом свайпов пробивать нельзя). Индикатор гаснет по концу локального
-     * обновления; серверные пулы подтянут раздел сами, когда данные приедут.
+     * возврата + полные серверные пулы Shikimori/Anixart. Фоновый 15-минутный
+     * троттл здесь НЕ применяется осознанно: после логина lastFullSyncMs только
+     * что выставлен и syncOnForeground молча делал бы только пуш — жест
+     * выглядел мёртвым (кейс 13.09: свайп не подтягивал разделы, а открытие
+     * карточки — да, через точечный refreshRateForDetails). Шторм свайпов
+     * держит короткий 10-секундный дебаунс + флаг libraryRefreshing.
+     * Индикатор гаснет по концу локального обновления; серверные пулы подтянут
+     * раздел сами, когда данные приедут.
      */
+    @Volatile
+    private var lastManualLibrarySyncMs = 0L
+
     fun refreshLibrary() {
         if (uiState.libraryRefreshing) return
         uiState = uiState.copy(libraryRefreshing = true)
@@ -5354,8 +5498,21 @@ class FilmsViewModel(
             forced = true,
             onDone = { uiState = uiState.copy(libraryRefreshing = false) }
         )
-        syncShikimoriOnForeground()
-        syncAnixartOnForeground()
+        val now = System.nanoTime() / 1_000_000L
+        if (now - lastManualLibrarySyncMs < MANUAL_LIBRARY_SYNC_DEBOUNCE_MS) return
+        lastManualLibrarySyncMs = now
+        // Полный пул Shikimori мимо foreground-троттла (caller != "foreground").
+        refreshShikimoriAuth(pushLocalNewer = true, caller = "manual-refresh")
+        // Полный пул Anixart мимо foreground-троттла, штамп — общий.
+        val anixartAuth = uiState.anixartAuthState
+        if (anixartAuth.isLoggedIn && anixartAuth.token != null) {
+            viewModelScope.launch {
+                anixartSyncMutex.withLock {
+                    lastAnixartSyncMs = System.nanoTime() / 1_000_000L
+                    syncAnixartLists(anixartAuth.token, pushLocalNewer = true, caller = "manual-refresh")
+                }
+            }
+        }
     }
 
     /**
@@ -5412,7 +5569,11 @@ class FilmsViewModel(
                 hideRussianContent = preferences.hideRussianContent,
                 discoverTileSize = preferences.discoverTileSize ?: fallbackTileSize,
                 libraryTileSize = preferences.libraryTileSize ?: fallbackTileSize,
-                showFpsCounter = preferences.showFpsCounter
+                showFpsCounter = preferences.showFpsCounter,
+                navOrder = sanitizeNavOrder(userStateStore.getNavOrder()),
+                navHidden = userStateStore.getNavHidden(),
+                navHapticsEnabled = userStateStore.isNavHapticsEnabled(),
+                navHapticScale = userStateStore.getNavHapticScale()
             )
         }
     }
@@ -5579,9 +5740,16 @@ class FilmsViewModel(
         if (!userStateStore.isHentaiVisibleInLibrary()) {
             result.removeAll { item ->
                 if (item.kinopoiskId < hd.kinoshka.app.data.model.ANIME_ID_OFFSET) return@removeAll false
-                val cachedAdult = localAnimeCache[item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET]?.isAdult
+                val cached = localAnimeCache[item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET]
+                val cachedAdult = cached?.isAdult
+                // Проверенный «чистый» (жанровый проход или полные details) каталогом
+                // уже не перепроверяем. Непроверенный false (наследие эпохи, когда
+                // краткий объект кэшировал false из null) — как null: каталог мог
+                // уже прогреться после записи, и повторная сверка прячет хентай
+                // сразу, не дожидаясь жанрового батча.
+                val verifiedClean = cachedAdult == false && cached?.genreChecked == true
                 cachedAdult == true ||
-                    (cachedAdult == null &&
+                    (!verifiedClean &&
                         hd.kinoshka.app.data.source.HentaiStreamResolver.isKnownHentai(item.title, item.subtitle))
             }
         }

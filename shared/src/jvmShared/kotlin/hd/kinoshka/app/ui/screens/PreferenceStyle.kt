@@ -83,6 +83,9 @@ fun KinoSettingsRow(
     modifier: Modifier = Modifier,
     summary: String? = null,
     icon: ImageVector? = null,
+    // Кастомная иконка вместо ImageVector (например, drawable-глиф вкладки
+    // с телефона): рисуется в том же контейнере без primary-тинта.
+    iconContent: (@Composable () -> Unit)? = null,
     onClick: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
 ) {
@@ -92,7 +95,16 @@ fun KinoSettingsRow(
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (icon != null) {
+        if (iconContent != null) {
+            Box(
+                modifier = Modifier
+                    .widthIn(min = 56.dp)
+                    .padding(start = 16.dp, top = 16.dp, bottom = 16.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                iconContent()
+            }
+        } else if (icon != null) {
             Box(
                 modifier = Modifier
                     .widthIn(min = 56.dp)
@@ -110,7 +122,7 @@ fun KinoSettingsRow(
         Column(
             modifier = Modifier
                 .weight(1f)
-                .padding(start = if (icon != null) 0.dp else 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
+                .padding(start = if (icon != null || iconContent != null) 0.dp else 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
         ) {
             Text(
                 text = title,

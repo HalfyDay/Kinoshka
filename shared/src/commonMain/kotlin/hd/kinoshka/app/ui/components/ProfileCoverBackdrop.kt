@@ -39,13 +39,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.ui.common.preferHdAnimePosterUrl
 import hd.kinoshka.app.ui.platform.rememberReduceMotion
-import kotlinx.coroutines.delay
 
 /**
  * Обложка на фоне за шитом «Прогресс просмотра»: живёт в корне экрана
  * (шит — отдельный диалог поверх с прозрачным сримом). Выезжает из-за
  * нижнего края, при закрытии быстро уходит вниз вместе с шитом.
- * Небольшая задержка старта — сначала трогается шит, обложка догоняет из-под него.
+ * Стартует строго вместе с шитом, без задержки — обложка и шит выезжают синхронно.
  * За обложкой — лёгкое затемнение, проявляется плавно вместе с выездом.
  *
  * Грузит ту же картинку, что страница тайтла: аниме — smarthard HD,
@@ -55,6 +54,10 @@ import kotlinx.coroutines.delay
  * Примитивы вместо FilmDetails: тип деталей живёт в jvmShared и недоступен
  * из commonMain, а бэкдроп нужен и странице деталей, и KinoApp (лонг-пресс).
  */
+private const val COVER_ENTER_MS = 300
+/** Доворот обложки после прибытия (вторая фаза, см. tilted). */
+private const val COVER_TILT_MS = 280
+
 @Composable
 fun ProfileEditorCoverBackdrop(
     id: Int,
@@ -68,31 +71,42 @@ fun ProfileEditorCoverBackdrop(
     // Та же картинка, что на странице тайтла: аниме — smarthard HD (как детали),
     // кино — полный размер вместо превью (kp_small → kp). Каталог отдаёт только
     // превью (FilmItem без posterUrl), в библиотеке тоже лежат превью — апгрейдим
-    // прямо здесь, для обоих мест. Не загрузится полный — KinoshkaAsyncImage
-    // покажет исходник через fallbackModel.
+    // прямо здесь, для обоих мест. HD качается дольше превью и в кэше его нет,
+    // поэтому карточка двухслойная: снизу превью из memory-кэша (мгновенно),
+    // сверху HD с прозрачной загрузкой (кроссфейд по готовности).
     val hdAnimeUrl = preferHdAnimePosterUrl(posterUrl)
     val fullPosterUrl = preferFullSizePoster(posterUrl)
     val currentModel = hdAnimeUrl ?: fullPosterUrl ?: coverUrl
+    // Превью-кадр: тот же URL, что уже показан на странице/плитке тайтла, —
+    // бьёт в memory-кэш и рисуется в первом же кадре шита. HD-URL сверху
+    // в кэше почти наверняка нет (страница грузит превью), и пока он качается
+    // по сети, шит бы показывал шиммер до конца своей анимации.
+    val currentPreview = posterUrl ?: coverUrl
     // Последний живой кадр: при закрытии шита seed обнуляется сразу, а слайд
     // ещё доигрывается — без ретеншна на это время подставляется «?».
     var lastModel by remember { mutableStateOf<String?>(null) }
+    var lastPreview by remember { mutableStateOf<String?>(null) }
     var lastTitle by remember { mutableStateOf<String?>(null) }
     if (currentModel != null) {
         lastModel = currentModel
         lastTitle = title
     }
+    if (currentPreview != null) {
+        lastPreview = currentPreview
+    }
     val displayModel = currentModel ?: lastModel
+    val displayPreview = currentPreview ?: lastPreview
     val displayTitle = if (currentModel != null) title else lastTitle
-    // Наклон догоняет слайд: стартует с задержкой синхронно с выездом.
-    var entered by remember(displayModel) { mutableStateOf(calm) }
-    LaunchedEffect(displayModel) {
-        if (!calm) delay(90)
-        entered = true
+    // Наклон идёт синхронно с выездом, без задержки после прибытия:
+    // карточка сразу едет с доворотом 0 → -2° в такт слайду.
+    var tilted by remember(displayModel) { mutableStateOf(calm) }
+    LaunchedEffect(displayModel, visible) {
+        tilted = if (visible) true else calm
     }
     val tilt by animateFloatAsState(
-        targetValue = if (entered) -2f else -8f,
+        targetValue = if (tilted) -2f else 0f,
         animationSpec = if (calm) snap() else tween(
-            durationMillis = 450,
+            durationMillis = COVER_TILT_MS,
             easing = FastOutSlowInEasing
         ),
         label = "pe_cover_tilt"
@@ -112,14 +126,18 @@ fun ProfileEditorCoverBackdrop(
         }
         AnimatedVisibility(
             visible = visible,
-            // Строго из-за нижнего края: сдвиг на всю высоту — целиком за экраном.
+            // Выезд вместе с шитом, а не после него: сдвиг — половина высоты
+            // (карточка в кадре с первого кадра, выныривает из-за кромки шита),
+            // длительность — в такт шторке. Полный сдвиг на всю высоту давал
+            // мёртвый ход: карточка доезжала до кадра к середине анимации,
+            // уже после появления шита.
             enter = if (calm) EnterTransition.None else slideInVertically(
                 animationSpec = tween(
-                    durationMillis = 450,
-                    delayMillis = 90,
+                    durationMillis = COVER_ENTER_MS,
+                    delayMillis = 0,
                     easing = FastOutSlowInEasing
                 ),
-                initialOffsetY = { it }
+                initialOffsetY = { it / 2 }
             ),
             // Закрытие — сразу вниз вместе с шитом: быстрый старт без задержки.
             exit = if (calm) ExitTransition.None else slideOutVertically(
@@ -150,16 +168,34 @@ fun ProfileEditorCoverBackdrop(
                             transformOrigin = TransformOrigin(0.5f, 1f)
                         }
                 ) {
-                    if (displayModel != null) {
-                        KinoshkaAsyncImage(
-                            model = displayModel,
-                            contentDescription = displayTitle,
-                            contentScale = ContentScale.Crop,
-                            filterQuality = FilterQuality.High,
-                            useOriginalSize = true,
-                            fallbackModel = posterUrl,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                    if (displayModel != null || displayPreview != null) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            // Нижний слой — превью из кэша: мгновенно, без фейда.
+                            if (displayPreview != null) {
+                                KinoshkaAsyncImage(
+                                    model = displayPreview,
+                                    contentDescription = displayTitle,
+                                    contentScale = ContentScale.Crop,
+                                    filterQuality = FilterQuality.High,
+                                    fadeDurationMs = 0,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            // Верхний слой — HD: прозрачная загрузка поверх превью,
+                            // плавный кроссфейд по готовности. Превью под ним уже
+                            // страхует ошибку, поэтому fallbackModel не нужен.
+                            if (displayModel != null && displayModel != displayPreview) {
+                                KinoshkaAsyncImage(
+                                    model = displayModel,
+                                    contentDescription = displayTitle,
+                                    contentScale = ContentScale.Crop,
+                                    filterQuality = FilterQuality.High,
+                                    useOriginalSize = true,
+                                    transparentWhileLoading = true,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
                     } else {
                         Box(
                             contentAlignment = Alignment.Center,

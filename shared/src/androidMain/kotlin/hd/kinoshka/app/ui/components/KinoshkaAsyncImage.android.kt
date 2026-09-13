@@ -41,6 +41,7 @@ actual fun KinoshkaAsyncImage(
     useOriginalSize: Boolean,
     fadeDurationMs: Int,
     fallbackModel: Any?,
+    transparentWhileLoading: Boolean,
     onSuccess: ((width: Int, height: Int) -> Unit)?
 ) {
     val context = LocalContext.current
@@ -79,7 +80,11 @@ actual fun KinoshkaAsyncImage(
         contentScale = contentScale,
         filterQuality = filterQuality,
         loading = {
-            Box(modifier = Modifier.fillMaxSize().shimmerEffect())
+            if (transparentWhileLoading) {
+                Box(modifier = Modifier.fillMaxSize())
+            } else {
+                Box(modifier = Modifier.fillMaxSize().shimmerEffect())
+            }
         },
         success = { state ->
             val drawable = state.result.drawable
@@ -112,8 +117,11 @@ actual fun KinoshkaAsyncImage(
                     contentDescription = contentDescription,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = contentScale,
-                    fadeDurationMs = fadeDurationMs
+                    fadeDurationMs = fadeDurationMs,
+                    transparentWhileLoading = transparentWhileLoading
                 )
+            } else if (transparentWhileLoading) {
+                Box(modifier = Modifier.fillMaxSize())
             } else {
                 Box(
                     modifier = Modifier

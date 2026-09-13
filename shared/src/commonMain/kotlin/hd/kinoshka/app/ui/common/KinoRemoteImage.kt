@@ -19,4 +19,6 @@ expect fun KinoRemoteImage(
     useOriginalSize: Boolean = false,
     fadeDurationMs: Int = 520,
     fallbackModel: Any? = null,
+    /** Когда true — слоты загрузки/ошибки прозрачные (см. KinoshkaAsyncImage). */
+    transparentWhileLoading: Boolean = false,
 )

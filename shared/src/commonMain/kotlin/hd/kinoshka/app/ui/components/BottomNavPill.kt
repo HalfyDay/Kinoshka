@@ -86,6 +86,9 @@ private val NavGlyphUnselectedSize = 44.dp
  * от скорости ([scrollIntensity]): слабый скролл — едва заметно, флинг — в полную силу.
  * Плюс «дыхание» фона в простое (тень + blob).
  * Двухступенчатая тактильность: лёгкий тик на нажатие + подтверждение на выбор.
+ * Мастер-тумблер и сила — из настроек меню ([hapticsEnabled]/[onHaptic]):
+ * заданный платформой отклик 0..1 (Android — Vibrator с амплитудой),
+ * null — системный тик/конфёрм через LocalHapticFeedback.
  * При системном «уменьшить анимацию» ([rememberReduceMotion]) — только быстрые fade
  * без bounce ([reduceMotion] форсит).
  */
@@ -95,7 +98,9 @@ fun BottomNavPill(
     isAmoled: Boolean,
     modifier: Modifier = Modifier,
     reduceMotion: Boolean = false,
-    scrollIntensity: Float = 0f
+    scrollIntensity: Float = 0f,
+    hapticsEnabled: Boolean = true,
+    onHaptic: ((Float) -> Unit)? = null
 ) {
     val calm = reduceMotion || rememberReduceMotion()
     val containerColor = if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainer
@@ -248,7 +253,12 @@ fun BottomNavPill(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         items.forEach { item ->
-                            NavPillButton(item = item, reduceMotion = calm)
+                            NavPillButton(
+                                item = item,
+                                reduceMotion = calm,
+                                hapticsEnabled = hapticsEnabled,
+                                onHaptic = onHaptic
+                            )
                         }
                     }
                 }
@@ -258,15 +268,21 @@ fun BottomNavPill(
 }
 
 @Composable
-private fun NavPillButton(item: NavPillItem, reduceMotion: Boolean) {
+private fun NavPillButton(
+    item: NavPillItem,
+    reduceMotion: Boolean,
+    hapticsEnabled: Boolean,
+    onHaptic: ((Float) -> Unit)?
+) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val haptic = LocalHapticFeedback.current
 
     // Первая ступень тактильности: лёгкий тик в момент нажатия.
     LaunchedEffect(isPressed) {
-        if (isPressed) {
-            haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+        if (isPressed && hapticsEnabled) {
+            onHaptic?.invoke(0.35f)
+                ?: haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
         }
     }
 
@@ -308,8 +324,9 @@ private fun NavPillButton(item: NavPillItem, reduceMotion: Boolean) {
                 ),
                 onClick = {
                     // Вторая ступень: подтверждение только при реальной смене выбора.
-                    if (!item.selected) {
-                        haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+                    if (!item.selected && hapticsEnabled) {
+                        onHaptic?.invoke(0.8f)
+                            ?: haptic.performHapticFeedback(HapticFeedbackType.Confirm)
                     }
                     item.onClick()
                 }

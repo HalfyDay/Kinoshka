@@ -28,6 +28,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
@@ -343,6 +344,11 @@ fun DetailsScreen(
     var previewPosterOffset by remember(filmId) { mutableStateOf<Offset?>(null) }
     var imageViewerStartIndex by remember(filmId) { mutableIntStateOf(-1) }
     var showProfileEditor by remember(filmId) { mutableStateOf(false) }
+    // Состояние шита поднято к состоянию видимости: блюр фона и бэкдроп гаснут
+    // по targetValue (старт hide), а не по onDismiss (конец анимации) —
+    // уход строго вместе с шитом, а не после него.
+    val profileSheetState = rememberKinoSheetState()
+    val editorOpen = showProfileEditor && profileSheetState.targetValue != SheetValue.Hidden
     var selectedCharacterId by remember(filmId) { mutableStateOf<Int?>(null) }
     var isInteractive by remember { mutableStateOf(true) }
     var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
@@ -567,6 +573,14 @@ fun DetailsScreen(
                     animationSpec = tween(300, easing = FastOutSlowInEasing),
                     label = "contentAlpha"
                 )
+                // Лёгкий блюр страницы за шитом «Прогресс просмотра» (бэкдроп
+                // с обложкой — сиблинг ниже, его блюр не касается).
+                // Появление — плавно, уход — быстро и плавно вместе с шитом (150мс).
+                val editorBlur by animateDpAsState(
+                    targetValue = if (editorOpen) 8.dp else 0.dp,
+                    animationSpec = if (editorOpen) tween(300) else tween(150),
+                    label = "editorBgBlur"
+                )
                 // Общие обработчики «Смотреть»: телефонный и TV-макеты разделяют одну логику.
                 val animeWatchAction: (hd.kinoshka.app.data.model.FilmDetails) -> Unit = { filmDetails ->
                     onWatch(filmDetails)
@@ -683,6 +697,7 @@ fun DetailsScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer { alpha = contentAlpha }
+                        .blur(editorBlur)
                 ) {
                     if (tvLayout) {
                         DetailsTvLayout(
@@ -1245,16 +1260,13 @@ fun DetailsScreen(
 
         // Локальная копия: item объявлен в другом модуле (shared), smart cast невозможен.
         val editorItem = state.item
-        // Состояние шита поднято наружу: бэкдроп гаснет по targetValue (старт hide),
-        // а не по onDismiss (конец анимации) — уход строго вместе с шитом.
-        val profileSheetState = rememberKinoSheetState()
         if (editorItem != null) {
             ProfileEditorCoverBackdrop(
                 id = editorItem.kinopoiskId,
                 title = editorItem.nameRu ?: editorItem.nameOriginal,
                 posterUrl = editorItem.posterUrl ?: editorItem.posterUrlPreview,
                 coverUrl = editorItem.coverUrl,
-                visible = showProfileEditor && profileSheetState.targetValue != SheetValue.Hidden
+                visible = editorOpen
             )
             if (showProfileEditor) {
             UserProfileEditorSheet(
@@ -1620,13 +1632,18 @@ private fun ActionPanel(
     enabled: Boolean,
     profile: UserFilmProfile?,
     seasons: List<hd.kinoshka.app.data.model.SeasonItem> = emptyList(),
+    // Тотал серий аниме из деталей Shikimori: у профилей-оболочек и рейтов
+    // без краткого объекта своего totalEpisodes нет, и «Смотрю» показывало
+    // голое N вместо N/N. Для кино/сериалов не используется (там считают сезоны).
+    animeTotalEpisodes: Int? = null,
     onWatch: () -> Unit,
     onOpenEditor: () -> Unit
 ) {
     val status = profile?.status
+    val userRating = profile?.userRating?.takeIf { it > 0 }
     val watchedSeasons = profile?.watchedSeasons
     val watchedEp = profile?.watchedEpisodes
-    val totalEp = profile?.totalEpisodes
+    val totalEp = profile?.totalEpisodes ?: animeTotalEpisodes?.takeIf { it > 0 }
     val progressText = remember(watchedSeasons, watchedEp, totalEp, seasons) {
         if (watchedEp == null || watchedEp <= 0) {
             if (watchedSeasons != null && watchedSeasons > 0) " с.$watchedSeasons" else ""
@@ -1662,7 +1679,7 @@ private fun ActionPanel(
     }
 
     val statusText = when (status) {
-        UserFilmStatus.COMPLETED -> "Просмотрено"
+        UserFilmStatus.COMPLETED -> if (userRating != null) "Просмотрено · $userRating" else "Просмотрено"
         UserFilmStatus.WATCHING -> "Смотрю$progressText"
         UserFilmStatus.PLANNED -> "В планах"
         UserFilmStatus.REWATCHING -> "Пересматриваю$progressText"
@@ -1753,6 +1770,16 @@ private fun ActionPanel(
                             overflow = TextOverflow.Ellipsis,
                             color = MaterialTheme.colorScheme.onSurface
                         )
+                        // Оценка при «Просмотрено» — той же иконкой-звездой,
+                        // что у «В планах», а не текстовым символом.
+                        if (status == UserFilmStatus.COMPLETED && userRating != null) {
+                            Icon(
+                                imageVector = Icons.Rounded.Star,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
                 }
             }
@@ -3144,6 +3171,7 @@ private fun AnimeDetailsLayout(
                     enabled = isInteractive,
                     profile = state.userProfile,
                     seasons = state.seasons,
+                    animeTotalEpisodes = anime?.episodes,
                     onWatch = {
                         onWatch(item)
                     },

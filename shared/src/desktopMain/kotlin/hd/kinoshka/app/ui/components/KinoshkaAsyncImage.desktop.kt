@@ -17,6 +17,7 @@ actual fun KinoshkaAsyncImage(
     useOriginalSize: Boolean,
     fadeDurationMs: Int,
     fallbackModel: Any?,
+    transparentWhileLoading: Boolean,
     onSuccess: ((width: Int, height: Int) -> Unit)?
 ) {
     // filterQuality на desktop не применяется: Skia-декодер сам выбирает сэмплинг.
@@ -27,7 +28,8 @@ actual fun KinoshkaAsyncImage(
         contentScale = contentScale,
         useOriginalSize = useOriginalSize,
         fadeDurationMs = fadeDurationMs,
-        fallbackModel = fallbackModel
+        fallbackModel = fallbackModel,
+        transparentWhileLoading = transparentWhileLoading
     )
     if (onSuccess != null) {
         // KinoRemoteImage не отдаёт момент/размеры загрузки; вызывающие код защищён

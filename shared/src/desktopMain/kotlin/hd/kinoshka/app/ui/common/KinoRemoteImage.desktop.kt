@@ -59,6 +59,7 @@ actual fun KinoRemoteImage(
     useOriginalSize: Boolean,
     fadeDurationMs: Int,
     fallbackModel: Any?,
+    transparentWhileLoading: Boolean,
 ) {
     // На desktop модель — всегда строка-URL (ImageRequest-упаковка Coil здесь не существует).
     val rawUrl = model?.toString()
@@ -84,7 +85,10 @@ actual fun KinoRemoteImage(
         }
     }
 
-    Box(modifier = modifier.background(Color(0xFF1C1C22)), contentAlignment = Alignment.Center) {
+    Box(
+        modifier = if (transparentWhileLoading) modifier else modifier.background(Color(0xFF1C1C22)),
+        contentAlignment = Alignment.Center
+    ) {
         val loaded = bitmap
         if (loaded != null) {
             var visible by remember(loaded) { mutableStateOf(false) }
@@ -104,14 +108,17 @@ actual fun KinoRemoteImage(
                 contentScale = contentScale,
             )
         } else if (!failed) {
-            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+            if (!transparentWhileLoading) {
+                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+            }
         } else if (fallbackModel != null && fallbackModel != model) {
             KinoRemoteImage(
                 model = fallbackModel,
                 contentDescription = contentDescription,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = contentScale,
-                fadeDurationMs = fadeDurationMs
+                fadeDurationMs = fadeDurationMs,
+                transparentWhileLoading = transparentWhileLoading
             )
         }
         // Полный «нет постера»-заглушки нет: фон бокса уже служит плейсхолдером.

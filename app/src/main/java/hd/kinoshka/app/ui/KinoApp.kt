@@ -7,6 +7,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -101,6 +103,7 @@ import hd.kinoshka.app.ui.screens.MpvExPreferencesHost
 import hd.kinoshka.app.ui.screens.ProfileScreen
 import hd.kinoshka.app.ui.screens.RecommendationFeedScreen
 import hd.kinoshka.app.ui.screens.SettingsScreen
+import hd.kinoshka.app.ui.screens.NavMenuSettingsScreen
 import hd.kinoshka.app.ui.screens.SourcesSettingsScreen
 import hd.kinoshka.app.ui.screens.StorageSettingsScreen
 import hd.kinoshka.app.ui.screens.ProgressEditorSeed
@@ -487,6 +490,17 @@ fun KinoApp() {
                                 initialValue = SheetValue.Hidden
                             )
 
+                            // Лёгкий блюр главной за шитом «Прогресс просмотра» (лонг-пресс).
+                            // Гаснет по старту hide шита (targetValue), а не по onDismiss —
+                            // быстро и плавно вместе с уходом, а не после него.
+                            val homeEditorOpen = progressEditorSeed != null &&
+                                progressSheetState.targetValue != SheetValue.Hidden
+                            val homeEditorBlur by animateDpAsState(
+                                targetValue = if (homeEditorOpen) 8.dp else 0.dp,
+                                animationSpec = if (homeEditorOpen) tween(300) else tween(150),
+                                label = "homeEditorBlur"
+                            )
+                            Box(modifier = Modifier.fillMaxSize().blur(homeEditorBlur)) {
                             HomeScreen(
                                 state = vm.uiState,
                                 onQueryChange = vm::onQueryChange,
@@ -508,6 +522,30 @@ fun KinoApp() {
                                 onLoadMore = vm::loadMore,
                                 onRemoveFromHistory = vm::removeFromHistory,
                                 onRefreshLibrary = vm::refreshLibrary,
+                                navOrder = vm.uiState.navOrder,
+                                navHidden = vm.uiState.navHidden,
+                                navHapticsEnabled = vm.uiState.navHapticsEnabled,
+                                // Тактильность пилюли из настроек меню: тики 0.35/0.8
+                                // масштабируем силой и уважаем системный тумблер.
+                                onNavHaptic = { intensity ->
+                                    if (!vm.uiState.navHapticsEnabled) return@HomeScreen
+                                    val scale = vm.uiState.navHapticScale
+                                    if (scale <= 0.01f) return@HomeScreen
+                                    val vibrator = appContext.getSystemService(
+                                        android.os.Vibrator::class.java
+                                    )
+                                    val hapticsOn = android.provider.Settings.System.getInt(
+                                        appContext.contentResolver,
+                                        android.provider.Settings.System.HAPTIC_FEEDBACK_ENABLED,
+                                        1
+                                    ) == 1
+                                    if (vibrator != null && vibrator.hasVibrator() && hapticsOn) {
+                                        val amplitude = (30 + 225 * (intensity * scale).coerceIn(0f, 1f)).toInt()
+                                        vibrator.vibrate(
+                                            android.os.VibrationEffect.createOneShot(20, amplitude)
+                                        )
+                                    }
+                                },
                                 onLibraryRefreshHaptic = { intensity ->
                                     // Амплитудная вибрация за жестом (minSdk 26 —
                                     // VibrationEffect доступен везде): тики 30→235,
@@ -605,33 +643,24 @@ fun KinoApp() {
                                 // Кастомные иконки пилюли (как до KMP M4);
                                 // общий HomeScreen без инъекции рисует material-фолбэк на desktop.
                                 feedGlyph = { sel ->
-                                    Icon(
-                                        painter = painterResource(
-                                            if (sel) hd.kinoshka.app.R.drawable.ic_nav_feed_filled
-                                            else hd.kinoshka.app.R.drawable.ic_nav_feed_outlined
-                                        ),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(28.dp)
+                                    NavGlyph(
+                                        filled = hd.kinoshka.app.R.drawable.ic_nav_feed_filled,
+                                        outlined = hd.kinoshka.app.R.drawable.ic_nav_feed_outlined,
+                                        selected = sel
                                     )
                                 },
                                 libraryGlyph = { sel ->
-                                    Icon(
-                                        painter = painterResource(
-                                            if (sel) hd.kinoshka.app.R.drawable.ic_nav_library_filled
-                                            else hd.kinoshka.app.R.drawable.ic_nav_library_outlined
-                                        ),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(28.dp)
+                                    NavGlyph(
+                                        filled = hd.kinoshka.app.R.drawable.ic_nav_library_filled,
+                                        outlined = hd.kinoshka.app.R.drawable.ic_nav_library_outlined,
+                                        selected = sel
                                     )
                                 },
                                 discoverGlyph = { sel ->
-                                    Icon(
-                                        painter = painterResource(
-                                            if (sel) hd.kinoshka.app.R.drawable.ic_nav_discover_filled
-                                            else hd.kinoshka.app.R.drawable.ic_nav_discover_outlined
-                                        ),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(28.dp)
+                                    NavGlyph(
+                                        filled = hd.kinoshka.app.R.drawable.ic_nav_discover_filled,
+                                        outlined = hd.kinoshka.app.R.drawable.ic_nav_discover_outlined,
+                                        selected = sel
                                     )
                                 },
                                 // Секция «Профиль» вместо старого «Ещё»: тот же экран,
@@ -679,6 +708,7 @@ fun KinoApp() {
                                 onRemoveSearchHistory = vm::removeSearchQueryFromHistory,
                                 onClearSearchHistory = vm::clearSearchHistory
                             )
+                            }
 
                             // Обложка на фоне за шитом (тот же общий компонент, что на странице деталей).
                             val editorSeed = progressEditorSeed
@@ -1140,7 +1170,61 @@ fun KinoApp() {
                                     onOpenPlayerSettings = { navController.navigate("player_settings") },
                                     onOpenAbout = { navController.navigate("about") },
                                     onOpenSources = { navController.navigate("sources") },
-                                    onOpenStorage = { navController.navigate("storage") }
+                                    onOpenStorage = { navController.navigate("storage") },
+                                    onOpenNavMenu = { navController.navigate("nav_menu") }
+                                )
+                            }
+                        }
+                        composable(
+                            route = "nav_menu",
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
+                        ) {
+                            TvAdaptiveSecondary {
+                                NavMenuSettingsScreen(
+                                    onBack = { navController.popBackStack() },
+                                    order = vm.uiState.navOrder,
+                                    hidden = vm.uiState.navHidden,
+                                    hapticsEnabled = vm.uiState.navHapticsEnabled,
+                                    hapticScale = vm.uiState.navHapticScale,
+                                    onMoveSection = vm::moveNavSection,
+                                    onToggleSection = vm::setNavSectionVisible,
+                                    onHapticsEnabledChanged = vm::setNavHapticsEnabled,
+                                    onHapticScaleChanged = vm::setNavHapticScale,
+                                    libraryGlyph = { sel ->
+                                        NavGlyph(
+                                            filled = hd.kinoshka.app.R.drawable.ic_nav_library_filled,
+                                            outlined = hd.kinoshka.app.R.drawable.ic_nav_library_outlined,
+                                            selected = sel,
+                                            size = 24.dp
+                                        )
+                                    },
+                                    discoverGlyph = { sel ->
+                                        NavGlyph(
+                                            filled = hd.kinoshka.app.R.drawable.ic_nav_discover_filled,
+                                            outlined = hd.kinoshka.app.R.drawable.ic_nav_discover_outlined,
+                                            selected = sel,
+                                            size = 24.dp
+                                        )
+                                    },
+                                    feedGlyph = { sel ->
+                                        NavGlyph(
+                                            filled = hd.kinoshka.app.R.drawable.ic_nav_feed_filled,
+                                            outlined = hd.kinoshka.app.R.drawable.ic_nav_feed_outlined,
+                                            selected = sel,
+                                            size = 24.dp
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -1592,6 +1676,24 @@ private fun qualitiesBestFallback(qualities: Map<String, String>): String? =
         ?: qualities.keys.firstOrNull()
 
 private fun detailsRoute(id: Int): String = "details/$id"
+
+/**
+ * Кастомный глиф пилюли/меню (как до KMP M4): один хелпер на пилюлю HomeScreen
+ * и страницу «Навигационное меню» — иконки в обоих местах строго одинаковые.
+ */
+@Composable
+private fun NavGlyph(
+    filled: Int,
+    outlined: Int,
+    selected: Boolean,
+    size: androidx.compose.ui.unit.Dp = 28.dp
+) {
+    Icon(
+        painter = painterResource(if (selected) filled else outlined),
+        contentDescription = null,
+        modifier = Modifier.size(size)
+    )
+}
 
 /**
  * Вторичный экран в TV-режиме: тот же телефонный композабл, центрированный на TV-фоне

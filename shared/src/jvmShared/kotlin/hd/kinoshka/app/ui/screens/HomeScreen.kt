@@ -380,7 +380,14 @@ fun HomeScreen(
     onRefreshLibrary: () -> Unit = {},
     // Отзывчивая вибрация сияния: 0..1 (слабо → сильно). Реализацию привозит
     // платформа (Android — Vibrator с амплитудой); без неё (desktop) — no-op.
-    onLibraryRefreshHaptic: (Float) -> Unit = {}
+    onLibraryRefreshHaptic: (Float) -> Unit = {},
+    // Нижнее меню из настроек: порядок вкладок (MainSection.name), скрытые,
+    // мастер-тумблер тактильности пилюли и платформенный отклик 0..1
+    // (Android — Vibrator с амплитудой; null — системный тик/конфёрм).
+    navOrder: List<String> = MainSection.entries.map { it.name },
+    navHidden: Set<String> = emptySet(),
+    navHapticsEnabled: Boolean = true,
+    onNavHaptic: ((Float) -> Unit)? = null
 ) {
     // TV-дизайн (ПК/планшет landscape/ТВ): полностью другой макет с той же моделью состояния.
     if (hd.kinoshka.app.ui.tv.rememberTvLayout()) {
@@ -671,6 +678,20 @@ fun HomeScreen(
     KinoBackHandler(enabled = section == MainSection.FEED) {
         handleNav(prevSection)
     }
+    // Пилюля по настройкам меню: порядок + скрытые вкладки. Неизвестные имена
+    // отбрасываем, потерянные секции дописываем, пустой итог = всё как раньше.
+    val pillSections = remember(navOrder, navHidden) {
+        val ordered = navOrder.mapNotNull { name ->
+            MainSection.entries.firstOrNull { it.name == name }
+        } + MainSection.entries.filter { it.name !in navOrder }
+        ordered.filter { it.name !in navHidden }.distinct()
+            .takeIf { it.isNotEmpty() } ?: MainSection.entries.toList()
+    }
+    // Текущая секция могла оказаться скрытой настройкой (или вернуться Назад
+    // из ленты в неё) — уходим на первую видимую тем же общим путём.
+    LaunchedEffect(section, pillSections) {
+        if (section !in pillSections) handleNav(pillSections.first())
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -681,7 +702,9 @@ fun HomeScreen(
             // Глифы: Android (KinoApp) инъекцией возвращает кастомные drawable-иконки,
             // без инъекции (desktop) рисуются material-фолбэки.
             BottomNavPill(
-                items = listOf(
+                items = pillSections.map { pillTarget ->
+                    when (pillTarget) {
+                        MainSection.LIBRARY ->
                     NavPillItem(
                         contentDescription = "Библиотека",
                         selected = section == MainSection.LIBRARY,
@@ -698,7 +721,8 @@ fun HomeScreen(
                                 )
                             }
                         }
-                    ),
+                    )
+                        MainSection.DISCOVER ->
                     NavPillItem(
                         contentDescription = "Обзор",
                         selected = section == MainSection.DISCOVER,
@@ -715,7 +739,8 @@ fun HomeScreen(
                                 )
                             }
                         }
-                    ),
+                    )
+                        MainSection.FEED ->
                     NavPillItem(
                         contentDescription = "Лента",
                         selected = section == MainSection.FEED,
@@ -741,7 +766,8 @@ fun HomeScreen(
                                 )
                             }
                         }
-                    ),
+                    )
+                        MainSection.PROFILE ->
                     NavPillItem(
                         contentDescription = "Профиль",
                         selected = section == MainSection.PROFILE,
@@ -759,8 +785,11 @@ fun HomeScreen(
                             }
                         }
                     )
-                ),
+                    }
+                },
                 isAmoled = state.themeMode == AppThemeMode.AMOLED,
+                hapticsEnabled = navHapticsEnabled,
+                onHaptic = onNavHaptic,
                 scrollIntensity = if (section == MainSection.FEED) feedIntensity else contentScrollIntensity
             )
         }
@@ -1803,13 +1832,26 @@ private fun BoxScope.AuroraRefreshOverlay(
     val pull = pullState.distanceFraction.coerceIn(0f, 1f)
     // Отзывчивая вибрация от слабой к сильной: тики по мере натяжения,
     // мощный — в момент срыва обновления, мягкий — по его концу.
+    // Взвод только живым жестом: оверлей живёт лишь на вкладке Библиотеки,
+    // его remember-состояние сбрасывается при уходе со вкладки — возврат
+    // посреди чужого refresh (пул после логина, свайп на другой вкладке)
+    // иначе бабахал бы onHaptic(1f) при простом открытии страницы.
+    var gestureArmed by remember { mutableStateOf(false) }
+    if (!isRefreshing) {
+        if (pull > 0.4f) gestureArmed = true
+        else if (pull <= 0.01f) gestureArmed = false
+    }
     val level = if (isRefreshing) 5 else (pull * 5).toInt().coerceIn(0, 4)
-    var firedLevel by remember { mutableStateOf(-1) }
+    // Старт с 0, а не с -1: иначе первое срабатывание эффекта при монтировании
+    // (каждое открытие вкладки Библиотеки) давало бы лишний тик 0 > -1 без жеста.
+    var firedLevel by remember { mutableStateOf(0) }
     var wasRefreshing by remember { mutableStateOf(false) }
     // Тихий пульс, пока обновление длится: сияние «дышит» и в руке.
     // Цикл гасится сам при смене ключа (конец refresh).
     LaunchedEffect(isRefreshing) {
-        if (isRefreshing) {
+        // Пульс — только своему жесту: программный refresh, застигнутый
+        // возвратом на вкладку, молчит.
+        if (isRefreshing && gestureArmed) {
             while (true) {
                 kotlinx.coroutines.delay(1400)
                 onHaptic(0.18f)
@@ -1818,7 +1860,10 @@ private fun BoxScope.AuroraRefreshOverlay(
     }
     LaunchedEffect(level, isRefreshing) {
         if (isRefreshing && !wasRefreshing) {
-            onHaptic(1f)
+            if (gestureArmed) {
+                onHaptic(1f)
+                gestureArmed = false
+            }
             wasRefreshing = true
             firedLevel = 5
         } else if (!isRefreshing) {

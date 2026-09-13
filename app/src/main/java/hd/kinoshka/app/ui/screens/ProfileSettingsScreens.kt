@@ -81,6 +81,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Movie
@@ -664,6 +666,12 @@ fun ProfileScreen(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(14.dp)
                         ) {
+                            Icon(
+                                imageVector = Icons.Filled.FileDownload,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text("Экспорт")
                         }
                         OutlinedButton(
@@ -671,6 +679,12 @@ fun ProfileScreen(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(14.dp)
                         ) {
+                            Icon(
+                                imageVector = Icons.Filled.FileUpload,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text("Импорт")
                         }
                     }

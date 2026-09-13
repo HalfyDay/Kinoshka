@@ -33,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -118,7 +119,10 @@ fun SettingsScreen(
     onOpenSources: (() -> Unit)? = null,
     // Память и хранилище (только Android: замеры и очистка живут в app-модуле;
     // null — строка скрыта, как на desktop).
-    onOpenStorage: (() -> Unit)? = null
+    onOpenStorage: (() -> Unit)? = null,
+    // Управление нижней пилюлей (порядок/видимость вкладок, вибрация).
+    // null — строка скрыта.
+    onOpenNavMenu: (() -> Unit)? = null
 ) {
     var showThemePicker by remember { mutableStateOf(false) }
     var showDiscoverTileSizePicker by remember { mutableStateOf(false) }
@@ -166,6 +170,15 @@ fun SettingsScreen(
                     icon = Icons.Outlined.Dashboard,
                     onClick = { showLibraryTileSizePicker = true }
                 )
+                if (onOpenNavMenu != null) {
+                    KinoSettingsDivider()
+                    KinoSettingsRow(
+                        title = "Навигационное меню",
+                        summary = "Вкладки пилюли: порядок, видимость, вибрация",
+                        icon = Icons.Outlined.Menu,
+                        onClick = onOpenNavMenu
+                    )
+                }
             }
         }
         item {
@@ -874,6 +887,7 @@ fun settingsSearchEntries(
     add(SettingsSearchEntry("Тема", "Внешний вид приложения", "тема тёмная светлая amoled оформление внешность"))
     add(SettingsSearchEntry("Размер плиток (Обзор)", "Крупные или компактные обложки", "плитки размер обзор сетка крупные мелкие"))
     add(SettingsSearchEntry("Размер плиток (Библиотека)", "Крупные или компактные обложки", "плитки размер библиотека сетка крупные мелкие"))
+    add(SettingsSearchEntry("Навигационное меню", "Вкладки пилюли: порядок, видимость, вибрация", "меню навигация вкладки пилюля порядок скрыть вибрация вибро тактильный"))
     add(SettingsSearchEntry("Плеер фильмов", "Какой плеер открывает кино", "плеер mpv ex внешний внутренний кино"))
     if (hasPlayerSettings) {
         add(SettingsSearchEntry("Настройки плеера mpvEx", "Скорость, жесты, субтитры, декодер", "mpvex скорость жесты субтитры декодер сброс плеер"))
