@@ -114,6 +114,6 @@
     java.lang.Object readResolve();
 }
 
-# Chromecast: OptionsProvider ищется по имени из манифеста — не переименовывать.
+# Chromecast: OptionsProvider РёС‰РµС‚СЃСЏ РїРѕ РёРјРµРЅРё РёР· РјР°РЅРёС„РµСЃС‚Р° вЂ” РЅРµ РїРµСЂРµРёРјРµРЅРѕРІС‹РІР°С‚СЊ.
 -keep class hd.kinoshka.app.data.cast.CastOptionsProvider { *; }
 -keep class com.google.android.gms.cast.framework.media.widget.ExpandedControllerActivity { *; }
