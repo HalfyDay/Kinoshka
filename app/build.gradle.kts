@@ -78,6 +78,32 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Release-подпись тем же ключом, что в Studio (Generate Signed Bundle/APK).
+            // Креды — в gitignored local.properties (RELEASE_STORE_*); без них в логе
+            // warning и сборка молча остаётся unsigned (на телефон не встанет).
+            val ksProps = Properties().apply {
+                val f = rootProject.file("local.properties")
+                if (f.exists()) f.inputStream().use { load(it) }
+            }
+            fun ksProp(name: String) = ksProps.getProperty(name)?.trim().orEmpty()
+            // Путь в properties — прямыми слешами (D:/Works/Keys/...) либо \\:
+            // одиночный backslash java.util.Properties съедает как escape.
+            val ksFile = rootProject.file(
+                ksProp("RELEASE_STORE_FILE").ifEmpty { "D:\\Works\\Keys\\kinoshka-release.jks" }
+            )
+            val ksStorePass = ksProp("RELEASE_STORE_PASSWORD")
+            val ksAlias = ksProp("RELEASE_KEY_ALIAS").ifEmpty { "kinoshka" }
+            val ksKeyPass = ksProp("RELEASE_KEY_PASSWORD")
+            if (ksFile.exists() && ksStorePass.isNotEmpty() && ksKeyPass.isNotEmpty()) {
+                signingConfig = signingConfigs.create("releaseKey") {
+                    storeFile = ksFile
+                    storePassword = ksStorePass
+                    keyAlias = ksAlias
+                    keyPassword = ksKeyPass
+                }
+            } else {
+                logger.warn("Release signing: no keystore/credentials (RELEASE_STORE_* in local.properties) — APK/AAB will be UNSIGNED")
+            }
         }
     }
 

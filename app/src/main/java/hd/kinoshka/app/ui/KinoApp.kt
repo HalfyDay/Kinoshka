@@ -527,6 +527,8 @@ fun KinoApp() {
                                 navHapticsEnabled = vm.uiState.navHapticsEnabled,
                                 // Тактильность пилюли из настроек меню: тики 0.35/0.8
                                 // масштабируем силой и уважаем системный тумблер.
+                                // Импульс — точечный системный примитив (тик/клик),
+                                // а не сырой oneShot: прямоугольные 20мс гудят мотором.
                                 onNavHaptic = { intensity ->
                                     if (!vm.uiState.navHapticsEnabled) return@HomeScreen
                                     val scale = vm.uiState.navHapticScale
@@ -540,17 +542,12 @@ fun KinoApp() {
                                         1
                                     ) == 1
                                     if (vibrator != null && vibrator.hasVibrator() && hapticsOn) {
-                                        val amplitude = (30 + 225 * (intensity * scale).coerceIn(0f, 1f)).toInt()
-                                        vibrator.vibrate(
-                                            android.os.VibrationEffect.createOneShot(20, amplitude)
-                                        )
+                                        performCrispHaptic(vibrator, intensity * scale)
                                     }
                                 },
                                 onLibraryRefreshHaptic = { intensity ->
-                                    // Амплитудная вибрация за жестом (minSdk 26 —
-                                    // VibrationEffect доступен везде): тики 30→235,
-                                    // срыв обновления — 255. Уважаем системный
-                                    // тумблер тактильного отклика.
+                                    // Тот же точечный примитив за жестом: тики натяжения,
+                                    // клик срыва, тик конца. Уважаем системный тумблер.
                                     val vibrator = appContext.getSystemService(
                                         android.os.Vibrator::class.java
                                     )
@@ -560,10 +557,7 @@ fun KinoApp() {
                                         1
                                     ) == 1
                                     if (vibrator != null && vibrator.hasVibrator() && hapticsOn) {
-                                        val amplitude = (30 + 225 * intensity.coerceIn(0f, 1f)).toInt()
-                                        vibrator.vibrate(
-                                            android.os.VibrationEffect.createOneShot(20, amplitude)
-                                        )
+                                        performCrispHaptic(vibrator, intensity)
                                     }
                                 },
                                 onOpenProfile = { navController.navigate("profile") },
@@ -1676,6 +1670,49 @@ private fun qualitiesBestFallback(qualities: Map<String, String>): String? =
         ?: qualities.keys.firstOrNull()
 
 private fun detailsRoute(id: Int): String = "details/$id"
+
+/**
+ * Точечный тактильный тык (0..1): системный shaped-примитив вместо сырого
+ * `createOneShot(20мс)` — прямоугольный гул мотора на 20мс воспринимается
+ * как жужжание, а тик/клик — как короткий «тык».
+ *
+ * API 30+: композиция с силой (тик — слабое, клик — среднее/сильное).
+ * API 29: предустановленный эффект без силы (железо само держит длительность).
+ * API 26–28: короткий oneShot 12мс — точечнее прежних 20мс.
+ */
+private fun performCrispHaptic(vibrator: android.os.Vibrator, intensity: Float) {
+    val x = intensity.coerceIn(0f, 1f)
+    if (x <= 0.01f) return
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+        vibrator.areAllPrimitivesSupported(
+            android.os.VibrationEffect.Composition.PRIMITIVE_TICK,
+            android.os.VibrationEffect.Composition.PRIMITIVE_CLICK
+        )
+    ) {
+        val primitive = if (x < 0.6f) {
+            android.os.VibrationEffect.Composition.PRIMITIVE_TICK
+        } else {
+            android.os.VibrationEffect.Composition.PRIMITIVE_CLICK
+        }
+        val effect = android.os.VibrationEffect.startComposition()
+            .addPrimitive(primitive, x)
+            .compose()
+        vibrator.vibrate(effect)
+    } else if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+        // Примитивы композиции поддерживает не каждое железо (напр. OnePlus 7T —
+        // mSupportedPrimitives пуст, и система молча дропает эффект как unsupported).
+        // Зато предустановленные тик/клик там есть — идём через них.
+        val predefined = when {
+            x < 0.6f -> android.os.VibrationEffect.EFFECT_TICK
+            x < 0.9f -> android.os.VibrationEffect.EFFECT_CLICK
+            else -> android.os.VibrationEffect.EFFECT_HEAVY_CLICK
+        }
+        vibrator.vibrate(android.os.VibrationEffect.createPredefined(predefined))
+    } else {
+        val amplitude = (30 + 225 * x).toInt()
+        vibrator.vibrate(android.os.VibrationEffect.createOneShot(12, amplitude))
+    }
+}
 
 /**
  * Кастомный глиф пилюли/меню (как до KMP M4): один хелпер на пилюлю HomeScreen
