@@ -54,7 +54,17 @@ object CastPlayback {
      * Подписка на сессии. Без Play Services — тихий no-op, кнопка каста просто
      * откроет пустой диалог выбора.
      */
-    fun init(context: Context, owner: Any, onSessionStarted: () -> Unit, onSessionEnded: () -> Unit) {
+    /**
+     * @param onSessionResumed тихое продолжение приостановленной сессии (приёмник ничего не
+     * терял — переливать не надо). По умолчанию no-op; плеер явно просит перелить заново.
+     */
+    fun init(
+        context: Context,
+        owner: Any,
+        onSessionStarted: () -> Unit,
+        onSessionEnded: () -> Unit,
+        onSessionResumed: () -> Unit = {},
+    ) {
         val mgr = try {
             CastContext.getSharedInstance(context.applicationContext).sessionManager
         } catch (e: Exception) {
@@ -84,7 +94,7 @@ object CastPlayback {
 
             override fun onSessionEnded(session: CastSession, error: Int) = onSessionEnded()
             override fun onSessionResuming(session: CastSession, sessionId: String) = Unit
-            override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) = onSessionStarted()
+            override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) = onSessionResumed()
             override fun onSessionResumeFailed(session: CastSession, error: Int) = Unit
             override fun onSessionSuspended(session: CastSession, reason: Int) = Unit
         }

@@ -1195,8 +1195,23 @@ class PlayerActivity :
       this,
       this,
       onSessionStarted = { onCastSessionStarted() },
-      onSessionEnded = { onCastSessionEnded() }
+      onSessionEnded = { onCastSessionEnded() },
+      // Resume тоже переливает текущий поток: плеер синхронизирует ТВ с локальной позицией.
+      onSessionResumed = { onCastSessionStarted() }
     )
+    // ТВ выбрано заранее (кнопка каста на странице тайтла → потом Play):
+    // как только появится активный стрим — льём на ТВ без повторного тапа.
+    if (hd.kinoshka.app.data.cast.CastPlayback.isCasting) {
+      lifecycleScope.launch {
+        repeat(60) {
+          if (qomActiveStream ?: currentAnimeStream != null) {
+            onCastSessionStarted()
+            return@launch
+          }
+          kotlinx.coroutines.delay(500)
+        }
+      }
+    }
   }
 
   private fun cleanupCast() {
@@ -1216,7 +1231,40 @@ class PlayerActivity :
    */
   private fun onCastSessionStarted() {
     castCurrentStream()
+    // Фильмы/сериалы едут в пульт тем же аниме-набором (эпизоды с сезонами,
+    // озвучки, лестница): QOM и series-режимы уже лежат в anime-полях модели.
+    val filmKpId = intent.getIntExtra("movie_kinopoisk_id", 0)
+      .takeIf { it > 0 } ?: movieSeriesContext?.kinopoiskId ?: 0
     val remote = android.content.Intent(this, hd.kinoshka.app.ui.player.CastRemoteActivity::class.java).apply {
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_MODE,
+        if (filmKpId > 0) "film" else "anime"
+      )
+      putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_KP_ID, filmKpId)
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_IS_SERIES,
+        movieSeriesContext != null
+      )
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_DIRECT,
+        movieSeriesContext?.isDirectSource == true
+      )
+      if (filmKpId > 0) {
+        putExtra(
+          hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_EPISODES,
+          runCatching {
+            Json.encodeToString(viewModel.animeEpisodes.value.orEmpty())
+          }.getOrDefault("[]")
+        )
+        putExtra(
+          hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_TRANSLATIONS,
+          runCatching {
+            Json.encodeToString(viewModel.animeTranslations.value.orEmpty())
+          }.getOrDefault("[]")
+        )
+        // Исходный интент плеера — для «В плеер» (перезапуск с позиции ТВ).
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_PLAYER_INTENT, intent)
+      }
       putExtra(
         hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_SHIKIMORI_ID,
         intent.getIntExtra("anime_shikimori_id", 0)
@@ -1236,6 +1284,13 @@ class PlayerActivity :
       putExtra(
         hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_QUALITY,
         viewModel.currentAnimeQualityId.value
+      )
+      // Лестница рангов: пульт показывает качество сразу, не дожидаясь резолва.
+      putExtra(
+        hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_ANIME_QUALITIES,
+        runCatching {
+          Json.encodeToString((qomActiveStream ?: currentAnimeStream)?.qualities.orEmpty())
+        }.getOrDefault("{}")
       )
       putExtra(
         hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_DISPLAY_TITLE,

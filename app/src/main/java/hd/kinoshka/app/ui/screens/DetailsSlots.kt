@@ -4,16 +4,26 @@ import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.mediarouter.app.MediaRouteChooserDialog
+import androidx.mediarouter.media.MediaRouteSelector
+import com.google.android.gms.cast.CastMediaControlIntent
+import com.google.android.gms.cast.framework.CastContext
+import hd.kinoshka.app.data.cast.CastPlayback
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -192,5 +202,82 @@ fun enqueueMovieDownload(context: Context, target: MovieDownloadTarget, preferre
             )
         )
         Toast.makeText(context, "Фильм добавлен в загрузки", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/**
+ * Кнопка Chromecast в шапке страницы тайтла (слот castButton).
+ * Устройство только подключается (диалог выбора ТВ), а серия/озвучка/источник
+ * выбираются пользователем на странице пикера — той же, что открывает «Смотреть».
+ * Никакого авто-выбора первого источника/озвучки/серии и авто-открытия пульта
+ * с дефолтами здесь нет: onOpenCastPicker поднимает каст-пикер DetailsScreen,
+ * результат пикера платформа льёт на ТВ и открывает пульт уже с явным выбором.
+ */
+@Composable
+internal fun TitleCastButton(
+    shikimoriId: Int,
+    kinopoiskId: Int,
+    title: String,
+    isAnime: Boolean,
+    onOpenCastPicker: () -> Unit
+) {
+    val context = LocalContext.current
+    val selector = remember {
+        MediaRouteSelector.Builder()
+            .addControlCategory(
+                CastMediaControlIntent.categoryForCast(
+                    CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID
+                )
+            )
+            .build()
+    }
+    val owner = remember { Any() }
+    var armed by remember { mutableStateOf(false) }
+
+    // Одноразовое ожидание сессии после выбора ТВ в диалоге: при подключении
+    // открываем пикер (выбор за пользователем), а не пульт с авто-выбором.
+    DisposableEffect(armed) {
+        if (armed) {
+            runCatching { CastContext.getSharedInstance(context.applicationContext) }
+            CastPlayback.init(
+                context, owner,
+                onSessionStarted = {
+                    armed = false
+                    onOpenCastPicker()
+                },
+                onSessionEnded = {}
+            )
+        }
+        onDispose { CastPlayback.release(owner) }
+    }
+
+    IconButton(
+        onClick = {
+            // Сессия уже есть — сразу пикер, без повторного диалога ТВ.
+            if (CastPlayback.isCasting) {
+                onOpenCastPicker()
+                return@IconButton
+            }
+            // Инициализация Cast (иначе диалог пуст) + обычный диалог без
+            // фрагментов: MainActivity — ComponentActivity, а не FragmentActivity.
+            runCatching { CastContext.getSharedInstance(context.applicationContext) }
+            try {
+                MediaRouteChooserDialog(context).apply {
+                    routeSelector = selector
+                    // Только отмена (назад/мимо): при выборе ТВ диалог
+                    // закрывается сам через dismiss — ожидание оставляем.
+                    setOnCancelListener { armed = false }
+                }.also { armed = true }.show()
+            } catch (e: Exception) {
+                armed = false
+                Toast.makeText(context, "Не удалось открыть выбор ТВ", Toast.LENGTH_SHORT).show()
+            }
+        }
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Cast,
+            contentDescription = "Транслировать на ТВ",
+            tint = MaterialTheme.colorScheme.onSurface
+        )
     }
 }

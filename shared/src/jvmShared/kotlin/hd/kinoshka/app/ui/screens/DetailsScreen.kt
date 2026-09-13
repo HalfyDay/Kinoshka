@@ -295,6 +295,32 @@ fun DetailsScreen(
         ) -> Unit
     ) -> Unit)? = null,
     downloadSheet: (@Composable (item: FilmDetails, isAnime: Boolean, onDismiss: () -> Unit) -> Unit)? = null,
+    // Кнопка Chromecast в шапке рядом со скачиванием (Android-слот; null — скрыта, как на desktop).
+    // onOpenCastPicker открывает страницу выбора серии/озвучки/источника как у «Смотреть»,
+    // но результат уходит в onOpenCastPlayer/onCastMovieSelected (трансляция на ТВ).
+    castButton: (@Composable (item: FilmDetails, isAnime: Boolean, onOpenCastPicker: () -> Unit) -> Unit)? = null,
+    // Аниме-каст из пикера: та же сигнатура, что у onOpenNativePlayer (seriesContext всегда null).
+    onOpenCastPlayer: ((
+        streamUrl: String,
+        headers: Map<String, String>,
+        qualities: Map<String, String>,
+        animeTitle: String,
+        episodeNumber: Int,
+        episodeTitle: String,
+        shikimoriId: Int,
+        kinopoiskId: Int,
+        sourceType: String,
+        episodes: List<hd.kinoshka.app.data.model.AnimeEpisode>,
+        translations: List<hd.kinoshka.app.data.model.FlatTranslation>,
+        currentTranslationId: String,
+        movieSeriesContext: hd.kinoshka.app.data.model.MovieSeriesPlaybackContext?
+    ) -> Unit)? = null,
+    // Кино-каст из пикера: результат как у «Смотреть», платформа сама льёт на ТВ и открывает пульт.
+    onCastMovieSelected: ((
+        result: hd.kinoshka.app.ui.components.MoviePickerResult,
+        displayTitle: String,
+        kinopoiskId: Int
+    ) -> Unit)? = null,
     hentaiDownloadButton: (@Composable (
         title: String,
         kinopoiskId: Int,
@@ -322,6 +348,11 @@ fun DetailsScreen(
     var activePlaybackSelection by remember(filmId) { mutableStateOf(false) }
     // Фильмы/сериалы: та же страница выбора сезона/серии/озвучки/источника, что у аниме.
     var activeMovieSelection by remember(filmId) { mutableStateOf(false) }
+    // Каст-пикеры: те же страницы выбора, что у «Смотреть», но результат уходит на ТВ.
+    // Устройство к этому моменту уже подключено (диалог ТВ отработал в castButton),
+    // никакого авто-выбора серии/озвучки/источника здесь нет — только явный выбор пользователя.
+    var activeCastAnimeSelection by remember(filmId) { mutableStateOf(false) }
+    var activeCastMovieSelection by remember(filmId) { mutableStateOf(false) }
     // 18+ titles open a full-screen source page (like the anime selection screen): every provider
     // resolves in parallel — loading spinners, retry buttons and episode lists per source.
     var activeHentaiSelection by remember(filmId) { mutableStateOf(false) }
@@ -345,6 +376,8 @@ fun DetailsScreen(
             }
             activePlaybackSelection -> activePlaybackSelection = false
             activeMovieSelection -> activeMovieSelection = false
+            activeCastAnimeSelection -> activeCastAnimeSelection = false
+            activeCastMovieSelection -> activeCastMovieSelection = false
             selectedCharacterId != null -> selectedCharacterId = null
             previewPosterUrl != null -> {
                 previewPosterUrl = null
@@ -743,6 +776,49 @@ fun DetailsScreen(
                                 }
                             }
                         }
+                        // Каст-пикер аниме: та же страница выбора, что у «Смотреть»
+                        // (серия → озвучка → источник), но результат уходит на ТВ.
+                        // Авто-выбора нет: пульт откроется уже с явным выбором пользователя.
+                        if (activeCastAnimeSelection) {
+                            val shikimoriId = if (item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
+                                item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                            } else {
+                                0
+                            }
+                            animeSelectionScreen?.invoke(
+                                shikimoriId,
+                                item.kinopoiskId,
+                                item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                { activeCastAnimeSelection = false }
+                            ) { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
+                                var normalizedUrl = stream.url
+                                if (normalizedUrl.startsWith("//")) {
+                                    normalizedUrl = "https:$normalizedUrl"
+                                }
+                                val isLocal = normalizedUrl.startsWith("file:", ignoreCase = true) ||
+                                    (normalizedUrl.startsWith("/") && !normalizedUrl.startsWith("//"))
+                                if (normalizedUrl.startsWith("http", ignoreCase = true) || isLocal) {
+                                    activeCastAnimeSelection = false
+                                    onOpenCastPlayer?.invoke(
+                                        normalizedUrl,
+                                        stream.headers,
+                                        stream.qualities,
+                                        item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                        epNum,
+                                        epTitle,
+                                        shikimoriId,
+                                        item.kinopoiskId,
+                                        source.name,
+                                        episodes,
+                                        translations,
+                                        trId,
+                                        null
+                                    )
+                                } else {
+                                    throw IllegalArgumentException("Некорректная ссылка на видеопоток: $normalizedUrl")
+                                }
+                            }
+                        }
                         if (activeHentaiSelection) {
                             // Cached episode lists from earlier successful resolutions — shown
                             // while providers re-check their lists (VPN sites can be slow).
@@ -1070,6 +1146,29 @@ fun DetailsScreen(
                     }
                 }
 
+                // Каст-пикер кино: та же страница выбора, что у «Смотреть»,
+                // но результат уходит на ТВ. Авто-выбора нет — только явный выбор.
+                if (activeCastMovieSelection && !isAnime) {
+                    val movieRequest = item.toMoviePlaybackRequest()
+                    hd.kinoshka.app.ui.components.MoviePlaybackSelectionScreen(
+                        request = movieRequest,
+                        displayTitle = item.nameRu ?: item.nameOriginal ?: "Фильм",
+                        isSeries = movieRequest.kind != hd.kinoshka.app.data.model.MovieContentKind.MOVIE,
+                        profile = state.userProfile,
+                        seasons = state.seasons,
+                        posterUrl = item.posterUrl ?: item.posterUrlPreview,
+                        userStateStore = userStateStore,
+                        downloadedEpisodeKeys = movieDownloadedEpisodes,
+                        downloadedByTranslation = movieDownloadedByTranslation,
+                        onDownloadTarget = onMovieDownload,
+                        onDismissRequest = { activeCastMovieSelection = false }
+                    ) { result ->
+                        val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
+                        activeCastMovieSelection = false
+                        onCastMovieSelected?.invoke(result, filmTitle, item.kinopoiskId)
+                    }
+                }
+
                 // Кино-пикер поверх любого макета (телефон/TV): сезон/серия/озвучка/источник,
                 // как страница выбора у аниме. Плеер открывается уже с явным выбором.
                 if (activeMovieSelection && !isAnime) {
@@ -1106,13 +1205,19 @@ fun DetailsScreen(
                 }
 
                 // TV-макет рисует свою кнопку «Назад» — телефонный топ-бар там лишний.
-                if (!tvLayout && (!isAnime || !activePlaybackSelection) && !activeMovieSelection) {
+                // Каст-пикеры тоже прячут топ-бар (они полноэкранные, как обычные пикеры).
+                if (!tvLayout && (!isAnime || (!activePlaybackSelection && !activeCastAnimeSelection)) && !activeMovieSelection && !activeCastMovieSelection) {
                     DetailsTopBar(
                         item = item,
                         isAnime = isAnime,
                         scrollState = scrollState,
                         onBack = onBack,
-                        downloadSheet = downloadSheet
+                        downloadSheet = downloadSheet,
+                        castButton = castButton,
+                        onOpenCastPicker = {
+                            if (isAnime) activeCastAnimeSelection = true
+                            else activeCastMovieSelection = true
+                        }
                     )
                 }
             }
@@ -4348,7 +4453,9 @@ private fun DetailsTopBar(
     isAnime: Boolean,
     scrollState: LazyListState,
     onBack: () -> Unit,
-    downloadSheet: (@Composable (item: FilmDetails, isAnime: Boolean, onDismiss: () -> Unit) -> Unit)? = null
+    downloadSheet: (@Composable (item: FilmDetails, isAnime: Boolean, onDismiss: () -> Unit) -> Unit)? = null,
+    castButton: (@Composable (item: FilmDetails, isAnime: Boolean, onOpenCastPicker: () -> Unit) -> Unit)? = null,
+    onOpenCastPicker: () -> Unit = {}
 ) {
     val platformActions = rememberKinoPlatformActions()
     val density = LocalDensity.current
@@ -4424,6 +4531,9 @@ private fun DetailsTopBar(
                         )
                     }
                 }
+                // Chromecast — платформенный слот рядом со скачиванием.
+                // onOpenCastPicker открывает каст-пикер (та же страница выбора, что у «Смотреть»).
+                castButton?.invoke(item, isAnime, onOpenCastPicker)
                 IconButton(
                     onClick = {
                         val shareUrl = if (isAnime) {

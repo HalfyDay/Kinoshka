@@ -82,6 +82,7 @@ import hd.kinoshka.app.ui.screens.AnimeTopicScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.DownloadQualityDialog
 import hd.kinoshka.app.ui.screens.HentaiDownloadButton
+import hd.kinoshka.app.ui.screens.TitleCastButton
 import hd.kinoshka.app.ui.screens.TitleDownloadSheet
 import hd.kinoshka.app.ui.screens.AnimePlaybackSelectionScreen
 import hd.kinoshka.app.data.download.EpisodeDownloadManager
@@ -999,6 +1000,26 @@ fun KinoApp() {
                                 downloadSheet = { item, isAnime, onDismiss ->
                                     TitleDownloadSheet(item = item, isAnime = isAnime, onDismiss = onDismiss)
                                 },
+                                onOpenCastPlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
+                                    castAnimeFromPicker(
+                                        detailsContext, streamUrl, headers, qualities, title,
+                                        epNum, trId, shikimoriId
+                                    )
+                                },
+                                onCastMovieSelected = { result, displayTitle, kinopoiskId ->
+                                    castMovieFromPicker(detailsContext, result, displayTitle, kinopoiskId)
+                                },
+                                castButton = { item, isAnime, onOpenCastPicker ->
+                                    TitleCastButton(
+                                        shikimoriId = if (isAnime && item.kinopoiskId > hd.kinoshka.app.data.model.ANIME_ID_OFFSET) {
+                                            item.kinopoiskId - hd.kinoshka.app.data.model.ANIME_ID_OFFSET
+                                        } else 0,
+                                        kinopoiskId = item.kinopoiskId,
+                                        title = item.nameRu ?: item.nameOriginal ?: item.nameEn ?: "",
+                                        isAnime = isAnime,
+                                        onOpenCastPicker = onOpenCastPicker
+                                    )
+                                },
                                 hentaiDownloadButton = { title, kinopoiskId, provider, label, episodeNumber, episodeUrl, headers ->
                                     HentaiDownloadButton(title, kinopoiskId, provider, label, episodeNumber, episodeUrl, headers)
                                 },
@@ -1412,6 +1433,160 @@ private const val KEY_LAST_UPDATE_STATUS = "last_update_status"
 private const val KEY_PENDING_APK_PATH = "pending_apk_path"
 private const val KEY_PENDING_APK_TAG = "pending_apk_tag"
 private const val AUTO_UPDATE_INTERVAL_MS = 24L * 60L * 60L * 1000L
+
+/**
+ * Аниме-каст из пикера страницы тайтла: устройство уже подключено (диалог ТВ отработал
+ * в TitleCastButton), серия/озвучка/источник — явный выбор пользователя в пикере.
+ * Льём выбранный поток на ТВ сразу и открываем пульт уже с этим выбором —
+ * никакого авто-выбора первого источника/озвучки/серии.
+ */
+private fun castAnimeFromPicker(
+    context: Context,
+    streamUrl: String,
+    headers: Map<String, String>,
+    qualities: Map<String, String>,
+    title: String,
+    episodeNumber: Int,
+    translationId: String,
+    shikimoriId: Int
+) {
+    // Без ABR-мастера: приёмник жуёт явный ранг лучше (см. пульт) — пиним лучший.
+    val pinned = qualities.keys.maxByOrNull { hd.kinoshka.app.data.model.qualityRank(it) }
+    val relay = hd.kinoshka.app.data.cast.CastRelayServer.getInstance()
+        .register(context, streamUrl, headers, qualities, pinned)
+    if (relay == null) {
+        Toast.makeText(context, "Каст: подключите телефон к Wi-Fi", Toast.LENGTH_SHORT).show()
+        return
+    }
+    hd.kinoshka.app.data.cast.CastPlayback.load(relay, title, 0, null)
+    val intent = Intent(context, hd.kinoshka.app.ui.player.CastRemoteActivity::class.java).apply {
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_MODE, "anime")
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_SHIKIMORI_ID, shikimoriId)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_ANIME_TITLE, title)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_EPISODE, episodeNumber)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_TRANSLATION_ID, translationId)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_QUALITY, pinned ?: "Auto")
+        putExtra(
+            hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_ANIME_QUALITIES,
+            runCatching { kotlinx.serialization.json.Json.encodeToString(qualities) }.getOrDefault("{}")
+        )
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_DISPLAY_TITLE, title)
+    }
+    runCatching { context.startActivity(intent) }
+    Toast.makeText(context, "Трансляция на ТВ", Toast.LENGTH_SHORT).show()
+}
+
+/**
+ * Кино-каст из пикера страницы тайтла: тот же набор, что плеер отдаёт пульту
+ * (эпизоды с сезонами, озвучки, лестница), но источник выбора — пикер «Смотреть»,
+ * а не авто-выбор. Поток уже зарезолвлен пикером — льём сразу и открываем пульт.
+ */
+private fun castMovieFromPicker(
+    context: Context,
+    result: hd.kinoshka.app.ui.components.MoviePickerResult,
+    displayTitle: String,
+    kinopoiskId: Int
+) {
+    val stream = result.stream
+    val pinned = stream.qualities.keys.maxByOrNull { hd.kinoshka.app.data.model.qualityRank(it) }
+        ?: qualitiesBestFallback(stream.qualities)
+    val relay = hd.kinoshka.app.data.cast.CastRelayServer.getInstance()
+        .register(context, stream.url, stream.headers, stream.qualities, pinned)
+    if (relay == null) {
+        Toast.makeText(context, "Каст: подключите телефон к Wi-Fi", Toast.LENGTH_SHORT).show()
+        return
+    }
+    hd.kinoshka.app.data.cast.CastPlayback.load(relay, displayTitle, 0, null)
+    val seriesContext = result.seriesContext
+    val isSeries = seriesContext != null
+    // Эпизоды для пульта: тот же маппинг, что делает плеер (playerEpisodeKey + сезон).
+    val filmEpisodes: List<hd.kinoshka.app.data.model.AnimeEpisode> = if (isSeries && seriesContext != null) {
+        seriesContext.episodes.map { episode ->
+            hd.kinoshka.app.data.model.AnimeEpisode(
+                number = episode.playerEpisodeKey,
+                title = episode.title?.takeIf { it.isNotBlank() },
+                link = episode.playerUrl,
+                season = episode.seasonNumber
+            )
+        }
+    } else emptyList()
+    // Озвучки для пульта: сериалы — дабы текущей серии из контекста (как seriesTranslationsFor
+    // плеера), фильмы — готовые строки QOM из пикера.
+    val filmTranslations: List<hd.kinoshka.app.data.model.FlatTranslation> = if (isSeries && seriesContext != null) {
+        val current = result.episode ?: seriesContext.currentEpisode
+        seriesContext.candidates
+            .filter { candidate ->
+                !candidate.translationId.isNullOrBlank() && candidate.episodes.any {
+                    it.seasonNumber == current.seasonNumber && it.episodeNumber == current.episodeNumber
+                }
+            }
+            .map { dub ->
+                val rawTitle = dub.translationTitle ?: dub.translationId.orEmpty()
+                val split = hd.kinoshka.app.data.playback.MovieNativeLauncher.splitDubTrack(rawTitle)
+                hd.kinoshka.app.data.model.FlatTranslation(
+                    source = if (seriesContext.isDirectSource) hd.kinoshka.app.data.model.AnimeSourceType.DDBB
+                    else hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
+                    translationId = dub.translationId ?: rawTitle,
+                    title = if (rawTitle.isBlank()) "Озвучка" else split.first,
+                    type = split.second,
+                    episodes = emptyList()
+                )
+            }
+            .takeIf { it.isNotEmpty() } ?: result.translations
+    } else {
+        result.translations
+    }
+    // Контекст/подготовленные потоки уже лежат в сторах (пикер положил), но дублируем
+    // на случай прямого вызова: пульт перефильтровывает озвучки по эпизоду через стор.
+    if (kinopoiskId > 0) {
+        seriesContext?.let { hd.kinoshka.app.data.model.MovieSeriesContextStore.put(it) }
+        if (result.preparedStreams.isNotEmpty()) {
+            val merged = hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.get(kinopoiskId) + result.preparedStreams
+            hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.put(kinopoiskId, merged)
+        }
+    }
+    val episodeKey = result.episode?.playerEpisodeKey ?: 1
+    val intent = Intent(context, hd.kinoshka.app.ui.player.CastRemoteActivity::class.java).apply {
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_MODE, "film")
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_KP_ID, kinopoiskId)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_IS_SERIES, isSeries)
+        putExtra(
+            hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_DIRECT,
+            seriesContext?.isDirectSource == true
+        )
+        putExtra(
+            hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_EPISODES,
+            runCatching {
+                kotlinx.serialization.json.Json.encodeToString(filmEpisodes)
+            }.getOrDefault("[]")
+        )
+        putExtra(
+            hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_FILM_TRANSLATIONS,
+            runCatching {
+                kotlinx.serialization.json.Json.encodeToString(filmTranslations)
+            }.getOrDefault("[]")
+        )
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_SHIKIMORI_ID, 0)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_ANIME_TITLE, displayTitle)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_EPISODE, episodeKey)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_TRANSLATION_ID, result.currentTranslationId)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_QUALITY, pinned ?: "Auto")
+        putExtra(
+            hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_ANIME_QUALITIES,
+            runCatching {
+                kotlinx.serialization.json.Json.encodeToString(stream.qualities)
+            }.getOrDefault("{}")
+        )
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_DISPLAY_TITLE, displayTitle)
+    }
+    runCatching { context.startActivity(intent) }
+    Toast.makeText(context, "Трансляция на ТВ", Toast.LENGTH_SHORT).show()
+}
+
+/** Лучший ранг лестницы без qualityRank-импорта в сигнатуре: пустая лестница → null. */
+private fun qualitiesBestFallback(qualities: Map<String, String>): String? =
+    hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC.firstOrNull { qualities.containsKey(it) }
+        ?: qualities.keys.firstOrNull()
 
 private fun detailsRoute(id: Int): String = "details/$id"
 
