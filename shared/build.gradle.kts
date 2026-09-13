@@ -7,7 +7,7 @@ plugins {
 }
 
 kotlin {
-    androidLibrary {
+    android {
         namespace = "hd.kinoshka.app.shared"
         compileSdk = 37
         minSdk = 26
@@ -16,14 +16,16 @@ kotlin {
     jvm("desktop")
 
     sourceSets {
-        val commonMain by getting {
+        val commonMain = getByName("commonMain") {
             dependencies {
                 api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
                 // Общий UI-слой (M2+): композаблы shared собираются CMP-артефактами;
                 // на Android CMP делегирует в androidx-артефакты, версиями рулит BOM приложения.
-                api(compose.runtime)
-                api(compose.foundation)
-                api(compose.material3)
+                // compose.* accessor'ы депрекейтнуты в CMP ("Specify dependency directly") —
+                // версии = связке CMP 1.12.0 (см. whats-new-compose-112).
+                api("org.jetbrains.compose.runtime:runtime:1.12.0")
+                api("org.jetbrains.compose.foundation:foundation:1.12.0")
+                api("org.jetbrains.compose.material3:material3:1.12.0-alpha03")
                 api("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
                 // Material-иконки для общих экранов (HomeScreen и др.): полный набор —
                 // History/PauseCircle/WifiOff и прочие есть только в extended.
@@ -32,7 +34,7 @@ kotlin {
         }
         // JVM-код, общий для Android- и desktop-таргетов (gson, java.util.concurrent
         // и прочее, чего нет в commonMain), но недоступный платформенно-нейтральному коду.
-        val jvmShared by creating {
+        val jvmShared = create("jvmShared") {
             dependsOn(commonMain)
             dependencies {
                 api("com.google.code.gson:gson:2.11.0")
@@ -42,7 +44,7 @@ kotlin {
                 api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
             }
         }
-        val androidMain by getting {
+        val androidMain = getByName("androidMain") {
             dependsOn(jvmShared)
             dependencies {
                 implementation("io.coil-kt:coil-compose:2.7.0")
@@ -53,7 +55,7 @@ kotlin {
                 implementation("androidx.compose.material3:material3:1.5.0-alpha22")
             }
         }
-        val desktopMain by getting {
+        val desktopMain = getByName("desktopMain") {
             dependsOn(jvmShared)
             dependencies {
                 implementation("net.java.dev.jna:jna:5.17.0")
