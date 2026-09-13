@@ -162,6 +162,9 @@ fun KinoApp() {
             val authStore = hd.kinoshka.app.data.local.AnixartAuthStore(appContext)
             hd.kinoshka.app.data.source.AnixartVideoResolver.tokenProvider =
                 { authStore.getAuthState().token }
+            // YouTube-ключ живёт в local.properties (BuildConfig), в коде его нет.
+            hd.kinoshka.app.data.feed.YouTubeStreamResolver.apiKeyProvider =
+                { hd.kinoshka.app.BuildConfig.YOUTUBE_API_KEY }
         }
         val updateManager = remember(appContext) { AppUpdateManager(appContext) }
         val updatePrefs = remember(appContext) {

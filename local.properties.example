@@ -4,3 +4,6 @@
 # Optional: GitHub releases page used in "Ещё -> Обновления".
 # Example:
 # GITHUB_RELEASES_URL=https://github.com/owner/repo/releases
+# YouTube Data API key for trailer resolve (InnerTube). Never commit the real key.
+# Example:
+# YOUTUBE_API_KEY=your_youtube_api_key

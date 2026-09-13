@@ -61,6 +61,13 @@ android {
         val yandexDiskClientSecret = (localProps.getProperty("YANDEX_DISK_CLIENT_SECRET") ?: "").trim().removeSurrounding("\"").removeSurrounding("'")
         buildConfigField("String", "YANDEX_DISK_CLIENT_ID", "\"$yandexDiskClientId\"")
         buildConfigField("String", "YANDEX_DISK_CLIENT_SECRET", "\"$yandexDiskClientSecret\"")
+
+        // YouTube Data API для InnerTube-резолва трейлеров (в коде ключей нет).
+        val youtubeApiKey = ((project.findProperty("YOUTUBE_API_KEY") as String?)
+            ?: localProps.getProperty("YOUTUBE_API_KEY")
+            ?: System.getenv("YOUTUBE_API_KEY")
+            ?: "").trim().removeSurrounding("\"").removeSurrounding("'")
+        buildConfigField("String", "YOUTUBE_API_KEY", "\"$youtubeApiKey\"")
     }
 
     buildTypes {

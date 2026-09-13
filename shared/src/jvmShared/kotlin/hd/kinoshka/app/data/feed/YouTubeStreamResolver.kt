@@ -23,7 +23,14 @@ object YouTubeStreamResolver {
 
     private const val TAG = "YouTubeStreamResolver"
     private const val PLAYER_ENDPOINT = "https://www.youtube.com/youtubei/v1/player"
-    private const val API_KEY = "***REVOKED***"
+
+    /**
+     * Ключ YouTube Data API задаёт платформа при старте (Android: local.properties
+     * YOUTUBE_API_KEY → BuildConfig; см. KinoApp). В коде и в git ключей нет —
+     * пустой ключ молча отдаёт null, как любой сетевой провал (вызывающий код
+     * открывает трейлер веб-плеером).
+     */
+    var apiKeyProvider: () -> String = { "" }
 
     private data class ClientProfile(
         val name: String,
@@ -63,6 +70,11 @@ object YouTubeStreamResolver {
 
     /** videoId → прямой mp4/HLS для mpv. null — поток извлечь не удалось. */
     suspend fun resolve(videoId: String): DirectStream? = withContext(Dispatchers.IO) {
+        val apiKey = apiKeyProvider().trim()
+        if (apiKey.isEmpty()) {
+            KLog.w(TAG, "no API key (YOUTUBE_API_KEY), skip resolve for $videoId")
+            return@withContext null
+        }
         for (profile in CLIENT_PROFILES) {
             val body = """{"context":{"client":{"clientName":"${profile.name}",""" +
                 """"clientVersion":"${profile.version}","hl":"ru",${profile.extraClientFields}}},""" +
@@ -150,7 +162,7 @@ object YouTubeStreamResolver {
     private fun httpPost(body: String, userAgent: String, profile: ClientProfile): String? = runCatching {
         httpClient.newCall(
             Request.Builder()
-                .url("$PLAYER_ENDPOINT?key=$API_KEY&prettyPrint=false")
+                .url("$PLAYER_ENDPOINT?key=${apiKeyProvider().trim()}&prettyPrint=false")
                 .header("User-Agent", userAgent)
                 .header("X-YouTube-Client-Name", profile.clientNameHeader.toString())
                 .header("X-YouTube-Client-Version", profile.version)
