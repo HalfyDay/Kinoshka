@@ -191,6 +191,58 @@ class HentaiCustomSourceTest {
         assertNull(stream)
     }
 
+    // --- Stremio-ветка с инжектом сети ---
+
+    private fun adultStremio() = CustomSource(
+        id = "CUSTOM_ADULT_S", name = "Стримио 18+",
+        urlTemplate = "", kind = CustomSourceKind.STREMIO,
+        endpoint = "https://adult.example.com/addon",
+        categories = setOf(SourceCategory.ADULT)
+    )
+
+    private fun stremioMovieFetch(): suspend (String) -> String? = { url ->
+        when {
+            url.endsWith("/manifest.json") -> """
+                {"id":"com.ex.adult","version":"1.0.0","name":"Adult Addon",
+                 "resources":["stream"],"types":["movie"],"idPrefixes":["tt"]}
+            """.trimIndent()
+            "/stream/movie/" in url -> """{"streams":[
+                {"url":"https://cdn.example.com/h_1080.mp4","name":"Adult","title":"1080p"}]}"""
+            else -> """{"streams":[]}"""
+        }
+    }
+
+    @Test
+    fun `fetchCustomHentai maps stremio movie to direct stream`() = runBlocking {
+        var embedCalled = false
+        val stream = HentaiStreamResolver.fetchCustomHentai(
+            custom = adultStremio(),
+            kinopoiskId = 301,
+            imdbId = "tt1234567",
+            resolve = { _, _ -> embedCalled = true; movieParse() },
+            stremioFetch = stremioMovieFetch()
+        )!!
+        assertTrue(!embedCalled)
+        assertEquals("https://cdn.example.com/h_1080.mp4", stream.url)
+        assertEquals("1080p", stream.quality)
+        assertEquals("Стримио 18+", stream.title)
+    }
+
+    @Test
+    fun `fetchCustomHentai skips stremio without imdb`() = runBlocking {
+        var networkCalled = false
+        val spy: suspend (String) -> String? = { networkCalled = true; "{}" }
+        assertNull(
+            HentaiStreamResolver.fetchCustomHentai(
+                custom = adultStremio(),
+                kinopoiskId = 301,
+                imdbId = null,
+                stremioFetch = spy
+            )
+        )
+        assertTrue(!networkCalled)
+    }
+
     // --- Валидация ADULT-раздела ---
 
     @Test

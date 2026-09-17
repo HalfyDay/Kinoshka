@@ -724,7 +724,8 @@ object AnimeStreamResolver {
         sourceType: AnimeSourceType,
         translationId: String,
         episodeNumber: Int,
-        kinopoiskId: Int = 0
+        kinopoiskId: Int = 0,
+        imdbId: String? = null
     ): AnimeMediaStream? {
         val cacheKey = "$shikimoriId:$animeTitle:${sourceType.name}:$translationId:$episodeNumber"
         resolveStreamCache[cacheKey]?.let { entry ->
@@ -735,7 +736,7 @@ object AnimeStreamResolver {
             }
         }
 
-        val stream = resolveStreamInternal(shikimoriId, animeTitle, sourceType, translationId, episodeNumber, kinopoiskId)
+        val stream = resolveStreamInternal(shikimoriId, animeTitle, sourceType, translationId, episodeNumber, kinopoiskId, imdbId)
         if (stream != null) {
             resolveStreamCache[cacheKey] = CacheEntry(stream, System.currentTimeMillis())
         }
@@ -771,7 +772,8 @@ object AnimeStreamResolver {
         sourceType: AnimeSourceType,
         translationId: String,
         episodeNumber: Int,
-        kinopoiskId: Int = 0
+        kinopoiskId: Int = 0,
+        imdbId: String? = null
     ): AnimeMediaStream? = withContext(Dispatchers.IO) {
         when (sourceType) {
             AnimeSourceType.KODIK -> resolveKodikStream(shikimoriId, animeTitle, translationId, episodeNumber)
@@ -787,7 +789,7 @@ object AnimeStreamResolver {
                 }
             AnimeSourceType.CUSTOM -> resolveCustomAnimeStream(
                 customSourceProvider?.invoke().orEmpty(),
-                shikimoriId, animeTitle, kinopoiskId, translationId, episodeNumber
+                shikimoriId, animeTitle, kinopoiskId, translationId, episodeNumber, imdbId
             )
             AnimeSourceType.DDBB,
             AnimeSourceType.TURBO,
@@ -1033,6 +1035,7 @@ object AnimeStreamResolver {
     var customSourceProvider: (() -> List<CustomSource>)? = null
 
     private val animeKpBridgeCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<Int?>>()
+    private val animeImdbBridgeCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<String?>>()
     private val customAnimeParseCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<DdbbStreamResolver.SourceParse>>()
 
     fun customTranslationId(customId: String, dubSlug: String): String =
@@ -1061,6 +1064,17 @@ object AnimeStreamResolver {
             }
             .firstOrNull()
 
+    /** Чистый выбор IMDb ID из Kodik-результатов (первый валидный tt…). */
+    fun pickAnimeImdbId(results: List<JSONObject>): String? =
+        results.asSequence()
+            .mapNotNull { row ->
+                // imdb_id у Kodik строкой ("tt1234567") или null (у аниме часто нет).
+                StremioAddonResolver.cleanImdbId(
+                    row.opt("imdb_id")?.toString()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                )
+            }
+            .firstOrNull()
+
     /**
      * Мост shikimori → kinopoisk для своих источников: прямой id пикера либо Kodik-поиск.
      * Кэшируется (положительный — 10 мин, пустой — 3 мин, как остальной негативный кэш).
@@ -1080,6 +1094,28 @@ object AnimeStreamResolver {
             animeKpBridgeCache[shikimoriId] = CacheEntry(kp, System.currentTimeMillis())
             if (kp == null) KLog.i(TAG, "[Custom] no kinopoisk id for shikimori=$shikimoriId \"$animeTitle\" — customs skipped")
             kp
+        }
+
+    /**
+     * Мост shikimori → IMDb для Stremio-аддонов: прямой id пикера либо imdb_id
+     * из Kodik-поиска (у аниме его часто нет — тогда Stremio пропускается).
+     * Кэш как у [animeKpId] (положительный — 10 мин, пустой — 3 мин).
+     */
+    suspend fun animeImdbId(shikimoriId: Int, animeTitle: String, imdbId: String? = null): String? =
+        withContext(Dispatchers.IO) {
+            StremioAddonResolver.cleanImdbId(imdbId)?.let { return@withContext it }
+            if (shikimoriId <= 0) return@withContext null
+            animeImdbBridgeCache[shikimoriId]?.let { entry ->
+                val age = System.currentTimeMillis() - entry.timestamp
+                val ttl = if (entry.data != null) CACHE_TTL_MS else NEGATIVE_CACHE_TTL_MS
+                if (age < ttl) return@withContext entry.data
+                animeImdbBridgeCache.remove(shikimoriId)
+            }
+            val found = runCatching { pickAnimeImdbId(kodikSearch(shikimoriId, animeTitle, null)) }
+                .getOrNull()
+            animeImdbBridgeCache[shikimoriId] = CacheEntry(found, System.currentTimeMillis())
+            if (found == null) KLog.i(TAG, "[Custom] no imdb id for shikimori=$shikimoriId \"$animeTitle\" — stremio skipped")
+            found
         }
 
     /**
@@ -1137,28 +1173,35 @@ object AnimeStreamResolver {
             }
     }
 
-    private fun cachedCustomParse(customId: String, kpId: Int): DdbbStreamResolver.SourceParse? {
-        val entry = customAnimeParseCache["$customId|$kpId"] ?: return null
+    private fun cachedCustomParse(customId: String, kpId: Int): DdbbStreamResolver.SourceParse? =
+        cachedCustomParseKey("$customId|$kpId")
+
+    private fun cachedCustomParseKey(key: String): DdbbStreamResolver.SourceParse? {
+        val entry = customAnimeParseCache[key] ?: return null
         if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) return entry.data
-        customAnimeParseCache.remove("$customId|$kpId")
+        customAnimeParseCache.remove(key)
         return null
     }
 
     /**
      * Строки ОДНОГО своего источника для аниме-пикера. [resolve] инжектится ради тестов
      * (дефолт — живой CustomSourceResolver). Пусто = источник пропускается.
+     * STREMIO идёт своей веткой (нужен IMDb ID, аниме — сериальная форма первой).
      */
     suspend fun fetchCustomAnimeTranslations(
         custom: CustomSource,
         shikimoriId: Int,
         animeTitle: String,
         kinopoiskId: Int = 0,
+        imdbId: String? = null,
         resolve: suspend (CustomSource, Int) -> DdbbStreamResolver.SourceParse? =
-            { c, kp -> CustomSourceResolver.resolveOne(c, kp, null) }
+            { c, kp -> CustomSourceResolver.resolveOne(c, kp, null) },
+        stremioFetch: (suspend (String) -> String?)? = null
     ): List<FlatTranslation> = withContext(Dispatchers.IO) {
         runCatching {
-            // STREMIO — только фильмы (раздел FILMS): в аниме-пикере ему нечего делать.
-            if (custom.kind == CustomSourceKind.STREMIO) return@runCatching emptyList<FlatTranslation>()
+            if (custom.kind == CustomSourceKind.STREMIO) {
+                return@runCatching fetchStremioAnimeTranslations(custom, shikimoriId, animeTitle, imdbId, stremioFetch)
+            }
             val kp = animeKpId(shikimoriId, animeTitle, kinopoiskId) ?: return@runCatching emptyList<FlatTranslation>()
             val parse = cachedCustomParse(custom.id, kp) ?: resolve(custom, kp)?.also { fetched ->
                 customAnimeParseCache["${custom.id}|$kp"] = CacheEntry(fetched, System.currentTimeMillis())
@@ -1166,6 +1209,37 @@ object AnimeStreamResolver {
             customParseToTranslations(custom, parse)
         }.getOrElse { e ->
             KLog.e(TAG, "[Custom] ${custom.id} fetch failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Строки Stremio-аддона для аниме-пикера: IMDb через прямой id или мост Kodik,
+     * сериальная форма первой (аниме — сериалы), фильмовой фолбэк для полнометражек.
+     * [fetch] инжектится ради тестов (дефолт — живая сеть резолвера).
+     */
+    suspend fun fetchStremioAnimeTranslations(
+        custom: CustomSource,
+        shikimoriId: Int,
+        animeTitle: String,
+        imdbId: String? = null,
+        fetch: (suspend (String) -> String?)? = null
+    ): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        runCatching {
+            val imdb = animeImdbId(shikimoriId, animeTitle, imdbId)
+                ?: return@runCatching emptyList<FlatTranslation>()
+            val key = "${custom.id}|stremio|$imdb"
+            val parse = cachedCustomParseKey(key) ?: run {
+                val fetched = if (fetch != null) {
+                    StremioAddonResolver.resolveBestParse(custom, imdb, seriesFirst = true, fetch = fetch)
+                } else {
+                    StremioAddonResolver.resolveBestParse(custom, imdb, seriesFirst = true)
+                }
+                fetched?.also { customAnimeParseCache[key] = CacheEntry(it, System.currentTimeMillis()) }
+            } ?: return@runCatching emptyList<FlatTranslation>()
+            customParseToTranslations(custom, parse)
+        }.getOrElse { e ->
+            KLog.e(TAG, "[Custom] ${custom.id} stremio fetch failed: ${e.message}")
             emptyList()
         }
     }
@@ -1201,7 +1275,8 @@ object AnimeStreamResolver {
         animeTitle: String,
         kinopoiskId: Int,
         translationId: String,
-        episodeNumber: Int
+        episodeNumber: Int,
+        imdbId: String? = null
     ): AnimeMediaStream? = withContext(Dispatchers.IO) {
         val customId = customIdOfTranslation(translationId)
         val custom = customs.firstOrNull { it.id == customId }
@@ -1209,17 +1284,32 @@ object AnimeStreamResolver {
             KLog.w(TAG, "[Custom] resolve: source $customId not found (removed?)")
             return@withContext null
         }
-        val kp = animeKpId(shikimoriId, animeTitle, kinopoiskId) ?: run {
-            KLog.w(TAG, "[Custom] resolve: no kinopoisk id for shikimori=$shikimoriId")
-            return@withContext null
-        }
-        val parse = cachedCustomParse(custom.id, kp)
-            ?: CustomSourceResolver.resolveOne(custom, kp, null)?.also { fetched ->
-                customAnimeParseCache["${custom.id}|$kp"] = CacheEntry(fetched, System.currentTimeMillis())
-            } ?: run {
-                KLog.w(TAG, "[Custom] resolve: ${custom.id} returned nothing for kp=$kp")
+        val parse = if (custom.kind == CustomSourceKind.STREMIO) {
+            val imdb = animeImdbId(shikimoriId, animeTitle, imdbId) ?: run {
+                KLog.w(TAG, "[Custom] resolve: no imdb id for shikimori=$shikimoriId")
                 return@withContext null
             }
+            val key = "${custom.id}|stremio|$imdb"
+            cachedCustomParseKey(key)
+                ?: StremioAddonResolver.resolveBestParse(custom, imdb, seriesFirst = true)?.also { fetched ->
+                    customAnimeParseCache[key] = CacheEntry(fetched, System.currentTimeMillis())
+                } ?: run {
+                    KLog.w(TAG, "[Custom] resolve: ${custom.id} returned nothing for $imdb")
+                    return@withContext null
+                }
+        } else {
+            val kp = animeKpId(shikimoriId, animeTitle, kinopoiskId) ?: run {
+                KLog.w(TAG, "[Custom] resolve: no kinopoisk id for shikimori=$shikimoriId")
+                return@withContext null
+            }
+            cachedCustomParse(custom.id, kp)
+                ?: CustomSourceResolver.resolveOne(custom, kp, null)?.also { fetched ->
+                    customAnimeParseCache["${custom.id}|$kp"] = CacheEntry(fetched, System.currentTimeMillis())
+                } ?: run {
+                    KLog.w(TAG, "[Custom] resolve: ${custom.id} returned nothing for kp=$kp")
+                    return@withContext null
+                }
+        }
         val (url, qualities) = pickCustomEpisodeUrl(parse, translationId, episodeNumber) ?: run {
             KLog.w(TAG, "[Custom] resolve: ep=$episodeNumber not in ${custom.id} ($translationId)")
             return@withContext null

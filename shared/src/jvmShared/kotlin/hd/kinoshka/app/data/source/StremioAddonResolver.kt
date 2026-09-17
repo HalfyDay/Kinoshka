@@ -411,6 +411,35 @@ object StremioAddonResolver {
     private suspend fun fetchTextDefault(url: String): String? =
         withContext(Dispatchers.IO) { fetchText(url, url.substringBefore("manifest.json", url)) }
 
+    /**
+     * Лучший парс под тайтл с IMDb ID: сериалы ([seriesFirst], аниме/сериалы) или
+     * фильмы (кино/хентай) — вторая форма как фолбэк, когда первой нет.
+     * null — нет endpoint/imdb, манифеста/ресурсов или ни одного потока.
+     * [fetch] инжектится ради тестов.
+     */
+    suspend fun resolveBestParse(
+        custom: CustomSource,
+        imdbId: String?,
+        seriesFirst: Boolean = true,
+        fetch: suspend (String) -> String? = ::fetchTextDefault
+    ): DdbbStreamResolver.SourceParse? = withContext(Dispatchers.IO) {
+        val imdb = cleanImdbId(imdbId) ?: run {
+            KLog.i(TAG, "${custom.id}: title has no imdb id — skipped")
+            return@withContext null
+        }
+        val movieFirst = !seriesFirst
+        val first = if (movieFirst) {
+            resolveMovieParse(custom, imdb, false, fetch)
+        } else {
+            resolveSeriesParse(custom, imdb, fetch)
+        }
+        if (first != null) return@withContext first
+        // Вторая форма — только когда первая честно пуста (не ошибка сети):
+        // resolveSeriesParse/resolveMovieParse уже залогировали причину.
+        if (movieFirst) resolveSeriesParse(custom, imdb, fetch)
+        else resolveMovieParse(custom, imdb, false, fetch)
+    }
+
     /** Сброс кэша манифестов (проверка черновика в диалоге идёт мимо кэша отдельно). */
     fun evictManifestCache() {
         manifestCache.clear()

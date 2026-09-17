@@ -1269,11 +1269,12 @@ fun KinoApp() {
                                 sourceIcon = { id, size ->
                                     AppSourceIcon(id, Modifier.size(size))
                                 },
-                                animeSelectionScreen = { shikimoriId, kinopoiskId, animeTitle, onDismissRequest, onStreamSelected ->
+                                animeSelectionScreen = { shikimoriId, kinopoiskId, animeTitle, imdbId, onDismissRequest, onStreamSelected ->
                                     AnimePlaybackSelectionScreen(
                                         shikimoriId = shikimoriId,
                                         kinopoiskId = kinopoiskId,
                                         animeTitle = animeTitle,
+                                        imdbId = imdbId,
                                         onDismissRequest = onDismissRequest,
                                         onStreamSelected = onStreamSelected
                                     )

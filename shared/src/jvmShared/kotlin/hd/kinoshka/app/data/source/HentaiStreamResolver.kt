@@ -357,13 +357,17 @@ object HentaiStreamResolver {
             .distinctBy { (_, url) -> url }
         if (rows.isEmpty()) return null
         if (rows.size == 1) {
-            val (_, url) = rows.single()
+            val (title, url) = rows.single()
             val ladder = parse.ladders[url] ?: parse.qualities
             return HentaiStream(
                 url = url,
                 qualities = ladder,
                 headers = parse.headers,
-                quality = bestHentaiQuality(ladder) ?: "Auto",
+                // У Stremio-парсов лестницы нет (один Auto) — качество тогда
+                // вытягиваем из подписи строки ("Аддон • 1080p").
+                quality = bestHentaiQuality(ladder)
+                    ?: StremioAddonResolver.qualityOf(title, "")
+                    ?: "Auto",
                 title = custom.name
             )
         }
@@ -389,17 +393,30 @@ object HentaiStreamResolver {
     /**
      * Стрим ОДНОГО своего источника для 18+-пикера. [resolve] инжектится ради тестов
      * (дефолт — живой CustomSourceResolver). null = источник пропускается.
+     * STREMIO идёт по IMDb ID тайтла (фильмовой формой первой — хентай обычно
+     * одиночные видео; сериальная как фолбэк). EMBED — по настоящему kp id.
      */
     suspend fun fetchCustomHentai(
         custom: CustomSource,
         kinopoiskId: Int,
         imdbId: String? = null,
         resolve: suspend (CustomSource, Int) -> DdbbStreamResolver.SourceParse? =
-            { c, kp -> CustomSourceResolver.resolveOne(c, kp, imdbId) }
+            { c, kp -> CustomSourceResolver.resolveOne(c, kp, imdbId) },
+        stremioFetch: (suspend (String) -> String?)? = null
     ): HentaiStream? = withContext(Dispatchers.IO) {
         runCatching {
-            // STREMIO — только фильмы (раздел FILMS): в 18+-пикере ему нечего делать.
-            if (custom.kind == CustomSourceKind.STREMIO) return@runCatching null
+            if (custom.kind == CustomSourceKind.STREMIO) {
+                val imdb = StremioAddonResolver.cleanImdbId(imdbId) ?: run {
+                    KLog.i(TAG, "[Custom] ${custom.id}: title has no imdb id — skipped")
+                    return@runCatching null
+                }
+                val parse = if (stremioFetch != null) {
+                    StremioAddonResolver.resolveBestParse(custom, imdb, seriesFirst = false, fetch = stremioFetch)
+                } else {
+                    StremioAddonResolver.resolveBestParse(custom, imdb, seriesFirst = false)
+                } ?: return@runCatching null
+                return@runCatching customParseToHentai(custom, parse)
+            }
             val kp = AnimeStreamResolver.realKinopoiskId(kinopoiskId) ?: run {
                 KLog.i(TAG, "[Custom] ${custom.id}: no real kinopoisk id (kp=$kinopoiskId) — skipped")
                 return@runCatching null

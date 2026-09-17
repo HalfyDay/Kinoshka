@@ -289,11 +289,16 @@ class StremioCustomSourceTest {
     // --- Реестр и стор ---
 
     @Test
-    fun `customInfo pins stremio to films`() {
-        val info = PlaybackSources.customInfo(stremio().copy(categories = setOf(SourceCategory.ANIME)))
-        assertEquals(setOf(SourceCategory.FILMS), info.categories)
-        assertTrue(info.description.contains("addons.example.com"))
-        assertTrue(info.description.contains("Фильмы"))
+    fun `customInfo respects stremio categories`() {
+        val anime = PlaybackSources.customInfo(
+            stremio().copy(categories = setOf(SourceCategory.ANIME, SourceCategory.FILMS))
+        )
+        assertEquals(setOf(SourceCategory.ANIME, SourceCategory.FILMS), anime.categories)
+        assertTrue(anime.description.contains("addons.example.com"))
+        assertTrue(anime.description.contains("Аниме"))
+        val filmsOnly = PlaybackSources.customInfo(stremio())
+        assertEquals(setOf(SourceCategory.FILMS), filmsOnly.categories)
+        assertTrue(!filmsOnly.description.contains("·"))
     }
 
     @Test
@@ -355,5 +360,62 @@ class StremioCustomSourceTest {
             if (url.endsWith("/manifest.json")) manifestStrings else """{"streams":[]}"""
         }
         assertNull(StremioAddonResolver.resolveMovieParse(stremio(endpoint = "https://streams.example.com/empty"), "tt0133093", isSeries = false, fetch = noStreams))
+    }
+
+    // --- resolveBestParse: сериалы/фильмы с фолбэком ---
+
+    @Test
+    fun `best parse prefers series for anime`() = runBlocking {
+        val parse = StremioAddonResolver.resolveBestParse(
+            stremio(endpoint = "https://series.example.com/x"), "tt0903747",
+            seriesFirst = true, fetch = seriesFetch()
+        )!!
+        assertTrue(parse.tracks.isNotEmpty())
+        assertEquals(2, parse.tracks.size)
+    }
+
+    @Test
+    fun `best parse falls back to movie when series empty`() = runBlocking {
+        val fetch: suspend (String) -> String? = { url ->
+            when {
+                url.endsWith("/manifest.json") -> manifestSeries
+                "/meta/series/" in url -> """{"meta":{"videos":[]}}"""
+                "/stream/movie/" in url -> streamsMixed
+                else -> """{"streams":[]}"""
+            }
+        }
+        val parse = StremioAddonResolver.resolveBestParse(
+            stremio(endpoint = "https://series.example.com/x"), "tt0133093",
+            seriesFirst = true, fetch = fetch
+        )!!
+        assertTrue(parse.tracks.isEmpty())
+        assertEquals(2, parse.voiceRows.size)
+    }
+
+    @Test
+    fun `best parse movie-first falls back to series`() = runBlocking {
+        val fetch: suspend (String) -> String? = { url ->
+            when {
+                url.endsWith("/manifest.json") -> manifestSeries
+                "/stream/movie/" in url -> """{"streams":[]}"""
+                "/meta/series/" in url -> metaThree
+                url.endsWith(":1:1.json") -> """{"streams":[{"url":"https://cdn.example.com/s1.mp4","name":"A"}]}"""
+                else -> """{"streams":[]}"""
+            }
+        }
+        val parse = StremioAddonResolver.resolveBestParse(
+            stremio(endpoint = "https://series.example.com/x"), "tt0903747",
+            seriesFirst = false, fetch = fetch
+        )!!
+        assertTrue(parse.tracks.isNotEmpty())
+    }
+
+    @Test
+    fun `best parse null without imdb and without network`() = runBlocking {
+        var called = false
+        val spy: suspend (String) -> String? = { called = true; manifestSeries }
+        assertNull(StremioAddonResolver.resolveBestParse(stremio(), null, fetch = spy))
+        assertNull(StremioAddonResolver.resolveBestParse(stremio(), "junk", fetch = spy))
+        assertTrue(!called)
     }
 }

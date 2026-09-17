@@ -12,8 +12,10 @@ import kotlinx.serialization.json.Json
  *
  * Вариант B (STREMIO): Stremio-совместимый JSON-аддон (свой или чужой публичный):
  * manifest.json описывает ресурсы, потоки фильма тянутся с
- * `{base}/stream/movie/{imdb}.json`. Только фильмы с IMDb ID (сериалам нужен
- * поэпизодный запрос, аниме/18+ мост им не положен — см. диалог).
+ * `{base}/stream/movie/{imdb}.json`, сериалы — через meta-сетку и поэпизодные
+ * `{base}/stream/series/{imdb}:{s}:{e}.json`. Нужен IMDb ID тайтла: у кино он из
+ * каталога, у аниме — прямой id пикера либо мост Kodik (shikimori → imdb_id),
+ * у 18+ — только прямой id. Нет imdb — источник молча пропускается.
  */
 @Serializable
 enum class CustomSourceKind(val title: String) {
@@ -35,7 +37,8 @@ data class CustomSource(
     val webOnly: Boolean = false,
     /**
      * Разделы источника. Дефолт FILMS — старые записи (без поля) остаются киношными;
-     * пустой сет трактуется так же (защита от битых правок). STREMIO всегда FILMS.
+     * пустой сет трактуется так же (защита от битых правок). У старых STREMIO
+     * записей стоят только FILMS (диалог раньше пинил) — разделы добираются в UI.
      */
     val categories: Set<SourceCategory> = setOf(SourceCategory.FILMS),
     /** Вариант источника (дефолт EMBED — старые записи без поля). */
@@ -164,7 +167,7 @@ fun validateStremioEndpoint(endpoint: String, existing: List<CustomSource>): Cus
     }
     // Двухшаговый гейт диалога: первое «Сохранить» показывает это, второе — сохраняет.
     return CustomSourceCheck.Ok(
-        listOf("Stremio: фильмы и сериалы с IMDb ID; разделы Аниме/18+ не поддерживаются")
+        listOf("Stremio: нужен IMDb ID тайтла; у аниме он берётся через мост Kodik, без него источник там пропускается")
     )
 }
 

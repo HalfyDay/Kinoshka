@@ -228,4 +228,115 @@ class AnimeCustomSourceTest {
         assertEquals("Kodik", plain.displaySourceName())
         assertNull(plain.sourceLabel)
     }
+
+    // --- Мост Kodik → imdb ---
+
+    @Test
+    fun `pickAnimeImdbId takes first valid tt`() {
+        val results = listOf(
+            JSONObject("""{"shikimori_id":"1"}"""),
+            JSONObject("""{"imdb_id":null}"""),
+            JSONObject("""{"imdb_id":"tt0877057"}"""),
+            JSONObject("""{"imdb_id":"tt9999999"}""")
+        )
+        assertEquals("tt0877057", AnimeStreamResolver.pickAnimeImdbId(results))
+        assertNull(AnimeStreamResolver.pickAnimeImdbId(emptyList()))
+        assertNull(AnimeStreamResolver.pickAnimeImdbId(listOf(JSONObject("""{"imdb_id":"kp301"}"""))))
+    }
+
+    @Test
+    fun `animeImdbId prefers direct id without network`() = runBlocking {
+        // Прямой id — без Kodik-поиска (shikimoriId=0, сети нет).
+        assertEquals(
+            "tt0877057",
+            AnimeStreamResolver.animeImdbId(0, "Тетрадь смерти", "  tt0877057 ")
+        )
+        assertNull(AnimeStreamResolver.animeImdbId(0, "Тетрадь смерти", null))
+        assertNull(AnimeStreamResolver.animeImdbId(0, "Тетрадь смерти", "junk"))
+    }
+
+    // --- Stremio-ветка аниме с инжектом сети ---
+
+    private fun animeStremio(
+        id: String = "CUSTOM_ANIME_S",
+        name: String = "Стримио Аниме"
+    ) = CustomSource(
+        id = id, name = name, urlTemplate = "",
+        kind = CustomSourceKind.STREMIO, endpoint = "https://anime.example.com/addon",
+        categories = setOf(SourceCategory.ANIME)
+    )
+
+    private fun stremioSeriesFetch(): suspend (String) -> String? = { url ->
+        when {
+            url.endsWith("/manifest.json") -> """
+                {"id":"com.ex.anime","version":"1.0.0","name":"Anime Addon",
+                 "resources":[{"name":"stream","types":["movie","series"],"idPrefixes":["tt"]},
+                              {"name":"meta","types":["series"],"idPrefixes":["tt"]}],
+                 "types":["movie","series"]}
+            """.trimIndent()
+            "/meta/series/" in url -> """
+                {"meta":{"videos":[
+                    {"season":1,"episode":1,"title":"Первая"},
+                    {"season":1,"episode":2,"title":"Вторая"}
+                ]}}
+            """.trimIndent()
+            url.endsWith(":1:1.json") -> """{"streams":[
+                {"url":"https://cdn.example.com/a1_720.mp4","name":"A","title":"720p"},
+                {"url":"https://cdn.example.com/a1_1080.mp4","name":"A","title":"1080p"}]}"""
+            url.endsWith(":1:2.json") -> """{"streams":[
+                {"url":"https://cdn.example.com/a2.mp4","name":"A"}]}"""
+            else -> """{"streams":[]}"""
+        }
+    }
+
+    @Test
+    fun `fetchStremioAnimeTranslations maps series to one row`() = runBlocking {
+        val rows = AnimeStreamResolver.fetchStremioAnimeTranslations(
+            custom = animeStremio(),
+            shikimoriId = 0,
+            animeTitle = "Наруто",
+            imdbId = "tt0409591",
+            fetch = stremioSeriesFetch()
+        )
+        assertEquals(1, rows.size)
+        val row = rows.single()
+        assertEquals(AnimeSourceType.CUSTOM, row.source)
+        assertEquals("custom|CUSTOM_ANIME_S|stremio", row.translationId)
+        assertEquals("Anime Addon", row.title)
+        assertEquals(listOf(1, 2), row.episodes.map { it.number })
+        assertEquals("https://cdn.example.com/a1_1080.mp4", row.episodes[0].link)
+    }
+
+    @Test
+    fun `fetchStremioAnimeTranslations empty without imdb`() = runBlocking {
+        var called = false
+        val spy: suspend (String) -> String? = { called = true; "{}" }
+        val rows = AnimeStreamResolver.fetchStremioAnimeTranslations(
+            custom = animeStremio(),
+            shikimoriId = 0,
+            animeTitle = "Наруто",
+            imdbId = null,
+            fetch = spy
+        )
+        assertTrue(rows.isEmpty())
+        assertTrue(!called)
+    }
+
+    @Test
+    fun `fetchCustomAnimeTranslations routes stremio by kind`() = runBlocking {
+        var embedCalled = false
+        val rows = AnimeStreamResolver.fetchCustomAnimeTranslations(
+            custom = animeStremio(),
+            shikimoriId = 0,
+            animeTitle = "Наруто",
+            kinopoiskId = 0,
+            imdbId = "tt0409591",
+            resolve = { _, _ -> embedCalled = true; movieParse() },
+            stremioFetch = stremioSeriesFetch()
+        )
+        assertTrue(!embedCalled)
+        assertEquals(1, rows.size)
+        assertEquals("custom|CUSTOM_ANIME_S|stremio", rows.single().translationId)
+        assertEquals(listOf(1, 2), rows.single().episodes.map { it.number })
+    }
 }

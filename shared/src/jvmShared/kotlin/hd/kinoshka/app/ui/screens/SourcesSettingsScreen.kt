@@ -530,7 +530,7 @@ private fun CustomSourceEditDialog(
         referer = if (isStremio) "" else referer.trim(),
         useProxy = useProxy && !isStremio,
         webOnly = webOnly && !isStremio,
-        categories = if (isStremio) setOf(SourceCategory.FILMS) else categories,
+        categories = categories,
         kind = kind,
         endpoint = if (isStremio) endpoint.trim() else ""
     )
@@ -576,7 +576,7 @@ private fun CustomSourceEditDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text(
-                        text = "Stremio: фильмы и сериалы с IMDb ID. Хвост /manifest.json необязателен.",
+                        text = "Stremio: фильмы, сериалы, аниме и 18+ по IMDb ID. Хвост /manifest.json необязателен.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp)
@@ -621,6 +621,7 @@ private fun CustomSourceEditDialog(
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
+                    }
                     Text(
                         text = "Разделы",
                         style = MaterialTheme.typography.labelMedium,
@@ -646,7 +647,6 @@ private fun CustomSourceEditDialog(
                             )
                         }
                     }
-                }
                 if (error != null) {
                     Text(
                         text = error.orEmpty(),
@@ -675,7 +675,7 @@ private fun CustomSourceEditDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                if (categories.isEmpty() && !isStremio) {
+                if (categories.isEmpty()) {
                     error = "Выберите хотя бы один раздел"
                     return@TextButton
                 }
@@ -685,7 +685,7 @@ private fun CustomSourceEditDialog(
                     existing = customs,
                     selfId = existing?.id,
                     builtInNames = PlaybackSources.ALL.map { it.displayName },
-                    categories = if (isStremio) setOf(SourceCategory.FILMS) else categories,
+                    categories = categories,
                     webOnly = webOnly,
                     kind = kind,
                     endpoint = endpoint

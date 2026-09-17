@@ -292,6 +292,7 @@ fun DetailsScreen(
         shikimoriId: Int,
         kinopoiskId: Int,
         animeTitle: String,
+        imdbId: String?,
         onDismissRequest: () -> Unit,
         onStreamSelected: (
             stream: hd.kinoshka.app.data.model.AnimeMediaStream,
@@ -831,6 +832,7 @@ fun DetailsScreen(
                                 shikimoriId,
                                 item.kinopoiskId,
                                 item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                item.imdbId,
                                 { activePlaybackSelection = false }
                             ) { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
                                 var normalizedUrl = stream.url
@@ -875,6 +877,7 @@ fun DetailsScreen(
                                 shikimoriId,
                                 item.kinopoiskId,
                                 item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                item.imdbId,
                                 { activeCastAnimeSelection = false }
                             ) { stream, epNum, epTitle, source, translationTitle, episodes, translations, trId ->
                                 var normalizedUrl = stream.url

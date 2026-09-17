@@ -163,6 +163,8 @@ fun AnimePlaybackSelectionScreen(
     // Raw Kinopoisk id of the title (when opened outside the Shikimori section). Used as the
     // library profile key when shikimoriId is 0, keeping episode progress synced for such titles.
     kinopoiskId: Int = 0,
+    // Raw IMDb id for Stremio custom sources (movies/series bridge); blank = derive via Kodik.
+    imdbId: String? = null,
     onDismissRequest: () -> Unit,
     onStreamSelected: (
         stream: AnimeMediaStream,
@@ -293,7 +295,7 @@ fun AnimePlaybackSelectionScreen(
                 episodeNumber = episode.number,
                 episodeLabel = episode.title?.takeIf { it.isNotBlank() } ?: "Серия ${episode.number}",
                 resolve = {
-                    AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, tr.source, tr.translationId, episode.number, kinopoiskId)
+                    AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, tr.source, tr.translationId, episode.number, kinopoiskId, imdbId)
                         ?.let { DownloadBridges.mediaSource(it, quality) }
                 }
             )
@@ -344,7 +346,7 @@ fun AnimePlaybackSelectionScreen(
         customStatesFlow.update { it + (custom.id to SourceLoadState.Loading) }
         scope.launch {
             val deferred = scope.async(Dispatchers.IO) {
-                AnimeStreamResolver.fetchCustomAnimeTranslations(custom, shikimoriId, animeTitle, kinopoiskId)
+                AnimeStreamResolver.fetchCustomAnimeTranslations(custom, shikimoriId, animeTitle, kinopoiskId, imdbId)
                     .filter { it.episodes.isNotEmpty() }
             }
             // Timeout must not cancel the fetch itself — как у startSource выше.
@@ -579,7 +581,8 @@ fun AnimePlaybackSelectionScreen(
                         source,
                         translation.translationId,
                         episode.number,
-                        kinopoiskId
+                        kinopoiskId,
+                        imdbId
                     )
                 isResolvingStream = false
                 if (stream != null) {
