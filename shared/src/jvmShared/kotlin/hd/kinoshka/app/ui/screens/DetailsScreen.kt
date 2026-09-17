@@ -34,12 +34,19 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import hd.kinoshka.app.ui.tv.TvButton
+import hd.kinoshka.app.ui.tv.TvChip
 import hd.kinoshka.app.ui.tv.TvAnimatedBackdrop
 import hd.kinoshka.app.ui.tv.TvChip
 import hd.kinoshka.app.ui.tv.rememberTvLayout
 import hd.kinoshka.app.ui.tv.rememberTvWindowSize
 import hd.kinoshka.app.ui.tv.TvWindowSize
 import hd.kinoshka.app.ui.tv.tvFocusable
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -103,6 +110,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
 import kotlinx.coroutines.delay
@@ -216,6 +224,7 @@ import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.source.HentaiStream
 import hd.kinoshka.app.data.source.HentaiStreamResolver
 import hd.kinoshka.app.data.source.toAnimeSourceType
+import hd.kinoshka.app.data.source.playbackSourceId
 import hd.kinoshka.app.data.source.MovieStreamResolver
 import kotlinx.coroutines.async
 import hd.kinoshka.app.data.source.KodikMovieParser
@@ -336,7 +345,11 @@ fun DetailsScreen(
     // пометки скачанного и постановка целей MovieDownloadTarget в очередь.
     movieDownloadedEpisodes: Set<Pair<Int, Int>> = emptySet(),
     movieDownloadedByTranslation: Map<String, Int> = emptyMap(),
-    onMovieDownload: ((hd.kinoshka.app.ui.components.MovieDownloadTarget) -> Unit)? = null
+    onMovieDownload: ((hd.kinoshka.app.ui.components.MovieDownloadTarget) -> Unit)? = null,
+    // Иконка источника в кино-пикере и хентай-выборе: платформа подставляет
+    // реальные картинки, по умолчанию — рисованный бейдж.
+    sourceIcon: @Composable (sourceId: String, size: Dp) -> Unit =
+        { id, size -> SourceBrandIcon(sourceId = id, size = size) }
 ) {
     val platformActions = rememberKinoPlatformActions()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -365,9 +378,26 @@ fun DetailsScreen(
     var hentaiSources by remember(filmId) {
         mutableStateOf<Map<hd.kinoshka.app.data.source.HentaiProvider, HentaiSourceState>>(emptyMap())
     }
+    // Запуск провайдеров завершён (все включённые стартовали): нужно, чтобы
+    // отличить «ещё грузится» от «все выключены» в хентай-выборе.
+    var hentaiLaunchDone by remember(filmId) { mutableStateOf(false) }
     val hentaiJobs = remember(filmId) {
         mutableMapOf<hd.kinoshka.app.data.source.HentaiProvider, kotlinx.coroutines.Job>()
     }
+    // Выключенные 18+ источники («Настройки → Источники», раздел 18+):
+    // не запрашиваются и не показываются в хентай-выборе.
+    var adultDisabledIds by remember(filmId) { mutableStateOf<Set<String>?>(null) }
+    LaunchedEffect(filmId, activeHentaiSelection) {
+        // Перечитываем при каждом открытии — возврат из «Настройки → Источники»
+        // применяется сразу, без перезахода в детали.
+        if (activeHentaiSelection) {
+            adultDisabledIds = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                userStateStore?.getDisabledSources(hd.kinoshka.app.data.source.SourceCategory.ADULT).orEmpty()
+            }
+        }
+    }
+    fun isHentaiProviderEnabled(provider: hd.kinoshka.app.data.source.HentaiProvider): Boolean =
+        provider.playbackSourceId() !in (adultDisabledIds.orEmpty())
 
     LaunchedEffect(filmId) {
         load(filmId)
@@ -704,6 +734,9 @@ fun DetailsScreen(
                             item = item,
                             state = state,
                             isInteractive = isInteractive,
+                            profile = state.userProfile,
+                            seasons = state.seasons,
+                            animeTotalEpisodes = state.animeDetails?.episodes,
                             onWatch = if (isAnime) {
                                 { animeWatchAction(item) }
                             } else {
@@ -748,6 +781,11 @@ fun DetailsScreen(
                             // плеер, веб-площадки (YouTube, Sibnet) открываются встроенным браузером.
                             onPlayTrailer = playTrailer
                         )
+                    }
+                    // Пикеры аниме — поверх любого макета (телефон/TV): выбор серии/
+                    // озвучки/источника, каст и 18+. Раньше жили внутри телефонной ветки,
+                    // поэтому в горизонтальном режиме «Смотреть» у аниме ничего не открывал.
+                    if (isAnime) {
                         // Шит поверх живого DetailsLayout (не вместо): демонтаж всего экрана на
                         // время выбора источника давал ~4с фриза на открытие и на закрытие.
                         if (activePlaybackSelection) {
@@ -849,6 +887,7 @@ fun DetailsScreen(
                             // Kick off every provider once when the page opens; failures stay on
                             // their card with a retry button instead of blocking the others.
                             fun startHentaiProvider(provider: hd.kinoshka.app.data.source.HentaiProvider) {
+                                if (!isHentaiProviderEnabled(provider)) return
                                 if (hentaiJobs[provider]?.isActive == true) return
                                 hentaiJobs[provider]?.cancel()
                                 hentaiSources = hentaiSources + (provider to HentaiSourceState.Loading)
@@ -879,13 +918,18 @@ fun DetailsScreen(
                                     hentaiSources = hentaiSources + (provider to state)
                                 }
                             }
-                            LaunchedEffect(activeHentaiSelection, filmId) {
+                            LaunchedEffect(activeHentaiSelection, filmId, adultDisabledIds) {
+                                // Выключатели читаются асинхронно — без них не стартуем,
+                                // иначе выключенные успеют запроситься.
+                                if (adultDisabledIds == null) return@LaunchedEffect
                                 hd.kinoshka.app.data.source.HentaiProvider.entries.forEach { provider ->
+                                    if (!isHentaiProviderEnabled(provider)) return@forEach
                                     val current = hentaiSources[provider]
                                     if (current !is HentaiSourceState.Loading && current !is HentaiSourceState.Ready) {
                                         startHentaiProvider(provider)
                                     }
                                 }
+                                hentaiLaunchDone = true
                             }
                             fun playHentai(
                                 stream: HentaiStream,
@@ -916,11 +960,12 @@ fun DetailsScreen(
                                 val ordered = listOf(provider to stream) +
                                     hentaiSources.entries.mapNotNull { (p, st) ->
                                         (st as? HentaiSourceState.Ready)
-                                            ?.takeIf { p != provider }?.let { p to it.stream }
+                                            ?.takeIf { p != provider && isHentaiProviderEnabled(p) }?.let { p to it.stream }
                                     } +
                                     hentaiBackups.entries.mapNotNull { (p, s) ->
                                         s?.takeIf {
-                                            p != provider && hentaiSources[p] !is HentaiSourceState.Ready
+                                            p != provider && isHentaiProviderEnabled(p) &&
+                                                hentaiSources[p] !is HentaiSourceState.Ready
                                         }?.let { p to it }
                                     }
                                 val voiceovers = mutableListOf<hd.kinoshka.app.data.model.FlatTranslation>()
@@ -1010,11 +1055,15 @@ fun DetailsScreen(
                                     null
                                 )
                             }
+                            val visibleHentaiStates = hentaiSources.filterKeys { isHentaiProviderEnabled(it) }
+                            val visibleHentaiBackups = hentaiBackups.filterKeys { isHentaiProviderEnabled(it) }
                             HentaiSourceScreen(
                                 filmTitle = item.nameRu ?: item.nameOriginal ?: "Аниме",
                                 kinopoiskId = item.kinopoiskId,
-                                states = hentaiSources,
-                                backups = hentaiBackups,
+                                states = visibleHentaiStates,
+                                backups = visibleHentaiBackups,
+                                showAllDisabledHint = hentaiLaunchDone && visibleHentaiStates.isEmpty(),
+                                sourceIcon = sourceIcon,
                                 hentaiDownloadButton = hentaiDownloadButton,
                                 onBack = {
                                     hentaiJobs.values.forEach { it.cancel() }
@@ -1025,7 +1074,9 @@ fun DetailsScreen(
                                 onPlay = ::playHentai
                             )
                         }
-                } else {
+                    }
+                    // Телефонный макет кино — только вне TV (TV рисует DetailsTvLayout выше).
+                    if (!tvLayout && !isAnime) {
                     // Warm both native sources while the user reads the card: pressing Watch then
                     // hits warm caches instead of paying the full resolve latency. Scoped to this
                     // screen — leaving the page cancels whatever is still in flight.
@@ -1176,7 +1227,8 @@ fun DetailsScreen(
                         downloadedEpisodeKeys = movieDownloadedEpisodes,
                         downloadedByTranslation = movieDownloadedByTranslation,
                         onDownloadTarget = onMovieDownload,
-                        onDismissRequest = { activeCastMovieSelection = false }
+                        onDismissRequest = { activeCastMovieSelection = false },
+                        sourceIcon = sourceIcon
                     ) { result ->
                         val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
                         activeCastMovieSelection = false
@@ -1199,7 +1251,8 @@ fun DetailsScreen(
                         downloadedEpisodeKeys = movieDownloadedEpisodes,
                         downloadedByTranslation = movieDownloadedByTranslation,
                         onDownloadTarget = onMovieDownload,
-                        onDismissRequest = { activeMovieSelection = false }
+                        onDismissRequest = { activeMovieSelection = false },
+                        sourceIcon = sourceIcon
                     ) { result ->
                         val filmTitle = item.nameRu ?: item.nameOriginal ?: "Фильм"
                         if (result.seriesContext != null && result.episode != null) {
@@ -1269,6 +1322,42 @@ fun DetailsScreen(
                 visible = editorOpen
             )
             if (showProfileEditor) {
+                val saveProfile: (UserFilmStatus?, Int?, String, Int?, Int?) -> Unit =
+                    { status, rating, note, seasons, episodes ->
+                        val totalSeasons = state.seasons.size.takeIf { it > 0 }
+                            ?: if (state.animeDetails != null) 1 else null
+                        val totalEpisodes = state.seasons.sumOf { it.episodes.orEmpty().size }.takeIf { it > 0 }
+                            ?: state.animeDetails?.episodes?.takeIf { it > 0 }
+
+                        onSaveUserProfile(
+                            editorItem,
+                            status,
+                            rating,
+                            note,
+                            seasons,
+                            episodes,
+                            seasons
+                                ?.takeIf { it > 0 }
+                                ?.let { seasonNumber ->
+                                    state.seasons.firstOrNull { it.number == seasonNumber }?.episodes?.size
+                                },
+                            totalSeasons,
+                            totalEpisodes
+                        )
+                        showProfileEditor = false
+                    }
+                if (rememberTvLayout()) {
+                    // На ТВ — окном по центру, а не нижним шитом (шитом пультом неудобно).
+                    UserProfileEditorTvDialog(
+                        item = editorItem,
+                        animeDetails = state.animeDetails,
+                        seasons = state.seasons,
+                        profile = state.userProfile,
+                        saving = state.savingProfile,
+                        onDismiss = { showProfileEditor = false },
+                        onSave = saveProfile,
+                    )
+                } else {
             UserProfileEditorSheet(
                 item = editorItem,
                 animeDetails = state.animeDetails,
@@ -1277,30 +1366,9 @@ fun DetailsScreen(
                 saving = state.savingProfile,
                 sheetState = profileSheetState,
                 onDismiss = { showProfileEditor = false },
-                onSave = { status, rating, note, seasons, episodes ->
-                    val totalSeasons = state.seasons.size.takeIf { it > 0 }
-                        ?: if (state.animeDetails != null) 1 else null
-                    val totalEpisodes = state.seasons.sumOf { it.episodes.orEmpty().size }.takeIf { it > 0 }
-                        ?: state.animeDetails?.episodes?.takeIf { it > 0 }
-
-                    onSaveUserProfile(
-                        editorItem,
-                        status,
-                        rating,
-                        note,
-                        seasons,
-                        episodes,
-                        seasons
-                            ?.takeIf { it > 0 }
-                            ?.let { seasonNumber ->
-                                state.seasons.firstOrNull { it.number == seasonNumber }?.episodes?.size
-                            },
-                        totalSeasons,
-                        totalEpisodes
-                    )
-                    showProfileEditor = false
-                }
+                onSave = saveProfile,
             )
+                }
             }
         }
 
@@ -1831,6 +1899,33 @@ private fun RoundedPlayIcon(modifier: Modifier = Modifier, color: Color = Color.
     }
 }
 
+/**
+ * Скруглённая стрелка «назад» без стержня (шеврон ‹ с круглыми концами).
+ * Рисуем сами: у Icons.Filled.ArrowBackIos острые углы, а нужен rounded-шеврон.
+ */
+@Composable
+private fun RoundedChevronLeftIcon(modifier: Modifier = Modifier, color: Color = Color.White) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = minOf(w, h) * 0.16f
+        drawLine(
+            color = color,
+            start = androidx.compose.ui.geometry.Offset(w * 0.68f, h * 0.20f),
+            end = androidx.compose.ui.geometry.Offset(w * 0.34f, h * 0.50f),
+            strokeWidth = stroke,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
+        drawLine(
+            color = color,
+            start = androidx.compose.ui.geometry.Offset(w * 0.34f, h * 0.50f),
+            end = androidx.compose.ui.geometry.Offset(w * 0.68f, h * 0.80f),
+            strokeWidth = stroke,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
+    }
+}
+
 
 
 @Composable
@@ -2096,6 +2191,292 @@ fun UserProfileEditorSheet(
             )
 
             Spacer(modifier = Modifier.height(4.dp))
+        }
+    }
+}
+
+/**
+ * ТВ-версия «Прогресса просмотра»: то же состояние и логика, что у [UserProfileEditorSheet],
+ * но окном по центру ([AlertDialog]), а не нижним шитом. Все контролы — через
+ * tvFocusable-кольцо (TvChip/TvButton/круглые +/−), чтобы пульт ходил по диалогу.
+ */
+@Composable
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+fun UserProfileEditorTvDialog(
+    item: FilmDetails,
+    animeDetails: hd.kinoshka.app.data.model.ShikimoriAnimeDetails?,
+    seasons: List<SeasonItem>,
+    profile: UserFilmProfile?,
+    saving: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (
+        status: UserFilmStatus?,
+        userRating: Int?,
+        note: String,
+        watchedSeasons: Int?,
+        watchedEpisodes: Int?
+    ) -> Unit
+) {
+    var status by remember(item.kinopoiskId, profile?.updatedAt) { mutableStateOf(profile?.status) }
+    var ratingValue by remember(item.kinopoiskId, profile?.updatedAt) {
+        mutableIntStateOf(profile?.userRating ?: 0)
+    }
+    var noteInput by remember(item.kinopoiskId, profile?.updatedAt) {
+        mutableStateOf(profile?.note.orEmpty())
+    }
+    var seasonsCount by remember(item.kinopoiskId, profile?.updatedAt) {
+        mutableIntStateOf(profile?.watchedSeasons ?: 0)
+    }
+    var episodesCount by remember(item.kinopoiskId, profile?.updatedAt) {
+        mutableIntStateOf(profile?.watchedEpisodes ?: 0)
+    }
+
+    val isAnimeItem = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" || item.genres.containsAnimeGenre()
+    val maxAnimeEpisodes = maxOf(
+        animeDetails?.episodes ?: 0,
+        profile?.totalEpisodes ?: 0,
+        profile?.watchedEpisodes ?: 0
+    ).takeIf { it > 0 } ?: Int.MAX_VALUE
+    val maxSeasons = seasons.size.takeIf { it > 0 } ?: Int.MAX_VALUE
+    val currentSeasonObj = seasons.firstOrNull { it.number == seasonsCount } ?: seasons.firstOrNull()
+    val maxEpisodesInSeason = currentSeasonObj?.episodes?.size?.takeIf { it > 0 } ?: Int.MAX_VALUE
+    val isCompleted = status == UserFilmStatus.COMPLETED
+
+    fun applyStatus(option: UserFilmStatus) {
+        status = option
+        if (option == UserFilmStatus.COMPLETED) {
+            if (isAnimeItem) {
+                episodesCount = maxAnimeEpisodes.takeIf { it != Int.MAX_VALUE } ?: 1
+            } else if (item.type == "TV_SERIES" && seasons.isNotEmpty()) {
+                seasonsCount = seasons.size
+                episodesCount = seasons.last().episodes.orEmpty().size
+            } else {
+                episodesCount = 1
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.widthIn(max = 640.dp),
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Прогресс просмотра",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = item.nameRu ?: item.nameOriginal ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    UserFilmStatus.entries.forEach { option ->
+                        TvChip(
+                            text = option.toUiLabel(),
+                            selected = status == option,
+                            onClick = { applyStatus(option) },
+                        )
+                    }
+                }
+                if (isAnimeItem) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        TvCounterField(
+                            label = "Серии",
+                            value = episodesCount,
+                            onValueChange = { episodesCount = it.coerceIn(0, maxAnimeEpisodes) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        TvCounterField(
+                            label = "Повторы",
+                            value = seasonsCount,
+                            onValueChange = { seasonsCount = it.coerceAtLeast(0) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                } else if (item.type == "TV_SERIES") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        TvCounterField(
+                            label = "Сезоны",
+                            value = seasonsCount,
+                            onValueChange = { targetSeason ->
+                                val newSeason = targetSeason.coerceIn(0, maxSeasons)
+                                if (newSeason != seasonsCount) {
+                                    seasonsCount = newSeason
+                                    episodesCount = 1
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        TvCounterField(
+                            label = "Серии",
+                            value = episodesCount,
+                            onValueChange = { episodesCount = it.coerceIn(0, maxEpisodesInSeason) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            text = "Моя оценка",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isCompleted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                        Text(
+                            text = if (!isCompleted) "Только для «Просмотрено»" else if (ratingValue > 0) "$ratingValue ★" else "Без оценки",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isCompleted) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                    }
+                    TvCounterField(
+                        label = "Оценка",
+                        value = ratingValue,
+                        onValueChange = { ratingValue = it.coerceIn(0, 10) },
+                        enabled = isCompleted,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                TextField(
+                    value = noteInput,
+                    onValueChange = { noteInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Комментарий", style = MaterialTheme.typography.bodyMedium) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (status != null) {
+                    TvButton(
+                        text = "Очистить",
+                        icon = Icons.Filled.Delete,
+                        onClick = {
+                            status = null
+                            seasonsCount = 0
+                            episodesCount = 0
+                        },
+                        enabled = !saving,
+                    )
+                }
+                TvButton(
+                    text = if (saving) "Сохранение…" else "Сохранить",
+                    primary = true,
+                    onClick = {
+                        onSave(
+                            status,
+                            ratingValue.takeIf { it > 0 },
+                            noteInput,
+                            if (item.type == "TV_SERIES") seasonsCount else null,
+                            if (item.type == "TV_SERIES") episodesCount else null
+                        )
+                    },
+                    enabled = !saving,
+                )
+            }
+        },
+        dismissButton = {
+            TvButton(text = "Отмена", onClick = onDismiss, enabled = !saving)
+        }
+    )
+}
+
+/** Счётчик для ТВ-диалога: значение + круглые −/+ с пульт-кольцом. */
+@Composable
+private fun TvCounterField(
+    label: String,
+    value: Int,
+    onValueChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        modifier = modifier.height(56.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = cs.surfaceContainerHigh
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant
+                )
+                Text(
+                    text = value.toString(),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (enabled) cs.onSurface else cs.onSurface.copy(alpha = 0.4f)
+                )
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .tvFocusable(
+                            onClick = { onValueChange((value - 1).coerceAtLeast(0)) },
+                            shape = CircleShape,
+                            enabled = enabled,
+                        )
+                        .clip(CircleShape)
+                        .background(cs.surface),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("−", fontWeight = FontWeight.Bold, color = cs.onSurface)
+                }
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .tvFocusable(
+                            onClick = { onValueChange(value + 1) },
+                            shape = CircleShape,
+                            enabled = enabled,
+                        )
+                        .clip(CircleShape)
+                        .background(cs.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("+", fontWeight = FontWeight.Bold, color = cs.onPrimaryContainer)
+                }
+            }
         }
     }
 }
@@ -2423,6 +2804,7 @@ private fun HorizontalFilmsCard(
     }
     if (validItems.isEmpty()) return
 
+    val tvLayout = rememberTvLayout()
     val listState = rememberLazyListState()
     val snapFling = rememberSnapFlingBehavior(lazyListState = listState)
     Column(
@@ -2439,7 +2821,10 @@ private fun HorizontalFilmsCard(
         LazyRow(
             state = listState,
             flingBehavior = snapFling,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            // Кольцо фокуса (3dp) + scale краевых плиток не должны резаться о границы
+            // строки: запас 10-12dp с каждой стороны (scale 1.03 от 132dp ≈ ±2dp + кольцо).
+            contentPadding = if (tvLayout) PaddingValues(horizontal = 10.dp, vertical = 12.dp) else PaddingValues(0.dp)
         ) {
             items(
                 items = validItems.take(20),
@@ -2447,10 +2832,22 @@ private fun HorizontalFilmsCard(
             ) { linked ->
                 var isFailed by remember(linked.id) { mutableStateOf(false) }
                 if (!isFailed) {
+                    // На ТВ — кольцо фокуса пульта вместо тач-риппла.
                     ElevatedCard(
                         modifier = Modifier
                             .width(itemWidth)
-                            .clickable { onOpenFilm(linked.id) },
+                            .then(
+                                if (tvLayout) {
+                                    Modifier.tvFocusable(
+                                        onClick = { onOpenFilm(linked.id) },
+                                        shape = RoundedCornerShape(14.dp),
+                                        focusedScale = 1.03f,
+                                        bringIntoViewOnFocus = true,
+                                    )
+                                } else {
+                                    Modifier.clickable { onOpenFilm(linked.id) }
+                                }
+                            ),
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Column(modifier = Modifier.padding(8.dp)) {
@@ -2491,6 +2888,8 @@ private fun ImagesCard(
 ) {
     val listState = rememberLazyListState()
     val snapFling = rememberSnapFlingBehavior(lazyListState = listState)
+    // На ТВ кадрам нужно кольцо фокуса пульта вместо тач-риппла.
+    val tvLayout = rememberTvLayout()
 
     // Трейлер приезжает асинхронно в НАЧАЛО уже показанной строки: LazyRow держит якорь
     // на первой видимой ячейке (по ключу), и новая ячейка остаётся за левым краем до
@@ -2534,7 +2933,10 @@ private fun ImagesCard(
             LazyRow(
                 state = listState,
                 flingBehavior = snapFling,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                // Кольцо фокуса (3dp) + scale краевых кадров не должны резаться о границы
+                // строки: запас 10-12dp с каждой стороны (scale 1.03 от 220dp ≈ ±3.3dp + кольцо).
+                contentPadding = if (tvLayout) PaddingValues(horizontal = 10.dp, vertical = 12.dp) else PaddingValues(0.dp)
             ) {
                 // Трейлер страницы (KP / Shikimori) — первой ячейкой, без автозапуска: постер + Play.
                 if (trailer != null) {
@@ -2557,21 +2959,47 @@ private fun ImagesCard(
                     items = images.take(24),
                     key = { index, img -> "$index:${img.previewUrl ?: img.imageUrl.orEmpty()}" }
                 ) { previewIndex, image ->
-                    ElevatedCard(
-                        modifier = Modifier
-                            .width(220.dp)
-                            .clickable { onPreview(previewIndex) },
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        KinoshkaAsyncImage(
-                            model = image.previewUrl ?: image.imageUrl,
-                            contentDescription = "Кадр",
-                            contentScale = ContentScale.Crop,
-                            fadeDurationMs = 1200,
+                    // На ТВ — кольцо фокуса пульта вместо тач-риппла.
+                    if (tvLayout) {
+                        Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(16f / 9f)
-                        )
+                                .width(220.dp)
+                                .tvFocusable(
+                                    onClick = { onPreview(previewIndex) },
+                                    shape = RoundedCornerShape(14.dp),
+                                    focusedScale = 1.03f,
+                                    bringIntoViewOnFocus = true,
+                                )
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                        ) {
+                            KinoshkaAsyncImage(
+                                model = image.previewUrl ?: image.imageUrl,
+                                contentDescription = "Кадр",
+                                contentScale = ContentScale.Crop,
+                                fadeDurationMs = 1200,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(16f / 9f)
+                            )
+                        }
+                    } else {
+                        ElevatedCard(
+                            modifier = Modifier
+                                .width(220.dp)
+                                .clickable { onPreview(previewIndex) },
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            KinoshkaAsyncImage(
+                                model = image.previewUrl ?: image.imageUrl,
+                                contentDescription = "Кадр",
+                                contentScale = ContentScale.Crop,
+                                fadeDurationMs = 1200,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(16f / 9f)
+                            )
+                        }
                     }
                 }
             }
@@ -2589,11 +3017,27 @@ private fun TrailerCard(
     fallbackPosterUrl: String? = null,
     onPlay: () -> Unit
 ) {
+    // На ТВ — кольцо фокуса пульта вместо тач-риппла.
+    val tvLayout = rememberTvLayout()
     Box(
         modifier = Modifier
             .width(220.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .clickable { onPlay() }
+            .then(
+                if (tvLayout) {
+                    Modifier
+                        .tvFocusable(
+                            onClick = onPlay,
+                            shape = RoundedCornerShape(14.dp),
+                            focusedScale = 1.03f,
+                            bringIntoViewOnFocus = true,
+                        )
+                        .clip(RoundedCornerShape(14.dp))
+                } else {
+                    Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { onPlay() }
+                }
+            )
     ) {
         ElevatedCard(
             shape = RoundedCornerShape(14.dp),
@@ -2684,6 +3128,13 @@ internal fun ImagesViewerDialog(
         initialPage = safeStart,
         pageCount = { fullUrls.size }
     )
+    val tvLayout = rememberTvLayout()
+    // ТВ-пульт: фокус сразу на пейджере (креста закрытия на ТВ нет, см. ниже),
+    // влево/вправо листают кадры. Назад закрывает через хост-экран.
+    val pagerFocus = remember { FocusRequester() }
+    LaunchedEffect(tvLayout) {
+        if (tvLayout) runCatching { pagerFocus.requestFocus() }
+    }
 
     // Активность залочена в портрет манифестом — пока просмотрщик открыт, лок отпускается
     // датчикам (Android-actual); при закрытии прежнее состояние возвращается. Desktop — no-op.
@@ -2782,7 +3233,35 @@ internal fun ImagesViewerDialog(
         HorizontalPager(
             state = pagerState,
             userScrollEnabled = zoomScale <= 1.01f,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (tvLayout) {
+                        Modifier
+                            .focusRequester(pagerFocus)
+                            .focusable()
+                            .onPreviewKeyEvent { event ->
+                                if (event.type != KeyEventType.KeyDown || zoomScale > 1.01f) {
+                                    return@onPreviewKeyEvent false
+                                }
+                                when (event.key) {
+                                    Key.DirectionLeft -> {
+                                        if (pagerState.currentPage > 0) {
+                                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+                                            true
+                                        } else false
+                                    }
+                                    Key.DirectionRight -> {
+                                        if (pagerState.currentPage < fullUrls.lastIndex) {
+                                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                                            true
+                                        } else false
+                                    }
+                                    else -> false
+                                }
+                            }
+                    } else Modifier
+                )
         ) { page ->
             var imageAspectRatio by remember(page) { mutableStateOf<Float?>(null) }
 
@@ -2906,26 +3385,29 @@ internal fun ImagesViewerDialog(
             }
         }
 
-        // Top Close Button
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                onClick = onDismiss,
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
+        // Top Close Button — только вне ТВ: на пульте крест не работает
+        // (тапнуть нечем), закрытие — кнопкой Назад через хост-экран.
+        if (!tvLayout) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = "Закрыть",
-                    modifier = Modifier.padding(10.dp).size(22.dp),
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
+                Surface(
+                    onClick = onDismiss,
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Закрыть",
+                        modifier = Modifier.padding(10.dp).size(22.dp),
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         }
 
@@ -4005,6 +4487,9 @@ private data class DetailEntry(
 
 @Composable
 private fun DetailRow(label: String, value: String, copyable: Boolean = false) {
+    // На ТВ копирования нет: пультом в буфер не скопировать, кликабельная
+    // строка только путает фокус — всегда обычный текст.
+    val tvLayout = rememberTvLayout()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -4016,7 +4501,7 @@ private fun DetailRow(label: String, value: String, copyable: Boolean = false) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f)
         )
-        if (!copyable) {
+        if (!copyable || tvLayout) {
             Text(
                 text = value,
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
@@ -4760,8 +5245,13 @@ private fun HentaiSourceScreen(
     kinopoiskId: Int = 0,
     states: Map<hd.kinoshka.app.data.source.HentaiProvider, HentaiSourceState>,
     backups: Map<hd.kinoshka.app.data.source.HentaiProvider, hd.kinoshka.app.data.source.HentaiStream?> = emptyMap(),
+    // true — запуск провайдеров завершён и включённых не осталось: показываем
+    // подсказку про «Настройки → Источники» вместо пустого списка.
+    showAllDisabledHint: Boolean = false,
     onBack: () -> Unit,
     onRetry: (hd.kinoshka.app.data.source.HentaiProvider) -> Unit,
+    sourceIcon: @Composable (sourceId: String, size: Dp) -> Unit =
+        { id, size -> SourceBrandIcon(sourceId = id, size = size) },
     hentaiDownloadButton: (@Composable (
         title: String,
         kinopoiskId: Int,
@@ -4825,7 +5315,25 @@ private fun HentaiSourceScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 16.dp)
                 ) {
-                    val grouped = hd.kinoshka.app.data.source.HentaiProvider.entries.groupBy { it.language }
+                    // Только включённые провайдеры: выключенные в «Настройки → Источники»
+                    // (раздел 18+) не запрашиваются и даже заголовком не показываются.
+                    val grouped = hd.kinoshka.app.data.source.HentaiProvider.entries
+                        .filter { it in states }
+                        .groupBy { it.language }
+                    if (showAllDisabledHint) {
+                        item(key = "hentai_all_disabled") {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Все 18+ источники выключены — включите их в «Настройки → Источники»",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                     grouped.forEach { (language, providers) ->
                         item(key = "lang_header_$language") {
                             Text(
@@ -4848,6 +5356,13 @@ private fun HentaiSourceScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier.size(30.dp).clip(CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        sourceIcon(provider.playbackSourceId(), 30.dp)
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
                                     Text(
                                         text = provider.displayName,
                                         style = MaterialTheme.typography.labelMedium,
@@ -5161,6 +5676,9 @@ private fun DetailsTvLayout(
     item: FilmDetails,
     state: DetailsUiState,
     isInteractive: Boolean,
+    profile: UserFilmProfile?,
+    seasons: List<SeasonItem> = emptyList(),
+    animeTotalEpisodes: Int? = null,
     onWatch: () -> Unit,
     onOpenEditor: () -> Unit,
     onOpenFilm: (Int) -> Unit,
@@ -5173,12 +5691,6 @@ private fun DetailsTvLayout(
     val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" ||
         item.genres.containsAnimeGenre()
     val posterUrl = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview
-    val metaParts = buildList {
-        item.year?.let { add(it.toString()) }
-        item.countries.orEmpty().mapNotNull { it.country }.takeIf { it.isNotEmpty() }?.let { add(it.joinToString(", ")) }
-        item.filmLength?.takeIf { it > 0 }?.let { add("${it / 60} ч ${it % 60} мин") }
-        item.ratingAgeLimits?.let { add(it.replace("age", "") + "+") }
-    }
     val cs = MaterialTheme.colorScheme
     val windowSize = rememberTvWindowSize()
     val hPad = when (windowSize) {
@@ -5192,26 +5704,11 @@ private fun DetailsTvLayout(
         TvWindowSize.MEDIUM -> 200.dp
         TvWindowSize.EXPANDED -> 256.dp
     }
-    Box(modifier = Modifier.fillMaxSize().background(cs.background)) {
+    Box(modifier = Modifier.fillMaxSize().background(cs.background).focusGroup()) {
         TvAnimatedBackdrop(imageUrl = posterUrl, modifier = Modifier.fillMaxSize())
-        Column(modifier = Modifier.fillMaxSize()) {
-        Row(modifier = Modifier.fillMaxWidth().padding(start = hPad, end = hPad, top = 16.dp)) {
-            Text(
-                text = "← Назад",
-                color = cs.onSurface,
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier
-                    .tvFocusable(onClick = { onBack() }, shape = RoundedCornerShape(12.dp))
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(cs.surfaceContainerHigh)
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-            )
-        }
         LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            contentPadding = PaddingValues(start = hPad, end = hPad, top = 16.dp, bottom = 32.dp),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = hPad, end = hPad, top = 84.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
             item(key = "header") {
@@ -5234,8 +5731,9 @@ private fun DetailsTvLayout(
                             KinoshkaAsyncImage(model = posterUrl, contentDescription = item.nameRu ?: item.nameOriginal, modifier = Modifier.fillMaxSize())
                         }
                         DetailsTvHeaderText(
-                            item = item, isAnime = isAnime, metaParts = metaParts,
-                            isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor, onOpenGenre = onOpenGenre
+                            item = item, isAnime = isAnime, anime = state.animeDetails,
+                            isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor,
+                            profile = profile, seasons = seasons, animeTotalEpisodes = animeTotalEpisodes,
                         )
                     }
                 } else {
@@ -5264,17 +5762,36 @@ private fun DetailsTvLayout(
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
                             DetailsTvHeaderText(
-                                item = item, isAnime = isAnime, metaParts = metaParts,
-                                isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor, onOpenGenre = onOpenGenre
+                                item = item, isAnime = isAnime, anime = state.animeDetails,
+                                isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor,
+                                profile = profile, seasons = seasons, animeTotalEpisodes = animeTotalEpisodes,
                             )
                         }
                     }
                 }
             }
+            // На ТВ описание всегда раскрыто целиком (на телефоне — сворачиваемое).
+            // Блок фокусируется пультом (кольцо + доводка скролла), чтобы текст удобно читать.
             val description = item.description ?: item.shortDescription
             if (!description.isNullOrBlank()) {
                 item(key = "description") {
-                    MovieExpandableDescription(description = description)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .tvFocusable(
+                                onClick = {},
+                                shape = RoundedCornerShape(12.dp),
+                                focusedScale = 1f,
+                                bringIntoViewOnFocus = true,
+                            )
+                            .clip(RoundedCornerShape(12.dp))
+                            .padding(4.dp),
+                    ) {
+                        Text(
+                            text = description,
+                            style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                        )
+                    }
                 }
             }
             item(key = "images") {
@@ -5300,14 +5817,42 @@ private fun DetailsTvLayout(
                     )
                 }
             }
+            // Блок «Детали» тоже выделяется пультом для чтения (внутри только текст).
             item(key = "details") {
-                if (isAnime) {
-                    AnimeFullDetailsCard(anime = state.animeDetails, item = item)
-                } else {
-                    MovieFullDetailsCard(item = item)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .tvFocusable(
+                            onClick = {},
+                            shape = RoundedCornerShape(18.dp),
+                            focusedScale = 1f,
+                            bringIntoViewOnFocus = true,
+                        )
+                ) {
+                    if (isAnime) {
+                        AnimeFullDetailsCard(anime = state.animeDetails, item = item)
+                    } else {
+                        MovieFullDetailsCard(item = item)
+                    }
                 }
             }
         }
+        // Кнопка «Назад» — просто круг в левом углу поверх контента,
+        // отдельной строки-шапки не занимает. Шеврон без стержня.
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = hPad, top = 16.dp)
+                .size(48.dp)
+                .tvFocusable(onClick = { onBack() }, shape = CircleShape)
+                .clip(CircleShape)
+                .background(cs.surfaceContainerHigh),
+            contentAlignment = Alignment.Center,
+        ) {
+            RoundedChevronLeftIcon(
+                modifier = Modifier.size(24.dp),
+                color = cs.onSurface,
+            )
         }
     }
 }
@@ -5316,29 +5861,91 @@ private fun DetailsTvLayout(
 private fun DetailsTvHeaderText(
     item: FilmDetails,
     isAnime: Boolean,
-    metaParts: List<String>,
+    anime: hd.kinoshka.app.data.model.ShikimoriAnimeDetails?,
     isInteractive: Boolean,
     onWatch: () -> Unit,
     onOpenEditor: () -> Unit,
-    onOpenGenre: ((String, Boolean) -> Unit)?,
+    profile: UserFilmProfile? = null,
+    seasons: List<SeasonItem> = emptyList(),
+    animeTotalEpisodes: Int? = null,
 ) {
     val cs = MaterialTheme.colorScheme
+    // Текущий список — та же логика, что в мобильной ActionPanel:
+    // статус + прогресс (серии/сезоны) + оценка при «Просмотрено».
+    val status = profile?.status
+    val userRating = profile?.userRating?.takeIf { it > 0 }
+    val watchedSeasons = profile?.watchedSeasons
+    val watchedEp = profile?.watchedEpisodes
+    val totalEp = profile?.totalEpisodes ?: animeTotalEpisodes?.takeIf { it > 0 }
+    val progressText = remember(watchedSeasons, watchedEp, totalEp, seasons) {
+        if (watchedEp == null || watchedEp <= 0) {
+            if (watchedSeasons != null && watchedSeasons > 0) " с.$watchedSeasons" else ""
+        } else {
+            var cumulativeWatched = 0
+            var cumulativeTotal = 0
+            val currentSeasonNum = watchedSeasons ?: 1
+            if (seasons.isNotEmpty()) {
+                val sortedSeasons = seasons.filter { it.number > 0 }.sortedBy { it.number }
+                for (season in sortedSeasons) {
+                    val epCount = season.episodes.orEmpty().size
+                    if (season.number < currentSeasonNum) {
+                        cumulativeWatched += epCount
+                        cumulativeTotal += epCount
+                    } else if (season.number == currentSeasonNum) {
+                        cumulativeWatched += watchedEp.coerceAtMost(epCount)
+                        cumulativeTotal += epCount
+                    } else {
+                        cumulativeTotal += epCount
+                    }
+                }
+            }
+            if (cumulativeWatched > 0) {
+                val totalStr = if (cumulativeTotal > 0) "/$cumulativeTotal" else (totalEp?.let { "/$it" } ?: "")
+                " $cumulativeWatched$totalStr"
+            } else {
+                val totalStr = totalEp?.let { "/$it" } ?: ""
+                " $watchedEp$totalStr"
+            }
+        }
+    }
+    val statusText = when (status) {
+        // Текст 1-в-1 как в мобильной ActionPanel; звезда оценки — отдельной иконкой справа.
+        UserFilmStatus.COMPLETED -> if (userRating != null) "Просмотрено · $userRating" else "Просмотрено"
+        UserFilmStatus.WATCHING -> "Смотрю$progressText"
+        UserFilmStatus.PLANNED -> "В планах"
+        UserFilmStatus.REWATCHING -> "Пересматриваю$progressText"
+        UserFilmStatus.ON_HOLD -> "Отложено$progressText"
+        UserFilmStatus.DROPPED -> "Брошено$progressText"
+        null -> "В список"
+    }
+    // Иконки 1-в-1 как в мобильной ActionPanel: у WATCHING иконки нет —
+    // там рисуется RoundedPlayIcon (ветка ниже), у остальных — те же векторы.
+    val statusIcon = when (status) {
+        UserFilmStatus.COMPLETED -> Icons.Default.Check
+        UserFilmStatus.WATCHING -> null
+        UserFilmStatus.PLANNED -> Icons.Rounded.Star
+        UserFilmStatus.REWATCHING -> Icons.Default.Refresh
+        UserFilmStatus.ON_HOLD -> Icons.Default.KeyboardArrowDown
+        UserFilmStatus.DROPPED -> Icons.Default.Close
+        null -> Icons.Default.Add
+    }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Шрифты как в мобильной версии: заголовок аниме — headlineSmall Bold,
+        // оригинал — bodyMedium (телефонный titleMedium/bodySmall в той же иерархии).
         Text(
             text = item.nameRu ?: item.nameOriginal ?: "",
             color = cs.onBackground,
-            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
         item.nameOriginal?.takeIf { it.isNotBlank() && it != item.nameRu }?.let {
-            Text(text = it, color = cs.onSurfaceVariant, style = MaterialTheme.typography.titleMedium)
+            Text(text = it, color = cs.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
         }
         // Lampa .full-start-new__rate-line: ratings большие, с иконками
         val ratings = buildList {
             item.ratingKinopoisk?.let { add("КП %.1f".format(java.util.Locale.US, it)) }
             item.ratingImdb?.let { add("IMDb %.1f".format(java.util.Locale.US, it)) }
-            item.ratingImdb?.let { }
         }
         if (ratings.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -5354,31 +5961,139 @@ private fun DetailsTvHeaderText(
                 }
             }
         }
-        if (metaParts.isNotEmpty()) {
-            Text(
-                text = metaParts.joinToString("  •  "),
-                color = cs.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
-            )
+        // Мета — столбиками как на телефоне, без страны и студии.
+        if (isAnime) {
+            // Та же таблица, что в телефонном AnimeDetailsLayout.
+            val kindStr = when (anime?.kind?.lowercase()) {
+                "tv" -> "ТВ"
+                "movie" -> "Фильм"
+                "ova" -> "OVA"
+                "ona" -> "ONA"
+                "special", "tv_special" -> "Спешл"
+                "music" -> "Музыка"
+                null -> "—"
+                else -> anime?.kind?.uppercase() ?: "—"
+            }
+            val statusStr = when (anime?.status?.lowercase()) {
+                "released" -> "Вышло"
+                "ongoing" -> "Онгоинг"
+                "anons" -> "Анонс"
+                else -> anime?.status.orEmpty()
+            }
+            val seasonStr = formatAnimeSeason(anime?.season, anime?.airedOn ?: item.year?.toString())
+            val airedEp = anime?.episodesAired
+            val totalEpCount = anime?.episodes
+            val epStr = if (anime?.status == "ongoing" && airedEp != null && airedEp > 0) {
+                "$airedEp из ${if (totalEpCount != null && totalEpCount > 0) totalEpCount else "?"} эп."
+            } else if (totalEpCount != null && totalEpCount > 0) {
+                "$totalEpCount эп."
+            } else "—"
+            val ageRatingStr = anime?.rating?.uppercase()?.replace("R_17", "R-17")?.replace("PG_13", "PG-13")?.replace("R_PLUS", "R+") ?: "—"
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                TvMetaColumn(label = "Тип", value = "$kindStr · $statusStr", highlighted = true)
+                TvMetaColumn(label = "Сезон", value = seasonStr, highlighted = true)
+                TvMetaColumn(label = "Эпизоды", value = epStr, highlighted = true)
+                TvMetaColumn(label = "Рейтинг", value = ageRatingStr, highlighted = true)
+            }
+        } else {
+            // Та же сетка, что в телефонной карточке кино: Тип / Дата / Время / Возраст.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                TvMetaColumn(label = "Тип", value = item.type?.toLocalizedType() ?: "Фильм", highlighted = false)
+                TvMetaColumn(label = "Дата", value = item.year?.let { "$it г." } ?: "—", highlighted = false)
+                TvMetaColumn(label = "Время", value = item.filmLength?.let { "$it мин" } ?: "—", highlighted = false)
+                TvMetaColumn(
+                    label = "Возраст",
+                    value = item.ratingAgeLimits?.replace("age", "")?.let { "$it+" } ?: "—",
+                    highlighted = false
+                )
+            }
         }
+        // Жанры на ТВ не кликабельны: статичные чипы без фокуса пульта.
         if (!item.genres.isNullOrEmpty()) {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 item.genres.orEmpty().mapNotNull { it.genre }.forEach { genreName ->
-                    TvChip(
-                        text = genreName,
-                        selected = false,
-                        onClick = { onOpenGenre?.invoke(genreName, isAnime) },
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = cs.surfaceContainerHigh,
+                    ) {
+                        Text(
+                            text = genreName,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = cs.onSurface,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
         }
         Spacer(androidx.compose.ui.Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TvButton(text = "▶  Смотреть", primary = true, onClick = onWatch, enabled = isInteractive)
-            TvButton(text = "В список", onClick = onOpenEditor)
+            // Иконки — те же, что в мобильной ActionPanel: рисованный play-треугольник.
+            TvButton(
+                text = "Смотреть",
+                primary = true,
+                onClick = onWatch,
+                enabled = isInteractive,
+                leading = { RoundedPlayIcon(modifier = Modifier.size(18.dp), color = cs.onPrimary) },
+            )
+            if (status == UserFilmStatus.WATCHING) {
+                TvButton(
+                    text = statusText,
+                    onClick = onOpenEditor,
+                    enabled = isInteractive,
+                    leading = { RoundedPlayIcon(modifier = Modifier.size(18.dp), color = cs.onSurface) },
+                )
+            } else if (status == UserFilmStatus.COMPLETED && userRating != null) {
+                // Как в мобильной ActionPanel: галочка слева, звезда оценки справа от текста.
+                TvButton(
+                    text = statusText,
+                    icon = statusIcon,
+                    onClick = onOpenEditor,
+                    enabled = isInteractive,
+                    trailing = {
+                        Icon(
+                            imageVector = Icons.Rounded.Star,
+                            contentDescription = null,
+                            tint = cs.onSurface,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                )
+            } else {
+                TvButton(text = statusText, icon = statusIcon, onClick = onOpenEditor, enabled = isInteractive)
+            }
         }
+    }
+}
+
+/**
+ * Столбик мета-информации ТВ-шапки. Стили — как на телефоне: у аниме подпись
+ * primary+SemiBold и значение Medium, у кино подпись onSurfaceVariant и значение Bold.
+ */
+@Composable
+private fun TvMetaColumn(label: String, value: String, highlighted: Boolean) {
+    Column {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontWeight = if (highlighted) FontWeight.Medium else FontWeight.Bold
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
     }
 }
