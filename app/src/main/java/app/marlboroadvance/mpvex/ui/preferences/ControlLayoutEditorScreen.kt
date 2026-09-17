@@ -20,7 +20,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.ui.draw.rotate
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.RemoveCircle
 import androidx.compose.material.icons.outlined.Restore
@@ -28,9 +27,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -181,23 +178,16 @@ data class ControlLayoutEditorScreen(
       )
     }
 
-    Scaffold(
-      topBar = {
-        TopAppBar(
-          title = { Text(text = title) },
-          navigationIcon = {
-            IconButton(onClick = backstack::removeLastOrNull) {
-              Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Назад")
-            }
-          },
-          actions = {
-            IconButton(onClick = { showResetDialog = true }) {
-              Icon(Icons.Outlined.Restore, contentDescription = "Сбросить к стандартной")
-            }
-          },
-        )
-      },
-    ) { padding ->
+    MpvExKinoPage(
+      title = title,
+      subtitle = "Расположение кнопок плеера",
+      onBack = backstack::removeLastOrNull,
+      actions = {
+        IconButton(onClick = { showResetDialog = true }) {
+          Icon(Icons.Outlined.Restore, contentDescription = "Сбросить к стандартной")
+        }
+      }
+    ) { topPad ->
       ProvidePreferenceLocals {
         val gridState = rememberLazyGridState()
         val reorderableState = rememberReorderableLazyGridState(gridState) { from, to ->
@@ -218,12 +208,10 @@ data class ControlLayoutEditorScreen(
         LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Adaptive(minSize = 72.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, top = topPad, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+            modifier = Modifier.fillMaxSize()
         ) {
             // --- 1. Header & Active Selected Zone ---
             item(span = { GridItemSpan(maxLineSpan) }) {

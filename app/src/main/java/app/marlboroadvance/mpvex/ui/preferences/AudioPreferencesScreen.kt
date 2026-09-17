@@ -1,25 +1,21 @@
 package app.marlboroadvance.mpvex.ui.preferences
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import hd.kinoshka.app.R
@@ -45,35 +41,15 @@ object AudioPreferencesScreen : Screen {
     val backstack = LocalBackStack.current
     val preferences = koinInject<AudioPreferences>()
 
-    Scaffold(
-      topBar = {
-        TopAppBar(
-          title = { 
-            Text(
-              text = stringResource(R.string.pref_audio),
-              style = MaterialTheme.typography.headlineSmall,
-              fontWeight = FontWeight.ExtraBold,
-              color = MaterialTheme.colorScheme.primary,
-            )
-          },
-          navigationIcon = {
-            IconButton(onClick = backstack::removeLastOrNull) {
-              Icon(
-                Icons.AutoMirrored.Default.ArrowBack, 
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.secondary,
-              )
-            }
-          },
-        )
-      },
-    ) { padding ->
+    MpvExKinoPage(
+      title = stringResource(R.string.pref_audio),
+      subtitle = stringResource(R.string.pref_audio_summary),
+      onBack = backstack::removeLastOrNull
+    ) { topPad ->
       ProvidePreferenceLocals {
         LazyColumn(
-          modifier =
-            Modifier
-              .fillMaxSize()
-              .padding(padding),
+          modifier = Modifier.fillMaxSize(),
+          contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
         ) {
           item {
             PreferenceSectionHeader(title = stringResource(R.string.pref_audio))

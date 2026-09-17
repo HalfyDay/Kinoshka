@@ -9,21 +9,19 @@ import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -60,35 +58,15 @@ object DecoderPreferencesScreen : Screen {
     val context = LocalContext.current
     val isVulkanSupported = remember { VulkanUtils.isVulkanSupported(context) }
     var showGpuNextWarning by remember { mutableStateOf(false) }
-    Scaffold(
-      topBar = {
-        TopAppBar(
-          title = {
-            Text(
-              text = stringResource(R.string.pref_decoder),
-              style = MaterialTheme.typography.headlineSmall,
-              fontWeight = FontWeight.ExtraBold,
-              color = MaterialTheme.colorScheme.primary,
-            )
-          },
-          navigationIcon = {
-            IconButton(onClick = backstack::removeLastOrNull) {
-              Icon(
-                Icons.AutoMirrored.Default.ArrowBack,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.secondary,
-              )
-            }
-          },
-        )
-      },
-    ) { padding ->
+    MpvExKinoPage(
+      title = stringResource(R.string.pref_decoder),
+      subtitle = stringResource(R.string.pref_decoder_summary),
+      onBack = backstack::removeLastOrNull
+    ) { topPad ->
       ProvidePreferenceLocals {
         LazyColumn(
-          modifier =
-            Modifier
-              .fillMaxSize()
-              .padding(padding),
+          modifier = Modifier.fillMaxSize(),
+          contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
         ) {
           item {
             PreferenceSectionHeader(title = stringResource(R.string.pref_decoder))

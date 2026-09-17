@@ -1,24 +1,18 @@
 package app.marlboroadvance.mpvex.ui.preferences
 
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.R
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
@@ -36,41 +30,20 @@ import kotlin.math.roundToInt
 
 @Serializable
 object PlayerPreferencesScreen : Screen {
-  @OptIn(ExperimentalMaterial3Api::class)
   @Composable
   override fun Content() {
     val backstack = LocalBackStack.current
     val context = LocalContext.current
     val preferences = koinInject<PlayerPreferences>()
-    Scaffold(
-      topBar = {
-        TopAppBar(
-          title = { 
-            Text(
-              text = stringResource(id = R.string.pref_player),
-              style = MaterialTheme.typography.headlineSmall,
-              fontWeight = FontWeight.ExtraBold,
-              color = MaterialTheme.colorScheme.primary,
-            ) 
-          },
-          navigationIcon = {
-            IconButton(onClick = backstack::removeLastOrNull) {
-              Icon(
-                Icons.AutoMirrored.Outlined.ArrowBack, 
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.secondary,
-              )
-            }
-          },
-        )
-      },
-    ) { padding ->
+    MpvExKinoPage(
+      title = stringResource(id = R.string.pref_player),
+      subtitle = stringResource(id = R.string.pref_player_summary),
+      onBack = backstack::removeLastOrNull
+    ) { topPad ->
       ProvidePreferenceLocals {
         LazyColumn(
-          modifier =
-            Modifier
-              .fillMaxSize()
-              .padding(padding),
+          modifier = Modifier.fillMaxSize(),
+          contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
         ) {
           // General Section
           item {
