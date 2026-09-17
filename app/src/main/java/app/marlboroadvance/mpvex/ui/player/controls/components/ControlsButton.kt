@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.padding
@@ -14,7 +15,6 @@ import androidx.compose.material.icons.filled.CatchingPokemon
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -47,6 +47,9 @@ fun ControlsButton(
   val hideBackground by appearancePreferences.hidePlayerButtonsBackground.collectAsState()
 
   val clickEvent = LocalPlayerButtonsClickEvent.current
+  // ТВ-пульт: фокус — явной круглой заливкой вместо риппла (его подсветка
+  // на круглых кнопках давала квадрат). indication = null детерминированно.
+  val focused by interactionSource.collectIsFocusedAsState()
   Surface(
     modifier =
       modifier
@@ -58,11 +61,19 @@ fun ControlsButton(
           },
           onLongClick = onLongClick,
           interactionSource = interactionSource,
-          indication = ripple(),
+          indication = null,
         ),
     shape = CircleShape,
-    color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
-    contentColor = color ?: MaterialTheme.colorScheme.onSurface,
+    color = when {
+      focused -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
+      hideBackground -> Color.Transparent
+      else -> MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f)
+    },
+    contentColor = if (focused) {
+      MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+      color ?: MaterialTheme.colorScheme.onSurface
+    },
     tonalElevation = 0.dp,
     shadowElevation = 0.dp,
     border = null,
@@ -70,7 +81,11 @@ fun ControlsButton(
     Icon(
       imageVector = icon,
       contentDescription = title,
-      tint = color ?: MaterialTheme.colorScheme.onSurface,
+      tint = if (focused) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+      } else {
+        color ?: MaterialTheme.colorScheme.onSurface
+      },
       modifier =
         Modifier
           .padding(MaterialTheme.spacing.small)

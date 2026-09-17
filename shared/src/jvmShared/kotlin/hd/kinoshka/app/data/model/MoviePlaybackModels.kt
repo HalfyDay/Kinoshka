@@ -117,6 +117,48 @@ object MovieSeriesContextStore {
 }
 
 /**
+ * Process-local handoff of anime episode/translation catalogs. A long-running title
+ * (One Piece: 12 Kodik dubs x ~1000+ episodes each) serializes to ~2.4MB of JSON —
+ * stuffing it into Intent extras overflows the binder transaction
+ * (TransactionTooLargeException → fatal crash on startActivity) and janks the main
+ * thread during encoding. The catalog now travels through this map keyed by title
+ * ("sh:<shikimoriId>" preferred, "kp:<kinopoiskId>" fallback); the intent carries
+ * only the ids, plus a small-JSON fallback for short titles and process-death recovery.
+ */
+object AnimeCatalogStore {
+    data class Catalog(
+        val episodes: List<hd.kinoshka.app.data.model.AnimeEpisode>,
+        val translations: List<hd.kinoshka.app.data.model.FlatTranslation>
+    )
+
+    private val catalogs = java.util.concurrent.ConcurrentHashMap<String, Catalog>()
+
+    fun key(shikimoriId: Int, kinopoiskId: Int): String? = when {
+        shikimoriId > 0 -> "sh:$shikimoriId"
+        kinopoiskId > 0 -> "kp:$kinopoiskId"
+        else -> null
+    }
+
+    fun put(
+        shikimoriId: Int,
+        kinopoiskId: Int,
+        episodes: List<hd.kinoshka.app.data.model.AnimeEpisode>,
+        translations: List<hd.kinoshka.app.data.model.FlatTranslation>
+    ) {
+        val k = key(shikimoriId, kinopoiskId) ?: return
+        if (episodes.isEmpty() && translations.isEmpty()) return
+        catalogs[k] = Catalog(episodes, translations)
+    }
+
+    fun get(shikimoriId: Int, kinopoiskId: Int): Catalog? =
+        key(shikimoriId, kinopoiskId)?.let { catalogs[it] }
+
+    fun remove(shikimoriId: Int, kinopoiskId: Int) {
+        key(shikimoriId, kinopoiskId)?.let { catalogs.remove(it) }
+    }
+}
+
+/**
  * Process-local handoff for PENDING_MOVIE launches: the player activity opens before any
  * stream exists, so the resolve request (titles/ids/kind) travels through this map instead
  * of the intent; the intent carries only the kinopoisk lookup id. Removed on consume.

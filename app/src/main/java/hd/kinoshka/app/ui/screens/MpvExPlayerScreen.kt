@@ -3,6 +3,7 @@ package hd.kinoshka.app.ui.screens
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.TransactionTooLargeException
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
@@ -10,6 +11,7 @@ import app.marlboroadvance.mpvex.ui.player.PlayerActivity
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.AnimeCatalogStore
 import hd.kinoshka.app.data.model.MovieSeriesContextStore
 import hd.kinoshka.app.data.model.MovieSeriesPlaybackContext
 import hd.kinoshka.app.data.model.NativePlaybackMode
@@ -118,11 +120,35 @@ fun MpvExPlayerScreen(
                 }
             }
 
-            if (episodes.isNotEmpty()) {
-                putExtra("anime_episodes", Json.encodeToString(episodes))
-            }
-            if (translations.isNotEmpty()) {
-                putExtra("anime_translations", Json.encodeToString(translations))
+            if (episodes.isNotEmpty() || translations.isNotEmpty()) {
+                // Full anime catalogs (One Piece: 12 dubs x ~1000+ eps ≈ 2.4MB JSON)
+                // overflow the binder transaction (TransactionTooLargeException → crash).
+                // Hand them over in-process; the intent carries JSON only for short
+                // titles (process-death fallback), the player prefers the store.
+                AnimeCatalogStore.put(shikimoriId, kinopoiskId, episodes, translations)
+                val totalRefs = episodes.size + translations.sumOf { it.episodes.size }
+                if (totalRefs <= 400) {
+                    if (episodes.isNotEmpty()) {
+                        putExtra("anime_episodes", Json.encodeToString(episodes))
+                    }
+                    if (translations.isNotEmpty()) {
+                        putExtra("anime_translations", Json.encodeToString(translations))
+                    }
+                } else if (AnimeCatalogStore.key(shikimoriId, kinopoiskId) == null) {
+                    // No store key (both ids 0): the player cannot recover via the store,
+                    // so send a small current-dub-only slice instead of nothing. Parcel
+                    // stays tiny, playback and the current dub/episode dropdown work.
+                    val current = translations.firstOrNull { it.translationId == currentTranslationId }
+                        ?: translations.firstOrNull()
+                    val sliceEps = current?.episodes?.take(400)
+                        ?: episodes.take(400)
+                    if (sliceEps.isNotEmpty()) {
+                        runCatching { putExtra("anime_episodes", Json.encodeToString(sliceEps)) }
+                    }
+                    if (current != null) {
+                        runCatching { putExtra("anime_translations", Json.encodeToString(listOf(current))) }
+                    }
+                }
             }
             if (qualities.isNotEmpty()) {
                 putExtra("anime_qualities", Json.encodeToString(qualities))
@@ -131,7 +157,19 @@ fun MpvExPlayerScreen(
             
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
-        context.startActivity(intent)
+        // Last-resort guard: if any future extra grows the parcel past the binder
+        // limit again, strip the large catalog JSON and retry instead of crashing.
+        try {
+            context.startActivity(intent)
+        } catch (e: RuntimeException) {
+            val cause = generateSequence<Throwable>(e) { it.cause }.firstOrNull { it is TransactionTooLargeException }
+            if (cause == null) throw e
+            android.util.Log.w("MpvExPlayerScreen", "startActivity parcel too large, retrying without catalog JSON", e)
+            intent.removeExtra("anime_episodes")
+            intent.removeExtra("anime_translations")
+            intent.removeExtra("movie_series_context")
+            context.startActivity(intent)
+        }
         onBack() // Dismiss the overlay overlay immediately once the player activity is started
     }
 }

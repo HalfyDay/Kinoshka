@@ -344,6 +344,13 @@ class PlayerActivity :
   // a lower rung of the same dead CDN is no longer the best move — switch sources instead.
   private var autoSlowStartStepped = false
 
+  // One fresh ddbb re-resolve per recovery chain for single-dub QOM movies (live: Collaps
+  // winner with a dead HLS token, no second dub to fall back to). The launch-time probe
+  // validates only the master URL while mpv chokes on its sub-playlists/segments, and the
+  // lazy voiceover re-resolve replays the same direct URL verbatim — without a genuinely
+  // fresh resolve the chain ends on an error card while a live token exists.
+  private var qomFreshResolveAttempts = 0
+
   // Segment-skip guard: when the HLS demuxer gives up on dead segments (vpn tunnel flapping,
   // live log kp=5437614 segments 379-387), mpv jumps playback FORWARD past the skipped content.
   // The guard remembers the last played position and pulls playback back once the stream moves
@@ -2028,6 +2035,54 @@ class PlayerActivity :
   }
 
   /**
+   * Single-dub QOM recovery: no second row exists for [tryAlternativeQomSource], so a dead
+   * direct token (live: Collaps HLS whose master probes alive while mpv chokes on its
+   * sub-playlists) is re-resolved from scratch once per chain. Returns true when a fresh
+   * resolve attempt is underway; the error card is shown only when it yields nothing new.
+   */
+  private fun retryQomSingleDubFreshResolve(slowStart: Boolean): Boolean {
+    if (effectiveNativePlaybackMode != NativePlaybackMode.QUALITY_ONLY_MOVIE) return false
+    val kpId = intent.getIntExtra("movie_kinopoisk_id", 0).takeIf { it > 0 } ?: return false
+    if (qomFreshResolveAttempts >= 1) return false
+    val translations = viewModel.animeTranslations.value
+    if (translations.size != 1) return false
+    val track = translations.firstOrNull() ?: return false
+    qomFreshResolveAttempts += 1
+    MPVLib.getPropertyDouble("time-pos")?.takeIf { it > 0 }?.let { pendingSeekPosition = it }
+    Log.i(TAG, "Single-dub QOM recovery: fresh ddbb re-resolve for kp=$kpId")
+    AppDiagnostics.event("single-dub fresh re-resolve kp=$kpId")
+    lifecycleScope.launch(Dispatchers.IO) {
+      DdbbStreamResolver.evictResolveCache(kpId)
+      val fresh = runCatching { DdbbStreamResolver.resolveMovieStream(kpId) }.getOrNull()
+      withContext(Dispatchers.Main) {
+        if (isFinishing || isDestroyed) return@withContext
+        val url = fresh?.url?.takeIf { it.isNotBlank() }
+        if (url == null || url == currentPlayingUrl) {
+          Log.w(TAG, "Single-dub fresh re-resolve yielded nothing new")
+          finishStreamLoadIndicator()
+          showStreamLoadError(streamLoadErrorMessage(slowStart = slowStart))
+          return@withContext
+        }
+        val ladder = fresh.qualities.ifEmpty { mapOf("Auto" to url) }
+        val stream = AnimeMediaStream(url = url, qualities = ladder, headers = fresh.headers)
+        qomActiveStream = stream
+        currentAnimeStream = stream
+        currentPlayingUrl = url
+        applyHttpHeaders(fresh.headers)
+        viewModel.setAnimeData(emptyList(), translations, null, track.translationId, ladder, "Auto")
+        updateAutoRungHint(ladder, url)
+        startAutoQualityWatchdog()
+        beginTrackedStreamLoad(retry = {
+          applyHttpHeaders(fresh.headers)
+          mpvLoadFile(url, "replace")
+        })
+        mpvLoadFile(url, "replace")
+      }
+    }
+    return true
+  }
+
+  /**
    * Late voiceover merge: the losing provider answered after playback already started. Only
    * GROWS the dropdown (never reshuffles rows mid-playback) and keeps the current dub and
    * quality; the QOM selection callback reads the live list, so new rows are switchable at once.
@@ -2466,7 +2521,8 @@ class PlayerActivity :
     rememberedId?.let { trId ->
       context.candidates.firstOrNull { it.translationId == trId }?.let { dub ->
         recordPlaybackUsage(
-          if (context.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
+          translations.firstOrNull { it.translationId == trId }?.source
+            ?: if (context.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
           dub.translationTitle ?: trId,
           dubMemoryMediaKey(context.kinopoiskId)
         )
@@ -2581,7 +2637,9 @@ class PlayerActivity :
       if (trId == viewModel.currentAnimeTranslationId.value) return@translationSelected
       activeContext.candidates.firstOrNull { it.translationId == trId }?.let { dub ->
         recordPlaybackUsage(
-          if (activeContext.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
+          seriesTranslationsFor(activeContext, activeContext.currentEpisode)
+            .firstOrNull { it.translationId == trId }?.source
+            ?: if (activeContext.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
           dub.translationTitle ?: trId,
           dubMemoryMediaKey(activeContext.kinopoiskId)
         )
@@ -2746,6 +2804,7 @@ class PlayerActivity :
           .takeIf { it > 0 }
           ?.let { DdbbStreamResolver.evictResolveCache(it) }
         if (tryAlternativeQomSource()) return@launch
+        if (retryQomSingleDubFreshResolve(slowStart = true)) return@launch
         if (lastStreamLoadRetry == null) {
           // ANIME-launch path не трекает загрузку — «Повторить» реплеит текущий url.
           lastStreamLoadRetry = {
@@ -2807,6 +2866,7 @@ class PlayerActivity :
   private fun resetStreamLoadRetries() {
     streamLoadRetries = 0
     autoSlowStartStepped = false
+    qomFreshResolveAttempts = 0
   }
 
   /** Clears the stream-loading overlay (file loaded, or switch failed). */
@@ -2836,8 +2896,9 @@ class PlayerActivity :
         }
       }
       .map { dub ->
-        // DIRECT (ddbb/turbo) series catalogs must surface as DDBB rows — hardcoding KODIK
-        // put every turbo dub under the wrong source chip ("у сериалов вся озвучка Kodik").
+        // DIRECT series catalogs carry the concrete provider per dub (Turbo/HDRezka/…,
+        // from the source-namespaced dubId) — a blanket DDBB put every dub under one
+        // chip, while hardcoding KODIK did the same for Kodik ("у сериалов вся озвучка Kodik").
         // splitDubTrack also strips "(субтитры)"/Original markers into proper types.
         val rawTitle = dub.translationTitle ?: dub.translationId.orEmpty()
         val (dubTitle, kind) = MovieNativeLauncher.splitDubTrack(rawTitle)
@@ -2853,7 +2914,9 @@ class PlayerActivity :
           }
         } else null
         FlatTranslation(
-          source = if (context.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
+          source = if (context.isDirectSource)
+            hd.kinoshka.app.data.source.PlaybackSources.animeSourceTypeForDubId(dub.translationId.orEmpty())
+          else AnimeSourceType.KODIK,
           translationId = dub.translationId ?: rawTitle,
           title = if (rawTitle.isBlank()) "Озвучка" else dubTitle,
           type = kind,
@@ -3882,6 +3945,10 @@ class PlayerActivity :
         streamLoadRetryAction = null
         streamLoadRetries = 0
         finishStreamLoadIndicator()
+        // A slow-start timeout may have already raised the error card while the file was
+        // still opening (live: Джентльмены — timeout at 15s, FILE_LOADED at 18s). The stream
+        // is playing now, so the card must go instead of hanging over the video.
+        viewModel.setPendingResolveError(null)
         viewModel.setPropertyPollingEnabled(true)
         startSegmentSkipGuard()
         handleFileLoaded()
@@ -3943,6 +4010,7 @@ class PlayerActivity :
       // Same-target retries are spent: another dub/provider is the next thing to try before
       // giving up — a dead CDN must not end in an error card while alternatives are untried.
       if (tryAlternativeQomSource()) return
+      if (retryQomSingleDubFreshResolve(slowStart = false)) return
       finishStreamLoadIndicator()
       showStreamLoadError(streamLoadErrorMessage(slowStart = false))
     }
@@ -5105,16 +5173,20 @@ class PlayerActivity :
     val isNoSheetOpen = viewModel.sheetShown.value == Sheets.None
 
     when (keyCode) {
-      KeyEvent.KEYCODE_DPAD_UP -> {
-        return super.onKeyDown(keyCode, event)
-      }
-
+      KeyEvent.KEYCODE_DPAD_UP,
       KeyEvent.KEYCODE_DPAD_DOWN,
       KeyEvent.KEYCODE_DPAD_RIGHT,
       KeyEvent.KEYCODE_DPAD_LEFT,
         -> {
         if (isTrackSheetOpen) {
           return super.onKeyDown(keyCode, event)
+        }
+
+        // ТВ-пульт: вслепую ничего не жмём и фокус не двигаем —
+        // первое нажатие только показывает интерфейс плеера.
+        if (!viewModel.controlsShown.value) {
+          viewModel.showControls()
+          return true
         }
 
         if (isNoSheetOpen) {
@@ -5136,6 +5208,11 @@ class PlayerActivity :
       KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
         if (isTrackSheetOpen) {
           return super.onKeyDown(keyCode, event)
+        }
+        // ТВ-пульт: ОК при скрытом интерфейсе показывает его, а не кликает в пустоту.
+        if (!viewModel.controlsShown.value) {
+          viewModel.showControls()
+          return true
         }
         return super.onKeyDown(keyCode, event)
       }

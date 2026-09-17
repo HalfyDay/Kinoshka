@@ -32,6 +32,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -65,7 +66,6 @@ import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -80,6 +80,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -174,6 +176,12 @@ fun PlayerControls(
   val showSystemNavigationBar by playerPreferences.showSystemNavigationBar.collectAsState()
   val interactionSource = remember { MutableInteractionSource() }
   val controlsShown by viewModel.controlsShown.collectAsState()
+  // ТВ-пульт: стартовый фокус интерфейса — кнопка play/pause, иначе D-pad
+  // при показанных контролах кликает в пустоту и фокуса не видно.
+  val playPauseFocus = remember { FocusRequester() }
+  LaunchedEffect(controlsShown) {
+    if (controlsShown) runCatching { playPauseFocus.requestFocus() }
+  }
   val areControlsLocked by viewModel.areControlsLocked.collectAsState()
   val seekBarShown by viewModel.seekBarShown.collectAsState()
   val pausedForCache by MPVLib.propBoolean["paused-for-cache"].collectAsState()
@@ -883,6 +891,13 @@ fun PlayerControls(
           val showLoadingCircle by playerPreferences.showLoadingCircle.collectAsState()
           val icon = AnimatedImageVector.animatedVectorResource(R.drawable.anim_play_to_pause)
           val interaction = remember { MutableInteractionSource() }
+          // ТВ-пульт: фокус транспортных кнопок — явной круглой заливкой
+          // вместо риппла (см. ControlsButton): детерминированно и uniform.
+          val playFocused by interaction.collectIsFocusedAsState()
+          val prevInteraction = remember { MutableInteractionSource() }
+          val prevFocused by prevInteraction.collectIsFocusedAsState()
+          val nextInteraction = remember { MutableInteractionSource() }
+          val nextFocused by nextInteraction.collectIsFocusedAsState()
 
           when {
             pausedForCache == true && showLoadingCircle -> {
@@ -919,6 +934,8 @@ fun PlayerControls(
                         .size(56.dp)
                         .clip(CircleShape)
                         .clickable(
+                          interactionSource = prevInteraction,
+                          indication = null,
                           enabled = canPlayPrevious,
                           onClick = {
                             resetControlsTimestamp = System.currentTimeMillis()
@@ -934,12 +951,19 @@ fun PlayerControls(
                         ),
                     shape = CircleShape,
                     color =
-                      if (!hideBackground) {
+                      if (prevFocused) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
+                      } else if (!hideBackground) {
                         MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f)
                       } else {
                         Color.Transparent
                       },
-                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    contentColor =
+                      if (prevFocused) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                      } else {
+                        MaterialTheme.colorScheme.onSurface
+                      },
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp,
                     border = null,
@@ -948,7 +972,9 @@ fun PlayerControls(
                       imageVector = Icons.Default.SkipPrevious,
                       contentDescription = "Previous",
                       tint =
-                        if (canPlayPrevious) {
+                        if (prevFocused) {
+                          MaterialTheme.colorScheme.onPrimaryContainer
+                        } else if (canPlayPrevious) {
                           if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface
                         } else {
                           if (hideBackground) {
@@ -968,10 +994,15 @@ fun PlayerControls(
                       Modifier
                         .size(64.dp)
                         .clip(CircleShape)
-                        .clickable(interaction, ripple(), onClick = {
-                          resetControlsTimestamp = System.currentTimeMillis()
-                          viewModel.pauseUnpause()
-                        })
+                        .focusRequester(playPauseFocus)
+                        .clickable(
+                          interactionSource = interaction,
+                          indication = null,
+                          onClick = {
+                            resetControlsTimestamp = System.currentTimeMillis()
+                            viewModel.pauseUnpause()
+                          },
+                        )
                         .then(
                           if (hideBackground) {
                             Modifier.background(brush = buttonShadow, shape = CircleShape)
@@ -981,12 +1012,21 @@ fun PlayerControls(
                         ),
                     shape = CircleShape,
                     color =
-                      if (!hideBackground) {
+                      if (playFocused) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
+                      } else if (!hideBackground) {
                         MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f)
                       } else {
                         Color.Transparent
                       },
-                    contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
+                    contentColor =
+                      if (playFocused) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                      } else if (hideBackground) {
+                        controlColor
+                      } else {
+                        MaterialTheme.colorScheme.onSurface
+                      },
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp,
                     border = null,
@@ -1007,6 +1047,8 @@ fun PlayerControls(
                         .size(56.dp)
                         .clip(CircleShape)
                         .clickable(
+                          interactionSource = nextInteraction,
+                          indication = null,
                           enabled = canPlayNext,
                           onClick = {
                             resetControlsTimestamp = System.currentTimeMillis()
@@ -1022,12 +1064,19 @@ fun PlayerControls(
                         ),
                     shape = CircleShape,
                     color =
-                      if (!hideBackground) {
+                      if (nextFocused) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
+                      } else if (!hideBackground) {
                         MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f)
                       } else {
                         Color.Transparent
                       },
-                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    contentColor =
+                      if (nextFocused) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                      } else {
+                        MaterialTheme.colorScheme.onSurface
+                      },
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp,
                     border = null,
@@ -1036,7 +1085,9 @@ fun PlayerControls(
                       imageVector = Icons.Default.SkipNext,
                       contentDescription = "Next",
                       tint =
-                        if (canPlayNext) {
+                        if (nextFocused) {
+                          MaterialTheme.colorScheme.onPrimaryContainer
+                        } else if (canPlayNext) {
                           if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface
                         } else {
                           if (hideBackground) {
@@ -1057,10 +1108,15 @@ fun PlayerControls(
                     Modifier
                       .size(64.dp)
                       .clip(CircleShape)
-                      .clickable(interaction, ripple(), onClick = {
-                        resetControlsTimestamp = System.currentTimeMillis()
-                        viewModel.pauseUnpause()
-                      })
+                      .focusRequester(playPauseFocus)
+                      .clickable(
+                        interactionSource = interaction,
+                        indication = null,
+                        onClick = {
+                          resetControlsTimestamp = System.currentTimeMillis()
+                          viewModel.pauseUnpause()
+                        },
+                      )
                       .then(
                         if (hideBackground) {
                           Modifier.background(brush = buttonShadow, shape = CircleShape)
@@ -1069,23 +1125,32 @@ fun PlayerControls(
                         },
                       ),
                   shape = CircleShape,
-                  color =
-                    if (!hideBackground) {
-                      MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f)
-                    } else {
-                      Color.Transparent
-                    },
-                  contentColor = if (hideBackground) controlColor else MaterialTheme.colorScheme.onSurface,
-                  tonalElevation = 0.dp,
-                  shadowElevation = 0.dp,
-                  border = null,
-                ) {
-                  Image(
-                    painter = rememberAnimatedVectorPainter(icon, paused == false),
-                    modifier = Modifier
-                      .fillMaxSize()
-                      .padding(MaterialTheme.spacing.medium),
-                    contentDescription = null,
+                    color =
+                      if (playFocused) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
+                      } else if (!hideBackground) {
+                        MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f)
+                      } else {
+                        Color.Transparent
+                      },
+                    contentColor =
+                      if (playFocused) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                      } else if (hideBackground) {
+                        controlColor
+                      } else {
+                        MaterialTheme.colorScheme.onSurface
+                      },
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
+                    border = null,
+                  ) {
+                    Image(
+                      painter = rememberAnimatedVectorPainter(icon, paused == false),
+                      modifier = Modifier
+                        .fillMaxSize()
+                        .padding(MaterialTheme.spacing.medium),
+                      contentDescription = null,
                     colorFilter = ColorFilter.tint(LocalContentColor.current),
                   )
                 }
