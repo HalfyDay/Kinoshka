@@ -394,8 +394,10 @@ object MovieNativeLauncher {
         val ladderSummary = rows.joinToString { row ->
             "${row.source.name}:${row.title.take(24)}=${streams[row.translationId]?.qualities?.keys?.joinToString("/") ?: "lazy"}"
         }
-        KLog.i(TAG, "readyQualityMovie: rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), kp=$kinopoiskId, ladders: $ladderSummary")
-        hd.kinoshka.app.data.diagnostics.SharedDiag.event("prepared rows=${rows.size} (ddbb=${rows.count { it.source == AnimeSourceType.DDBB }}, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), ladders: $ladderSummary".take(380))
+        val directSummary = rows.filter { it.source != AnimeSourceType.KODIK }.groupBy { it.source.name }
+            .entries.joinToString { (name, list) -> "$name=${list.size}" }
+        KLog.i(TAG, "readyQualityMovie: rows=${rows.size} (direct: $directSummary, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), kp=$kinopoiskId, ladders: $ladderSummary")
+        hd.kinoshka.app.data.diagnostics.SharedDiag.event("prepared rows=${rows.size} (direct: $directSummary, kodik=${rows.count { it.source == AnimeSourceType.KODIK }}), ladders: $ladderSummary".take(380))
         NativeLaunchPayload.QualityOnlyMovie(initial, orderedRows, streams)
     }
 
@@ -501,9 +503,14 @@ object MovieNativeLauncher {
 
         // Fresh inputs pass the classifier BEFORE dedup so "Original"/"…Subt" rows from
         // different providers collapse into one relabeled row instead of competing as dubs.
+        // Each row carries its winning provider (Turbo/HDRezka/…) — a blanket DDBB used to
+        // label every movie row in the player's dropdown.
         val ddbbRows = relabelDubTracks(ddbbStream?.translations.orEmpty().map { (title, url) ->
+            val provider = ddbbStream?.translationSources?.get(title)
+                ?.let { hd.kinoshka.app.data.source.PlaybackSources.animeSourceTypeFor(it) }
+                ?: AnimeSourceType.DDBB
             FlatTranslation(
-                source = AnimeSourceType.DDBB,
+                source = provider,
                 translationId = title,
                 title = title,
                 episodes = listOf(AnimeEpisode(number = 1, title = title, link = url))

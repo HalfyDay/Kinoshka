@@ -42,6 +42,7 @@ object PlaybackSources {
     const val VOIDBOOST = "VOIDBOOST"
     const val ALLOHA = "ALLOHA"
     const val VEOVEO = "VEOVEO"
+    const val HDREZKA = "HDREZKA"
 
     const val HENTAI_ALLHENTAI = "HENTAI_ALLHENTAI"
     const val HENTAI_HENTAIDREAM = "HENTAI_HENTAIDREAM"
@@ -89,32 +90,37 @@ object PlaybackSources {
         PlaybackSourceInfo(
             TURBO, "Turbo",
             "Прямые ссылки Turbo (ddbb): MP4 до 1080p, много озвучек",
-            setOf(SourceCategory.FILMS)
+            setOf(SourceCategory.FILMS), animeSourceType = AnimeSourceType.TURBO
         ),
         PlaybackSourceInfo(
             VIDEOCDN, "VideoCDN",
             "Каталог VideoCDN: фильмы и сериалы по kinopoisk id",
-            setOf(SourceCategory.FILMS)
+            setOf(SourceCategory.FILMS), animeSourceType = AnimeSourceType.VIDEOCDN
         ),
         PlaybackSourceInfo(
             COLLAPS, "Collaps",
             "Встраиваемый плеер Collaps: HLS на серию/фильм",
-            setOf(SourceCategory.FILMS)
+            setOf(SourceCategory.FILMS), animeSourceType = AnimeSourceType.COLLAPS
         ),
         PlaybackSourceInfo(
             VOIDBOOST, "Voidboost",
             "Бэкенд Rezka: озвучки Voidboost",
-            setOf(SourceCategory.FILMS)
+            setOf(SourceCategory.FILMS), animeSourceType = AnimeSourceType.VOIDBOOST
         ),
         PlaybackSourceInfo(
             ALLOHA, "Alloha",
-            "Прямые ссылки Alloha (ddbb)",
+            "Alloha (ddbb): iframe-плеер, только веб-режим",
             setOf(SourceCategory.FILMS)
         ),
         PlaybackSourceInfo(
             VEOVEO, "Veoveo",
-            "Прямые ссылки Veoveo (ddbb)",
+            "Veoveo (ddbb): iframe-плеер, только веб-режим",
             setOf(SourceCategory.FILMS)
+        ),
+        PlaybackSourceInfo(
+            HDREZKA, "HDRezka",
+            "Прямые ссылки HDRezka: фильмы и сериалы, много озвучек",
+            setOf(SourceCategory.FILMS), animeSourceType = AnimeSourceType.HDREZKA
         ),
         PlaybackSourceInfo(
             HENTAI_ALLHENTAI, "AllHentai",
@@ -148,7 +154,7 @@ object PlaybackSources {
 
     /** Источники кино-страницы выбора: Kodik + все прямые. */
     val MOVIE_IDS: List<String> =
-        listOf(KODIK, TURBO, VIDEOCDN, COLLAPS, VOIDBOOST, ALLOHA, VEOVEO)
+        listOf(KODIK, HDREZKA, TURBO, VIDEOCDN, COLLAPS, VOIDBOOST, ALLOHA, VEOVEO)
 
     val ADULT_IDS: List<String> = listOf(
         HENTAI_ALLHENTAI, HENTAI_HENTAIDREAM, HENTAI_HENTAIZ, HENTAI_HANIME1, HENTAI_OPPAI
@@ -213,6 +219,7 @@ object PlaybackSources {
         "voidboost" -> VOIDBOOST
         "alloha" -> ALLOHA
         "veoveo" -> VEOVEO
+        "hdrezka" -> HDREZKA
         "kodik" -> KODIK
         else -> null
     }
@@ -221,5 +228,44 @@ object PlaybackSources {
     fun idToDdbbSourceName(id: String): String = when (canonical(id)) {
         VIDEOCDN -> "videocdn"
         else -> canonical(id).lowercase()
+    }
+
+    /**
+     * Тип строки плеера для id реестра кино-источника: прямые провайдеры несут свой
+     * собственный тип (Turbo/HDRezka/VideoCDN/Collaps/Voidboost), а не общий DDBB —
+     * иначе в дропдауне озвучек плеера все строки кино помечены «DDBB» (как у аниме
+     * каждая строка несёт свой источник). Неизвестные id → [AnimeSourceType.DDBB].
+     */
+    fun animeSourceTypeFor(id: String): AnimeSourceType {
+        if (CustomSource.isCustomId(id)) return AnimeSourceType.CUSTOM
+        return info(id)?.animeSourceType
+            ?: runCatching { AnimeSourceType.valueOf(canonical(id)) }.getOrDefault(AnimeSourceType.DDBB)
+    }
+
+    /**
+     * Тип строки плеера по сырому dubId прямого каталога. DubId уже несут пространство
+     * имён провайдера (turbo|…, videocdn|…, voidboost|…, hdrezka, collaps) — см. продюсеры
+     * [DdbbStreamResolver]/[WebmasterStreamSources]/[HdrezkaApi]. Без префикса → DDBB.
+     */
+    fun animeSourceTypeForDubId(dubId: String): AnimeSourceType {
+        val lower = dubId.trim().lowercase()
+        return when {
+            lower == "hdrezka" || lower == "collaps" -> animeSourceTypeFor(lower)
+            lower.startsWith("turbo|") -> AnimeSourceType.TURBO
+            lower.startsWith("videocdn|") -> AnimeSourceType.VIDEOCDN
+            lower.startsWith("voidboost|") -> AnimeSourceType.VOIDBOOST
+            lower.startsWith("custom|") -> AnimeSourceType.CUSTOM
+            else -> AnimeSourceType.DDBB
+        }
+    }
+
+    /** «1 источник», «3 источника», «8 источников» — подпись строки озвучки кино-пикера. */
+    fun sourcesCountLabel(count: Int): String {
+        val word = when {
+            count % 10 == 1 && count % 100 != 11 -> "источник"
+            count % 10 in 2..4 && (count % 100 < 12 || count % 100 > 14) -> "источника"
+            else -> "источников"
+        }
+        return "$count $word"
     }
 }

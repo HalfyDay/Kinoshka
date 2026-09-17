@@ -1875,6 +1875,17 @@ enum class HentaiProvider(
     );
 }
 
+/** Id источника в реестре [PlaybackSources] для экрана «Источники» и выключателей. */
+fun HentaiProvider.playbackSourceId(): String = when (this) {
+    HentaiProvider.ALLHENTAI -> PlaybackSources.HENTAI_ALLHENTAI
+    HentaiProvider.HENTAIDREAM -> PlaybackSources.HENTAI_HENTAIDREAM
+    HentaiProvider.ANISTAR -> PlaybackSources.ANISTAR
+    HentaiProvider.HENTAIZ -> PlaybackSources.HENTAI_HENTAIZ
+    HentaiProvider.HANIME1 -> PlaybackSources.HENTAI_HANIME1
+    HentaiProvider.SMARTHARD -> PlaybackSources.SMARTHARD
+    HentaiProvider.OPPAI -> PlaybackSources.HENTAI_OPPAI
+}
+
 /** Источник строки хентая для шита озвучек плеера: реальное имя провайдера, а не «Kodik». */
 fun HentaiProvider.toAnimeSourceType(): hd.kinoshka.app.data.model.AnimeSourceType =
     when (this) {

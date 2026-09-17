@@ -109,6 +109,10 @@ object WebmasterStreamSources {
      *  serving host (voidboost ladder iframes) need the final URL, not the requested one. */
     private fun fetchHtmlTracked(url: String, referer: String?, depth: Int = 0): Pair<String, String>? {
         val host = runCatching { java.net.URI(url).host }.getOrNull() ?: url.take(60)
+        if (host.contains('.') && HostCooldown.shouldSkip(host)) {
+            KLog.i(TAG, "fetch $host skipped (cooldown)")
+            return null
+        }
         return try {
             redirectlessClient.newCall(buildGet(url, referer)).execute().use { response ->
                 when {
@@ -136,11 +140,14 @@ object WebmasterStreamSources {
                         KLog.w(TAG, "fetch $host: HTTP ${response.code}")
                         null
                     }
-                    else -> response.body.string().takeIf { it.isNotEmpty() }?.let { url to it }
+                    else -> response.body.string().takeIf { it.isNotEmpty() }?.also {
+                        if (host.contains('.')) HostCooldown.recordSuccess(host)
+                    }?.let { url to it }
                 }
             }
         } catch (e: Exception) {
             KLog.w(TAG, "fetch $host: ${e.javaClass.simpleName}: ${e.message?.take(140)}")
+            if (host.contains('.') && HostCooldown.isConnectivityFailure(e)) HostCooldown.recordFailure(host)
             null
         }
     }
@@ -170,9 +177,13 @@ object WebmasterStreamSources {
             if (kinopoiskId <= 0) return@withContext null
             for ((base, param, token) in VIDEOCDN_APIS) {
                 // Kind is unknown at this layer (the resolver interface carries only the id),
-                // so both endpoints are queried — two cheap JSON calls.
-                val row = videocdnRow(base, param, token, "movies", kinopoiskId)
-                    ?: videocdnRow(base, param, token, "tv", kinopoiskId)
+                // so both endpoints are queried — two cheap JSON calls, in parallel: на мёртвой
+                // сети последовательные 6-секундные таймауты складывались в 24 c.
+                val row = coroutineScope {
+                    val movies = async { videocdnRow(base, param, token, "movies", kinopoiskId) }
+                    val tv = async { videocdnRow(base, param, token, "tv", kinopoiskId) }
+                    movies.await() ?: tv.await()
+                }
                 if (row == null) continue
                 val iframeSrc = row.optString("iframe_src").trim()
                 if (iframeSrc.isEmpty()) continue

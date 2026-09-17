@@ -167,8 +167,79 @@ class DdbbStreamResolverTest {
     }
 
     @Test
+    fun `translationSources attributes each dub row to its winning parse`() {
+        val turbo = parse(
+            "Turbo", "https://t/a1080.mp4", mapOf("Referer" to "https://t/"),
+            voiceRows = listOf("Дубляж" to "https://t/a1080.mp4", "МVO" to "https://t/b.mp4")
+        )
+        val collaps = parse(
+            "Collaps", "https://c/m.m3u8", mapOf("Referer" to "https://c/"),
+            voiceRows = listOf("Дубляж" to "https://c/m.m3u8", "Кубик" to "https://c/k.m3u8")
+        )
+        val sources = DdbbStreamResolver.translationSources(listOf(turbo, collaps))
+
+        // First parse wins the shared row — same rule as mergeSourceParses' voiceRows.
+        assertEquals("Turbo", sources["Дубляж"])
+        assertEquals("Turbo", sources["МVO"])
+        assertEquals("Collaps", sources["Кубик"])
+    }
+
+    @Test
     fun `sourceRank orders turbo then webmaster trio then the rest`() {
         val names = listOf("Veoveo", "Voidboost", "Collaps", "Alloha", "VideoCDN", "Turbo")
         assertEquals(listOf("Turbo", "VideoCDN", "Collaps", "Voidboost", "Veoveo", "Alloha"), names.sortedBy { DdbbStreamResolver.sourceRank(it) })
+    }
+
+    // --- ddbb Collaps embeds (used to be dropped as "no stream extracted") ---
+
+    @Test
+    fun `turboBlob finds player blob`() {
+        val blob = obfuscate(sampleConfig())
+        val html = """<html><script>new Player("$blob");</script></html>"""
+        assertEquals(blob, DdbbStreamResolver.turboBlob(html))
+        assertNull(DdbbStreamResolver.turboBlob("<html>no player here</html>"))
+    }
+
+    @Test
+    fun `collaps movie embed becomes one dub row`() {
+        val html = "makePlayer({title:\"Фильм\"," +
+            "source:{hls:\"https://c/master.m3u8\",audio:{names:[\"Многоголосый\"]}}});"
+        val parse = DdbbStreamResolver.collapsEmbedParse(
+            "collaps", emptyMap(), mapOf("Auto" to "https://c/master.m3u8"), html
+        )!!
+        assertEquals("Collaps", parse.sourceName)
+        assertEquals("https://c/master.m3u8", parse.url)
+        assertEquals(listOf("Многоголосый" to "https://c/master.m3u8"), parse.voiceRows)
+        assertTrue(parse.tracks.isEmpty())
+    }
+
+    @Test
+    fun `collaps series embed becomes episode tracks`() {
+        val html = "makePlayer({title:\"Шоу\",playlist:{seasons:[{season:1,episodes:[" +
+            "{episode:1,hls:\"https://c/e1.m3u8\",title:\"Начало\",audio:{names:[\"Дубляж\"]}}," +
+            "{episode:2,hls:\"https://c/e2.m3u8\",audio:{names:[\"Дубляж\"]}}]}]}}});"
+        val parse = DdbbStreamResolver.collapsEmbedParse(
+            "collaps", emptyMap(), mapOf("Auto" to "https://c/e1.m3u8"), html
+        )!!
+        assertEquals(2, parse.tracks.size)
+        assertEquals("Дубляж", parse.tracks[0].dubTitle)
+        assertEquals(1, parse.tracks[0].seasonNumber)
+        assertEquals(2, parse.tracks[1].episodeNumber)
+        assertEquals("https://c/e1.m3u8", parse.url)
+        assertTrue(parse.voiceRows.isEmpty())
+    }
+
+    @Test
+    fun `collaps embed without makePlayer exposes raw hls row`() {
+        val html = """<html><script>var opts = { src: { hls: "https://cdn.example/v.m3u8" } };</script></html>"""
+        val parse = DdbbStreamResolver.collapsEmbedParse(
+            "collaps", emptyMap(), mapOf("Auto" to "https://cdn.example/v.m3u8"), html
+        )!!
+        assertEquals(listOf("Collaps" to "https://cdn.example/v.m3u8"), parse.voiceRows)
+    }
+
+    @Test
+    fun `collaps embed parse rejects empty qualities`() {
+        assertNull(DdbbStreamResolver.collapsEmbedParse("collaps", emptyMap(), emptyMap(), "<html></html>"))
     }
 }

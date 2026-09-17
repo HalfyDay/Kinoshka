@@ -34,6 +34,8 @@ object StreamProxyConfig {
     private val PROXIED_HOST_SUFFIXES = listOf(
         // вебмастер-источники
         "delivembd.ws", "voidboost.net", "voidboost.cc", "svetacdn.in", "cdnmovies.net",
+        // HDRezka (сайт, ajax и CDN signed-ссылок) + её CDN-хосты
+        "rezka.ag", "hdrezka.ag", "voidboost.one",
         // хентай-каталоги
         "allhentai.fun", "freeanimehentai.net", "hanime.tv", "hanime1.me", "hentaidream.fun",
         "oppai.stream", "hentaiiz.org",

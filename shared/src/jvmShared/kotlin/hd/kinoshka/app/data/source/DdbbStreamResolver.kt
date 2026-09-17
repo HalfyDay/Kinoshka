@@ -165,10 +165,11 @@ object DdbbStreamResolver {
      *  webmaster API trio, then ddbb's single-stream embeds. Public for unit tests. */
     fun sourceRank(sourceName: String): Int = when {
         sourceName.equals("turbo", ignoreCase = true) -> 0
-        sourceName.equals("videocdn", ignoreCase = true) -> 1
-        sourceName.equals("collaps", ignoreCase = true) -> 2
-        sourceName.equals("voidboost", ignoreCase = true) -> 3
-        else -> 4
+        sourceName.equals("hdrezka", ignoreCase = true) -> 1
+        sourceName.equals("videocdn", ignoreCase = true) -> 2
+        sourceName.equals("collaps", ignoreCase = true) -> 3
+        sourceName.equals("voidboost", ignoreCase = true) -> 4
+        else -> 5
     }
 
     /**
@@ -304,10 +305,16 @@ object DdbbStreamResolver {
         val lowerType = type.lowercase()
         val (headers, qualities) = extractFromEmbed(html, iframeUrl) ?: return null
         if (qualities.isEmpty()) return null
+        // Non-turbo embeds (Collaps/Venom HLS) carry no per-dub blob: build their rows from
+        // the makePlayer config instead of dropping the extracted stream — previously this
+        // branch fell into "no stream extracted" and the source never appeared in the picker.
+        if (lowerType != "turbo") {
+            return collapsEmbedParse(type, headers, qualities, html)
+        }
         // extractTurboTracks must receive the obfuscated config blob, not the whole embed page:
         // findTurboWindow scans a short base64 prefix, and feeding it the full HTML made the
         // window search fail → voiceover list silently empty.
-        val turboBlob = if (lowerType == "turbo") TURBO_BLOB_REGEX.find(html)?.groupValues?.get(1) else null
+        val turboBlob = turboBlob(html)
         // Single decode feeds both consumers: flat dub rows for the movie dropdown and
         // structured dub×episode rows for series playback.
         val turboEntries = turboBlob?.let { extractTurboEntries(it) }.orEmpty()

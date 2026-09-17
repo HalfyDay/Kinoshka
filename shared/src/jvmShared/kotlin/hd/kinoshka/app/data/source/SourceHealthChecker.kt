@@ -38,7 +38,8 @@ object SourceHealthChecker {
      *  важен сам факт ответа API. */
     private const val PROBE_SHIKIMORI_ID = 1
 
-    const val DEFAULT_TIMEOUT_MS = 12_000L
+    // Turbo/Collaps-пробы тянут embed-страницу вслед за списком плееров — 12 с впритык.
+    const val DEFAULT_TIMEOUT_MS = 20_000L
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -134,26 +135,58 @@ object SourceHealthChecker {
             val records = SmarthardApi.loadRecords(PROBE_SHIKIMORI_ID)
             true to if (records.isEmpty()) "API отвечает (записей нет)" else "OK: записей ${records.size}"
         }
-        PlaybackSources.TURBO, PlaybackSources.ALLOHA,
-        PlaybackSources.VEOVEO, PlaybackSources.COLLAPS -> {
-            // ddbb-эмбеды и стендалон-Collaps делят имя: проверяем оба пути.
+        PlaybackSources.TURBO -> {
+            // Зелёный — только когда embed реально разбирается в потоки, а не просто
+            // присутствует в списке: раньше наличие типа красило источник в зелёный,
+            // хотя нативный резолв ничего из него не извлекал.
             val players = DdbbStreamResolver.fetchPlayersSnapshot(PROBE_KINOPOISK_ID)
-            if (players.isEmpty()) {
-                if (id == PlaybackSources.COLLAPS) probeCollapsDirect()
-                else false to "Список плееров пуст"
-            } else {
-                val hasType = players.any { it.first.equals(PlaybackSources.idToDdbbSourceName(id), ignoreCase = true) }
-                when {
-                    hasType -> true to "OK: ${players.size} плееров"
-                    id == PlaybackSources.COLLAPS -> probeCollapsDirect()
-                    else -> true to "ddbb отвечает, типа ${id.lowercase()} нет (${players.map { it.first }})"
-                }
+            if (players.isEmpty()) return false to "Список плееров пуст"
+            val iframe = players.firstOrNull { it.first.equals("turbo", ignoreCase = true) }?.second
+            if (iframe.isNullOrEmpty() || !iframe.startsWith("http")) return false to "ddbb отвечает, turbo нет"
+            val html = ddbbEmbedHtml(iframe) ?: return false to "Embed не загрузился"
+            val blob = DdbbStreamResolver.turboBlob(html) ?: return false to "Плеер без конфига"
+            val qualities = DdbbStreamResolver.extractTurboQualities(blob)
+            if (qualities.isNotEmpty()) true to "OK: конфиг разбирается (${qualities.size} качеств)"
+            else false to "Конфиг не разобрался"
+        }
+        PlaybackSources.ALLOHA, PlaybackSources.VEOVEO -> {
+            // Нативного экстрактора для этих iframe нет — они играют только через веб-плеер
+            // (режим DDBB). Зелёный означает «в списке и embed отвечает», а не «есть прямые ссылки».
+            val want = PlaybackSources.idToDdbbSourceName(id)
+            val players = DdbbStreamResolver.fetchPlayersSnapshot(PROBE_KINOPOISK_ID)
+            if (players.isEmpty()) return false to "Список плееров пуст"
+            val iframe = players.firstOrNull { it.first.equals(want, ignoreCase = true) }?.second
+            if (iframe.isNullOrEmpty() || !iframe.startsWith("http")) return false to "ddbb отвечает, типа $want нет"
+            if (ddbbEmbedHtml(iframe) != null) true to "В списке ddbb (только веб-плеер)"
+            else false to "Embed не загрузился"
+        }
+        PlaybackSources.COLLAPS -> {
+            // ddbb-embed и стендалон — два независимых пути с одним именем: жив любой — зелёный.
+            val players = DdbbStreamResolver.fetchPlayersSnapshot(PROBE_KINOPOISK_ID)
+            val iframe = players.firstOrNull { it.first.equals("collaps", ignoreCase = true) }?.second
+            val ddbbOk = !iframe.isNullOrEmpty() && iframe.startsWith("http") &&
+                ddbbEmbedHtml(iframe)?.let {
+                    runCatching { WebmasterStreamSources.parseCollapsMakePlayer(it) }.getOrNull()
+                } != null
+            val (directOk, directMsg) = probeCollapsDirect()
+            when {
+                ddbbOk && directOk -> true to "OK: ddbb-embed + стендалон ($directMsg)"
+                ddbbOk -> true to "OK: ddbb-embed разбирается"
+                directOk -> true to "OK (стендалон): $directMsg"
+                players.isEmpty() -> false to "ddbb пуст и стендалон молчит"
+                else -> false to "ddbb и стендалон не ответили"
             }
         }
         PlaybackSources.VIDEOCDN -> {
             val parse = WebmasterStreamSources.resolveVideoCdn(PROBE_KINOPOISK_ID)
             if (parse != null) true to "OK: ${parse.voiceRows.size} озвучек, ${parse.tracks.size} серий"
             else false to "Ничего не найдено для kp=$PROBE_KINOPOISK_ID"
+        }
+        PlaybackSources.HDREZKA -> {
+            // Поиск без kp: проба — «Матрица», tajtl обязан найтись с годом 1999.
+            val hits = HdrezkaApi.searchTitles("матрица")
+            if (hits.isNotEmpty()) true to "OK: поиск отвечает (${hits.size})"
+            else false to "Поиск ничего не нашёл"
         }
         PlaybackSources.VOIDBOOST -> {
             val parse = WebmasterStreamSources.resolveVoidboost(PROBE_KINOPOISK_ID)
@@ -259,11 +292,29 @@ object SourceHealthChecker {
         else false to "Нет ответа API"
     }
 
+    /** Стендалон-Collaps: (жив, "N озвучек, M серий"). Сообщение компонует вызывающий. */
     private suspend fun probeCollapsDirect(): Pair<Boolean, String> {
         val parse = WebmasterStreamSources.resolveCollaps(PROBE_KINOPOISK_ID)
-        return if (parse != null) true to "OK (стендалон): ${parse.tracks.size} серий"
-        else false to "ddbb и стендалон не ответили"
+        return if (parse != null) true to "${parse.voiceRows.size} озвучек, ${parse.tracks.size} серий"
+        else false to ""
     }
+
+    /** Embed-страница ddbb-плеера (Turbo/Collaps/Alloha/Veoveo): тем же путём, что резолвер. */
+    private fun ddbbEmbedHtml(url: String): String? = runCatching {
+        val req = Request.Builder().url(url)
+            .addHeader("User-Agent", USER_AGENT)
+            .addHeader("Referer", "https://ddbb.lol/")
+            .build()
+        httpClient.newCall(req).execute().use { response ->
+            if (!response.isSuccessful) {
+                KLog.w(TAG, "ddbb embed ${url.take(60)} -> HTTP ${response.code}")
+                return null
+            }
+            response.body.string().takeIf { it.isNotEmpty() }
+        }
+    }.onFailure {
+        KLog.w(TAG, "ddbb embed fetch failed: ${it.javaClass.simpleName}")
+    }.getOrNull()
 
     private fun probeHttpHost(url: String): Pair<Boolean, String> {
         val code = httpCode(url) ?: return false to "Хост не отвечает"
