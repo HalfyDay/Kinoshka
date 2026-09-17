@@ -3,12 +3,15 @@ package hd.kinoshka.app.ui.screens
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
@@ -18,10 +21,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
@@ -74,6 +84,51 @@ fun KinoSettingsDivider(modifier: Modifier = Modifier) {
         modifier = modifier.padding(horizontal = 16.dp),
         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
     )
+}
+
+/**
+ * Страница настроек с закреплённой шапкой-пилюлей: [SettingsHeaderCard] (и,
+ * опционально, [extraHeader] — например, ряд фильтров) парят ПОВЕРХ контента
+ * без фоновой полосы. Контент занимает весь экран и уходит под пилюлю, поэтому
+ * [content] обязан начинаться с верхнего отступа [topPad] (обычно contentPadding
+ * списка) — иначе первый элемент окажется под шапкой. Обрезка скролла видна
+ * только за самой пилюлей, глухих полос, режущих строки в открытом виде, нет.
+ */
+@Composable
+fun PinnedHeaderPage(
+    title: String,
+    subtitle: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    headerActions: (@Composable () -> Unit)? = null,
+    extraHeader: (@Composable ColumnScope.() -> Unit)? = null,
+    estimatedTopPad: Dp = 120.dp,
+    content: @Composable BoxScope.(topPad: Dp) -> Unit
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+    ) {
+        var headerHPx by remember { mutableStateOf<Int?>(null) }
+        val topPad = headerHPx?.let { with(LocalDensity.current) { it.toDp() } + 10.dp }
+            ?: estimatedTopPad
+        content(topPad)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onSizeChanged { headerHPx = it.height }
+        ) {
+            SettingsHeaderCard(
+                title = title,
+                subtitle = subtitle,
+                onBack = onBack,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                action = headerActions
+            )
+            if (extraHeader != null) extraHeader()
+        }
+    }
 }
 
 /** Строка настройки: иконка primary 24dp в контейнере 56dp, title + summary, опциональный виджет справа. */

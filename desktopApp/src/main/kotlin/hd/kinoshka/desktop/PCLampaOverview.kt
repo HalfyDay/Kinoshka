@@ -23,7 +23,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Close
@@ -64,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.ui.screens.ContentType
+import hd.kinoshka.app.ui.screens.LibraryShelfIcon
 import hd.kinoshka.app.ui.screens.DiscoverCategory
 import hd.kinoshka.app.ui.screens.DiscoverPanel
 import hd.kinoshka.app.ui.screens.HomeUiState
@@ -84,7 +84,7 @@ import java.util.Locale
  */
 enum class LampaNavItem(val label: String, val icon: ImageVector, val isAction: Boolean = false) {
     HOME("Главная", Icons.Filled.Home),
-    LIBRARY("Библиотека", Icons.AutoMirrored.Filled.List),
+    LIBRARY("Библиотека", LibraryShelfIcon),
     FILMS("Фильмы", Icons.Filled.Movie),
     SERIES("Сериалы", Icons.Filled.Tv),
     CARTOONS("Мультфильмы", Icons.Filled.FavoriteBorder),

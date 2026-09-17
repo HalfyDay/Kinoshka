@@ -1,10 +1,14 @@
 package hd.kinoshka.app.ui.screens
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -13,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.layout.Column
@@ -25,24 +30,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Dashboard
-import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Contrast
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Circle
@@ -74,6 +80,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
@@ -83,7 +90,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.FilmTileSize
-import hd.kinoshka.app.data.local.PlayerMode
 import kotlinx.coroutines.launch
 
 /**
@@ -100,17 +106,10 @@ fun SettingsScreen(
     selectedDiscoverTileSize: FilmTileSize,
     selectedLibraryTileSize: FilmTileSize,
     selectedShowFpsCounter: Boolean,
-    selectedPlayerMode: PlayerMode,
-    onPlayerModeSelected: (PlayerMode) -> Unit,
     onThemeModeSelected: (AppThemeMode) -> Unit,
     onHideRussianChanged: (Boolean) -> Unit,
-    onDiscoverTileSizeSelected: (FilmTileSize) -> Unit,
-    onLibraryTileSizeSelected: (FilmTileSize) -> Unit,
     onShowFpsCounterChanged: (Boolean) -> Unit,
     showDebugSettings: Boolean = false,
-    // Прокси для заблокированных источников (Android-отладка): начальное значение и писатель.
-    proxyUrl: String = "",
-    onProxyUrlChanged: (String) -> Unit = {},
     // Настройки плеера mpvEx есть только на Android: их UI живёт в app-модуле, desktop-плеер их не читает.
     onOpenPlayerSettings: (() -> Unit)? = null,
     // «О приложении» живёт внутри настроек (раньше — отдельный пункт меню).
@@ -122,32 +121,31 @@ fun SettingsScreen(
     onOpenStorage: (() -> Unit)? = null,
     // Управление нижней пилюлей (порядок/видимость вкладок, вибрация).
     // null — строка скрыта.
-    onOpenNavMenu: (() -> Unit)? = null
+    onOpenNavMenu: (() -> Unit)? = null,
+    // Страницы разделов: размер плиток и вид сетки. null — строка скрыта.
+    onOpenOverview: (() -> Unit)? = null,
+    onOpenLibrary: (() -> Unit)? = null,
+    // Иконки строк как в пилюле: Android inject'ит drawable-глифы,
+    // без инъекции (desktop) — material-фолбэк. null — фолбэк.
+    overviewIconContent: (@Composable () -> Unit)? = null,
+    libraryIconContent: (@Composable () -> Unit)? = null
 ) {
     var showThemePicker by remember { mutableStateOf(false) }
-    var showDiscoverTileSizePicker by remember { mutableStateOf(false) }
-    var showLibraryTileSizePicker by remember { mutableStateOf(false) }
-    var showPlayerModePicker by remember { mutableStateOf(false) }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding(),
-        contentPadding = PaddingValues(bottom = 24.dp)
-    ) {
-        item {
-            SettingsHeaderCard(
-                title = "Настройки",
-                subtitle = "Внешний вид и библиотека",
-                onBack = onBack,
-                // Боковые поля раньше давал контентный паддинг страницы, теперь он
-                // у карточек настроек — шапке задаём отступы явно.
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)
-            )
-        }
-        item {
-            KinoSettingsSectionHeader("Внешний вид")
-        }
+    // Шапка-пилюля парит поверх контента без подложки: список уходит под неё,
+    // обрезка видна только за самой пилюлей, глухих полос нет.
+    PinnedHeaderPage(
+        title = "Настройки",
+        subtitle = "Внешний вид и библиотека",
+        onBack = onBack
+    ) { topPad ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
+        ) {
+            item {
+                KinoSettingsSectionHeader("Внешний вид")
+            }
         item {
             KinoSettingsCard {
                 KinoSettingsRow(
@@ -156,20 +154,27 @@ fun SettingsScreen(
                     icon = Icons.Outlined.Palette,
                     onClick = { showThemePicker = true }
                 )
-                KinoSettingsDivider()
-                KinoSettingsRow(
-                    title = "Размер плиток (Обзор)",
-                    summary = selectedDiscoverTileSize.toSettingsLabel(),
-                    icon = Icons.Outlined.GridView,
-                    onClick = { showDiscoverTileSizePicker = true }
-                )
-                KinoSettingsDivider()
-                KinoSettingsRow(
-                    title = "Размер плиток (Библиотека)",
-                    summary = selectedLibraryTileSize.toSettingsLabel(),
-                    icon = Icons.Outlined.Dashboard,
-                    onClick = { showLibraryTileSizePicker = true }
-                )
+                if (onOpenOverview != null) {
+                    KinoSettingsDivider()
+                    KinoSettingsRow(
+                        title = "Обзор",
+                        summary = "Размер плиток: ${selectedDiscoverTileSize.toSettingsLabel()}",
+                        icon = if (overviewIconContent == null) Icons.Outlined.Explore else null,
+                        iconContent = overviewIconContent,
+                        onClick = onOpenOverview
+                    )
+                }
+                if (onOpenLibrary != null) {
+                    KinoSettingsDivider()
+                    KinoSettingsRow(
+                        title = "Библиотека",
+                        summary = "Размер плиток: ${selectedLibraryTileSize.toSettingsLabel()}",
+                        // Книги на полке, как в пилюле, а не список.
+                        icon = if (libraryIconContent == null) LibraryShelfIcon else null,
+                        iconContent = libraryIconContent,
+                        onClick = onOpenLibrary
+                    )
+                }
                 if (onOpenNavMenu != null) {
                     KinoSettingsDivider()
                     KinoSettingsRow(
@@ -181,34 +186,30 @@ fun SettingsScreen(
                 }
             }
         }
-        item {
-            KinoSettingsSectionHeader("Плеер")
-        }
-        item {
-            KinoSettingsCard {
-                KinoSettingsRow(
-                    title = "Плеер фильмов",
-                    summary = selectedPlayerMode.displayName,
-                    icon = Icons.Outlined.PlayCircle,
-                    onClick = { showPlayerModePicker = true }
-                )
-                if (onOpenPlayerSettings != null) {
-                    KinoSettingsDivider()
-                    KinoSettingsRow(
-                        title = "Настройки плеера mpvEx",
-                        summary = "Скорость, жесты, субтитры, декодер, сброс",
-                        icon = Icons.Outlined.Tune,
-                        onClick = onOpenPlayerSettings
-                    )
-                }
-                if (onOpenSources != null) {
-                    KinoSettingsDivider()
-                    KinoSettingsRow(
-                        title = "Источники видео",
-                        summary = "Фильмы, аниме и 18+: вкл/выкл и проверка",
-                        icon = Icons.Outlined.VideoLibrary,
-                        onClick = onOpenSources
-                    )
+        // Плеер всегда mpvEx (выбора больше нет): секция видна, пока есть хоть одна строка.
+        if (onOpenPlayerSettings != null || onOpenSources != null) {
+            item {
+                KinoSettingsSectionHeader("Плеер")
+            }
+            item {
+                KinoSettingsCard {
+                    if (onOpenPlayerSettings != null) {
+                        KinoSettingsRow(
+                            title = "Настройки плеера mpvEx",
+                            summary = "Скорость, жесты, субтитры, декодер, сброс",
+                            icon = Icons.Outlined.Tune,
+                            onClick = onOpenPlayerSettings
+                        )
+                    }
+                    if (onOpenSources != null) {
+                        if (onOpenPlayerSettings != null) KinoSettingsDivider()
+                        KinoSettingsRow(
+                            title = "Источники видео",
+                            summary = "Фильмы, аниме и 18+: вкл/выкл и проверка",
+                            icon = Icons.Outlined.VideoLibrary,
+                            onClick = onOpenSources
+                        )
+                    }
                 }
             }
         }
@@ -235,82 +236,46 @@ fun SettingsScreen(
                             Switch(checked = selectedShowFpsCounter, onCheckedChange = onShowFpsCounterChanged)
                         }
                     )
-                    KinoSettingsDivider()
-                    StreamProxySettingRow(initial = proxyUrl, onChanged = onProxyUrlChanged)
                 }
             }
         }
         if (onOpenAbout != null || onOpenStorage != null) {
-            item {
-                KinoSettingsSectionHeader("Приложение")
-            }
-            item {
-                KinoSettingsCard {
-                    if (onOpenStorage != null) {
-                        KinoSettingsRow(
-                            title = "Память и хранилище",
-                            summary = "Размер кэша, очистка, загрузки",
-                            icon = Icons.Outlined.Storage,
-                            onClick = onOpenStorage
-                        )
-                    }
-                    if (onOpenAbout != null) {
-                        if (onOpenStorage != null) KinoSettingsDivider()
-                        KinoSettingsRow(
-                            title = "О приложении",
-                            summary = "Версия, обновления и полезные ссылки",
-                            icon = Icons.Outlined.Info,
-                            onClick = onOpenAbout
-                        )
-                    }
+        item {
+            KinoSettingsSectionHeader("Приложение")
+        }
+        item {
+            KinoSettingsCard {
+                if (onOpenStorage != null) {
+                    KinoSettingsRow(
+                        title = "Память и хранилище",
+                        summary = "Размер кэша, очистка, загрузки",
+                        icon = Icons.Outlined.Storage,
+                        onClick = onOpenStorage
+                    )
+                }
+                if (onOpenAbout != null) {
+                    if (onOpenStorage != null) KinoSettingsDivider()
+                    KinoSettingsRow(
+                        title = "О приложении",
+                        summary = "Версия, обновления и полезные ссылки",
+                        icon = Icons.Outlined.Info,
+                        onClick = onOpenAbout
+                    )
                 }
             }
+        }
+        }
         }
     }
 
     if (showThemePicker) {
-        SettingsSelectBottomSheet(
-            title = "Тема",
-            options = listOf(AppThemeMode.CURRENT, AppThemeMode.DARK, AppThemeMode.AMOLED),
+        ThemePickerBottomSheet(
             selected = selectedThemeMode,
-            optionLabel = { it.toSettingsLabel() },
             onSelect = onThemeModeSelected,
             onDismiss = { showThemePicker = false }
         )
     }
 
-    if (showDiscoverTileSizePicker) {
-        SettingsSelectBottomSheet(
-            title = "Размер плиток (Обзор)",
-            options = FilmTileSize.entries.toList(),
-            selected = selectedDiscoverTileSize,
-            optionLabel = { it.toSettingsLabel() },
-            onSelect = onDiscoverTileSizeSelected,
-            onDismiss = { showDiscoverTileSizePicker = false }
-        )
-    }
-
-    if (showLibraryTileSizePicker) {
-        SettingsSelectBottomSheet(
-            title = "Размер плиток (Библиотека)",
-            options = FilmTileSize.entries.toList(),
-            selected = selectedLibraryTileSize,
-            optionLabel = { it.toSettingsLabel() },
-            onSelect = onLibraryTileSizeSelected,
-            onDismiss = { showLibraryTileSizePicker = false }
-        )
-    }
-
-    if (showPlayerModePicker) {
-        SettingsSelectBottomSheet(
-            title = "Плеер фильмов",
-            options = PlayerMode.entries.toList(),
-            selected = selectedPlayerMode,
-            optionLabel = { it.displayName },
-            onSelect = onPlayerModeSelected,
-            onDismiss = { showPlayerModePicker = false }
-        )
-    }
 }
 
 /**
@@ -876,7 +841,9 @@ private fun StorageOtherRow(
 data class SettingsSearchEntry(
     val title: String,
     val subtitle: String,
-    val keywords: String
+    val keywords: String,
+    /** Куда вести тап из поиска Профиля: settings, settings_overview, settings_library, nav_menu, sources... */
+    val route: String = "settings"
 )
 
 /** Все строки экрана настроек, видимые при данных флагах (для поиска с Профиля). */
@@ -884,22 +851,20 @@ fun settingsSearchEntries(
     hasPlayerSettings: Boolean,
     showDebugSettings: Boolean
 ): List<SettingsSearchEntry> = buildList {
-    add(SettingsSearchEntry("Тема", "Внешний вид приложения", "тема тёмная светлая amoled оформление внешность"))
-    add(SettingsSearchEntry("Размер плиток (Обзор)", "Крупные или компактные обложки", "плитки размер обзор сетка крупные мелкие"))
-    add(SettingsSearchEntry("Размер плиток (Библиотека)", "Крупные или компактные обложки", "плитки размер библиотека сетка крупные мелкие"))
-    add(SettingsSearchEntry("Навигационное меню", "Вкладки пилюли: порядок, видимость, вибрация", "меню навигация вкладки пилюля порядок скрыть вибрация вибро тактильный"))
-    add(SettingsSearchEntry("Плеер фильмов", "Какой плеер открывает кино", "плеер mpv ex внешний внутренний кино"))
+    add(SettingsSearchEntry("Тема", "Внешний вид приложения", "тема тёмная светлая amoled оформление внешность", "settings"))
+    add(SettingsSearchEntry("Обзор", "Размер плиток страницы", "обзор плитки размер сетка крупные мелкие", "settings_overview"))
+    add(SettingsSearchEntry("Библиотека", "Размер плиток страницы", "библиотека плитки размер сетка крупные мелкие", "settings_library"))
+    add(SettingsSearchEntry("Навигационное меню", "Вкладки пилюли: порядок, видимость, вибрация", "меню навигация вкладки пилюля порядок скрыть вибрация вибро тактильный", "nav_menu"))
     if (hasPlayerSettings) {
-        add(SettingsSearchEntry("Настройки плеера mpvEx", "Скорость, жесты, субтитры, декодер", "mpvex скорость жесты субтитры декодер сброс плеер"))
+        add(SettingsSearchEntry("Настройки плеера mpvEx", "Скорость, жесты, субтитры, декодер", "mpvex скорость жесты субтитры декодер сброс плеер", "player_settings"))
     }
-    add(SettingsSearchEntry("Скрывать российские фильмы", "Фильтр обзора и библиотеки", "скрыть российские русские фильтр"))
-    add(SettingsSearchEntry("Источники", "Включение и проверка Kodik, Turbo, VideoCDN", "источники kodik turbo videocdn collaps voidboost alloha veoveo shikimori aniliberty anilib anistar smarthard хентай фильмы сериалы мультфильмы аниме проверка вкл выкл"))
+    add(SettingsSearchEntry("Скрывать российские фильмы", "Фильтр обзора и библиотеки", "скрыть российские русские фильтр", "settings"))
+    add(SettingsSearchEntry("Источники", "Включение и проверка Kodik, Turbo, VideoCDN", "источники kodik turbo videocdn collaps voidboost alloha veoveo hdrezka shikimori aniliberty anilib anistar smarthard хентай фильмы сериалы мультфильмы аниме проверка вкл выкл", "sources"))
     if (showDebugSettings) {
-        add(SettingsSearchEntry("Показывать FPS", "Счётчик кадров (только debug)", "fps кадры счётчик отладка debug"))
-        add(SettingsSearchEntry("Прокси для источников", "VideoCDN, хентай, YouTube", "прокси proxy заблокированные источники"))
+        add(SettingsSearchEntry("Показывать FPS", "Счётчик кадров (только debug)", "fps кадры счётчик отладка debug", "settings"))
     }
-    add(SettingsSearchEntry("Память и хранилище", "Размер кэша, очистка, загрузки", "память хранилище кэш cache очистить загрузки вес размер лимит telegram"))
-    add(SettingsSearchEntry("О приложении", "Версия, обновления и ссылки", "о приложении версия обновление github telegram шикимори"))
+    add(SettingsSearchEntry("Память и хранилище", "Размер кэша, очистка, загрузки", "память хранилище кэш cache очистить загрузки вес размер лимит telegram", "storage"))
+    add(SettingsSearchEntry("О приложении", "Версия, обновления и ссылки", "о приложении версия обновление github telegram шикимори", "about"))
 }
 
 /**
@@ -911,32 +876,6 @@ fun matchesSearchQuery(query: String, vararg fields: String): Boolean {
     if (tokens.isEmpty()) return true
     val haystacks = fields.map { it.lowercase() }
     return tokens.all { token -> haystacks.any { it.contains(token) } }
-}
-
-/**
- * Текстовое поле прокси в отладочных настройках: через него ходят вебмастер-источники
- * (VideoCDN/Collaps/Voidboost), хентай-каталоги и YouTube — OkHttp по хосту запроса
- * (StreamProxySelector) и mpv перед loadfile (http-proxy). Остальной трафик — напрямую.
- */
-@Composable
-private fun StreamProxySettingRow(initial: String, onChanged: (String) -> Unit) {
-    var draft by remember(initial) { mutableStateOf(initial) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Text(
-            "Прокси для заблокированных источников",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium
-        )
-        Spacer(Modifier.height(6.dp))
-        OutlinedTextField(
-            value = draft,
-            onValueChange = { draft = it; onChanged(it) },
-            placeholder = { Text("http://host:port или socks5://host:port") },
-            supportingText = { Text("VideoCDN / Collaps / Voidboost, хентай, YouTube. Пусто — напрямую") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-    }
 }
 
 @Composable
@@ -958,20 +897,18 @@ fun AboutScreen(
     val isUpdateAvailable = updateStatusText.contains("Доступна", ignoreCase = true)
     val statusColor = if (isUpdateAvailable) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        item {
-            SettingsHeaderCard(
-                title = "О приложении",
-                subtitle = "Версия, обновления и ссылки",
-                onBack = onBack
-            )
-        }
+    // Шапка-пилюля закреплена и парит без подложки (с тенью и градиентом),
+    // как на остальных страницах настроек.
+    PinnedHeaderPage(
+        title = "О приложении",
+        subtitle = "Версия, обновления и ссылки",
+        onBack = onBack
+    ) { topPad ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 14.dp, top = topPad, end = 14.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1099,6 +1036,7 @@ fun AboutScreen(
                 }
             }
         }
+        }
     }
 }
 
@@ -1162,9 +1100,393 @@ private fun <T> SettingsSelectBottomSheet(
     }
 }
 
+/**
+ * Выбор темы с живыми превью: сетка 2×2 (системная / светлая / тёмная / AMOLED),
+ * каждая карточка — мини-макет интерфейса в своих цветах.
+ * Выбор применяется сразу и не закрывает шит: видна и анимация рамки с галочкой,
+ * и плавный перелив темы всего приложения (animateKinoColorScheme в KinoTheme).
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSelectRow(
-    title: String,
+private fun ThemePickerBottomSheet(
+    selected: AppThemeMode,
+    onSelect: (AppThemeMode) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        hd.kinoshka.app.ui.platform.KinoKeepDialogNavBarEffect()
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Тема",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp)
+                )
+                Text(
+                    text = "Оформление применяется сразу, с плавной анимацией",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp)
+                )
+            }
+            val options = listOf(
+                AppThemeMode.CURRENT,
+                AppThemeMode.LIGHT,
+                AppThemeMode.DARK,
+                AppThemeMode.AMOLED
+            )
+            options.chunked(2).forEachIndexed { rowIndex, row ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    row.forEachIndexed { colIndex, mode ->
+                        ThemeOptionCard(
+                            mode = mode,
+                            isSelected = selected == mode,
+                            entranceIndex = rowIndex * 2 + colIndex,
+                            onClick = { onSelect(mode) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    if (row.size < 2) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+            // Выбор применяется сразу — отдельной кнопки не нужно,
+            // шит закрывается свайпом/тапом мимо/кнопкой «Назад».
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+    }
+}
+
+/** Карточка варианта темы: превью сверху, иконка + название + подсказка снизу. */
+@Composable
+private fun ThemeOptionCard(
+    mode: AppThemeMode,
+    isSelected: Boolean,
+    entranceIndex: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // Каскадное появление карточек при открытии шита.
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    val entrance by animateFloatAsState(
+        targetValue = if (shown) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = 350,
+            delayMillis = entranceIndex * 70,
+            easing = FastOutSlowInEasing
+        ),
+        label = "themeCardEntrance"
+    )
+    // Анимация выбора: рамка цветом/толщиной, галочка — пружиной.
+    val borderColor by animateColorAsState(
+        targetValue = if (isSelected) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+        },
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "themeCardBorder"
+    )
+    val borderWidth by animateDpAsState(
+        targetValue = if (isSelected) 2.dp else 1.dp,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "themeCardBorderWidth"
+    )
+    val checkScale by animateFloatAsState(
+        targetValue = if (isSelected) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "themeCardCheck"
+    )
+    val density = LocalDensity.current
+    val cardShape = RoundedCornerShape(20.dp)
+    Card(
+        shape = cardShape,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        modifier = modifier
+            .graphicsLayer {
+                alpha = entrance
+                val scale = 0.92f + 0.08f * entrance
+                scaleX = scale
+                scaleY = scale
+                translationY = with(density) { ((1f - entrance) * 16.dp.toPx()) }
+            }
+            .clip(cardShape)
+            .clickable(onClick = onClick)
+            .border(width = borderWidth, color = borderColor, shape = cardShape)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                ThemePreview(
+                    mode = mode,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(86.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                )
+                if (checkScale > 0.02f) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                        shadowElevation = 4.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 4.dp, y = (-4).dp)
+                            .size(24.dp)
+                            .graphicsLayer {
+                                scaleX = checkScale
+                                scaleY = checkScale
+                                alpha = checkScale.coerceIn(0f, 1f)
+                            }
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "Выбрано",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            imageVector = mode.toThemeIcon(),
+                            contentDescription = null,
+                            tint = if (isSelected) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    Text(
+                        text = mode.toSettingsLabel(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+                    )
+                    Text(
+                        text = mode.toThemeHint(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Мини-макет интерфейса в цветах темы: шапка-пилюля, две строки текста
+ * и ряд маленьких карточек. Цвета зафиксированы — превью не зависит
+ * от текущей темы и всегда показывает правду.
+ */
+@Composable
+private fun ThemePreview(
+    mode: AppThemeMode,
+    modifier: Modifier = Modifier
+) {
+    if (mode == AppThemeMode.CURRENT) {
+        Row(modifier = modifier) {
+            ThemePreviewMock(
+                bg = Color(0xFFF7F9FF),
+                onBg = Color(0xFF1A1C20),
+                primary = Color(0xFF1D4A8A),
+                card = Color(0xFFDDE5F5),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.outlineVariant)
+            )
+            ThemePreviewMock(
+                bg = Color(0xFF10141D),
+                onBg = Color(0xFFE2E6EF),
+                primary = Color(0xFFA7C8FF),
+                card = Color(0xFF202A3C),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+        }
+        return
+    }
+    val bg: Color
+    val onBg: Color
+    val primary: Color
+    val card: Color
+    when (mode) {
+        AppThemeMode.LIGHT -> {
+            bg = Color(0xFFF7F9FF)
+            onBg = Color(0xFF1A1C20)
+            primary = Color(0xFF1D4A8A)
+            card = Color(0xFFDDE5F5)
+        }
+        AppThemeMode.DARK -> {
+            bg = Color(0xFF10141D)
+            onBg = Color(0xFFE2E6EF)
+            primary = Color(0xFFA7C8FF)
+            card = Color(0xFF202A3C)
+        }
+        else -> {
+            bg = Color(0xFF000000)
+            onBg = Color(0xFFF2F5FA)
+            primary = Color(0xFFA7C8FF)
+            card = Color(0xFF151515)
+        }
+    }
+    ThemePreviewMock(
+        bg = bg,
+        onBg = onBg,
+        primary = primary,
+        card = card,
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun ThemePreviewMock(
+    bg: Color,
+    onBg: Color,
+    primary: Color,
+    card: Color,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier.background(bg)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            // Шапка: акцентная пилюля + точка меню.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 30.dp, height = 9.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(primary)
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(onBg.copy(alpha = 0.45f))
+                )
+            }
+            // Строки текста.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.85f)
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(onBg.copy(alpha = 0.75f))
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.6f)
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(onBg.copy(alpha = 0.35f))
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            // Ряд карточек.
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                repeat(3) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(20.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(card)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun AppThemeMode.toThemeIcon(): ImageVector {
+    return when (this) {
+        AppThemeMode.CURRENT -> Icons.Outlined.Smartphone
+        AppThemeMode.LIGHT -> Icons.Outlined.LightMode
+        AppThemeMode.DARK -> Icons.Outlined.DarkMode
+        AppThemeMode.AMOLED -> Icons.Outlined.Contrast
+    }
+}
+
+private fun AppThemeMode.toThemeHint(): String {
+    return when (this) {
+        AppThemeMode.CURRENT -> "Как в системе"
+        AppThemeMode.LIGHT -> "Светлый фон"
+        AppThemeMode.DARK -> "Мягкий тёмный"
+        AppThemeMode.AMOLED -> "Чистый чёрный"
+    }
+}
+
+@Composable
+private fun SettingsSelectRow(    title: String,
     value: String,
     onClick: () -> Unit
 ) {
@@ -1244,12 +1566,13 @@ private fun AboutLinkRow(
 private fun AppThemeMode.toSettingsLabel(): String {
     return when (this) {
         AppThemeMode.CURRENT -> "Системная"
+        AppThemeMode.LIGHT -> "Светлая"
         AppThemeMode.DARK -> "Темная"
         AppThemeMode.AMOLED -> "AMOLED"
     }
 }
 
-private fun FilmTileSize.toSettingsLabel(): String {
+internal fun FilmTileSize.toSettingsLabel(): String {
     return when (this) {
         FilmTileSize.COMPACT -> "4 в ряд"
         FilmTileSize.MEDIUM -> "3 в ряд"
@@ -1271,6 +1594,9 @@ fun SettingsHeaderCard(
         modifier = modifier,
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        // Тень под пилюлей, чтобы не сливалась со страницей: подложки-полосы
+        // за шапкой нет, глубина читается только тенью карточки + градиентом.
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(14.dp),

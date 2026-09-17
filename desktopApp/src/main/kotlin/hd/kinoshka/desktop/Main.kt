@@ -2,6 +2,7 @@ package hd.kinoshka.desktop
 
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -28,6 +29,7 @@ import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.FilmsViewModel
 import hd.kinoshka.app.ui.screens.SettingsScreen
 import hd.kinoshka.app.ui.screens.SourcesSettingsScreen
+import hd.kinoshka.app.ui.screens.TileSizeSettingsScreen
 import hd.kinoshka.app.ui.tv.LocalKeyboardNavigation
 import hd.kinoshka.app.ui.tv.TvSecondaryContainer
 import hd.kinoshka.app.ui.tv.inputModeTracker
@@ -45,6 +47,8 @@ sealed interface Screen {
     data object Home : Screen
     data object Settings : Screen
     data object Sources : Screen
+    data object OverviewSettings : Screen
+    data object LibrarySettings : Screen
     data object About : Screen
     data object Calendar : Screen
     data object Feed : Screen
@@ -57,6 +61,10 @@ fun main(args: Array<String>) = application {
     val repository = remember { buildRepository() }
     // Общий FilmsViewModel (shared): та же модель состояния, что и на телефоне.
     val userStateStore = remember { UserStateStoreBase(KinoPrefs.createDefault()) }
+    // Свои источники (вариант A): реестр имён, прокси-хосты и health-провайдер.
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        hd.kinoshka.app.data.source.syncCustomSourceRuntime { userStateStore.getCustomSources() }
+    }
     val viewModel = remember { buildViewModel(repository, userStateStore) }
     val scope = rememberCoroutineScope()
     val (initial, initialPlayer) = remember { initialScreenAndPlayer(args, repository) }
@@ -177,7 +185,11 @@ fun main(args: Array<String>) = application {
                                     seriesContext = seriesContext
                                 )
                             },
-                            userStateStore = userStateStore
+                            userStateStore = userStateStore,
+                            // Реальные иконки источников в кино-пикере и хентай-выборе.
+                            sourceIcon = { id, size ->
+                                DesktopSourceIcon(id, Modifier.size(size))
+                            }
                         )
                         is Screen.Settings -> TvSecondaryContainer {
                             SettingsScreen(
@@ -187,26 +199,60 @@ fun main(args: Array<String>) = application {
                                 selectedDiscoverTileSize = viewModel.uiState.discoverTileSize,
                                 selectedLibraryTileSize = viewModel.uiState.libraryTileSize,
                                 selectedShowFpsCounter = viewModel.uiState.showFpsCounter,
-                                selectedPlayerMode = viewModel.uiState.playerMode,
-                                onPlayerModeSelected = viewModel::setPlayerMode,
                                 onThemeModeSelected = viewModel::setThemeMode,
                                 onHideRussianChanged = viewModel::setHideRussianContent,
-                                onDiscoverTileSizeSelected = viewModel::setDiscoverTileSize,
-                                onLibraryTileSizeSelected = viewModel::setLibraryTileSize,
                                 onShowFpsCounterChanged = viewModel::setShowFpsCounter,
                                 showDebugSettings = false,
                                 onOpenAbout = { screen = Screen.About },
-                                onOpenSources = { screen = Screen.Sources }
+                                onOpenSources = { screen = Screen.Sources },
+                                onOpenOverview = { screen = Screen.OverviewSettings },
+                                onOpenLibrary = { screen = Screen.LibrarySettings }
+                            )
+                        }
+                        is Screen.OverviewSettings -> TvSecondaryContainer {
+                            TileSizeSettingsScreen(
+                                onBack = { screen = Screen.Settings },
+                                title = "Обзор",
+                                subtitle = "Внешний вид страницы",
+                                selected = viewModel.uiState.discoverTileSize,
+                                onSelected = viewModel::setDiscoverTileSize
+                            )
+                        }
+                        is Screen.LibrarySettings -> TvSecondaryContainer {
+                            TileSizeSettingsScreen(
+                                onBack = { screen = Screen.Settings },
+                                title = "Библиотека",
+                                subtitle = "Внешний вид страницы",
+                                selected = viewModel.uiState.libraryTileSize,
+                                onSelected = viewModel::setLibraryTileSize
                             )
                         }
                         is Screen.Sources -> TvSecondaryContainer {
-                            var disabledSources by remember { mutableStateOf(userStateStore.getDisabledSources()) }
+                            var disabledKeys by remember { mutableStateOf(userStateStore.getDisabledSourceKeys()) }
+                            var customSources by remember { mutableStateOf(userStateStore.getCustomSources()) }
                             SourcesSettingsScreen(
                                 onBack = { screen = Screen.Settings },
-                                disabledSources = disabledSources,
-                                onSourceEnabledChanged = { id, enabled ->
-                                    userStateStore.setSourceEnabled(id, enabled)
-                                    disabledSources = userStateStore.getDisabledSources()
+                                disabledKeys = disabledKeys,
+                                onSourceEnabledChanged = { id, category, enabled ->
+                                    userStateStore.setSourceEnabled(id, enabled, category)
+                                    disabledKeys = userStateStore.getDisabledSourceKeys()
+                                },
+                                customSources = customSources,
+                                onSaveCustomSource = { src ->
+                                    userStateStore.saveCustomSource(src)
+                                    customSources = userStateStore.getCustomSources()
+                                },
+                                onDeleteCustomSource = { id ->
+                                    userStateStore.deleteCustomSource(id)
+                                    customSources = userStateStore.getCustomSources()
+                                },
+                                // Реальные иконки: аниме — те же логотипы, что в мобильном
+                                // пикере, остальные — PNG-логотипы из ресурсов.
+                                sourceIcon = { info ->
+                                    DesktopSourceIcon(
+                                        sourceId = info.id,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
                                 }
                             )
                         }

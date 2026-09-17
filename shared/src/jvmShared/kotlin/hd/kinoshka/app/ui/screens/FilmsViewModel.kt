@@ -4460,11 +4460,6 @@ class FilmsViewModel(
         uiState = uiState.copy(showFpsCounter = enabled)
     }
 
-    fun setPlayerMode(mode: hd.kinoshka.app.data.local.PlayerMode) {
-        userStateStore.setPlayerMode(mode)
-        uiState = uiState.copy(playerMode = mode)
-    }
-
     fun exportLibraryJson(): String = userStateStore.exportLibraryJson()
 
     fun importLibraryJson(rawJson: String): Result<Unit> {

@@ -1,13 +1,12 @@
 package hd.kinoshka.app.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -33,32 +32,35 @@ fun StorageSettingsScreen(
     onRetentionSelected: (Int) -> Unit,
     onAutoCleanupChanged: (Boolean) -> Unit
 ) {
-    // Шапка закреплена над списком: остаётся поверх содержания при прокрутке.
-    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-        SettingsHeaderCard(
-            title = "Память и хранилище",
-            subtitle = "Размер кэша, очистка, загрузки",
-            onBack = onBack,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)
-        )
+    // Шапка-пилюля парит поверх контента без подложки (с тенью и градиентом),
+    // как на остальных страницах настроек: список уходит под неё.
+    PinnedHeaderPage(
+        title = "Память и хранилище",
+        subtitle = "Размер кэша, очистка, загрузки",
+        onBack = onBack
+    ) { topPad ->
         if (rows == null) {
-            Column(
-                modifier = Modifier.fillMaxSize().weight(1f),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+            Box(
+                modifier = Modifier.fillMaxSize().padding(top = topPad),
+                contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
-                Text(
-                    text = "Замеряем хранилище…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 12.dp)
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                    Text(
+                        text = "Замеряем хранилище…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                }
             }
         } else {
             LazyColumn(
-                modifier = Modifier.fillMaxSize().weight(1f),
-                contentPadding = PaddingValues(bottom = 24.dp)
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
             ) {
                 item {
                     StorageSectionCard(
