@@ -12,6 +12,8 @@ import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.formatSyncTimeMs
 import hd.kinoshka.app.data.source.embedHost
 import java.util.Locale
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 
 
 enum class SavedViewMode {
@@ -849,6 +851,47 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             if (changed) writeIdSet(storeKey, ids)
         }
     }
+
+    // ---- Обмен своими источниками (файл JSON между устройствами) ----
+
+    /** JSON всех своих для экспорта в файл. */
+    fun exportCustomSourcesJson(): String =
+        hd.kinoshka.app.data.source.customSourcesToJson(getCustomSources())
+
+    /**
+     * Импорт файла обмена: терпимый парс + слияние без потерь (обновление своих,
+     * переименование чужих при коллизии id, пропуск дубликатов). Сохранение идёт
+     * через [saveCustomSource], поэтому реестр и прокси-хосты синкаются сами.
+     */
+    fun importCustomSourcesJson(rawJson: String): Result<hd.kinoshka.app.data.source.CustomSourceImportReport> =
+        synchronized(BLOB_LOCK) {
+            runCatching {
+                val trimmed = rawJson.trim()
+                if (trimmed.isEmpty()) error("Файл пустой")
+                val rawCount = runCatching {
+                    Json.parseToJsonElement(trimmed).jsonArray.size
+                }.getOrDefault(-1)
+                if (rawCount == 0) error("Файл пустой")
+                if (rawCount < 0) error("Файл повреждён: нужен JSON-массив источников")
+                val incoming = hd.kinoshka.app.data.source.parseCustomSources(trimmed)
+                if (incoming.isEmpty()) error("Все записи битые — нечего импортировать")
+                val existing = getCustomSources()
+                val (merged, report) = hd.kinoshka.app.data.source.mergeCustomSources(
+                    existing = existing,
+                    incoming = incoming,
+                    builtInNames = hd.kinoshka.app.data.source.PlaybackSources.ALL.map { it.displayName },
+                    rawCount = rawCount
+                )
+                val before = existing.associateBy { it.id }
+                for (item in merged) {
+                    if (before[item.id] != item) saveCustomSource(item)
+                }
+                if (report.skipped.isNotEmpty()) {
+                    KLog.i("UserStateStore", "custom import skipped: ${report.skipped.take(5).joinToString("; ")}")
+                }
+                report
+            }
+        }
 
     private fun registerCustomProxyHost(source: hd.kinoshka.app.data.source.CustomSource) {
         source.takeIf { it.useProxy }?.embedHost()?.let {

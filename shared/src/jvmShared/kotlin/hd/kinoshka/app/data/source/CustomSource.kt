@@ -312,3 +312,139 @@ fun customSourcesToJson(sources: List<CustomSource>): String =
         kotlinx.serialization.builtins.ListSerializer(CustomSource.serializer()),
         sources
     )
+
+/** Итог импорта файла обмена: что влилось, что пропущено и почему. */
+data class CustomSourceImportReport(
+    val added: Int = 0,
+    val updated: Int = 0,
+    val renamed: Int = 0,
+    val skipped: List<String> = emptyList()
+) {
+    /** Короткая строка для тоста/статуса («Импорт: добавлено 2, обновлено 1»). */
+    fun summary(): String = buildString {
+        append("Импорт: добавлено $added, обновлено $updated")
+        if (renamed > 0) append(", переименовано $renamed")
+        if (skipped.isNotEmpty()) append(", пропущено ${skipped.size}")
+    }
+}
+
+data class CustomSourceMergeResult(
+    val merged: List<CustomSource>,
+    val report: CustomSourceImportReport
+)
+
+/** Идентичность источника для дедупа: нормализованный шаблон либо stremio-base. */
+private fun CustomSource.shareIdentity(): String? = when (kind) {
+    CustomSourceKind.STREMIO -> stremioBase()?.let { "stremio:$it" }
+    CustomSourceKind.EMBED -> "embed:${normalizeTemplate(urlTemplate)}"
+}
+
+private fun uniqueImportName(base: String, taken: MutableSet<String>): String {
+    var candidate = base
+    var n = 2
+    while (taken.any { it.equals(candidate, ignoreCase = true) }) {
+        candidate = "$base $n"
+        n++
+    }
+    taken.add(candidate)
+    return candidate
+}
+
+/**
+ * Слияние импортируемого списка с существующим (чистая функция, без IO).
+ * Правила: битые записи уже отсеяны парсером; совпадение id + идентичности —
+ * обновление; тот же id с другим адресом — переименование входящего;
+ * та же идентичность под другим id — пропуск как дубликат; clash имени
+ * (включая встроенные) — суффикс «2», «3»… Пустые разделы → FILMS.
+ * [rawCount] — размер сырого JSON-массива для учёта битых записей в отчёте
+ * (-1 = не считать).
+ */
+fun mergeCustomSources(
+    existing: List<CustomSource>,
+    incoming: List<CustomSource>,
+    builtInNames: List<String> = emptyList(),
+    rawCount: Int = -1
+): CustomSourceMergeResult {
+    val merged = existing.toMutableList()
+    val byId = merged.associateBy { it.id }.toMutableMap()
+    val identityToId = LinkedHashMap<String, String>()
+    for (item in merged) {
+        item.shareIdentity()?.let { identityToId.putIfAbsent(it, item.id) }
+    }
+    val takenNames = (merged.map { it.name.trim() } + builtInNames).toMutableSet()
+    val takenIds = merged.map { it.id }.toMutableSet()
+    var added = 0
+    var updated = 0
+    var renamed = 0
+    val skipped = mutableListOf<String>()
+    if (rawCount >= 0 && rawCount > incoming.size) {
+        skipped += "битых записей: ${rawCount - incoming.size}"
+    }
+    for (raw in incoming) {
+        var id = raw.id.trim().uppercase()
+        val name = raw.name.trim()
+        if (name.isEmpty()) {
+            skipped += "запись без названия — пропущена"
+            continue
+        }
+        val template = raw.urlTemplate.trim()
+        val endpoint = raw.endpoint.trim()
+        val identity = when (raw.kind) {
+            CustomSourceKind.STREMIO -> {
+                if (normalizeStremioEndpoint(endpoint) == null) {
+                    skipped += "«$name»: кривой адрес аддона"
+                    continue
+                }
+                "stremio:${normalizeStremioEndpoint(endpoint)}"
+            }
+            CustomSourceKind.EMBED -> {
+                if (template.isEmpty()) {
+                    skipped += "«$name»: пустой шаблон ссылки"
+                    continue
+                }
+                "embed:${normalizeTemplate(template)}"
+            }
+        }
+        if (!CustomSource.isCustomId(id)) {
+            id = buildCustomId(name, takenIds)
+        }
+        val clean = raw.copy(
+            id = id,
+            name = name,
+            urlTemplate = if (raw.kind == CustomSourceKind.STREMIO) "" else template,
+            referer = raw.referer.trim(),
+            endpoint = if (raw.kind == CustomSourceKind.STREMIO) endpoint else "",
+            useProxy = raw.useProxy && raw.kind == CustomSourceKind.EMBED,
+            webOnly = raw.webOnly && raw.kind == CustomSourceKind.EMBED,
+            categories = raw.categories.ifEmpty { setOf(SourceCategory.FILMS) }
+        )
+        val clash = byId[id]
+        if (clash != null) {
+            if (clash.shareIdentity() == identity) {
+                takenNames.removeAll { it.equals(clash.name.trim(), ignoreCase = true) }
+                val index = merged.indexOfFirst { it.id == id }
+                merged[index] = clean.copy(name = uniqueImportName(clean.name, takenNames))
+                byId[id] = merged[index]
+                updated++
+            } else {
+                val newId = buildCustomId(clean.name, takenIds)
+                takenIds.add(newId)
+                merged += clean.copy(id = newId, name = uniqueImportName(clean.name, takenNames))
+                identityToId.putIfAbsent(identity, newId)
+                renamed++
+            }
+            continue
+        }
+        val twinId = identityToId[identity]
+        if (twinId != null) {
+            skipped += "«$name»: дубликат «${byId[twinId]?.name ?: twinId}»"
+            continue
+        }
+        merged += clean.copy(name = uniqueImportName(clean.name, takenNames))
+        byId[merged.last().id] = merged.last()
+        takenIds.add(merged.last().id)
+        identityToId[identity] = merged.last().id
+        added++
+    }
+    return CustomSourceMergeResult(merged, CustomSourceImportReport(added, updated, renamed, skipped))
+}

@@ -224,4 +224,94 @@ class CustomSourceTest {
         val sources = DdbbStreamResolver.translationSources(listOf(p))
         assertEquals("CUSTOM_TEST", sources["Рус. Дублированный"])
     }
+
+    // --- Слияние импорта (шаринг файлом) ---
+
+    private fun stremioSrc(
+        id: String = "CUSTOM_S",
+        name: String = "Стримио",
+        endpoint: String = "https://addons.example.com/stremio"
+    ) = CustomSource(
+        id = id, name = name, urlTemplate = "",
+        kind = CustomSourceKind.STREMIO, endpoint = endpoint
+    )
+
+    @Test
+    fun `merge adds new and updates same identity`() {
+        val existing = listOf(src())
+        val incoming = listOf(
+            src(id = "CUSTOM_NEW", name = "Новый", template = "https://other.example.com/e/{kp}"),
+            // Тот же id и адрес — обновление (имя тоже обновляется).
+            src(id = "CUSTOM_TEST", name = "Тест v2")
+        )
+        val (merged, report) = mergeCustomSources(existing, incoming)
+        assertEquals(2, merged.size)
+        assertEquals(1, report.added)
+        assertEquals(1, report.updated)
+        assertEquals(0, report.renamed)
+        assertTrue(report.skipped.isEmpty())
+        assertEquals("Тест v2", merged.first { it.id == "CUSTOM_TEST" }.name)
+        assertEquals("Импорт: добавлено 1, обновлено 1", report.summary())
+    }
+
+    @Test
+    fun `merge renames on id collision and skips duplicate identity`() {
+        val existing = listOf(src())
+        val incoming = listOf(
+            // Тот же id, другой адрес — переименование входящего.
+            src(id = "CUSTOM_TEST", name = "Тест", template = "https://other.example.com/e/{kp}"),
+            // Тот же адрес под другим id — дубликат.
+            src(id = "CUSTOM_CLONE", name = "Клон", template = "https://example.com/embed/kp/{kp}?x=1")
+        )
+        val (merged, report) = mergeCustomSources(existing, incoming)
+        assertEquals(1, report.renamed)
+        assertEquals(1, report.skipped.size)
+        assertEquals(2, merged.size)
+        val renamed = merged.first { it.id != "CUSTOM_TEST" }
+        assertTrue(renamed.id.startsWith("CUSTOM_"))
+        assertTrue(renamed.name.startsWith("Тест"))
+        assertTrue(report.summary().contains("переименовано 1"))
+        assertTrue(report.summary().contains("пропущено 1"))
+    }
+
+    @Test
+    fun `merge suffixes clashing names and skips broken entries`() {
+        val existing = listOf(src(name = "Тест"))
+        val incoming = listOf(
+            src(id = "CUSTOM_X", name = "тест", template = "https://other.example.com/e/{kp}"),
+            src(id = "CUSTOM_BAD", name = "  ", template = "https://bad.example.com/{kp}"),
+            src(id = "CUSTOM_EMPTY", name = "Пустой", template = "   ")
+        )
+        val (merged, report) = mergeCustomSources(existing, incoming, rawCount = 4)
+        assertEquals(1, report.added)
+        assertEquals(3, report.skipped.size) // 2 битые + 1 битая запись в raw
+        assertEquals("тест 2", merged.first { it.id == "CUSTOM_X" }.name)
+    }
+
+    @Test
+    fun `merge accepts stremio and assigns ids without prefix`() {
+        val incoming = listOf(
+            stremioSrc(id = "hand-written", name = "Ручной"),
+            stremioSrc(id = "CUSTOM_S2", name = "Стримио 2", endpoint = "https://addons.example.com/stremio")
+        )
+        val (merged, report) = mergeCustomSources(emptyList(), incoming)
+        assertEquals(1, report.added)
+        assertEquals(1, report.skipped.size)
+        assertTrue(merged.single().id.startsWith("CUSTOM_"))
+    }
+
+    @Test
+    fun `exported json reimports through merge without loss`() {
+        val original = listOf(
+            src(),
+            stremioSrc().copy(categories = setOf(SourceCategory.ANIME))
+        )
+        val json = customSourcesToJson(original)
+        val back = parseCustomSources(json)
+        val (merged, report) = mergeCustomSources(emptyList(), back, rawCount = 2)
+        assertEquals(2, merged.size)
+        assertEquals(2, report.added)
+        assertEquals(original.map { it.id }.toSet(), merged.map { it.id }.toSet())
+        assertEquals(setOf(SourceCategory.ANIME), merged.first { it.kind == CustomSourceKind.STREMIO }.categories)
+    }
 }

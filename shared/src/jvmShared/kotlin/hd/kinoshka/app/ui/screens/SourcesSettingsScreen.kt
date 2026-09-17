@@ -87,7 +87,13 @@ fun SourcesSettingsScreen(
     // Свои источники (вариант A): null-колбэки прячут секцию (старые коллеры).
     customSources: List<CustomSource> = emptyList(),
     onSaveCustomSource: ((CustomSource) -> Unit)? = null,
-    onDeleteCustomSource: ((String) -> Unit)? = null
+    onDeleteCustomSource: ((String) -> Unit)? = null,
+    // Обмен файлом JSON между устройствами (платформа открывает диалог
+    // сохранения/выбора и дергает стор): null прячет свою кнопку.
+    onExportCustomSourcesFile: (() -> Unit)? = null,
+    onImportCustomSourcesFile: (() -> Unit)? = null,
+    // Статус последнего обмена для платформ без тостов (desktop); Android — null.
+    fileExchangeMessage: String? = null
 ) {
     val scope = rememberCoroutineScope()
     var selectedCategory by remember { mutableStateOf<SourceCategory?>(null) }
@@ -248,6 +254,41 @@ fun SourcesSettingsScreen(
                                 Text("Добавить")
                             }
                         }
+                    )
+                }
+            }
+            // Обмен с другим устройством: файл JSON (экспорт своих + импорт
+            // слиянием: дубликаты пропускаются, коллизии переименовываются).
+            if (onExportCustomSourcesFile != null || onImportCustomSourcesFile != null) {
+                item {
+                    KinoSettingsCard {
+                        KinoSettingsRow(
+                            title = "Поделиться источниками",
+                            summary = "Файл JSON для переноса на другое устройство",
+                            trailing = {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (onExportCustomSourcesFile != null) {
+                                        TextButton(
+                                            onClick = onExportCustomSourcesFile,
+                                            enabled = customSources.isNotEmpty()
+                                        ) { Text("Экспорт") }
+                                    }
+                                    if (onImportCustomSourcesFile != null) {
+                                        TextButton(onClick = onImportCustomSourcesFile) { Text("Импорт") }
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+            if (fileExchangeMessage != null) {
+                item {
+                    Text(
+                        text = fileExchangeMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                     )
                 }
             }

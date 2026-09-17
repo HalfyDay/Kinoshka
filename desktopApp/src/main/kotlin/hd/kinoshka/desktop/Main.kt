@@ -34,8 +34,11 @@ import hd.kinoshka.app.ui.tv.LocalKeyboardNavigation
 import hd.kinoshka.app.ui.tv.TvSecondaryContainer
 import hd.kinoshka.app.ui.tv.inputModeTracker
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Properties
+import javax.swing.JFileChooser
+import javax.swing.filechooser.FileNameExtensionFilter
 
 /** Заголовок главного окна; используется и для поиска HWND в Win32. */
 const val MAIN_WINDOW_TITLE = "Kino Desktop"
@@ -230,6 +233,59 @@ fun main(args: Array<String>) = application {
                         is Screen.Sources -> TvSecondaryContainer {
                             var disabledKeys by remember { mutableStateOf(userStateStore.getDisabledSourceKeys()) }
                             var customSources by remember { mutableStateOf(userStateStore.getCustomSources()) }
+                            var exchangeMessage by remember { mutableStateOf<String?>(null) }
+                            // Обмен своими источниками файлом JSON (как библиотека
+                            // в профиле): экспорт своих, импорт слиянием с отчётом.
+                            fun exportCustomSources() {
+                                scope.launch {
+                                    val json = userStateStore.exportCustomSourcesJson()
+                                    exchangeMessage = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        runCatching {
+                                            val chooser = JFileChooser()
+                                            chooser.dialogTitle = "Экспорт своих источников"
+                                            chooser.selectedFile = File("kinoshka-custom-sources.json")
+                                            chooser.fileFilter = FileNameExtensionFilter("JSON", "json")
+                                            var path: String? = null
+                                            java.awt.EventQueue.invokeAndWait {
+                                                if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
+                                                    path = chooser.selectedFile.absolutePath
+                                                }
+                                            }
+                                            path?.let { p ->
+                                                val file = if (p.endsWith(".json", true)) File(p) else File("$p.json")
+                                                file.writeText(json, Charsets.UTF_8)
+                                                "Экспорт завершён: ${file.name}"
+                                            } ?: "Экспорт отменён"
+                                        }.getOrElse { "Ошибка экспорта: ${it.message}" }
+                                    }
+                                }
+                            }
+                            fun importCustomSources() {
+                                scope.launch {
+                                    exchangeMessage = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        runCatching {
+                                            val chooser = JFileChooser()
+                                            chooser.dialogTitle = "Импорт своих источников"
+                                            chooser.fileFilter = FileNameExtensionFilter("JSON", "json")
+                                            var text: String? = null
+                                            java.awt.EventQueue.invokeAndWait {
+                                                if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
+                                                    text = chooser.selectedFile.readText(Charsets.UTF_8)
+                                                }
+                                            }
+                                            text?.let { payload ->
+                                                userStateStore.importCustomSourcesJson(payload).fold(
+                                                    onSuccess = { report ->
+                                                        customSources = userStateStore.getCustomSources()
+                                                        report.summary()
+                                                    },
+                                                    onFailure = { "Ошибка импорта: ${it.message}" }
+                                                )
+                                            } ?: "Импорт отменён"
+                                        }.getOrElse { "Ошибка импорта: ${it.message}" }
+                                    }
+                                }
+                            }
                             SourcesSettingsScreen(
                                 onBack = { screen = Screen.Settings },
                                 disabledKeys = disabledKeys,
@@ -246,6 +302,9 @@ fun main(args: Array<String>) = application {
                                     userStateStore.deleteCustomSource(id)
                                     customSources = userStateStore.getCustomSources()
                                 },
+                                onExportCustomSourcesFile = ::exportCustomSources,
+                                onImportCustomSourcesFile = ::importCustomSources,
+                                fileExchangeMessage = exchangeMessage,
                                 // Реальные иконки: аниме — те же логотипы, что в мобильном
                                 // пикере, остальные — PNG-логотипы из ресурсов.
                                 sourceIcon = { info ->

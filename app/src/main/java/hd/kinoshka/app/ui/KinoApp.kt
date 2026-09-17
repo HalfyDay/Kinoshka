@@ -12,6 +12,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -1679,6 +1681,40 @@ fun KinoApp() {
                                 var customSources by remember {
                                     mutableStateOf(emptyList<hd.kinoshka.app.data.source.CustomSource>())
                                 }
+                                // Обмен своими источниками файлом JSON (шаринг между
+                                // устройствами): те же контракты, что у экспорта библиотеки.
+                                val exportCustomsFile = rememberLauncherForActivityResult(
+                                    contract = ActivityResultContracts.CreateDocument("application/json")
+                                ) { uri ->
+                                    if (uri == null) return@rememberLauncherForActivityResult
+                                    runCatching {
+                                        val json = sourcesStore.exportCustomSourcesJson()
+                                        sourcesContext.contentResolver.openOutputStream(uri)?.use {
+                                            it.write(json.toByteArray(Charsets.UTF_8))
+                                        } ?: error("Не удалось открыть файл для записи")
+                                    }
+                                        .onSuccess { Toast.makeText(sourcesContext, "Экспорт завершён", Toast.LENGTH_SHORT).show() }
+                                        .onFailure { ex -> Toast.makeText(sourcesContext, "Ошибка экспорта: ${ex.message}", Toast.LENGTH_LONG).show() }
+                                }
+                                val importCustomsFile = rememberLauncherForActivityResult(
+                                    contract = ActivityResultContracts.OpenDocument()
+                                ) { uri ->
+                                    if (uri == null) return@rememberLauncherForActivityResult
+                                    runCatching {
+                                        val text = sourcesContext.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                                            ?: error("Не удалось прочитать файл")
+                                        sourcesStore.importCustomSourcesJson(text).getOrThrow()
+                                    }
+                                        .onSuccess { report ->
+                                            scope.launch {
+                                                customSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                    sourcesStore.getCustomSources()
+                                                }
+                                            }
+                                            Toast.makeText(sourcesContext, report.summary(), Toast.LENGTH_LONG).show()
+                                        }
+                                        .onFailure { ex -> Toast.makeText(sourcesContext, "Ошибка импорта: ${ex.message}", Toast.LENGTH_LONG).show() }
+                                }
                                 LaunchedEffect(sourcesStore) {
                                     disabledKeys = withContext(kotlinx.coroutines.Dispatchers.IO) {
                                         sourcesStore.getDisabledSourceKeys()
@@ -1714,6 +1750,12 @@ fun KinoApp() {
                                                 sourcesStore.getCustomSources()
                                             }
                                         }
+                                    },
+                                    onExportCustomSourcesFile = {
+                                        exportCustomsFile.launch("kinoshka-custom-sources.json")
+                                    },
+                                    onImportCustomSourcesFile = {
+                                        importCustomsFile.launch(arrayOf("application/json"))
                                     },
                                     // Реальные иконки: аниме — те же drawable, что в пикере
                                     // озвучек/источников, остальные — PNG-логотипы.
