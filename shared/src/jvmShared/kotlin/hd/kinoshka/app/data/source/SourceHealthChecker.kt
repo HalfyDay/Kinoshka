@@ -34,6 +34,9 @@ object SourceHealthChecker {
     /** Известный тайтл для проб: Матрица (kp=301) есть почти в каждом кино-каталоге. */
     const val PROBE_KINOPOISK_ID = 301
 
+    /** Сериальная проба Stremio: Во все тяжкие — meta должна отдать сетку серий. */
+    private const val PROBE_SERIES_IMDB = "tt0903747"
+
     /** Аниме-проба Shikimori id=1 (Cowboy Bebop): плейлист может быть пустым (лицензия),
      *  важен сам факт ответа API. */
     private const val PROBE_SHIKIMORI_ID = 1
@@ -258,10 +261,34 @@ object SourceHealthChecker {
             StremioAddonResolver.movieStreamUrl(base, CustomSource.PROBE_IMDB), "$base/"
         ) ?: return false to "Манифест ок, запрос потоков не отвечает"
         val (streams, _) = StremioAddonResolver.parseStreams(streamsRaw)
-        return if (streams.isNotEmpty()) {
-            true to "OK: «${manifest.name}», потоков: ${streams.size} (Матрица)"
+        val moviePart = if (streams.isNotEmpty()) {
+            "потоков: ${streams.size} (Матрица)"
         } else {
-            true to "Манифест ок, но потоков для Матрицы нет"
+            "потоков для Матрицы нет"
+        }
+        if (!manifest.hasSeriesStream || !manifest.hasSeriesMeta) {
+            return (streams.isNotEmpty()) to "OK: «${manifest.name}», $moviePart"
+        }
+        val seriesPart = probeStremioSeries(base)
+        return (streams.isNotEmpty()) to "OK: «${manifest.name}», $moviePart; $seriesPart"
+    }
+
+    /** Сериальная часть пробы: meta сетки + потоки первой серии. */
+    private fun probeStremioSeries(base: String): String {
+        val metaRaw = httpGet(StremioAddonResolver.seriesMetaUrl(base, PROBE_SERIES_IMDB), "$base/")
+            ?: return "сериалы: meta не отвечает"
+        val videos = StremioAddonResolver.parseMetaVideos(metaRaw)
+        if (videos.isEmpty()) return "сериалы: список серий пуст"
+        val first = videos.first()
+        val streamsRaw = httpGet(
+            StremioAddonResolver.seriesStreamUrl(base, PROBE_SERIES_IMDB, first.season, first.episode),
+            "$base/"
+        ) ?: return "сериалы: ${videos.size} сер., потоки не отвечают"
+        val (streams, _) = StremioAddonResolver.parseStreams(streamsRaw)
+        return if (streams.isNotEmpty()) {
+            "сериалы: ${videos.size} сер., потоки есть"
+        } else {
+            "сериалы: ${videos.size} сер., потоков нет"
         }
     }
 

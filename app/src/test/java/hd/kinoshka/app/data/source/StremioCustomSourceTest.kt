@@ -77,6 +77,130 @@ class StremioCustomSourceTest {
         assertNull(StremioAddonResolver.parseManifest("not json"))
     }
 
+    @Test
+    fun `manifest exposes series stream and meta flags`() {
+        val m = StremioAddonResolver.parseManifest(
+            """{"id":"com.ex.both","version":"1","name":"Both",
+                "resources":[{"name":"stream","types":["movie","series"],"idPrefixes":["tt"]},
+                             {"name":"meta","types":["series"],"idPrefixes":["tt"]}]}"""
+        )!!
+        assertTrue(m.hasMovieStream)
+        assertTrue(m.hasSeriesStream)
+        assertTrue(m.hasSeriesMeta)
+        val movieOnly = StremioAddonResolver.parseManifest(manifestStrings)!!
+        assertTrue(movieOnly.hasMovieStream)
+        assertFalse(movieOnly.hasSeriesStream)
+        assertFalse(movieOnly.hasSeriesMeta)
+    }
+
+    // --- Meta ---
+
+    @Test
+    fun `meta videos filter specials and sort`() {
+        val raw = """{"meta":{"videos":[
+            {"season":1,"episode":2,"title":"Вторая"},
+            {"season":0,"episode":1,"title":"Спешл"},
+            {"season":1,"episode":1,"title":"Первая"},
+            {"season":1,"episode":1,"title":"Дубль"},
+            {"season":1,"episode":0},
+            {"title":"Без номеров"}
+        ]}}"""
+        val videos = StremioAddonResolver.parseMetaVideos(raw)
+        assertEquals(
+            listOf(
+                StremioAddonResolver.MetaEpisode(1, 1, "Первая"),
+                StremioAddonResolver.MetaEpisode(1, 2, "Вторая")
+            ),
+            videos
+        )
+        assertTrue(StremioAddonResolver.parseMetaVideos("""{"meta":{}}""").isEmpty())
+        assertTrue(StremioAddonResolver.parseMetaVideos("junk").isEmpty())
+    }
+
+    @Test
+    fun `quality rank picks max rendition`() {
+        assertEquals("1080p", StremioAddonResolver.qualityOf("Дубляж", "Addon • 720p • 1080p"))
+        assertNull(StremioAddonResolver.qualityOf("Серия 1", "NoQuality"))
+        assertNull(StremioAddonResolver.qualityOf("", ""))
+    }
+
+    // --- Сериальный резолв с инжектом сети ---
+
+    private val manifestSeries = """
+        {"id":"com.ex.series","version":"1.0.0","name":"Series Addon",
+         "resources":[{"name":"stream","types":["movie","series"],"idPrefixes":["tt"]},
+                      {"name":"meta","types":["series"],"idPrefixes":["tt"]}],
+         "types":["movie","series"]}
+    """.trimIndent()
+
+    private val metaThree = """
+        {"meta":{"videos":[
+            {"season":1,"episode":1,"title":"Пилот"},
+            {"season":1,"episode":2,"title":"Вторая"},
+            {"season":1,"episode":3,"title":"Пустая"}
+        ]}}
+    """.trimIndent()
+
+    private fun seriesFetch(): suspend (String) -> String? = { url ->
+        when {
+            url.endsWith("/manifest.json") -> manifestSeries
+            "/meta/series/" in url -> metaThree
+            url.endsWith(":1:1.json") -> """{"streams":[
+                {"url":"https://cdn.example.com/s1_720.mp4","name":"A","title":"720p"},
+                {"url":"https://cdn.example.com/s1_1080.mp4","name":"A","title":"1080p"}]}"""
+            url.endsWith(":1:2.json") -> """{"streams":[
+                {"url":"https://cdn.example.com/s2.mp4","name":"A"}]}"""
+            else -> """{"streams":[]}"""
+        }
+    }
+
+    @Test
+    fun `resolveSeriesParse builds tracks with ladders`() = runBlocking {
+        val parse = StremioAddonResolver.resolveSeriesParse(
+            stremio(endpoint = "https://series.example.com/x"), "tt0903747", fetch = seriesFetch()
+        )!!
+        assertEquals("CUSTOM_S", parse.sourceName)
+        // Третья серия без потоков пропущена.
+        assertEquals(2, parse.tracks.size)
+        val ep1 = parse.tracks.first { it.episodeNumber == 1 }
+        assertEquals(1, ep1.seasonNumber)
+        assertEquals("custom|CUSTOM_S|stremio", ep1.dubId)
+        assertEquals("Series Addon", ep1.dubTitle)
+        assertEquals("Пилот", ep1.title)
+        // Лучший ранг играет, лестница полная.
+        assertEquals("https://cdn.example.com/s1_1080.mp4", ep1.playerUrl)
+        assertEquals(
+            mapOf("720p" to "https://cdn.example.com/s1_720.mp4", "1080p" to "https://cdn.example.com/s1_1080.mp4"),
+            parse.ladders[ep1.playerUrl]
+        )
+        assertEquals("https://cdn.example.com/s2.mp4", parse.tracks.first { it.episodeNumber == 2 }.playerUrl)
+        assertEquals(parse.tracks.first().playerUrl, parse.url)
+    }
+
+    @Test
+    fun `resolveSeriesParse null without series resources or ids`() = runBlocking {
+        val fetch: suspend (String) -> String? = { manifestStrings }
+        // Манифест только под фильмы.
+        assertNull(
+            StremioAddonResolver.resolveSeriesParse(
+                stremio(endpoint = "https://series.example.com/movie-only"), "tt0903747", fetch = fetch
+            )
+        )
+        var called = false
+        val spy: suspend (String) -> String? = { called = true; manifestSeries }
+        assertNull(
+            StremioAddonResolver.resolveSeriesParse(
+                stremio(endpoint = "https://series.example.com/noid"), null, fetch = spy
+            )
+        )
+        assertNull(
+            StremioAddonResolver.resolveSeriesParse(
+                stremio(endpoint = "https://series.example.com/blank"), "  ", fetch = spy
+            )
+        )
+        assertTrue(!called)
+    }
+
     // --- Потоки ---
 
     @Test
@@ -98,6 +222,16 @@ class StremioCustomSourceTest {
         assertEquals(0, skipped)
         val (broken, _) = StremioAddonResolver.parseStreams("""{"nope":[]}""")
         assertTrue(broken.isEmpty())
+    }
+
+    @Test
+    fun `imdb id sanitized`() {
+        assertEquals("tt0133093", StremioAddonResolver.cleanImdbId("tt0133093"))
+        assertEquals("tt0133093", StremioAddonResolver.cleanImdbId("  tt0133093\n"))
+        assertEquals("tt0133093", StremioAddonResolver.cleanImdbId("imdb:tt0133093 (1999)"))
+        assertNull(StremioAddonResolver.cleanImdbId(null))
+        assertNull(StremioAddonResolver.cleanImdbId("  "))
+        assertNull(StremioAddonResolver.cleanImdbId("kp301"))
     }
 
     // --- URL ---
@@ -201,10 +335,9 @@ class StremioCustomSourceTest {
     }
 
     @Test
-    fun `resolveMovieParse skips series and missing ids`() = runBlocking {
+    fun `resolveMovieParse skips missing ids without network`() = runBlocking {
         var called = false
         val fetch: suspend (String) -> String? = { called = true; manifestStrings }
-        assertNull(StremioAddonResolver.resolveMovieParse(stremio(), "tt0133093", isSeries = true, fetch = fetch))
         assertNull(StremioAddonResolver.resolveMovieParse(stremio(), null, isSeries = false, fetch = fetch))
         assertNull(StremioAddonResolver.resolveMovieParse(stremio(), "  ", isSeries = false, fetch = fetch))
         assertTrue(!called)

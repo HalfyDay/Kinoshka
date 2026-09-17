@@ -164,7 +164,7 @@ fun validateStremioEndpoint(endpoint: String, existing: List<CustomSource>): Cus
     }
     // Двухшаговый гейт диалога: первое «Сохранить» показывает это, второе — сохраняет.
     return CustomSourceCheck.Ok(
-        listOf("Stremio: только фильмы с IMDb ID; сериалы и разделы Аниме/18+ не поддерживаются")
+        listOf("Stremio: фильмы и сериалы с IMDb ID; разделы Аниме/18+ не поддерживаются")
     )
 }
 
