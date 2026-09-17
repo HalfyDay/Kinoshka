@@ -20,8 +20,22 @@ enum class AnimeSourceType(val displayName: String, val description: String, val
      *  В аниме-пикере не участвует — источник остался только в хентай-флоу. */
     SMARTHARD("Smarthard", "Архив shikicinema: озвучки и субтитры; часть ссылок требует VPN", needsVpn = true),
     /** Direct CDN links (ddbb aggregator: turbo/collaps/alloha/veoveo). Movie/QOM rows only —
-     *  never offered by the anime picker (see ANIME_PICKER_SOURCES). */
+     *  never offered by the anime picker (see ANIME_PICKER_SOURCES). Kept as the fallback
+     *  for direct rows whose concrete provider is unknown. */
     DDBB("DDBB", "Прямые ссылки Turbo/Collaps/Alloha/Veoveo"),
+    /** Per-provider direct sources for movies/series: picker QOM rows and the player's
+     *  voiceover dropdown carry the concrete provider (as the anime rows do), so every
+     *  dub is labelled Turbo/HDRezka/VideoCDN/Collaps/Voidboost instead of plain DDBB.
+     *  Never offered by the anime picker (see ANIME_PICKER_SOURCES). */
+    TURBO("Turbo", "Прямые ссылки Turbo (ddbb): MP4 до 1080p, много озвучек"),
+    HDREZKA("HDRezka", "Прямые ссылки HDRezka: фильмы и сериалы, много озвучек"),
+    VIDEOCDN("VideoCDN", "Каталог VideoCDN: фильмы и сериалы по kinopoisk id"),
+    COLLAPS("Collaps", "Встраиваемый плеер Collaps: HLS на серию/фильм"),
+    VOIDBOOST("Voidboost", "Бэкенд Rezka: озвучки Voidboost"),
+    /** Пользовательский embed-источник (настройки → свои источники). Имя конкретного
+     *  источника несёт реестр ([PlaybackSources]), тип — общий чипецкий ярлык.
+     *  Никогда не предлагается аниме-пикером. */
+    CUSTOM("Свои", "Пользовательский embed-источник"),
     /** Hentai provider rows for the player's voiceover switcher (hentai flow in DetailsScreen);
      *  never offered by the anime picker (not in ANIME_PICKER_SOURCES). */
     HENTAI_ALLHENTAI("AllHentai", "Хентай-источник: русские озвучки"),
@@ -175,5 +189,15 @@ data class FlatTranslation(
     val translationId: String,
     val title: String,
     val type: String = "voice",
-    val episodes: List<AnimeEpisode> = emptyList()
+    val episodes: List<AnimeEpisode> = emptyList(),
+    /**
+     * Конкретный провайдер строки, когда [source] — групповой тип (CUSTOM свои источники):
+     * «Тест Коллапс» вместо голого «Свои». Null = отображать [AnimeSourceType.displayName].
+     * Дефолт держит совместимость со старыми persisted-каталогами плеера.
+     */
+    val sourceLabel: String? = null
 )
+
+/** Имя источника для UI: конкретный провайдер своих либо displayName типа. */
+fun FlatTranslation.displaySourceName(): String =
+    sourceLabel?.takeIf { it.isNotBlank() } ?: source.displayName

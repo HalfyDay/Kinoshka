@@ -156,11 +156,48 @@ object PlaybackSources {
 
     private val byId: Map<String, PlaybackSourceInfo> = ALL.associateBy { it.id }
 
-    fun info(id: String): PlaybackSourceInfo? = byId[id.uppercase()]
+    /**
+     * Свои источники (вариант A) поверх реестра: обновляется при старте приложения и
+     * при каждом сохранении/удалении ([setCustomSourceInfos]). Volatile — читается
+     * резолверами с IO-потоков без синхронизации.
+     */
+    @Volatile
+    var customSourceInfos: List<PlaybackSourceInfo> = emptyList()
+        private set
+
+    fun setCustomSourceInfos(infos: List<PlaybackSourceInfo>) {
+        customSourceInfos = infos.toList()
+    }
+
+    /** Встроенные + свои — для списков UI (настройки, пикер). */
+    fun allInfos(): List<PlaybackSourceInfo> = ALL + customSourceInfos
+
+    fun customInfo(source: CustomSource): PlaybackSourceInfo = PlaybackSourceInfo(
+        id = source.id,
+        displayName = source.name,
+        description = buildString {
+            append("Свой источник: ${source.embedHost() ?: source.urlTemplate}")
+            val cats = source.categories.ifEmpty { setOf(SourceCategory.FILMS) }
+            if (cats != setOf(SourceCategory.FILMS)) {
+                append(" · ")
+                append(cats.sortedBy { it.ordinal }.joinToString { it.title })
+            }
+        },
+        categories = source.categories.ifEmpty { setOf(SourceCategory.FILMS) },
+        animeSourceType = AnimeSourceType.CUSTOM
+    )
+
+    fun info(id: String): PlaybackSourceInfo? {
+        val key = id.uppercase()
+        return byId[key] ?: customSourceInfos.firstOrNull { it.id == key }
+    }
 
     fun displayName(id: String): String = info(id)?.displayName ?: id
 
-    fun isKnown(id: String): Boolean = byId.containsKey(id.uppercase())
+    fun isKnown(id: String): Boolean {
+        val key = id.uppercase()
+        return byId.containsKey(key) || customSourceInfos.any { it.id == key }
+    }
 
     /** Нормализация пользовательского/сериализованного id к каноническому (верхний регистр). */
     fun canonical(id: String): String = id.trim().uppercase()

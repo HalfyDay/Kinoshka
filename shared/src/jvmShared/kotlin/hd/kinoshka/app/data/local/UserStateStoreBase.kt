@@ -10,6 +10,7 @@ import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.formatSyncTimeMs
+import hd.kinoshka.app.data.source.embedHost
 import java.util.Locale
 
 
@@ -704,9 +705,11 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         prefs.putBoolean(showFpsCounterKey, enabled).apply()
     }
 
-    // ---- Источники видео: один выключатель (экран «Источники»): выключен —
-    // значит не запрашивается и не показывается. Отдельного «скрыть, но оставить
-    // работать» больше нет: старые скрытые записи при чтении считаются выключенными.
+    // ---- Источники видео: выключатель раздельно по разделам (экран «Источники»).
+    // Ключ записи — либо голый id («ANISTAR» = выключен везде, в т.ч. старые
+    // записи), либо «КАТЕГОРИЯ:ID» («ADULT:ANISTAR» = выключен только в 18+).
+    // Отдельного «скрыть, но оставить работать» больше нет: старые скрытые
+    // записи при чтении считаются выключенными.
 
     private val disabledSourcesKey = "disabled_sources_csv"
     private val hiddenSourcesKey = "hidden_sources_csv"
@@ -724,34 +727,146 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         else prefs.putString(key, canonical.joinToString(",")).apply()
     }
 
-    /** Источники, чья работа выключена (не запрашиваются и не показываются). */
-    fun getDisabledSources(): Set<String> =
+    /** Сырые ключи выключения (голые id + «КАТЕГОРИЯ:ID») — для экрана «Источники». */
+    fun getDisabledSourceKeys(): Set<String> =
         readIdSet(disabledSourcesKey) + readIdSet(hiddenSourcesKey)
+
+    /**
+     * Id источников, выключенных для [category] (глобально выключенные входят
+     * всегда). Без категории — старое поведение: только голые id.
+     */
+    fun getDisabledSources(category: hd.kinoshka.app.data.source.SourceCategory? = null): Set<String> {
+        val keys = getDisabledSourceKeys()
+        if (category == null) return keys.filter { ':' !in it }.toSet()
+        val prefix = category.name + ":"
+        return keys.filter { ':' !in it || it.startsWith(prefix) }
+            .map { it.removePrefix(prefix) }
+            .toSet()
+    }
 
     /** Устарело: скрытие сложено в выключение, метод оставлен для совместимости. */
     fun getHiddenSources(): Set<String> = readIdSet(hiddenSourcesKey)
 
-    fun isSourceEnabled(id: String): Boolean =
-        getDisabledSources().none { it == id.trim().uppercase() }
+    fun isSourceEnabled(id: String, category: hd.kinoshka.app.data.source.SourceCategory? = null): Boolean =
+        id.trim().uppercase() !in getDisabledSources(category)
 
     /** Устарело: видимость теперь совпадает с работой. */
     fun isSourceVisible(id: String): Boolean = isSourceEnabled(id)
 
-    fun setSourceEnabled(id: String, enabled: Boolean) = synchronized(BLOB_LOCK) {
+    /**
+     * Выключатель источника. Без категории — глобально (голый id, как раньше);
+     * с категорией — только для раздела («КАТЕГОРИЯ:ID»). Включение раздела при
+     * глобально выключенном источнике разбивает глобальный флаг на остальные
+     * его разделы, чтобы они остались выключенными.
+     */
+    fun setSourceEnabled(
+        id: String,
+        enabled: Boolean,
+        category: hd.kinoshka.app.data.source.SourceCategory? = null
+    ) = synchronized(BLOB_LOCK) {
         val key = id.trim().uppercase()
         if (key.isEmpty()) return
+        if (category == null) {
+            val ids = readIdSet(disabledSourcesKey)
+            if (enabled) ids.remove(key) else ids.add(key)
+            writeIdSet(disabledSourcesKey, ids)
+            // Чистим устаревший флаг скрытия, чтобы сеты не расходились.
+            if (enabled) {
+                val hidden = readIdSet(hiddenSourcesKey)
+                if (hidden.remove(key)) writeIdSet(hiddenSourcesKey, hidden)
+            }
+            return
+        }
+        val scoped = "${category.name}:$key"
         val ids = readIdSet(disabledSourcesKey)
-        if (enabled) ids.remove(key) else ids.add(key)
-        writeIdSet(disabledSourcesKey, ids)
-        // Чистим устаревший флаг скрытия, чтобы сеты не расходились.
         if (enabled) {
+            ids.remove(scoped)
+            if (ids.remove(key)) {
+                // Был выключен везде — остальные разделы источника остаются
+                // выключенными явно.
+                hd.kinoshka.app.data.source.PlaybackSources.info(key)
+                    ?.categories
+                    ?.filter { it != category }
+                    ?.forEach { ids.add("${it.name}:$key") }
+            }
+            writeIdSet(disabledSourcesKey, ids)
             val hidden = readIdSet(hiddenSourcesKey)
-            if (hidden.remove(key)) writeIdSet(hiddenSourcesKey, hidden)
+            if (hidden.remove(scoped)) writeIdSet(hiddenSourcesKey, hidden)
+        } else {
+            if (key !in ids) ids.add(scoped)
+            writeIdSet(disabledSourcesKey, ids)
         }
     }
 
     /** Устарело: перенаправлено на [setSourceEnabled] (один выключатель). */
     fun setSourceVisible(id: String, visible: Boolean) = setSourceEnabled(id, visible)
+
+    // ---- Свои источники (вариант A кастомных): CRUD поверх prefs, терпимое чтение.
+    private val customSourcesKey = "custom_sources_json"
+
+    fun getCustomSources(): List<hd.kinoshka.app.data.source.CustomSource> =
+        hd.kinoshka.app.data.source.parseCustomSources(prefs.getString(customSourcesKey, null))
+
+    /** Upsert по id + актуальная регистрация прокси-хоста и реестра в процессе. */
+    fun saveCustomSource(source: hd.kinoshka.app.data.source.CustomSource) = synchronized(BLOB_LOCK) {
+        val current = getCustomSources().toMutableList()
+        val index = current.indexOfFirst { it.id == source.id }
+        if (index >= 0) {
+            val old = current[index]
+            current[index] = source
+            unregisterCustomProxyHost(old)
+        } else {
+            current += source
+        }
+        prefs.putString(
+            customSourcesKey,
+            hd.kinoshka.app.data.source.customSourcesToJson(current)
+        ).apply()
+        registerCustomProxyHost(source)
+        refreshCustomRegistry(current)
+    }
+
+    /** Удаление + чистка выключателя + снятие прокси-хоста. */
+    fun deleteCustomSource(id: String) = synchronized(BLOB_LOCK) {
+        val key = id.trim().uppercase()
+        if (key.isEmpty()) return
+        val current = getCustomSources()
+        val removed = current.firstOrNull { it.id == key } ?: return
+        prefs.putString(
+            customSourcesKey,
+            hd.kinoshka.app.data.source.customSourcesToJson(current.filter { it.id != key })
+        ).apply()
+        unregisterCustomProxyHost(removed)
+        refreshCustomRegistry(current.filter { it.id != key })
+        for (storeKey in listOf(disabledSourcesKey, hiddenSourcesKey)) {
+            val ids = readIdSet(storeKey)
+            // or (не ||): все ветки обязаны выполниться.
+            var changed = ids.remove(key)
+            for (category in hd.kinoshka.app.data.source.SourceCategory.entries) {
+                changed = ids.remove("${category.name}:$key") or changed
+            }
+            if (changed) writeIdSet(storeKey, ids)
+        }
+    }
+
+    private fun registerCustomProxyHost(source: hd.kinoshka.app.data.source.CustomSource) {
+        source.takeIf { it.useProxy }?.embedHost()?.let {
+            hd.kinoshka.app.data.source.StreamProxyConfig.registerCustomHost(it)
+        }
+    }
+
+    private fun refreshCustomRegistry(current: List<hd.kinoshka.app.data.source.CustomSource>) {
+        hd.kinoshka.app.data.source.PlaybackSources.setCustomSourceInfos(
+            current.map { hd.kinoshka.app.data.source.PlaybackSources.customInfo(it) }
+        )
+    }
+
+    private fun unregisterCustomProxyHost(source: hd.kinoshka.app.data.source.CustomSource) {
+        // Снимаем, только если хост не нужен другому кастомному источнику с прокси.
+        val host = source.embedHost() ?: return
+        val stillNeeded = getCustomSources().any { it.id != source.id && it.useProxy && it.embedHost() == host }
+        if (!stillNeeded) hd.kinoshka.app.data.source.StreamProxyConfig.unregisterCustomHost(host)
+    }
 
     fun getSavedContentType(): hd.kinoshka.app.ui.screens.ContentType {
         val name = prefs.getString("saved_content_type", null) ?: return hd.kinoshka.app.ui.screens.ContentType.FILMS

@@ -1,5 +1,6 @@
 package hd.kinoshka.app.data.source
 
+import hd.kinoshka.app.data.model.AnimeSourceType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -59,5 +60,40 @@ class PlaybackSourcesTest {
         assertEquals("Kodik", PlaybackSources.displayName("kodik"))
         assertEquals("Turbo", PlaybackSources.displayName("TURBO"))
         assertNotNull(PlaybackSources.info(PlaybackSources.SHIKIMORI))
+    }
+
+    @Test
+    fun `movie sources map to their own player source type`() {
+        assertEquals(AnimeSourceType.KODIK, PlaybackSources.animeSourceTypeFor("KODIK"))
+        assertEquals(AnimeSourceType.TURBO, PlaybackSources.animeSourceTypeFor("turbo"))
+        assertEquals(AnimeSourceType.HDREZKA, PlaybackSources.animeSourceTypeFor("HDREZKA"))
+        assertEquals(AnimeSourceType.VIDEOCDN, PlaybackSources.animeSourceTypeFor("videocdn"))
+        assertEquals(AnimeSourceType.COLLAPS, PlaybackSources.animeSourceTypeFor("Collaps"))
+        assertEquals(AnimeSourceType.VOIDBOOST, PlaybackSources.animeSourceTypeFor("voidboost"))
+        // Web-only embeds and unknown ids keep the generic DDBB chip.
+        assertEquals(AnimeSourceType.DDBB, PlaybackSources.animeSourceTypeFor("ALLOHA"))
+        assertEquals(AnimeSourceType.DDBB, PlaybackSources.animeSourceTypeFor("nope"))
+    }
+
+    @Test
+    fun `dub ids resolve to their provider source type`() {
+        assertEquals(AnimeSourceType.TURBO, PlaybackSources.animeSourceTypeForDubId("turbo|dubljaz"))
+        assertEquals(AnimeSourceType.HDREZKA, PlaybackSources.animeSourceTypeForDubId("hdrezka"))
+        assertEquals(AnimeSourceType.COLLAPS, PlaybackSources.animeSourceTypeForDubId("collaps"))
+        assertEquals(AnimeSourceType.VIDEOCDN, PlaybackSources.animeSourceTypeForDubId("videocdn|12"))
+        assertEquals(AnimeSourceType.VOIDBOOST, PlaybackSources.animeSourceTypeForDubId("voidboost|anisat"))
+        assertEquals(AnimeSourceType.DDBB, PlaybackSources.animeSourceTypeForDubId("tt0133093"))
+        assertEquals(AnimeSourceType.DDBB, PlaybackSources.animeSourceTypeForDubId(""))
+    }
+
+    @Test
+    fun `sources count label pluralizes`() {
+        assertEquals("1 источник", PlaybackSources.sourcesCountLabel(1))
+        assertEquals("2 источника", PlaybackSources.sourcesCountLabel(2))
+        assertEquals("4 источника", PlaybackSources.sourcesCountLabel(4))
+        assertEquals("5 источников", PlaybackSources.sourcesCountLabel(5))
+        assertEquals("8 источников", PlaybackSources.sourcesCountLabel(8))
+        assertEquals("11 источников", PlaybackSources.sourcesCountLabel(11))
+        assertEquals("21 источник", PlaybackSources.sourcesCountLabel(21))
     }
 }

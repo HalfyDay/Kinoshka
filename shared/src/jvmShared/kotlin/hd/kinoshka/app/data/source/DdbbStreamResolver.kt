@@ -69,7 +69,13 @@ object DdbbStreamResolver {
          * Structured turbo serial catalog: one entry per (dub × episode) with S/E numbers from
          * the t1 label. Empty for movies and embeds without episode structure.
          */
-        val episodeTracks: List<hd.kinoshka.app.data.model.DdbbEpisodeTrack> = emptyList()
+        val episodeTracks: List<hd.kinoshka.app.data.model.DdbbEpisodeTrack> = emptyList(),
+        /**
+         * Provider of each merged voiceover row (dub title → sourceName of the parse that won
+         * the row, e.g. "Turbo"/"Collaps"/"HDRezka"). The merged [translations] list alone
+         * cannot tell providers apart — without this every QOM row is labelled DDBB.
+         */
+        val translationSources: Map<String, String> = emptyMap()
     )
 
     /** Sources whose embeds are worth re-resolving inside a real browser environment. */
@@ -337,6 +343,123 @@ object DdbbStreamResolver {
     private fun defaultLadderLabel(url: String, perDubLadders: Map<String, Map<String, String>>, embedQualities: Map<String, String>): String =
         perDubLadders[url]?.keys?.joinToString("/") ?: embedQualities.keys.firstOrNull() ?: "Auto"
 
+    /**
+     * One non-turbo ddbb embed (Collaps/Venom HLS) as a [SourceParse]: series carry per-episode
+     * HLS rows in the makePlayer config, movies a single HLS with audio names. Row mapping
+     * mirrors [WebmasterStreamSources.resolveCollaps], minus its network fetch.
+     * Public for unit tests (:app depends on :shared as a separate module).
+     */
+    fun collapsEmbedParse(
+        type: String,
+        headers: Map<String, String>,
+        qualities: Map<String, String>,
+        html: String,
+    ): SourceParse? {
+        if (qualities.isEmpty()) return null
+        val sourceName = type.replaceFirstChar { it.uppercase() }
+        val collaps = runCatching { WebmasterStreamSources.parseCollapsMakePlayer(html) }.getOrNull()
+        val tracks = collaps?.seasons.orEmpty().flatMap { season ->
+            season.episodes.map { ep ->
+                hd.kinoshka.app.data.model.DdbbEpisodeTrack(
+                    dubId = "collaps",
+                    dubTitle = ep.audioNames.firstOrNull()?.takeIf { it.isNotEmpty() } ?: sourceName,
+                    seasonNumber = season.number,
+                    episodeNumber = ep.number,
+                    title = ep.title,
+                    playerUrl = ep.hls
+                )
+            }
+        }
+        val ladders = LinkedHashMap<String, Map<String, String>>()
+        tracks.forEach { ladders.putIfAbsent(it.playerUrl, mapOf("Auto" to it.playerUrl)) }
+        val movieHls = collaps?.movieHls
+        val movieAudio = collaps?.movieAudio.orEmpty()
+        val voiceRows = if (tracks.isEmpty() && movieHls != null) {
+            listOf((movieAudio.firstOrNull()?.takeIf { it.isNotEmpty() } ?: sourceName) to movieHls)
+        } else emptyList()
+        for ((_, url) in voiceRows) ladders.putIfAbsent(url, mapOf("Auto" to url))
+        if (tracks.isEmpty() && voiceRows.isEmpty()) {
+            // The makePlayer shape changed or is unparsed, but a direct HLS was extracted:
+            // expose it as one row rather than hiding a playable source.
+            val bestKey = qualityPreference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first()
+            val bestUrl = qualities.getValue(bestKey)
+            KLog.w(TAG, "$type: makePlayer unparsed, exposing raw HLS row")
+            return SourceParse(
+                sourceName = sourceName,
+                url = bestUrl,
+                headers = headers,
+                qualities = qualities,
+                voiceRows = listOf(sourceName to bestUrl),
+                ladders = mapOf(bestUrl to qualities)
+            )
+        }
+        val defaultUrl = voiceRows.firstOrNull()?.second
+            ?: tracks.firstOrNull()?.playerUrl
+            ?: return null
+        KLog.i(TAG, "$type: collaps embed: ${tracks.size} episode tracks, movie=${movieHls != null}")
+        return SourceParse(
+            sourceName = sourceName,
+            url = defaultUrl,
+            headers = headers,
+            qualities = ladders[defaultUrl] ?: mapOf("Auto" to defaultUrl),
+            voiceRows = voiceRows,
+            tracks = tracks,
+            ladders = ladders
+        )
+    }
+
+    /**
+     * Full parse of an ARBITRARY embed page (custom sources, variant A): turbo blob →
+     * dub rows + episode tracks + ladders, Collaps/Venom HLS → movie/serial rows, else null.
+     * Unlike [parseDdbbSource] carries no kinopoiskId (no voiceover-row cache fallback — чужой
+     * кэш сюда подмешивать нельзя) and namespaces every track dubId with [dubIdPrefix]
+     * (custom tracks must never merge into built-in providers' dubs).
+     * Public for [CustomSourceResolver] (:app depends on :shared as a separate module).
+     */
+    fun parseGenericEmbed(
+        sourceName: String,
+        dubIdPrefix: String,
+        embedUrl: String,
+        html: String,
+        headers: Map<String, String>,
+    ): SourceParse? {
+        val (_, qualities) = extractFromEmbed(html, embedUrl) ?: return null
+        if (qualities.isEmpty()) return null
+        val turboBlob = turboBlob(html)
+        if (turboBlob != null) {
+            val turboEntries = extractTurboEntries(turboBlob)
+            val translations = voiceoverRowsFromEntries(turboEntries)
+            val serialParse = buildSerialParse(turboEntries)
+            val perDubLadders = buildLadders(turboEntries)
+            if (serialParse.tracks.isEmpty() && translations.isEmpty()) {
+                KLog.w(TAG, "$sourceName: turbo blob present but no rows decoded")
+                return null
+            }
+            val defaultDubUrl = translations.firstOrNull()?.second
+            val defaultUrl = defaultDubUrl
+                ?: qualities.getValue(qualityPreference.firstOrNull { qualities.containsKey(it) } ?: qualities.keys.first())
+            KLog.i(TAG, "$sourceName: generic turbo parse: ${translations.size} dubs, " +
+                "${serialParse.tracks.size} tracks")
+            return SourceParse(
+                sourceName = sourceName,
+                url = defaultUrl,
+                headers = headers,
+                qualities = defaultDubUrl?.let { perDubLadders[it] } ?: qualities,
+                voiceRows = translations,
+                tracks = serialParse.tracks.map { it.copy(dubId = dubIdPrefix + it.dubId) },
+                ladders = perDubLadders
+            )
+        }
+        // Non-turbo (Collaps/Venom HLS): row mapping mirrors collapsEmbedParse, dubIds — with prefix.
+        return collapsEmbedParse(sourceName, headers, qualities, html)?.let { parse ->
+            parse.copy(tracks = parse.tracks.map { it.copy(dubId = dubIdPrefix + it.dubId) })
+        }
+    }
+
+    /** Raw turbo config blob of an embed page, null when the page carries no turbo player.
+     * Public for unit tests and the source health check. */
+    fun turboBlob(html: String): String? = TURBO_BLOB_REGEX.find(html)?.groupValues?.get(1)
+
     /** One headless-WebView harvest of the highest-ranked harvestable ddbb embed. */
     private suspend fun harvestDdbbSource(players: List<Pair<String, String>>, deadline: Long): SourceParse? {
         if (System.currentTimeMillis() >= deadline) return null
@@ -362,6 +485,18 @@ object DdbbStreamResolver {
         )
     }
 
+    /**
+     * Provider of each merged voiceover row: first parse (priority order) wins the row,
+     * mirroring [mergeSourceParses]' voiceRows putIfAbsent. Public for unit tests.
+     */
+    fun translationSources(parses: List<SourceParse>): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for (parse in parses) {
+            for ((title, _) in parse.voiceRows) out.putIfAbsent(title, parse.sourceName)
+        }
+        return out
+    }
+
     /** Registers and builds the stream for an already-parsed set of sources (no probing). */
     private fun buildMergedStream(kinopoiskId: Int, parses: List<SourceParse>): DdbbStream? {
         if (parses.isEmpty()) return null
@@ -381,7 +516,8 @@ object DdbbStreamResolver {
             qualities = merged.qualities,
             sourceName = merged.sourceName,
             translations = merged.voiceRows,
-            episodeTracks = merged.tracks
+            episodeTracks = merged.tracks,
+            translationSources = translationSources(ordered)
         )
     }
 
@@ -419,7 +555,8 @@ object DdbbStreamResolver {
             qualities = chosenLadder,
             sourceName = winner.sourceName,
             translations = merged.voiceRows,
-            episodeTracks = merged.tracks
+            episodeTracks = merged.tracks,
+            translationSources = translationSources(ordered)
         )
     }
 
@@ -635,14 +772,16 @@ object DdbbStreamResolver {
 
     /**
      * Per-source parses for the movie selection page: every ddbb embed (Turbo/Collaps/
-     * Alloha/Veoveo) plus the webmaster trio (VideoCDN/Collaps/Voidboost) resolved
-     * CONCURRENTLY, returned unmerged and unprobed — the picker groups dub/episode rows
-     * by [SourceParse.sourceName] itself. Sources in [disabledIds] (PlaybackSources ids)
-     * are skipped outright.
+     * Alloha/Veoveo) plus the webmaster trio (VideoCDN/Collaps/Voidboost) plus user
+     * custom embed sources resolved CONCURRENTLY, returned unmerged and unprobed —
+     * the picker groups dub/episode rows by [SourceParse.sourceName] itself.
+     * Sources in [disabledIds] (PlaybackSources ids) are skipped outright.
      */
     suspend fun fetchSourceParses(
         kinopoiskId: Int,
         disabledIds: Set<String> = emptySet(),
+        imdbId: String? = null,
+        customSources: List<CustomSource> = emptyList(),
     ): List<SourceParse> = withContext(Dispatchers.IO) {
         if (kinopoiskId <= 0) return@withContext emptyList()
         val disabled = disabledIds.map { it.trim().lowercase() }.toSet()
@@ -682,6 +821,15 @@ object DdbbStreamResolver {
                 jobs += async {
                     runCatching { WebmasterStreamSources.resolveVoidboost(kinopoiskId) }
                         .onFailure { KLog.w(TAG, "voidboost: picker resolve failed", it) }
+                        .getOrNull()
+                }
+            }
+            // Свои источники: тем же конкуррентным пулом, в порядке добавления.
+            for (custom in customSources) {
+                if (isDisabled(custom.id)) continue
+                jobs += async {
+                    runCatching { CustomSourceResolver.resolveOne(custom, kinopoiskId, imdbId) }
+                        .onFailure { KLog.w(TAG, "custom ${custom.id}: picker resolve failed", it) }
                         .getOrNull()
                 }
             }
@@ -739,8 +887,14 @@ object DdbbStreamResolver {
     }
 
     private fun fetchDdbbPlayers(kinopoiskId: Int): List<Pair<String, String>> {
+        val host = "p2.ddbb.lol"
+        if (HostCooldown.shouldSkip(host)) {
+            KLog.i(TAG, "players api skipped (cooldown)")
+            return emptyList()
+        }
         // Three quick attempts beat two slow ones: the host intermittently drops connects for
         // a few seconds at a time, so an extra try usually lands (live-verified on Rick&Morty).
+        var sawConnectivityFailure = false
         for (attempt in 0..2) {
             runCatching {
                 val req = Request.Builder()
@@ -764,25 +918,43 @@ object DdbbStreamResolver {
                         result += type to url
                     }
                     if (result.isNotEmpty()) {
+                        HostCooldown.recordSuccess(host)
                         return result.sortedBy { typeRank(it.first) }
                     }
                 }
-            }.onFailure { KLog.w(TAG, "players api attempt $attempt failed", it) }
+            }.onFailure {
+                KLog.w(TAG, "players api attempt $attempt failed", it)
+                if (HostCooldown.isConnectivityFailure(it)) sawConnectivityFailure = true
+            }
         }
+        if (sawConnectivityFailure) HostCooldown.recordFailure(host)
         return emptyList()
     }
 
-    private fun fetchHtml(url: String): String? = runCatching {
-        val req = Request.Builder()
-            .url(url)
-            .addHeader("User-Agent", USER_AGENT)
-            .addHeader("Referer", "https://ddbb.lol/")
-            .build()
-        httpClient.newCall(req).execute().use { response ->
-            if (!response.isSuccessful) return@runCatching null
-            response.body.string().takeIf { it.isNotEmpty() }
+    private fun fetchHtml(url: String): String? {
+        val host = HostCooldown.hostOf(url)
+        if (host.isNotEmpty() && HostCooldown.shouldSkip(host)) {
+            KLog.i(TAG, "${host.take(40)} embed skipped (cooldown)")
+            return null
         }
-    }.getOrNull()
+        return try {
+            val req = Request.Builder()
+                .url(url)
+                .addHeader("User-Agent", USER_AGENT)
+                .addHeader("Referer", "https://ddbb.lol/")
+                .build()
+            httpClient.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) return null
+                response.body.string().takeIf { it.isNotEmpty() }?.also {
+                    if (host.isNotEmpty()) HostCooldown.recordSuccess(host)
+                }
+            }
+        } catch (e: Exception) {
+            KLog.w(TAG, "${host.take(40)} embed fetch failed: ${e.javaClass.simpleName}")
+            if (host.isNotEmpty() && HostCooldown.isConnectivityFailure(e)) HostCooldown.recordFailure(host)
+            null
+        }
+    }
 
     private const val USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

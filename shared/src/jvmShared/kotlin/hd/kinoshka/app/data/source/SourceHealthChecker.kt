@@ -25,6 +25,12 @@ data class SourceHealth(
 object SourceHealthChecker {
     private const val TAG = "SourceHealthChecker"
 
+    /**
+     * Свои источники для проб: приложение ставит лямбду на живой стор при старте
+     * (мостом как DdbbHarvestBridge) — чекер prefs не трогает.
+     */
+    var customSourceProvider: () -> List<CustomSource> = { emptyList() }
+
     /** Известный тайтл для проб: Матрица (kp=301) есть почти в каждом кино-каталоге. */
     const val PROBE_KINOPOISK_ID = 301
 
@@ -159,7 +165,52 @@ object SourceHealthChecker {
         PlaybackSources.HENTAI_HENTAIZ -> probeHentaiz()
         PlaybackSources.HENTAI_HANIME1 -> probeHttpHost("https://hanime1.me/")
         PlaybackSources.HENTAI_OPPAI -> probeHttpHost("https://oppai.stream/")
-        else -> false to "Неизвестный источник"
+        else -> probeCustom(id)
+    }
+
+    /**
+     * Проба своего источника: шаблон с kp=301 → fetch → extractFromEmbed. Извлеклось —
+     * зелёный «прямой поток», embed живой без потока — зелёный «только веб-режим»
+     * (как Alloha/Veoveo), иначе красный с причиной. Шаблонам только под {imdb}
+     * честно отвечаем, что проба невозможна. Публична: диалог добавления проверяет
+     * ещё не сохранённый черновик.
+     */
+    suspend fun checkCustomSource(
+        source: CustomSource,
+        timeoutMs: Long = DEFAULT_TIMEOUT_MS
+    ): SourceHealth = withContext(Dispatchers.IO) {
+        val start = System.currentTimeMillis()
+        val result = withTimeoutOrNull(timeoutMs) {
+            runCatching { probeCustomSource(source) }.getOrElse { e ->
+                KLog.w(TAG, "health custom ${source.id} failed: ${e.javaClass.simpleName}")
+                false to "Ошибка: ${e.javaClass.simpleName}"
+            }
+        } ?: (false to "Превышено время ожидания (${timeoutMs / 1000} c)")
+        SourceHealth(
+            id = source.id,
+            ok = result.first,
+            latencyMs = System.currentTimeMillis() - start,
+            message = result.second
+        )
+    }
+
+    private fun probeCustomSource(source: CustomSource): Pair<Boolean, String> {
+        val url = source.buildUrl(PROBE_KINOPOISK_ID, null)
+            ?: return false to "Шаблон без {kp}: проба невозможна"
+        val html = httpGet(url, source.effectiveReferer(url)) ?: return false to "Embed не загрузился"
+        val extracted = DdbbStreamResolver.extractFromEmbed(html, url)
+        return when {
+            extracted != null && extracted.second.isNotEmpty() ->
+                true to "OK: прямой поток извлекается"
+            else -> true to "Embed отвечает (только веб-режим)"
+        }
+    }
+
+    private suspend fun probeCustom(id: String): Pair<Boolean, String> {
+        if (!CustomSource.isCustomId(id)) return false to "Неизвестный источник"
+        val custom = customSourceProvider().firstOrNull { it.id == id }
+            ?: return false to "Источник удалён"
+        return probeCustomSource(custom)
     }
 
     /**

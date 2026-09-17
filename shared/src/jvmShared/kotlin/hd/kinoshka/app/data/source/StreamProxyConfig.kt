@@ -54,9 +54,27 @@ object StreamProxyConfig {
         return if (needsProxy(url)) raw else ""
     }
 
+    /**
+     * Хосты кастомных источников с включённым «через прокси» (вариант A): регистрируются
+     * при старте приложения и при сохранении источника, снимаются при удалении/выключении
+     * тумблера. Читаются на каждый запрос — рестарт не нужен.
+     */
+    private val extraHostSuffixes: MutableSet<String> =
+        java.util.Collections.synchronizedSet(LinkedHashSet())
+
+    fun registerCustomHost(host: String) {
+        val clean = host.trim().lowercase().trim('.')
+        if (clean.isNotEmpty() && '.' in clean) extraHostSuffixes.add(clean)
+    }
+
+    fun unregisterCustomHost(host: String) {
+        extraHostSuffixes.remove(host.trim().lowercase().trim('.'))
+    }
+
     fun needsProxy(url: String): Boolean {
         val host = hostOf(url) ?: return false
-        return PROXIED_HOST_SUFFIXES.any { suffix -> host == suffix || host.endsWith(".$suffix") }
+        return PROXIED_HOST_SUFFIXES.any { suffix -> host == suffix || host.endsWith(".$suffix") } ||
+            extraHostSuffixes.any { suffix -> host == suffix || host.endsWith(".$suffix") }
     }
 
     /** Public for unit tests. `http(s)://…` → HTTP-прокси, `socks5://…`/`socks://…` → SOCKS,
