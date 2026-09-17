@@ -225,6 +225,7 @@ fun MpvexTheme(content: @Composable () -> Unit) {
 
     val useDarkTheme = when (appThemeMode) {
         AppThemeMode.CURRENT -> darkTheme
+        AppThemeMode.LIGHT -> false
         AppThemeMode.DARK, AppThemeMode.AMOLED -> true
     }
     val useAmoled = amoledMode || appThemeMode == AppThemeMode.AMOLED

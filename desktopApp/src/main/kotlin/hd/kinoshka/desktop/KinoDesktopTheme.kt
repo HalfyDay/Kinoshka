@@ -1,5 +1,8 @@
 package hd.kinoshka.desktop
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
@@ -9,6 +12,7 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -19,7 +23,7 @@ import hd.kinoshka.app.data.local.AppThemeMode
 
 /**
  * Темы desktop-приложения — те же палитры, что в KinoTheme Android-приложения
- * (app/.../ui/theme/Theme.kt), без dynamicColor: выбор системная/тёмная/AMOLED
+ * (app/.../ui/theme/Theme.kt), без dynamicColor: выбор системная/светлая/тёмная/AMOLED
  * из настроек (AppThemeMode) проходит через FilmsViewModel.setThemeMode и там же
  * сохраняется, поэтому тема едина между платформами.
  */
@@ -141,11 +145,36 @@ fun KinoDesktopTheme(
 ) {
     val colors = when (themeMode) {
         AppThemeMode.CURRENT -> if (isSystemInDarkTheme()) ExpressiveDarkColors else ExpressiveLightColors
+        AppThemeMode.LIGHT -> ExpressiveLightColors
         AppThemeMode.DARK -> ExpressiveDarkColors
         AppThemeMode.AMOLED -> AmoledDarkColors
     }
+    // Плавная анимация смены темы, как на Android: цвета едут к целевым ~450 мс.
+    val spec = tween<Color>(durationMillis = 450, easing = FastOutSlowInEasing)
+    val background by animateColorAsState(colors.background, spec, label = "themeBackground")
+    val onBackground by animateColorAsState(colors.onBackground, spec, label = "themeOnBackground")
+    val surface by animateColorAsState(colors.surface, spec, label = "themeSurface")
+    val onSurface by animateColorAsState(colors.onSurface, spec, label = "themeOnSurface")
+    val surfaceContainer by animateColorAsState(colors.surfaceContainer, spec, label = "themeSurfaceContainer")
+    val surfaceContainerHigh by animateColorAsState(colors.surfaceContainerHigh, spec, label = "themeSurfaceContainerHigh")
+    val primary by animateColorAsState(colors.primary, spec, label = "themePrimary")
+    val onPrimary by animateColorAsState(colors.onPrimary, spec, label = "themeOnPrimary")
+    val primaryContainer by animateColorAsState(colors.primaryContainer, spec, label = "themePrimaryContainer")
+    val onPrimaryContainer by animateColorAsState(colors.onPrimaryContainer, spec, label = "themeOnPrimaryContainer")
+    val animated = colors.copy(
+        background = background,
+        onBackground = onBackground,
+        surface = surface,
+        onSurface = onSurface,
+        surfaceContainer = surfaceContainer,
+        surfaceContainerHigh = surfaceContainerHigh,
+        primary = primary,
+        onPrimary = onPrimary,
+        primaryContainer = primaryContainer,
+        onPrimaryContainer = onPrimaryContainer
+    )
     MaterialTheme(
-        colorScheme = colors,
+        colorScheme = animated,
         typography = KinoTypography,
         shapes = KinoShapes,
         content = content

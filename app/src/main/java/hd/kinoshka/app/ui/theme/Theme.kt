@@ -2,6 +2,9 @@
 
 import android.app.Activity
 import android.os.Build
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -13,6 +16,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -148,6 +152,13 @@ fun KinoTheme(
     val view = LocalView.current
 
     val colors = when (themeMode) {
+        AppThemeMode.LIGHT -> {
+            if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                dynamicLightColorScheme(context)
+            } else {
+                ExpressiveLightColors
+            }
+        }
         AppThemeMode.DARK -> {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 dynamicDarkColorScheme(context)
@@ -185,10 +196,15 @@ fun KinoTheme(
         }
     }
 
+    // Плавная анимация смены темы: цвета едут к целевым ~450 мс,
+    // а не щёлкают мгновенно (видно и в пике выбора темы, и по всему приложению).
+    val animatedColors = animateKinoColorScheme(colors)
+
     if (!view.isInEditMode) {
         val isAmoled = themeMode == AppThemeMode.AMOLED
         val isDarkForSystemBars = when (themeMode) {
             AppThemeMode.CURRENT -> darkTheme
+            AppThemeMode.LIGHT -> false
             AppThemeMode.DARK -> true
             AppThemeMode.AMOLED -> true
         }
@@ -198,7 +214,8 @@ fun KinoTheme(
             window.navigationBarColor =
                 when (themeMode) {
                     AppThemeMode.AMOLED -> Color.Black.toArgb()
-                    AppThemeMode.DARK -> colors.background.toArgb()
+                    AppThemeMode.LIGHT -> animatedColors.background.toArgb()
+                    AppThemeMode.DARK -> animatedColors.background.toArgb()
                     AppThemeMode.CURRENT -> Color.Transparent.toArgb()
                 }
 
@@ -212,9 +229,92 @@ fun KinoTheme(
     }
 
     MaterialTheme(
-        colorScheme = colors,
+        colorScheme = animatedColors,
         typography = KinoTypography,
         shapes = KinoShapes,
         content = content
+    )
+}
+
+/**
+ * Анимированная ColorScheme: каждое поле плавно интерполируется к целевому
+ * при смене темы (светлая ↔ тёмная ↔ AMOLED ↔ системная).
+ */
+@Composable
+private fun animateKinoColorScheme(target: ColorScheme): ColorScheme {
+    val spec = tween<Color>(durationMillis = 450, easing = FastOutSlowInEasing)
+    val primary by animateColorAsState(target.primary, spec, label = "themePrimary")
+    val onPrimary by animateColorAsState(target.onPrimary, spec, label = "themeOnPrimary")
+    val primaryContainer by animateColorAsState(target.primaryContainer, spec, label = "themePrimaryContainer")
+    val onPrimaryContainer by animateColorAsState(target.onPrimaryContainer, spec, label = "themeOnPrimaryContainer")
+    val inversePrimary by animateColorAsState(target.inversePrimary, spec, label = "themeInversePrimary")
+    val secondary by animateColorAsState(target.secondary, spec, label = "themeSecondary")
+    val onSecondary by animateColorAsState(target.onSecondary, spec, label = "themeOnSecondary")
+    val secondaryContainer by animateColorAsState(target.secondaryContainer, spec, label = "themeSecondaryContainer")
+    val onSecondaryContainer by animateColorAsState(target.onSecondaryContainer, spec, label = "themeOnSecondaryContainer")
+    val tertiary by animateColorAsState(target.tertiary, spec, label = "themeTertiary")
+    val onTertiary by animateColorAsState(target.onTertiary, spec, label = "themeOnTertiary")
+    val tertiaryContainer by animateColorAsState(target.tertiaryContainer, spec, label = "themeTertiaryContainer")
+    val onTertiaryContainer by animateColorAsState(target.onTertiaryContainer, spec, label = "themeOnTertiaryContainer")
+    val background by animateColorAsState(target.background, spec, label = "themeBackground")
+    val onBackground by animateColorAsState(target.onBackground, spec, label = "themeOnBackground")
+    val surface by animateColorAsState(target.surface, spec, label = "themeSurface")
+    val onSurface by animateColorAsState(target.onSurface, spec, label = "themeOnSurface")
+    val surfaceVariant by animateColorAsState(target.surfaceVariant, spec, label = "themeSurfaceVariant")
+    val onSurfaceVariant by animateColorAsState(target.onSurfaceVariant, spec, label = "themeOnSurfaceVariant")
+    val surfaceTint by animateColorAsState(target.surfaceTint, spec, label = "themeSurfaceTint")
+    val inverseSurface by animateColorAsState(target.inverseSurface, spec, label = "themeInverseSurface")
+    val inverseOnSurface by animateColorAsState(target.inverseOnSurface, spec, label = "themeInverseOnSurface")
+    val error by animateColorAsState(target.error, spec, label = "themeError")
+    val onError by animateColorAsState(target.onError, spec, label = "themeOnError")
+    val errorContainer by animateColorAsState(target.errorContainer, spec, label = "themeErrorContainer")
+    val onErrorContainer by animateColorAsState(target.onErrorContainer, spec, label = "themeOnErrorContainer")
+    val outline by animateColorAsState(target.outline, spec, label = "themeOutline")
+    val outlineVariant by animateColorAsState(target.outlineVariant, spec, label = "themeOutlineVariant")
+    val scrim by animateColorAsState(target.scrim, spec, label = "themeScrim")
+    val surfaceBright by animateColorAsState(target.surfaceBright, spec, label = "themeSurfaceBright")
+    val surfaceContainer by animateColorAsState(target.surfaceContainer, spec, label = "themeSurfaceContainer")
+    val surfaceContainerHigh by animateColorAsState(target.surfaceContainerHigh, spec, label = "themeSurfaceContainerHigh")
+    val surfaceContainerHighest by animateColorAsState(target.surfaceContainerHighest, spec, label = "themeSurfaceContainerHighest")
+    val surfaceContainerLow by animateColorAsState(target.surfaceContainerLow, spec, label = "themeSurfaceContainerLow")
+    val surfaceContainerLowest by animateColorAsState(target.surfaceContainerLowest, spec, label = "themeSurfaceContainerLowest")
+    val surfaceDim by animateColorAsState(target.surfaceDim, spec, label = "themeSurfaceDim")
+    return target.copy(
+        primary = primary,
+        onPrimary = onPrimary,
+        primaryContainer = primaryContainer,
+        onPrimaryContainer = onPrimaryContainer,
+        inversePrimary = inversePrimary,
+        secondary = secondary,
+        onSecondary = onSecondary,
+        secondaryContainer = secondaryContainer,
+        onSecondaryContainer = onSecondaryContainer,
+        tertiary = tertiary,
+        onTertiary = onTertiary,
+        tertiaryContainer = tertiaryContainer,
+        onTertiaryContainer = onTertiaryContainer,
+        background = background,
+        onBackground = onBackground,
+        surface = surface,
+        onSurface = onSurface,
+        surfaceVariant = surfaceVariant,
+        onSurfaceVariant = onSurfaceVariant,
+        surfaceTint = surfaceTint,
+        inverseSurface = inverseSurface,
+        inverseOnSurface = inverseOnSurface,
+        error = error,
+        onError = onError,
+        errorContainer = errorContainer,
+        onErrorContainer = onErrorContainer,
+        outline = outline,
+        outlineVariant = outlineVariant,
+        scrim = scrim,
+        surfaceBright = surfaceBright,
+        surfaceContainer = surfaceContainer,
+        surfaceContainerHigh = surfaceContainerHigh,
+        surfaceContainerHighest = surfaceContainerHighest,
+        surfaceContainerLow = surfaceContainerLow,
+        surfaceContainerLowest = surfaceContainerLowest,
+        surfaceDim = surfaceDim
     )
 }
