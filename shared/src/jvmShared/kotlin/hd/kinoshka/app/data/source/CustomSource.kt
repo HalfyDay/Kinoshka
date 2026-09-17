@@ -88,13 +88,14 @@ fun validateCustomSource(
         return CustomSourceCheck.Failed("Такой шаблон уже добавлен")
     }
     val warnings = mutableListOf<String>()
-    if (SourceCategory.ANIME in categories) {
-        // У аниме нет imdb, а kinopoisk id берётся из прямого id пикера или моста Kodik.
+    if (SourceCategory.ANIME in categories || SourceCategory.ADULT in categories) {
+        // У аниме/18+ нет imdb, а kinopoisk id берётся из прямого id пикера
+        // (у аниме — ещё и через мост Kodik, у 18+ моста нет).
         if (CustomSource.KP_PLACEHOLDER !in template) {
-            warnings += "Раздел «Аниме» работает только с {kp} — без него источник там пропускается"
+            warnings += "Разделы «Аниме» и «18+» работают только с {kp} — без него источник там пропускается"
         }
         if (webOnly) {
-            warnings += "«Только веб-плеер» в разделе «Аниме» не поддерживается — там источник пропускается"
+            warnings += "«Только веб-плеер» в разделах «Аниме» и «18+» не поддерживается — там источник пропускается"
         }
     }
     if (builtInNames.isNotEmpty()) {

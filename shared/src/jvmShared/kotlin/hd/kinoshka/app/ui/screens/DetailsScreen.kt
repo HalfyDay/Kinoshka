@@ -340,6 +340,18 @@ fun DetailsScreen(
         episodeUrl: String?,
         headers: Map<String, String>
     ) -> Unit)? = null,
+    // Кнопка скачивания серии своего 18+ источника: те же прямые ссылки, но ключ —
+    // custom id (enum-провайдера у своих нет). Null — кнопки скрыты, как на desktop/TV.
+    customHentaiDownloadButton: (@Composable (
+        title: String,
+        kinopoiskId: Int,
+        customId: String,
+        customName: String,
+        label: String,
+        episodeNumber: Int,
+        episodeUrl: String?,
+        headers: Map<String, String>
+    ) -> Unit)? = null,
     findLocalHentai: ((kinopoiskId: Int, providerName: String, translationId: String, episodeNumber: Int) -> String?)? = null,
     // Скачивание из кино-пикера (Android-слот; null — кнопки скрыты, как на desktop):
     // пометки скачанного и постановка целей MovieDownloadTarget в очередь.
@@ -387,12 +399,31 @@ fun DetailsScreen(
     // Выключенные 18+ источники («Настройки → Источники», раздел 18+):
     // не запрашиваются и не показываются в хентай-выборе.
     var adultDisabledIds by remember(filmId) { mutableStateOf<Set<String>?>(null) }
+    // Свои 18+ источники (раздел ADULT настроек): грузятся тем же прогрессивным
+    // паттерном, но ключ — custom id (N источников на один общий тип CUSTOM),
+    // поэтому отдельная карта состояний. null у adultCustoms — настройки ещё не прочитаны.
+    var customHentaiSources by remember(filmId) {
+        mutableStateOf<Map<String, HentaiSourceState>>(emptyMap())
+    }
+    val customHentaiJobs = remember(filmId) { mutableMapOf<String, kotlinx.coroutines.Job>() }
+    var adultCustoms by remember(filmId) {
+        mutableStateOf<List<hd.kinoshka.app.data.source.CustomSource>?>(null)
+    }
     LaunchedEffect(filmId, activeHentaiSelection) {
         // Перечитываем при каждом открытии — возврат из «Настройки → Источники»
         // применяется сразу, без перезахода в детали.
         if (activeHentaiSelection) {
             adultDisabledIds = withContext(kotlinx.coroutines.Dispatchers.IO) {
                 userStateStore?.getDisabledSources(hd.kinoshka.app.data.source.SourceCategory.ADULT).orEmpty()
+            }
+            adultCustoms = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val disabled = userStateStore?.getDisabledSources(
+                    hd.kinoshka.app.data.source.SourceCategory.ADULT
+                ).orEmpty()
+                userStateStore?.getCustomSources().orEmpty().filter {
+                    hd.kinoshka.app.data.source.SourceCategory.ADULT in it.categories &&
+                        it.id !in disabled
+                }
             }
         }
     }
@@ -408,6 +439,8 @@ fun DetailsScreen(
             activeHentaiSelection -> {
                 hentaiJobs.values.forEach { it.cancel() }
                 hentaiJobs.clear()
+                customHentaiJobs.values.forEach { it.cancel() }
+                customHentaiJobs.clear()
                 activeHentaiSelection = false
             }
             activePlaybackSelection -> activePlaybackSelection = false
@@ -918,15 +951,51 @@ fun DetailsScreen(
                                     hentaiSources = hentaiSources + (provider to state)
                                 }
                             }
-                            LaunchedEffect(activeHentaiSelection, filmId, adultDisabledIds) {
-                                // Выключатели читаются асинхронно — без них не стартуем,
-                                // иначе выключенные успеют запроситься.
-                                if (adultDisabledIds == null) return@LaunchedEffect
+                            // Свой 18+ источник: тот же жизненный цикл карточки, ключ — custom id.
+                            // Нужен только настоящий Kinopoisk id (моста Kodik у 18+ нет) —
+                            // синтетика пропускается молча внутри fetchCustomHentai.
+                            fun startCustomHentai(custom: hd.kinoshka.app.data.source.CustomSource) {
+                                if (customHentaiJobs[custom.id]?.isActive == true) return
+                                customHentaiJobs[custom.id]?.cancel()
+                                customHentaiSources = customHentaiSources + (custom.id to HentaiSourceState.Loading)
+                                customHentaiJobs[custom.id] = scope.launch {
+                                    val state = try {
+                                        val stream = hd.kinoshka.app.data.source.HentaiStreamResolver.fetchCustomHentai(
+                                            custom,
+                                            item.kinopoiskId,
+                                            item.imdbId
+                                        )
+                                        if (stream != null) HentaiSourceState.Ready(stream)
+                                        else HentaiSourceState.Failed("Ничего не найдено")
+                                    } catch (e: kotlinx.coroutines.CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        KLog.w("DetailsScreen", "Hentai custom ${custom.id} failed", e)
+                                        HentaiSourceState.Failed(
+                                            when (e) {
+                                                is java.net.SocketTimeoutException -> "Таймаут — источник недоступен. Включите VPN"
+                                                else -> "Ошибка: ${e.javaClass.simpleName}"
+                                            }
+                                        )
+                                    }
+                                    customHentaiSources = customHentaiSources + (custom.id to state)
+                                }
+                            }
+                            LaunchedEffect(activeHentaiSelection, filmId, adultDisabledIds, adultCustoms) {
+                                // Выключатели и свои читаются асинхронно — без них не стартуем,
+                                // иначе выключенные источники успеют запроситься.
+                                if (adultDisabledIds == null || adultCustoms == null) return@LaunchedEffect
                                 hd.kinoshka.app.data.source.HentaiProvider.entries.forEach { provider ->
                                     if (!isHentaiProviderEnabled(provider)) return@forEach
                                     val current = hentaiSources[provider]
                                     if (current !is HentaiSourceState.Loading && current !is HentaiSourceState.Ready) {
                                         startHentaiProvider(provider)
+                                    }
+                                }
+                                adultCustoms.orEmpty().forEach { custom ->
+                                    val current = customHentaiSources[custom.id]
+                                    if (current !is HentaiSourceState.Loading && current !is HentaiSourceState.Ready) {
+                                        startCustomHentai(custom)
                                     }
                                 }
                                 hentaiLaunchDone = true
@@ -1055,6 +1124,134 @@ fun DetailsScreen(
                                     null
                                 )
                             }
+                            // Свой 18+ источник: те же prepared-потоки и дорожки плеера, но ключ —
+                            // custom id, source=CUSTOM (плеер умеет этот тип по аниме-кастомам),
+                            // имя — в sourceLabel. В общий список подмешиваются и готовые
+                            // встроенные, и готовые свои: переключатель плеера видит всё.
+                            fun playCustomHentai(
+                                stream: HentaiStream,
+                                url: String,
+                                label: String,
+                                custom: hd.kinoshka.app.data.source.CustomSource
+                            ) {
+                                val episodeNumber = if (stream.episodes.isNotEmpty()) {
+                                    stream.episodes.indexOfFirst { it.label == label }.takeIf { it >= 0 }?.plus(1) ?: 1
+                                } else 1
+                                val hentaiTrId = hd.kinoshka.app.data.source.HentaiStreamResolver.customHentaiTranslationId(
+                                    custom.id, label.takeIf { stream.episodes.isNotEmpty() }
+                                )
+                                val localPlayable = if (item.kinopoiskId > 0) {
+                                    findLocalHentai?.invoke(item.kinopoiskId, custom.id, hentaiTrId, episodeNumber)
+                                } else null
+                                val effectiveUrl = localPlayable ?: url
+                                val effectiveHeaders = if (localPlayable != null) emptyMap() else stream.headers
+                                val effectiveQualities = if (localPlayable != null) emptyMap() else stream.qualities
+                                val ordered = listOf(Triple(custom.id, hd.kinoshka.app.data.model.AnimeSourceType.CUSTOM, stream)) +
+                                    hentaiSources.entries.mapNotNull { (p, st) ->
+                                        (st as? HentaiSourceState.Ready)
+                                            ?.takeIf { isHentaiProviderEnabled(p) }?.let { Triple(p.name, p.toAnimeSourceType(), it.stream) }
+                                    } +
+                                    hentaiBackups.entries.mapNotNull { (p, s) ->
+                                        s?.takeIf {
+                                            isHentaiProviderEnabled(p) &&
+                                                hentaiSources[p] !is HentaiSourceState.Ready
+                                        }?.let { Triple(p.name, p.toAnimeSourceType(), it) }
+                                    } +
+                                    customHentaiSources.entries.mapNotNull { (id, st) ->
+                                        (st as? HentaiSourceState.Ready)
+                                            ?.takeIf { id != custom.id }?.let { Triple(id, hd.kinoshka.app.data.model.AnimeSourceType.CUSTOM, it.stream) }
+                                    }
+                                val customById = adultCustoms.orEmpty().associateBy { it.id }
+                                val voiceovers = mutableListOf<hd.kinoshka.app.data.model.FlatTranslation>()
+                                val prepared = mutableMapOf<String, hd.kinoshka.app.data.model.AnimeMediaStream>()
+                                for ((key, src, s) in ordered) {
+                                    val name = if (src == hd.kinoshka.app.data.model.AnimeSourceType.CUSTOM) {
+                                        customById[key]?.name ?: custom.name
+                                    } else null
+                                    if (s.episodes.isNotEmpty()) {
+                                        s.episodes.forEachIndexed { index, ep ->
+                                            val trId = if (src == hd.kinoshka.app.data.model.AnimeSourceType.CUSTOM) {
+                                                hd.kinoshka.app.data.source.HentaiStreamResolver.customHentaiTranslationId(key, ep.label)
+                                            } else {
+                                                "hentai:$key:${ep.label}"
+                                            }
+                                            voiceovers += hd.kinoshka.app.data.model.FlatTranslation(
+                                                source = src,
+                                                translationId = trId,
+                                                title = ep.label,
+                                                type = "voice",
+                                                episodes = listOf(
+                                                    hd.kinoshka.app.data.model.AnimeEpisode(
+                                                        number = index + 1,
+                                                        title = ep.label,
+                                                        link = ep.url,
+                                                        maxQuality = ep.maxQuality
+                                                    )
+                                                ),
+                                                sourceLabel = name
+                                            )
+                                            prepared[trId] = hd.kinoshka.app.data.model.AnimeMediaStream(
+                                                url = ep.url,
+                                                qualities = ep.maxQuality
+                                                    ?.let { linkedMapOf(it to ep.url) }
+                                                    ?: LinkedHashMap(s.qualities),
+                                                headers = s.headers
+                                            )
+                                        }
+                                    } else {
+                                        val trId = if (src == hd.kinoshka.app.data.model.AnimeSourceType.CUSTOM) {
+                                            hd.kinoshka.app.data.source.HentaiStreamResolver.customHentaiTranslationId(key, null)
+                                        } else {
+                                            "hentai:$key"
+                                        }
+                                        voiceovers += hd.kinoshka.app.data.model.FlatTranslation(
+                                            source = src,
+                                            translationId = trId,
+                                            title = "Фильм",
+                                            type = "voice",
+                                            episodes = listOf(
+                                                hd.kinoshka.app.data.model.AnimeEpisode(
+                                                    number = 1,
+                                                    title = "Фильм",
+                                                    link = s.url
+                                                )
+                                            ),
+                                            sourceLabel = name
+                                        )
+                                        prepared[trId] = hd.kinoshka.app.data.model.AnimeMediaStream(
+                                            url = s.url,
+                                            qualities = LinkedHashMap(s.qualities),
+                                            headers = s.headers
+                                        )
+                                    }
+                                }
+                                if (item.kinopoiskId > 0) {
+                                    hd.kinoshka.app.data.model.MovieVoiceoverStreamStore.put(
+                                        item.kinopoiskId, prepared
+                                    )
+                                }
+                                val currentTrId = hentaiTrId
+                                if (localPlayable != null) {
+                                    prepared[currentTrId]?.let { s ->
+                                        prepared[currentTrId] = s.copy(url = localPlayable, headers = emptyMap())
+                                    }
+                                }
+                                onOpenNativePlayer?.invoke(
+                                    effectiveUrl,
+                                    effectiveHeaders,
+                                    effectiveQualities,
+                                    item.nameRu ?: item.nameOriginal ?: "Аниме",
+                                    1,
+                                    label,
+                                    0,
+                                    item.kinopoiskId,
+                                    "CUSTOM",
+                                    emptyList(),
+                                    voiceovers,
+                                    currentTrId,
+                                    null
+                                )
+                            }
                             val visibleHentaiStates = hentaiSources.filterKeys { isHentaiProviderEnabled(it) }
                             val visibleHentaiBackups = hentaiBackups.filterKeys { isHentaiProviderEnabled(it) }
                             HentaiSourceScreen(
@@ -1062,16 +1259,26 @@ fun DetailsScreen(
                                 kinopoiskId = item.kinopoiskId,
                                 states = visibleHentaiStates,
                                 backups = visibleHentaiBackups,
-                                showAllDisabledHint = hentaiLaunchDone && visibleHentaiStates.isEmpty(),
+                                showAllDisabledHint = hentaiLaunchDone && visibleHentaiStates.isEmpty() &&
+                                    customHentaiSources.isEmpty(),
                                 sourceIcon = sourceIcon,
                                 hentaiDownloadButton = hentaiDownloadButton,
+                                customSources = adultCustoms.orEmpty().associateBy { it.id },
+                                customStates = customHentaiSources,
+                                customHentaiDownloadButton = customHentaiDownloadButton,
                                 onBack = {
                                     hentaiJobs.values.forEach { it.cancel() }
                                     hentaiJobs.clear()
+                                    customHentaiJobs.values.forEach { it.cancel() }
+                                    customHentaiJobs.clear()
                                     activeHentaiSelection = false
                                 },
                                 onRetry = ::startHentaiProvider,
-                                onPlay = ::playHentai
+                                onCustomRetry = { id ->
+                                    adultCustoms.orEmpty().firstOrNull { it.id == id }?.let(::startCustomHentai)
+                                },
+                                onPlay = ::playHentai,
+                                onCustomPlay = ::playCustomHentai
                             )
                         }
                     }
@@ -5266,7 +5473,28 @@ private fun HentaiSourceScreen(
         url: String,
         label: String,
         provider: hd.kinoshka.app.data.source.HentaiProvider
-    ) -> Unit
+    ) -> Unit,
+    // Свои 18+ источники: параллельные карты (id → источник/состояние) — enum HentaiProvider
+    // N своих не вмещает. Пустые дефолты держат старые вызовы (превью, desktop).
+    customSources: Map<String, hd.kinoshka.app.data.source.CustomSource> = emptyMap(),
+    customStates: Map<String, HentaiSourceState> = emptyMap(),
+    customHentaiDownloadButton: (@Composable (
+        title: String,
+        kinopoiskId: Int,
+        customId: String,
+        customName: String,
+        label: String,
+        episodeNumber: Int,
+        episodeUrl: String?,
+        headers: Map<String, String>
+    ) -> Unit)? = null,
+    onCustomRetry: (String) -> Unit = {},
+    onCustomPlay: (
+        stream: hd.kinoshka.app.data.source.HentaiStream,
+        url: String,
+        label: String,
+        custom: hd.kinoshka.app.data.source.CustomSource
+    ) -> Unit = { _, _, _, _ -> }
 ) {
     KinoFullscreenDialog(onDismissRequest = onBack) {
         Surface(
@@ -5486,6 +5714,122 @@ private fun HentaiSourceScreen(
                             }
                         }
                     }
+                    }
+                    // Свои 18+ источники — отдельной группой после языковых: та же карточка
+                    // (бейдж-буква вместо иконки провайдера), свои ретрай/плей/скачивание.
+                    val shownCustoms = customSources.values
+                        .filter { it.id in customStates }
+                        .sortedBy { it.name.lowercase() }
+                    if (shownCustoms.isNotEmpty()) {
+                        item(key = "lang_header_custom") {
+                            Text(
+                                text = "🧩 Свои",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(top = 16.dp, bottom = 4.dp, start = 20.dp, end = 16.dp)
+                            )
+                        }
+                        shownCustoms.forEach { custom ->
+                            item(key = "custom_${custom.id}") {
+                                val state = customStates[custom.id]
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 12.dp, bottom = 4.dp, start = 20.dp, end = 16.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier.size(30.dp).clip(CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            sourceIcon(custom.id, 30.dp)
+                                        }
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            text = custom.name,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    when (state) {
+                                        is HentaiSourceState.Loading -> CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                        is HentaiSourceState.Ready -> Text(
+                                            text = if (state.stream.episodes.isNotEmpty())
+                                                "${state.stream.episodes.size} сер."
+                                            else "Фильм",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        is HentaiSourceState.Failed -> Text(
+                                            text = "Ошибка",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                        null -> {}
+                                    }
+                                }
+                                when (val st = state) {
+                                    is HentaiSourceState.Loading -> HentaiLoadingRow()
+                                    is HentaiSourceState.Failed -> HentaiFailedRow(
+                                        message = st.message,
+                                        onRetry = { onCustomRetry(custom.id) }
+                                    )
+                                    is HentaiSourceState.Ready -> {
+                                        val stream = st.stream
+                                        if (stream.episodes.isNotEmpty()) {
+                                            stream.episodes.forEachIndexed { index, episode ->
+                                                HentaiEpisodeRow(
+                                                    label = episode.label,
+                                                    subtitle = "Прямая ссылка",
+                                                    maxQuality = episode.maxQuality,
+                                                    onClick = { onCustomPlay(stream, episode.url, episode.label, custom) },
+                                                    trailing = {
+                                                        customHentaiDownloadButton?.invoke(
+                                                            filmTitle,
+                                                            kinopoiskId,
+                                                            custom.id,
+                                                            custom.name,
+                                                            episode.label,
+                                                            index + 1,
+                                                            episode.url,
+                                                            stream.headers
+                                                        )
+                                                    }
+                                                )
+                                            }
+                                        } else {
+                                            HentaiEpisodeRow(
+                                                label = "Смотреть",
+                                                subtitle = stream.qualities.keys.minOrNull()?.let { "До $it" }
+                                                    ?: "Прямая ссылка",
+                                                maxQuality = stream.quality,
+                                                onClick = { onCustomPlay(stream, stream.url, "Фильм", custom) },
+                                                trailing = {
+                                                    customHentaiDownloadButton?.invoke(
+                                                        filmTitle,
+                                                        kinopoiskId,
+                                                        custom.id,
+                                                        custom.name,
+                                                        "Фильм",
+                                                        1,
+                                                        stream.url,
+                                                        stream.headers
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
+                                    null -> {}
+                                }
+                            }
+                        }
                     }
                 }
             }

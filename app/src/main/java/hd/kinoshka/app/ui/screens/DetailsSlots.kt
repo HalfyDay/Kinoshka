@@ -123,6 +123,89 @@ internal fun HentaiDownloadButton(
 }
 
 /**
+ * Кнопка скачивания серии своего 18+ источника: те же прямые ссылки, что у
+ * [HentaiDownloadButton], но ключ — custom id (enum-провайдера у своих нет).
+ * translationId зеркалит формат playCustomHentai ("hentai:custom:<id>[:<label>]"),
+ * поэтому скачанное подхватывается local-first без сети.
+ */
+@Composable
+internal fun CustomHentaiDownloadButton(
+    title: String,
+    kinopoiskId: Int,
+    customId: String,
+    customName: String,
+    label: String,
+    episodeNumber: Int,
+    episodeUrl: String?,
+    headers: Map<String, String>
+) {
+    if (kinopoiskId <= 0 || episodeUrl.isNullOrBlank()) return
+    val context = LocalContext.current
+    val itemKey = animeItemKey(0, kinopoiskId)
+    val translationId = if (label == "Фильм") "hentai:custom:$customId" else "hentai:custom:$customId:$label"
+    val key = offlineKey(itemKey, customId, translationId, episodeNumber)
+    val tasks by EpisodeDownloadManager.tasks.collectAsState()
+    val library by EpisodeDownloadManager.library.collectAsState()
+    val task = tasks[key]
+    val downloaded = library.any { it.key == key }
+    when {
+        downloaded -> Icon(
+            imageVector = Icons.Rounded.DownloadDone,
+            contentDescription = "Скачано",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp)
+        )
+        task != null && task.phase == DownloadPhase.FAILED -> IconButton(
+            onClick = { EpisodeDownloadManager.retry(key) },
+            modifier = Modifier.size(32.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = "Повторить скачивание",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        task != null -> IconButton(
+            onClick = { EpisodeDownloadManager.cancel(key) },
+            modifier = Modifier.size(32.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Отменить скачивание",
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        else -> IconButton(
+            onClick = {
+                context.tryRequestNotificationPermission()
+                EpisodeDownloadManager.enqueue(
+                    EpisodeDownloadManager.EpisodeDownloadRequest(
+                        itemKey = itemKey,
+                        title = title,
+                        source = customId,
+                        translationId = translationId,
+                        translationTitle = "$customName · $label",
+                        episodeNumber = episodeNumber,
+                        episodeLabel = label,
+                        resolve = {
+                            MediaDownloader.MediaSource(episodeUrl, headers)
+                        }
+                    )
+                )
+            },
+            modifier = Modifier.size(32.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Download,
+                contentDescription = "Скачать серию",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(19.dp)
+            )
+        }
+    }
+}
+/**
  * Постановка целей кино-пикера ([MovieDownloadTarget]) в очередь загрузок.
  * Сериалы идут через DownloadBridges.seriesRequests тем же путём, что переключение
  * серий в плеере (Kodik — HLS-резолв, прямые — готовые CDN-url); резолв ленивый,
@@ -159,50 +242,96 @@ fun enqueueMovieDownload(context: Context, target: MovieDownloadTarget, preferre
             Toast.makeText(context, "Серия не найдена", Toast.LENGTH_SHORT).show()
             return
         }
-        EpisodeDownloadManager.enqueueAll(reqs)
+        // Молчаливый no-op очереди (дубль/уже скачано) раньше всё равно рапортовал
+        // «добавлено» — было похоже на зависшую очередь. Фильтруем и говорим честно.
+        val fresh = reqs.filterNot { isAlreadyHandled(it) }
+        if (fresh.isEmpty()) {
+            Toast.makeText(
+                context,
+                if (reqs.all { isDownloaded(it) }) "Уже скачано" else "Уже в очереди",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        EpisodeDownloadManager.enqueueAll(fresh)
         Toast.makeText(
             context,
-            if (target.wholeDub) "Озвучка добавлена в загрузки (${reqs.size} сер.)" else "Серия добавлена в загрузки",
+            if (target.wholeDub) "Озвучка добавлена в загрузки (${fresh.size} сер.)" else "Серия добавлена в загрузки",
             Toast.LENGTH_SHORT
         ).show()
     } else if (target.isKodik) {
-        EpisodeDownloadManager.enqueue(
-            EpisodeDownloadManager.EpisodeDownloadRequest(
-                itemKey = animeItemKey(0, target.kinopoiskId),
-                title = target.displayTitle,
-                source = AnimeSourceType.KODIK.name,
-                translationId = target.translationId,
-                translationTitle = target.dubTitle,
-                episodeNumber = 1,
-                episodeLabel = "Фильм",
-                posterUrl = target.posterUrl,
-                resolve = {
-                    MovieStreamResolver.resolveMovieUrls(target.movieUrls)
-                        ?.let { DownloadBridges.mediaSource(it, preferredQuality) }
-                }
-            )
+        val req = EpisodeDownloadManager.EpisodeDownloadRequest(
+            itemKey = animeItemKey(0, target.kinopoiskId),
+            title = target.displayTitle,
+            source = AnimeSourceType.KODIK.name,
+            translationId = target.translationId,
+            translationTitle = target.dubTitle,
+            episodeNumber = 1,
+            episodeLabel = "Фильм",
+            posterUrl = target.posterUrl,
+            resolve = {
+                MovieStreamResolver.resolveMovieUrls(target.movieUrls)
+                    ?.let { DownloadBridges.mediaSource(it, preferredQuality) }
+            }
         )
+        if (isAlreadyHandled(req)) {
+            Toast.makeText(
+                context,
+                if (isDownloaded(req)) "Уже скачано" else "Уже в очереди",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        EpisodeDownloadManager.enqueue(req)
         Toast.makeText(context, "Фильм добавлен в загрузки", Toast.LENGTH_SHORT).show()
     } else {
         if (target.directUrl.isBlank()) {
             Toast.makeText(context, "Нет ссылки для скачивания", Toast.LENGTH_SHORT).show()
             return
         }
-        EpisodeDownloadManager.enqueue(
-            EpisodeDownloadManager.EpisodeDownloadRequest(
-                itemKey = animeItemKey(0, target.kinopoiskId),
-                title = target.displayTitle,
-                source = AnimeSourceType.DDBB.name,
-                translationId = target.translationId,
-                translationTitle = target.dubTitle,
-                episodeNumber = 1,
-                episodeLabel = "Фильм",
-                posterUrl = target.posterUrl,
-                resolve = { MediaDownloader.MediaSource(target.directUrl, target.headers) }
-            )
+        val req = EpisodeDownloadManager.EpisodeDownloadRequest(
+            itemKey = animeItemKey(0, target.kinopoiskId),
+            title = target.displayTitle,
+            source = AnimeSourceType.DDBB.name,
+            translationId = target.translationId,
+            translationTitle = target.dubTitle,
+            episodeNumber = 1,
+            episodeLabel = "Фильм",
+            posterUrl = target.posterUrl,
+            // Прямые URL тоже давим потолком качества (лестница даба из каталога,
+            // иначе потолок внутри HLS-мастера) — раньше всегда качался максимум.
+            resolve = {
+                DownloadBridges.directCappedSource(target.request, target.directUrl, target.headers, preferredQuality)
+            }
         )
+        if (isAlreadyHandled(req)) {
+            Toast.makeText(
+                context,
+                if (isDownloaded(req)) "Уже скачано" else "Уже в очереди",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        EpisodeDownloadManager.enqueue(req)
         Toast.makeText(context, "Фильм добавлен в загрузки", Toast.LENGTH_SHORT).show()
     }
+}
+
+/** Ключ очереди запроса — то же, что считает EpisodeDownloadManager внутри. */
+private fun requestKey(req: EpisodeDownloadManager.EpisodeDownloadRequest): String =
+    offlineKey(req.itemKey, req.source, req.translationId, req.episodeNumber)
+
+private fun isDownloaded(req: EpisodeDownloadManager.EpisodeDownloadRequest): Boolean =
+    EpisodeDownloadManager.findLibraryEntry(requestKey(req)) != null
+
+/**
+ * true — серия уже скачана либо висит в очереди (упавшие не в счёт: их можно
+ * ставить заново). Честный тост вместо ложного «добавлено в загрузки».
+ */
+private fun isAlreadyHandled(req: EpisodeDownloadManager.EpisodeDownloadRequest): Boolean {
+    if (isDownloaded(req)) return true
+    val task = EpisodeDownloadManager.tasks.value[requestKey(req)] ?: return false
+    return task.phase != DownloadPhase.FAILED
 }
 
 /**

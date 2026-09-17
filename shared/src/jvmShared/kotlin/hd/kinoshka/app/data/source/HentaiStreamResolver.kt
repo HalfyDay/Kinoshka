@@ -288,6 +288,128 @@ object HentaiStreamResolver {
         stream
     }
 
+    // ============================ Свои embed-источники (вариант A, раздел 18+) ============================
+    // Как аниме-кастомы, но без моста Kodik (взрослый контент он не индексирует):
+    // нужен настоящий Kinopoisk id тайтла, синтетика (ANIME_ID_OFFSET + shikimori)
+    // пропускается молча, как выключенный источник. Неймспейс строк —
+    // "hentai:custom|<CUSTOM_ID>[:<label>]" при общем source=CUSTOM в плеере.
+
+    /** translationId хентай-строки своего источника (зеркалит "hentai:<PROVIDER>[:<label>]"). */
+    fun customHentaiTranslationId(customId: String, label: String?): String =
+        if (label.isNullOrBlank() || label == "Фильм") "hentai:custom:$customId"
+        else "hentai:custom:$customId:$label"
+
+    /** custom id из translationId своего 18+ источника, null для встроенных. */
+    fun customIdOfHentaiTranslation(translationId: String): String? {
+        if (!translationId.startsWith("hentai:custom:")) return null
+        return translationId.removePrefix("hentai:custom:").substringBefore(':')
+            .takeIf { it.isNotBlank() }
+    }
+
+    /** Лучший ранг лестницы для бейджа серии (без Auto). */
+    private fun bestHentaiQuality(qualities: Map<String, String>): String? =
+        listOf("1080p", "720p", "480p").firstOrNull { qualities.containsKey(it) }
+            ?: qualities.keys.firstOrNull { it != "Auto" }
+
+    /**
+     * SourceParse → HentaiStream. Сериальные треки группируются по дабу (метка
+     * "Дубляж • Серия N" при нескольких дабах, иначе голая "Серия N"); киношные
+     * войс-ряды — по строке на даб; пустой парс (webOnly) → null = пропуск.
+     */
+    fun customParseToHentai(
+        custom: CustomSource,
+        parse: DdbbStreamResolver.SourceParse
+    ): HentaiStream? {
+        if (parse.tracks.isNotEmpty()) {
+            val byDub = parse.tracks
+                .filter { it.episodeNumber > 0 && it.playerUrl.isNotBlank() }
+                .groupBy { it.dubId.ifBlank { "collaps" } }
+                .mapValues { (_, dubTracks) ->
+                    dubTracks.distinctBy { it.episodeNumber }.sortedBy { it.episodeNumber }
+                }
+                .filterValues { it.isNotEmpty() }
+            if (byDub.isEmpty()) return null
+            val multiDub = byDub.size > 1
+            val episodes = byDub.flatMap { (_, dubTracks) ->
+                val dubTitle = dubTracks.firstOrNull()?.dubTitle?.takeIf { it.isNotBlank() }
+                dubTracks.map { track ->
+                    val base = "Серия ${track.episodeNumber}"
+                    HentaiEpisode(
+                        label = if (multiDub && dubTitle != null) "$dubTitle • $base" else base,
+                        url = track.playerUrl,
+                        maxQuality = bestHentaiQuality(parse.ladders[track.playerUrl] ?: parse.qualities)
+                    )
+                }
+            }
+            val first = episodes.first()
+            val firstLadder = parse.ladders[first.url] ?: parse.qualities
+            return HentaiStream(
+                url = first.url,
+                qualities = firstLadder,
+                headers = parse.headers,
+                quality = bestHentaiQuality(firstLadder) ?: "Auto",
+                title = custom.name,
+                episodes = episodes
+            )
+        }
+        val rows = parse.voiceRows
+            .filter { (_, url) -> url.isNotBlank() }
+            .distinctBy { (_, url) -> url }
+        if (rows.isEmpty()) return null
+        if (rows.size == 1) {
+            val (_, url) = rows.single()
+            val ladder = parse.ladders[url] ?: parse.qualities
+            return HentaiStream(
+                url = url,
+                qualities = ladder,
+                headers = parse.headers,
+                quality = bestHentaiQuality(ladder) ?: "Auto",
+                title = custom.name
+            )
+        }
+        val episodes = rows.map { (title, url) ->
+            HentaiEpisode(
+                label = title.takeIf { it.isNotBlank() } ?: custom.name,
+                url = url,
+                maxQuality = bestHentaiQuality(parse.ladders[url] ?: parse.qualities)
+            )
+        }
+        val first = episodes.first()
+        val firstLadder = parse.ladders[first.url] ?: parse.qualities
+        return HentaiStream(
+            url = first.url,
+            qualities = firstLadder,
+            headers = parse.headers,
+            quality = bestHentaiQuality(firstLadder) ?: "Auto",
+            title = custom.name,
+            episodes = episodes
+        )
+    }
+
+    /**
+     * Стрим ОДНОГО своего источника для 18+-пикера. [resolve] инжектится ради тестов
+     * (дефолт — живой CustomSourceResolver). null = источник пропускается.
+     */
+    suspend fun fetchCustomHentai(
+        custom: CustomSource,
+        kinopoiskId: Int,
+        imdbId: String? = null,
+        resolve: suspend (CustomSource, Int) -> DdbbStreamResolver.SourceParse? =
+            { c, kp -> CustomSourceResolver.resolveOne(c, kp, imdbId) }
+    ): HentaiStream? = withContext(Dispatchers.IO) {
+        runCatching {
+            val kp = AnimeStreamResolver.realKinopoiskId(kinopoiskId) ?: run {
+                KLog.i(TAG, "[Custom] ${custom.id}: no real kinopoisk id (kp=$kinopoiskId) — skipped")
+                return@runCatching null
+            }
+            val parse = resolve(custom, kp) ?: return@runCatching null
+            customParseToHentai(custom, parse)
+        }.getOrElse { e ->
+            KLog.e(TAG, "[Custom] ${custom.id} hentai fetch failed: ${e.message}")
+            null
+        }
+    }
+
     private fun titleQueries(originalTitle: String?, russianTitle: String?): List<String> =
         listOfNotNull(
             originalTitle?.trim()?.takeIf { it.isNotEmpty() },

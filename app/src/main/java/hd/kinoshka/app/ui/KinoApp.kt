@@ -103,6 +103,7 @@ import hd.kinoshka.app.ui.screens.AnimeTopicScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.DownloadQualityDialog
 import hd.kinoshka.app.ui.screens.HentaiDownloadButton
+import hd.kinoshka.app.ui.screens.CustomHentaiDownloadButton
 import hd.kinoshka.app.ui.screens.ShikimoriWebLoginDialog
 import hd.kinoshka.app.data.download.tryRequestNotificationPermission
 import hd.kinoshka.app.ui.screens.TitleCastButton
@@ -1217,8 +1218,9 @@ fun KinoApp() {
                                     .groupingBy { it.translationId }.eachCount()
                             }
                             val detailsContext = LocalContext.current
-                            // Kodik-цель ждёт выбора качества в диалоге; прямые одиночные
-                            // файлы без лестницы ставятся в очередь сразу.
+                            // Любая кино-цель ждёт выбора качества в диалоге: прямые ссылки
+                            // тоже давятся потолком (лестница даба из каталога, иначе
+                            // вариант внутри HLS-мастера) — см. directCappedSource.
                             var pendingMovieDownload by remember { mutableStateOf<MovieDownloadTarget?>(null) }
                             DetailsScreen(
                                 filmId = id,
@@ -1303,6 +1305,9 @@ fun KinoApp() {
                                 hentaiDownloadButton = if (isTv) null else { title, kinopoiskId, provider, label, episodeNumber, episodeUrl, headers ->
                                     HentaiDownloadButton(title, kinopoiskId, provider, label, episodeNumber, episodeUrl, headers)
                                 },
+                                customHentaiDownloadButton = if (isTv) null else { title, kinopoiskId, customId, customName, label, episodeNumber, episodeUrl, headers ->
+                                    CustomHentaiDownloadButton(title, kinopoiskId, customId, customName, label, episodeNumber, episodeUrl, headers)
+                                },
                                 findLocalHentai = { kinopoiskId, providerName, translationId, episodeNumber ->
                                     EpisodeDownloadManager.findLocal(
                                         0, kinopoiskId, providerName, translationId, episodeNumber
@@ -1311,8 +1316,7 @@ fun KinoApp() {
                                 movieDownloadedEpisodes = movieDownloadedEpisodes,
                                 movieDownloadedByTranslation = movieDownloadedByTranslation,
                                 onMovieDownload = if (isTv) null else { target ->
-                                    if (target.isKodik) pendingMovieDownload = target
-                                    else enqueueMovieDownload(detailsContext, target)
+                                    pendingMovieDownload = target
                                 }
                             )
                             pendingMovieDownload?.let { target ->
