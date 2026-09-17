@@ -1,5 +1,6 @@
 package app.marlboroadvance.mpvex.utils.media
 
+import android.net.Uri
 import android.util.Log
 import app.marlboroadvance.mpvex.repository.NetworkRepository
 import app.marlboroadvance.mpvex.ui.browser.networkstreaming.proxy.NetworkStreamingProxy
@@ -9,6 +10,7 @@ import kotlinx.coroutines.withContext
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import java.io.File
+import java.net.URLDecoder
 import java.util.Locale
 
 /**
@@ -212,14 +214,44 @@ object SubtitleOps : KoinComponent {
     videoFilePath: String,
     videoFileName: String,
   ) {
-    // Get base name without extension
-    val baseName = videoFileName.substringBeforeLast('.')
-
     // Get the base URL (path without the filename)
     val lastSlashIndex = videoFilePath.lastIndexOf('/')
     if (lastSlashIndex == -1) return
 
     val baseUrl = videoFilePath.substring(0, lastSlashIndex + 1)
+
+    // The real sibling basename comes from the URL's own last segment — NOT from the
+    // display title. Live case (Джентльмены, Collaps/obrut): fileName is the movie title
+    // while the URL ends in an opaque stream token, so guessing "<Title>.srt/.ass" only
+    // produced raw-Cyrillic 404 noise (mpv tried .../Джентльмены.srt and .../Джентльмены.ass).
+    val urlLastRaw = videoFilePath.substring(lastSlashIndex + 1)
+      .substringBefore('?').substringBefore('#')
+    if (urlLastRaw.isBlank()) return
+    val urlLast = runCatching { URLDecoder.decode(urlLastRaw, "UTF-8") }.getOrDefault(urlLastRaw)
+
+    fun looksLikeFileName(name: String): Boolean {
+      if (!name.contains('.')) return false
+      val ext = name.substringAfterLast('.')
+      return ext.isNotBlank() && ext.length <= 5 && ext.all { it.isLetterOrDigit() }
+    }
+
+    val baseName: String = when {
+      videoFileName == urlLast || videoFileName == urlLastRaw ->
+        videoFileName.substringBeforeLast('.')
+      looksLikeFileName(urlLast) ->
+        urlLast.substringBeforeLast('.')
+      looksLikeFileName(urlLastRaw) ->
+        urlLastRaw.substringBeforeLast('.')
+      else -> {
+        Log.d(TAG, "Skipping network subtitle guess: display title '$videoFileName' vs opaque stream segment")
+        return
+      }
+    }
+    if (baseName.isBlank()) return
+
+    // Percent-encode non-ASCII (Cyrillic titles, spaces) so mpv never requests a raw-unicode URL.
+    // Dots/hyphens stay literal — they are legal in path segments and part of real basenames.
+    val encodedBase = Uri.encode(baseName, "-_.~()")
 
     // Common subtitle extensions to try
     val subtitleExtensions = listOf("srt", "ass", "ssa", "vtt", "sub")
@@ -227,7 +259,7 @@ object SubtitleOps : KoinComponent {
     // Keep mpv calls off the main thread for network URLs to avoid ANRs.
     // Try each subtitle extension
     subtitleExtensions.forEachIndexed { index, ext ->
-      val subtitleUrl = "$baseUrl$baseName.$ext"
+      val subtitleUrl = "$baseUrl$encodedBase.$ext"
       try {
         // Try to add the subtitle - MPV will handle if it doesn't exist
         // Use "auto" flag so MPV doesn't select it if it's not found
