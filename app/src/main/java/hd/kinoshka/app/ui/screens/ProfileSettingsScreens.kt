@@ -56,6 +56,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import android.view.ViewGroup
@@ -117,10 +119,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.SolidColor
@@ -189,10 +193,13 @@ fun ProfileScreen(
     onOpenLibraryStatus: (UserFilmStatus, Boolean) -> Unit = { _, _ -> },
     anixartImportProgress: hd.kinoshka.app.ui.screens.AnixartImportProgress? = null,
     onOpenSettings: () -> Unit = {},
+    onOpenSettingsEntry: ((SettingsSearchEntry) -> Unit)? = null,
     onOpenDownloads: () -> Unit = {},
     showBack: Boolean = true,
     sectionBottomPadding: Dp = 0.dp,
-    isAmoled: Boolean = false
+    isAmoled: Boolean = false,
+    /** Android TV: кнопка Загрузок скрыта (скачивание отключено). */
+    showDownloads: Boolean = true
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -334,28 +341,36 @@ fun ProfileScreen(
         }
     }
 
-    LazyColumn(
+    // Шапка закреплена в потоке (как SearchRow в Обзоре/Библиотеке): не скроллится,
+    // контент идёт ниже и никогда не просвечивает за пилюлями. Фона-полосы нет,
+    // глубина — только тенями пилюль. Верх списка гаснет в фон как в Обзоре.
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding(),
-        contentPadding = PaddingValues(
-            start = 16.dp,
-            top = 16.dp,
-            end = 16.dp,
-            bottom = 16.dp + sectionBottomPadding
-        ),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .statusBarsPadding()
     ) {
-        item {
-            ProfileHeader(
-                query = profileQuery,
-                onQueryChange = { profileQuery = it },
-                showBack = showBack,
-                onBack = onBack,
-                onOpenSettings = onOpenSettings,
-                onOpenDownloads = onOpenDownloads
-            )
-        }
+        ProfileHeader(
+            query = profileQuery,
+            onQueryChange = { profileQuery = it },
+            showBack = showBack,
+            onBack = onBack,
+            onOpenSettings = onOpenSettings,
+            onOpenDownloads = onOpenDownloads,
+            showDownloads = showDownloads,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)
+        )
+        val profileListState = rememberLazyListState()
+        LazyColumn(
+            state = profileListState,
+            modifier = Modifier.fillMaxSize().profileTopFadingEdge(profileListState),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = 4.dp,
+                end = 16.dp,
+                bottom = 16.dp + sectionBottomPadding
+            ),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
 
         if (isSearching && !showHero && !showStats && !showAccounts && settingsMatches.isEmpty()) {
             item {
@@ -718,7 +733,7 @@ fun ProfileScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .clickable(onClick = onOpenSettings)
+                                    .clickable(onClick = { onOpenSettingsEntry?.invoke(entry) ?: onOpenSettings() })
                                     .padding(horizontal = 4.dp, vertical = 8.dp)
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
@@ -744,6 +759,8 @@ fun ProfileScreen(
                     }
                 }
             }
+        }
+
         }
 
     }
@@ -823,13 +840,45 @@ fun ProfileScreen(
 
 
 @Composable
+private fun Modifier.profileTopFadingEdge(
+    state: LazyListState,
+    fadeHeight: Dp = 96.dp
+): Modifier {
+    val bg = MaterialTheme.colorScheme.background
+    return drawWithContent {
+        drawContent()
+        val fadePx = fadeHeight.toPx()
+        val offset = (if (state.firstVisibleItemIndex > 0) Int.MAX_VALUE else state.firstVisibleItemScrollOffset)
+            .coerceAtLeast(0)
+        if (offset > 0 && fadePx > 0f) {
+            val t = (offset / fadePx).coerceIn(0f, 1f)
+            // smootherstep — появление без рывка на старте и мягкое насыщение.
+            val strength = t * t * t * (t * (t * 6f - 15f) + 10f)
+            if (strength > 0.01f) {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        0f to bg.copy(alpha = strength),
+                        0.6f to bg.copy(alpha = strength * 0.45f),
+                        1f to bg.copy(alpha = 0f),
+                        startY = 0f,
+                        endY = fadePx
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun ProfileHeader(
     query: String,
     onQueryChange: (String) -> Unit,
     showBack: Boolean,
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenDownloads: () -> Unit
+    onOpenDownloads: () -> Unit,
+    showDownloads: Boolean = true,
+    modifier: Modifier = Modifier.fillMaxWidth()
 ) {
     // Активные загрузки: кнопка крутится, пока что-то качается.
     val downloadTasks by EpisodeDownloadManager.tasks.collectAsState()
@@ -839,8 +888,9 @@ private fun ProfileHeader(
             it.phase == DownloadPhase.DOWNLOADING
     }
     // Без фона-карточки — как шапки Библиотеки и Обзора: поле + круглые кнопки.
+    // Фона-полосы нет и в закрепе: глубина — только тенями самих пилюль.
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -848,7 +898,8 @@ private fun ProfileHeader(
                 Surface(
                     modifier = Modifier.size(48.dp).clickable(onClick = onBack),
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shadowElevation = 6.dp
                 ) {
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                         Icon(
@@ -861,15 +912,20 @@ private fun ProfileHeader(
                 }
             }
             // Строка поиска по профилю и настройкам — как поле поиска на Обзоре.
-            Box(
+            Surface(
                 modifier = Modifier
                     .weight(1f)
-                    .height(48.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .padding(horizontal = 14.dp),
-                contentAlignment = Alignment.CenterStart
+                    .height(48.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shadowElevation = 6.dp
             ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -912,16 +968,19 @@ private fun ProfileHeader(
                         )
                     }
                 }
+                }
             }
             // Загрузки — круглая кнопка в стиле фильтров; крутится при активной загрузке.
-            Surface(
+            // На Android TV скрыта (скачивание отключено).
+            if (showDownloads) Surface(
                 modifier = Modifier.size(48.dp).clickable(onClick = onOpenDownloads),
                 shape = CircleShape,
                 color = if (isDownloading) {
                     MaterialTheme.colorScheme.primaryContainer
                 } else {
                     MaterialTheme.colorScheme.surfaceContainerHigh
-                }
+                },
+                shadowElevation = 6.dp
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     if (isDownloading) {
@@ -943,7 +1002,8 @@ private fun ProfileHeader(
             Surface(
                 modifier = Modifier.size(48.dp).clickable(onClick = onOpenSettings),
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.primaryContainer
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shadowElevation = 6.dp
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     Icon(
@@ -1711,7 +1771,7 @@ private fun saveAvatarBitmap(context: Context, bitmap: Bitmap): Uri {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ShikimoriWebLoginDialog(
+internal fun ShikimoriWebLoginDialog(
     onDismiss: () -> Unit,
     onSuccess: (token: String, userId: Int, nickname: String, avatarUrl: String?) -> Unit
 ) {
@@ -1830,9 +1890,9 @@ private fun ShikimoriWebLoginDialog(
 // Yandex's built-in "confirmation code" redirect (always registered, can't be removed):
 // after consent the webview lands on this page carrying ?code=..., which the login dialog
 // captures — no custom redirect URI needs to be registered in the OAuth console.
-private const val YANDEX_VERIFICATION_REDIRECT = "https://oauth.yandex.ru/verification_code"
+internal const val YANDEX_VERIFICATION_REDIRECT = "https://oauth.yandex.ru/verification_code"
 
-private fun buildYandexAuthorizeUrl(): String {
+internal fun buildYandexAuthorizeUrl(): String {
     // No redirect_uri: Yandex serves the code on its verification page (OOB-style flow).
     return "https://oauth.yandex.ru/authorize?response_type=code" +
         "&client_id=${hd.kinoshka.app.BuildConfig.YANDEX_DISK_CLIENT_ID}"
@@ -1993,7 +2053,7 @@ private fun CloudBackupSection(
 }
 
 @Composable
-private fun WebDavConfigDialog(
+internal fun WebDavConfigDialog(
     onDismiss: () -> Unit,
     onSave: (url: String, user: String, password: String) -> Unit
 ) {
@@ -2101,7 +2161,7 @@ private enum class AnixartAuthMode {
 }
 
 @Composable
-private fun AnixartLoginDialog(
+internal fun AnixartLoginDialog(
     onDismiss: () -> Unit,
     onLogin: (login: String, password: String, onResult: (Boolean, String?) -> Unit) -> Unit,
     onSignUp: (login: String, email: String, password: String, onResult: (Boolean, String?, String?) -> Unit) -> Unit = { _, _, _, _ -> },
@@ -2435,7 +2495,7 @@ private fun AnixartLoginDialog(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun OAuthWebLoginDialog(
+internal fun OAuthWebLoginDialog(
     title: String,
     authorizeUrl: String,
     redirectUri: String,

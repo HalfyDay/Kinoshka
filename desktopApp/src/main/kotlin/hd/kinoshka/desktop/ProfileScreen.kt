@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,8 +42,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -132,20 +138,29 @@ fun ProfileScreen(
         }
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Surface(shape = CircleShape, color = cs.surfaceContainerHigh, modifier = Modifier.size(38.dp).tvFocusable(onClick = onBack, shape = CircleShape, hoverToFocus = true)) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = cs.onBackground, modifier = Modifier.size(22.dp))
-                    }
+    // Шапка закреплена в потоке (как SearchRow в Обзоре/Библиотеке): не скроллится,
+    // контент идёт ниже и никогда не просвечивает за пилюлями. Фона-полосы нет.
+    // Верх списка гаснет в фон как в Обзоре (тот же fade 48.dp).
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)
+        ) {
+            Surface(shape = CircleShape, color = cs.surfaceContainerHigh, modifier = Modifier.size(38.dp).tvFocusable(onClick = onBack, shape = CircleShape, hoverToFocus = true)) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = cs.onBackground, modifier = Modifier.size(22.dp))
                 }
-                Text("Профиль", color = cs.onBackground, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
             }
+            Text("Профиль", color = cs.onBackground, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
         }
+        val profileListState = rememberLazyListState()
+        LazyColumn(
+            state = profileListState,
+            modifier = Modifier.fillMaxSize().profileTopFadingEdge(profileListState),
+            contentPadding = PaddingValues(start = 24.dp, top = 4.dp, end = 24.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
         item {
             // Hero-карточка: аватар + аккаунт
             Surface(shape = RoundedCornerShape(28.dp), color = Color.Transparent, modifier = Modifier.fillMaxWidth()) {
@@ -257,6 +272,37 @@ fun ProfileScreen(
             }
         }
         item { Spacer(Modifier.height(12.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun Modifier.profileTopFadingEdge(
+    state: LazyListState,
+    fadeHeight: androidx.compose.ui.unit.Dp = 96.dp
+): Modifier {
+    val bg = MaterialTheme.colorScheme.background
+    return drawWithContent {
+        drawContent()
+        val fadePx = fadeHeight.toPx()
+        val offset = (if (state.firstVisibleItemIndex > 0) Int.MAX_VALUE else state.firstVisibleItemScrollOffset)
+            .coerceAtLeast(0)
+        if (offset > 0 && fadePx > 0f) {
+            val t = (offset / fadePx).coerceIn(0f, 1f)
+            // smootherstep — появление без рывка на старте и мягкое насыщение.
+            val strength = t * t * t * (t * (t * 6f - 15f) + 10f)
+            if (strength > 0.01f) {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        0f to bg.copy(alpha = strength),
+                        0.6f to bg.copy(alpha = strength * 0.45f),
+                        1f to bg.copy(alpha = 0f),
+                        startY = 0f,
+                        endY = fadePx
+                    )
+                )
+            }
+        }
     }
 }
 
