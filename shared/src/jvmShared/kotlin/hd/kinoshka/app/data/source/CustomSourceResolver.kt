@@ -48,8 +48,12 @@ object CustomSourceResolver {
     suspend fun resolveOne(
         custom: CustomSource,
         kinopoiskId: Int?,
-        imdbId: String?
+        imdbId: String?,
+        isSeries: Boolean = false
     ): DdbbStreamResolver.SourceParse? = withContext(Dispatchers.IO) {
+        if (custom.kind == CustomSourceKind.STREMIO) {
+            return@withContext StremioAddonResolver.resolveMovieParse(custom, imdbId, isSeries)
+        }
         val url = custom.buildUrl(kinopoiskId, imdbId)
         if (url == null) {
             KLog.i(TAG, "${custom.id}: skipped (title has no required id for template)")

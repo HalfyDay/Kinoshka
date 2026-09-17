@@ -1157,6 +1157,8 @@ object AnimeStreamResolver {
             { c, kp -> CustomSourceResolver.resolveOne(c, kp, null) }
     ): List<FlatTranslation> = withContext(Dispatchers.IO) {
         runCatching {
+            // STREMIO — только фильмы (раздел FILMS): в аниме-пикере ему нечего делать.
+            if (custom.kind == CustomSourceKind.STREMIO) return@runCatching emptyList<FlatTranslation>()
             val kp = animeKpId(shikimoriId, animeTitle, kinopoiskId) ?: return@runCatching emptyList<FlatTranslation>()
             val parse = cachedCustomParse(custom.id, kp) ?: resolve(custom, kp)?.also { fetched ->
                 customAnimeParseCache["${custom.id}|$kp"] = CacheEntry(fetched, System.currentTimeMillis())

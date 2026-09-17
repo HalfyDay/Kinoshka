@@ -398,6 +398,8 @@ object HentaiStreamResolver {
             { c, kp -> CustomSourceResolver.resolveOne(c, kp, imdbId) }
     ): HentaiStream? = withContext(Dispatchers.IO) {
         runCatching {
+            // STREMIO — только фильмы (раздел FILMS): в 18+-пикере ему нечего делать.
+            if (custom.kind == CustomSourceKind.STREMIO) return@runCatching null
             val kp = AnimeStreamResolver.realKinopoiskId(kinopoiskId) ?: run {
                 KLog.i(TAG, "[Custom] ${custom.id}: no real kinopoisk id (kp=$kinopoiskId) — skipped")
                 return@runCatching null

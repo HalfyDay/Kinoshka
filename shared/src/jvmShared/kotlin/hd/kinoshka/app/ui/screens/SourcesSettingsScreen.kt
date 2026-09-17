@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.source.CustomSource
 import hd.kinoshka.app.data.source.CustomSourceCheck
+import hd.kinoshka.app.data.source.CustomSourceKind
 import hd.kinoshka.app.data.source.PlaybackSourceInfo
 import hd.kinoshka.app.data.source.PlaybackSources
 import hd.kinoshka.app.data.source.SourceCategory
@@ -232,7 +233,7 @@ fun SourcesSettingsScreen(
                 KinoSettingsCard {
                     KinoSettingsRow(
                         title = "Добавить источник",
-                        summary = "Embed-ссылка с {kp} или {imdb}: ${customSources.size}",
+                        summary = "Embed-ссылки и Stremio-аддоны: ${customSources.size}",
                         trailing = {
                             FilledTonalButton(
                                 onClick = { addingCustom = true },
@@ -498,7 +499,15 @@ private fun CustomSourceEditDialog(
     onSave: (CustomSource) -> Unit
 ) {
     var name by remember { mutableStateOf(existing?.name.orEmpty()) }
+    var kind by remember { mutableStateOf(existing?.kind ?: CustomSourceKind.EMBED) }
+    val isStremio = kind == CustomSourceKind.STREMIO
     var template by remember { mutableStateOf(existing?.urlTemplate.orEmpty()) }
+    var endpoint by remember {
+        mutableStateOf(
+            existing?.endpoint?.ifBlank { null }
+                ?: existing?.takeIf { it.kind == CustomSourceKind.STREMIO }?.urlTemplate.orEmpty()
+        )
+    }
     var referer by remember { mutableStateOf(existing?.referer.orEmpty()) }
     var useProxy by remember { mutableStateOf(existing?.useProxy == true) }
     var webOnly by remember { mutableStateOf(existing?.webOnly == true) }
@@ -517,11 +526,13 @@ private fun CustomSourceEditDialog(
     fun draft(id: String) = CustomSource(
         id = id,
         name = name.trim(),
-        urlTemplate = template.trim(),
-        referer = referer.trim(),
-        useProxy = useProxy,
-        webOnly = webOnly,
-        categories = categories
+        urlTemplate = if (isStremio) "" else template.trim(),
+        referer = if (isStremio) "" else referer.trim(),
+        useProxy = useProxy && !isStremio,
+        webOnly = webOnly && !isStremio,
+        categories = if (isStremio) setOf(SourceCategory.FILMS) else categories,
+        kind = kind,
+        endpoint = if (isStremio) endpoint.trim() else ""
     )
 
     AlertDialog(
@@ -537,66 +548,103 @@ private fun CustomSourceEditDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = template,
-                    onValueChange = { template = it; error = null },
-                    label = { Text("Шаблон ссылки") },
-                    placeholder = { Text("https://host/embed/kp/{kp}") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
                 Text(
-                    text = "{kp} — Kinopoisk ID, {imdb} — IMDb ID",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = referer,
-                    onValueChange = { referer = it },
-                    label = { Text("Referer (необязательно)") },
-                    placeholder = { Text("origin embed-хоста") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = useProxy, onCheckedChange = { useProxy = it })
-                    Text(
-                        text = "Через прокси",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = webOnly, onCheckedChange = { webOnly = it })
-                    Text(
-                        text = "Только веб-плеер (не извлекать поток)",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-                Text(
-                    text = "Разделы",
+                    text = "Вид источника",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(top = 8.dp)
+                    color = MaterialTheme.colorScheme.primary
                 )
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(top = 4.dp)
                 ) {
-                    SourceCategory.entries.forEach { category ->
+                    CustomSourceKind.entries.forEach { entry ->
                         FilterChip(
-                            selected = category in categories,
-                            onClick = {
-                                categories = if (category in categories) {
-                                    categories - category
-                                } else {
-                                    categories + category
-                                }
-                                error = null
-                            },
-                            label = { Text(category.title) }
+                            selected = kind == entry,
+                            onClick = { kind = entry; error = null; probeResult = null },
+                            label = { Text(entry.title) }
                         )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                if (isStremio) {
+                    OutlinedTextField(
+                        value = endpoint,
+                        onValueChange = { endpoint = it; error = null },
+                        label = { Text("Адрес аддона") },
+                        placeholder = { Text("https://host:port[/path]") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "Stremio: только фильмы с IMDb ID. Хвост /manifest.json необязателен.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = template,
+                        onValueChange = { template = it; error = null },
+                        label = { Text("Шаблон ссылки") },
+                        placeholder = { Text("https://host/embed/kp/{kp}") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "{kp} — Kinopoisk ID, {imdb} — IMDb ID",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                if (!isStremio) {
+                    OutlinedTextField(
+                        value = referer,
+                        onValueChange = { referer = it },
+                        label = { Text("Referer (необязательно)") },
+                        placeholder = { Text("origin embed-хоста") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = useProxy, onCheckedChange = { useProxy = it })
+                        Text(
+                            text = "Через прокси",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = webOnly, onCheckedChange = { webOnly = it })
+                        Text(
+                            text = "Только веб-плеер (не извлекать поток)",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    Text(
+                        text = "Разделы",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(top = 4.dp)
+                    ) {
+                        SourceCategory.entries.forEach { category ->
+                            FilterChip(
+                                selected = category in categories,
+                                onClick = {
+                                    categories = if (category in categories) {
+                                        categories - category
+                                    } else {
+                                        categories + category
+                                    }
+                                    error = null
+                                },
+                                label = { Text(category.title) }
+                            )
+                        }
                     }
                 }
                 if (error != null) {
@@ -627,7 +675,7 @@ private fun CustomSourceEditDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                if (categories.isEmpty()) {
+                if (categories.isEmpty() && !isStremio) {
                     error = "Выберите хотя бы один раздел"
                     return@TextButton
                 }
@@ -637,8 +685,10 @@ private fun CustomSourceEditDialog(
                     existing = customs,
                     selfId = existing?.id,
                     builtInNames = PlaybackSources.ALL.map { it.displayName },
-                    categories = categories,
-                    webOnly = webOnly
+                    categories = if (isStremio) setOf(SourceCategory.FILMS) else categories,
+                    webOnly = webOnly,
+                    kind = kind,
+                    endpoint = endpoint
                 )) {
                     is CustomSourceCheck.Failed -> error = check.message
                     is CustomSourceCheck.Ok -> {

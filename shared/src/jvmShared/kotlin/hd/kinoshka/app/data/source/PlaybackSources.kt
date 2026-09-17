@@ -182,14 +182,23 @@ object PlaybackSources {
         id = source.id,
         displayName = source.name,
         description = buildString {
-            append("Свой источник: ${source.embedHost() ?: source.urlTemplate}")
-            val cats = source.categories.ifEmpty { setOf(SourceCategory.FILMS) }
-            if (cats != setOf(SourceCategory.FILMS)) {
-                append(" · ")
-                append(cats.sortedBy { it.ordinal }.joinToString { it.title })
+            if (source.kind == CustomSourceKind.STREMIO) {
+                append("Свой источник (Stremio JSON): ${source.stremioHost() ?: source.endpoint}")
+                append(" · Фильмы")
+            } else {
+                append("Свой источник: ${source.embedHost() ?: source.urlTemplate}")
+                val cats = source.categories.ifEmpty { setOf(SourceCategory.FILMS) }
+                if (cats != setOf(SourceCategory.FILMS)) {
+                    append(" · ")
+                    append(cats.sortedBy { it.ordinal }.joinToString { it.title })
+                }
             }
         },
-        categories = source.categories.ifEmpty { setOf(SourceCategory.FILMS) },
+        categories = if (source.kind == CustomSourceKind.STREMIO) {
+            setOf(SourceCategory.FILMS)
+        } else {
+            source.categories.ifEmpty { setOf(SourceCategory.FILMS) }
+        },
         animeSourceType = AnimeSourceType.CUSTOM
     )
 

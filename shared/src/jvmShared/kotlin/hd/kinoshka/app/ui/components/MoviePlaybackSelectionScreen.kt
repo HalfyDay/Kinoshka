@@ -302,6 +302,10 @@ fun MoviePlaybackSelectionScreen(
     var kodikCandidates by remember { mutableStateOf<List<KodikMovieCandidate>>(emptyList()) }
     var directParses by remember { mutableStateOf<List<DdbbStreamResolver.SourceParse>>(emptyList()) }
     var bulkStarted by remember { mutableStateOf(false) }
+    // С каким набором своих отработал последний bulk: свои грузятся асинхронно и часто
+    // приезжают ПОСЛЕ первого старта — без перезапуска они висят в Loading вечно
+    // (счётчик «8/9» стоит, пока не ткнёшь «Повторить»).
+    var bulkCustomsKey by remember(request) { mutableStateOf<String?>(null) }
 
     val filmCustoms = remember(customSources) {
         customSources.filter {
@@ -350,7 +354,8 @@ fun MoviePlaybackSelectionScreen(
                         request.kinopoiskId ?: 0,
                         disabledIds = disabled,
                         imdbId = request.imdbId,
-                        customSources = filmCustoms
+                        customSources = filmCustoms,
+                        isSeries = isSeries
                     )
                 }.await()
             }
@@ -455,7 +460,7 @@ fun MoviePlaybackSelectionScreen(
         }
     }
 
-    LaunchedEffect(request, prefsReady) {
+    LaunchedEffect(request, prefsReady, filmCustoms) {
         if (!prefsReady) return@LaunchedEffect
         // Помечаем Loading сразу, чтобы страница не мигала пустотой. Kodik и HDRezka
         // грузятся собственными стартерами (они сами ставят Loading + guard от повтора):
@@ -469,8 +474,13 @@ fun MoviePlaybackSelectionScreen(
             next
         }
         startKodik()
-        startBulk()
         startHdrezka()
+        val customIds = filmCustoms.map { it.id }
+        if (!bulkStarted || bulkCustomsKey != customIds.joinToString()) {
+            bulkStarted = false
+            bulkCustomsKey = customIds.joinToString()
+            startBulk()
+        }
     }
 
     val allOptions = remember(sourceStates, hidden) {

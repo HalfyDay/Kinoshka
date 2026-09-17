@@ -228,6 +228,7 @@ object SourceHealthChecker {
     }
 
     private fun probeCustomSource(source: CustomSource): Pair<Boolean, String> {
+        if (source.kind == CustomSourceKind.STREMIO) return probeStremioSource(source)
         val url = source.buildUrl(PROBE_KINOPOISK_ID, null)
             ?: return false to "Шаблон без {kp}: проба невозможна"
         val html = httpGet(url, source.effectiveReferer(url)) ?: return false to "Embed не загрузился"
@@ -236,6 +237,31 @@ object SourceHealthChecker {
             extracted != null && extracted.second.isNotEmpty() ->
                 true to "OK: прямой поток извлекается"
             else -> true to "Embed отвечает (только веб-режим)"
+        }
+    }
+
+    /**
+     * Проба Stremio-аддона: манифест → stream-ресурс для фильмов → пробный запрос
+     * потоков «Матрицы» (tt0133093). Манифест без movie-stream — честный фейл:
+     * каталоговые аддоны (Cinemeta) потоков не отдают.
+     */
+    private fun probeStremioSource(source: CustomSource): Pair<Boolean, String> {
+        val base = source.stremioBase() ?: return false to "Некорректный адрес аддона"
+        val manifestRaw = httpGet(StremioAddonResolver.manifestUrl(base), "$base/")
+            ?: return false to "Манифест не загрузился"
+        val manifest = StremioAddonResolver.parseManifest(manifestRaw)
+            ?: return false to "Манифест не распознан"
+        if (!manifest.hasMovieStream) {
+            return false to "«${manifest.name}»: нет stream-ресурса для фильмов"
+        }
+        val streamsRaw = httpGet(
+            StremioAddonResolver.movieStreamUrl(base, CustomSource.PROBE_IMDB), "$base/"
+        ) ?: return false to "Манифест ок, запрос потоков не отвечает"
+        val (streams, _) = StremioAddonResolver.parseStreams(streamsRaw)
+        return if (streams.isNotEmpty()) {
+            true to "OK: «${manifest.name}», потоков: ${streams.size} (Матрица)"
+        } else {
+            true to "Манифест ок, но потоков для Матрицы нет"
         }
     }
 

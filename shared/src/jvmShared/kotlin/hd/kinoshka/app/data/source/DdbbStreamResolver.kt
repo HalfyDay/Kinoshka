@@ -789,6 +789,7 @@ object DdbbStreamResolver {
         disabledIds: Set<String> = emptySet(),
         imdbId: String? = null,
         customSources: List<CustomSource> = emptyList(),
+        isSeries: Boolean = false,
     ): List<SourceParse> = withContext(Dispatchers.IO) {
         if (kinopoiskId <= 0) return@withContext emptyList()
         val disabled = disabledIds.map { it.trim().lowercase() }.toSet()
@@ -832,10 +833,11 @@ object DdbbStreamResolver {
                 }
             }
             // Свои источники: тем же конкуррентным пулом, в порядке добавления.
+            // STREMIO-сериалы скипаются внутри резолва (v1: только фильмы).
             for (custom in customSources) {
                 if (isDisabled(custom.id)) continue
                 jobs += async {
-                    runCatching { CustomSourceResolver.resolveOne(custom, kinopoiskId, imdbId) }
+                    runCatching { CustomSourceResolver.resolveOne(custom, kinopoiskId, imdbId, isSeries) }
                         .onFailure { KLog.w(TAG, "custom ${custom.id}: picker resolve failed", it) }
                         .getOrNull()
                 }

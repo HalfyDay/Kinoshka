@@ -4,17 +4,29 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /**
- * Пользовательский embed-источник фильмов/сериалов (вариант A кастомных источников):
- * только шаблон embed-ссылки с плейсхолдерами, без кода. Резолв идёт по тем же рельсам,
- * что встроенные прямые (fetch embed → host-agnostic [DdbbStreamResolver.extractFromEmbed]
- * → SourceParse; не извлеклось — веб-режим как у Alloha/Veoveo).
+ * Пользовательский источник фильмов/сериалов.
+ *
+ * Вариант A (EMBED): только шаблон embed-ссылки с плейсхолдерами, без кода. Резолв идёт
+ * по тем же рельсам, что встроенные прямые (fetch embed → host-agnostic
+ * [DdbbStreamResolver.extractFromEmbed] → SourceParse; не извлеклось — веб-режим).
+ *
+ * Вариант B (STREMIO): Stremio-совместимый JSON-аддон (свой или чужой публичный):
+ * manifest.json описывает ресурсы, потоки фильма тянутся с
+ * `{base}/stream/movie/{imdb}.json`. Только фильмы с IMDb ID (сериалам нужен
+ * поэпизодный запрос, аниме/18+ мост им не положен — см. диалог).
  */
+@Serializable
+enum class CustomSourceKind(val title: String) {
+    EMBED("Embed-ссылка"),
+    STREMIO("Stremio JSON")
+}
+
 @Serializable
 data class CustomSource(
     /** CUSTOM_<slug>, uppercase. */
     val id: String,
     val name: String,
-    /** https://host/embed/kp/{kp} — плейсхолдеры [KP_PLACEHOLDER]/[IMDB_PLACEHOLDER]. */
+    /** EMBED: https://host/embed/kp/{kp} — плейсхолдеры [KP_PLACEHOLDER]/[IMDB_PLACEHOLDER]. */
     val urlTemplate: String,
     /** Пусто = origin embed-хоста. */
     val referer: String = "",
@@ -23,9 +35,13 @@ data class CustomSource(
     val webOnly: Boolean = false,
     /**
      * Разделы источника. Дефолт FILMS — старые записи (без поля) остаются киношными;
-     * пустой сет трактуется так же (защита от битых правок).
+     * пустой сет трактуется так же (защита от битых правок). STREMIO всегда FILMS.
      */
-    val categories: Set<SourceCategory> = setOf(SourceCategory.FILMS)
+    val categories: Set<SourceCategory> = setOf(SourceCategory.FILMS),
+    /** Вариант источника (дефолт EMBED — старые записи без поля). */
+    val kind: CustomSourceKind = CustomSourceKind.EMBED,
+    /** STREMIO: transport URL аддона (https://host[:port][/path], хвост /manifest.json необязателен). */
+    val endpoint: String = ""
 ) {
     companion object {
         const val ID_PREFIX = "CUSTOM_"
@@ -58,7 +74,9 @@ fun validateCustomSource(
     selfId: String? = null,
     builtInNames: List<String> = emptyList(),
     categories: Set<SourceCategory> = setOf(SourceCategory.FILMS),
-    webOnly: Boolean = false
+    webOnly: Boolean = false,
+    kind: CustomSourceKind = CustomSourceKind.EMBED,
+    endpoint: String = ""
 ): CustomSourceCheck {
     val cleanName = name.trim()
     if (cleanName.isEmpty()) return CustomSourceCheck.Failed("Укажите название источника")
@@ -69,6 +87,9 @@ fun validateCustomSource(
     }
     if (builtInNames.any { it.equals(cleanName, ignoreCase = true) }) {
         return CustomSourceCheck.Failed("Такое имя занято встроенным источником")
+    }
+    if (kind == CustomSourceKind.STREMIO) {
+        return validateStremioEndpoint(endpoint, others)
     }
     val template = urlTemplate.trim()
     if (template.isEmpty()) return CustomSourceCheck.Failed("Укажите шаблон ссылки")
@@ -109,6 +130,44 @@ fun validateCustomSource(
     return CustomSourceCheck.Ok(warnings)
 }
 
+/** Нормализация transport URL Stremio-аддона: без хвостового /manifest.json и /; null — кривой адрес. */
+fun normalizeStremioEndpoint(endpoint: String): String? {
+    var s = endpoint.trim().trimEnd('/')
+    if (s.isEmpty()) return null
+    if ("{" in s || "}" in s) return null
+    val tail = "/manifest.json"
+    if (s.length > tail.length && s.substring(s.length - tail.length).equals(tail, ignoreCase = true)) {
+        s = s.substring(0, s.length - tail.length).trimEnd('/')
+    }
+    if (s.isEmpty()) return null
+    val scheme = s.substringBefore("://", "")
+    if (!scheme.equals("http", ignoreCase = true) && !scheme.equals("https", ignoreCase = true)) return null
+    val host = urlHost(s)
+    if (host == null || '.' !in host) return null
+    return s
+}
+
+/** Проверка адреса Stremio-аддона перед сохранением (без сетевых запросов — они в «Проверить»). */
+fun validateStremioEndpoint(endpoint: String, existing: List<CustomSource>): CustomSourceCheck {
+    val raw = endpoint.trim()
+    if (raw.isEmpty()) return CustomSourceCheck.Failed("Укажите адрес Stremio-аддона")
+    if ("{" in raw || "}" in raw) {
+        return CustomSourceCheck.Failed("Адрес аддона — без плейсхолдеров {kp}/{imdb}")
+    }
+    val base = normalizeStremioEndpoint(raw)
+        ?: return CustomSourceCheck.Failed("Некорректный адрес: нужен http(s)-URL с доменом")
+    if (existing.any {
+            it.kind == CustomSourceKind.STREMIO && normalizeStremioEndpoint(it.endpoint) == base
+        }
+    ) {
+        return CustomSourceCheck.Failed("Такой аддон уже добавлен")
+    }
+    // Двухшаговый гейт диалога: первое «Сохранить» показывает это, второе — сохраняет.
+    return CustomSourceCheck.Ok(
+        listOf("Stremio: только фильмы с IMDb ID; сериалы и разделы Аниме/18+ не поддерживаются")
+    )
+}
+
 /** Подстановка плейсхолдеров; null, когда нужного id нет или шаблон кривой. */
 fun substitutePlaceholders(template: String, kinopoiskId: Int?, imdbId: String?): String? {
     var url = template.trim()
@@ -131,6 +190,13 @@ fun CustomSource.buildUrl(kinopoiskId: Int?, imdbId: String?): String? =
 
 /** Хост шаблона (плейсхолдеры в хосте не поддерживаются — валидация это гарантирует). */
 fun CustomSource.embedHost(): String? = urlHost(urlTemplate.trim())
+
+/** Transport base Stremio-аддона; null — адрес не задан/кривой. */
+fun CustomSource.stremioBase(): String? =
+    if (kind != CustomSourceKind.STREMIO) null else normalizeStremioEndpoint(endpoint)
+
+/** Хост Stremio-аддона (для подписей и прокси-регистрации). */
+fun CustomSource.stremioHost(): String? = urlHost(stremioBase() ?: return null)
 
 /** Referer для запросов/плеера: явный либо origin embed-ссылки. */
 fun CustomSource.effectiveReferer(embedUrl: String): String {
@@ -228,7 +294,11 @@ fun parseCustomSources(raw: String?): List<CustomSource> {
                 customSourcesJson.decodeFromJsonElement(CustomSource.serializer(), el)
             }.getOrNull()
             parsed
-                ?.takeIf { it.id.isNotBlank() && it.name.isNotBlank() && it.urlTemplate.isNotBlank() }
+                ?.takeIf { it.id.isNotBlank() && it.name.isNotBlank() }
+                ?.takeIf {
+                    it.urlTemplate.isNotBlank() ||
+                        (it.kind == CustomSourceKind.STREMIO && it.endpoint.isNotBlank())
+                }
                 ?.let { ok -> ok.copy(id = ok.id.trim().uppercase()) }
         }
     }.getOrDefault(emptyList())
