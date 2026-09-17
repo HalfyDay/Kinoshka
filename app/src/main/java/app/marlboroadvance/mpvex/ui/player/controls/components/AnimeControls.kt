@@ -44,6 +44,7 @@ import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.theme.controlColor
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FlatTranslation
+import hd.kinoshka.app.data.model.displaySourceName
 import hd.kinoshka.app.data.model.qualityBadgeLabel
 import hd.kinoshka.app.data.model.qualityRank
 import kotlinx.coroutines.Dispatchers
@@ -456,7 +457,7 @@ fun AnimeTranslationDropdown(
                                                 color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "${tr.source.displayName} • ${
+                                                text = "${tr.displaySourceName()} • ${
                                                     when (tr.type) {
                                                         "voice" -> "Озвучка"
                                                         "orig" -> "Оригинал (без перевода)"

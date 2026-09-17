@@ -4,7 +4,6 @@ import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -27,18 +26,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import hd.kinoshka.app.R
 import hd.kinoshka.app.data.model.*
 import hd.kinoshka.app.data.download.DownloadBridges
 import hd.kinoshka.app.data.download.DownloadPhase
@@ -49,6 +44,9 @@ import hd.kinoshka.app.data.download.offlineKey
 import hd.kinoshka.app.data.download.toAnimeMediaStream
 import hd.kinoshka.app.data.download.tryRequestNotificationPermission
 import hd.kinoshka.app.data.source.AnimeStreamResolver
+import hd.kinoshka.app.data.source.CustomSource
+import hd.kinoshka.app.data.source.SourceCategory
+import hd.kinoshka.app.ui.components.AppSourceIcon
 import hd.kinoshka.app.ui.components.KinoLoadingIndicator
 import app.marlboroadvance.mpvex.domain.playbackstate.repository.PlaybackStateRepository
 import org.koin.compose.koinInject
@@ -204,20 +202,29 @@ fun AnimePlaybackSelectionScreen(
     }
     val sourceStates by sourceStatesFlow.collectAsState()
 
-    val allTranslations = remember(sourceStates) {
-        sourceStates.values.filterIsInstance<SourceLoadState.Ready>().flatMap { it.translations }
+    // Свои источники раздела «Аниме»: грузятся тем же прогрессивным паттерном, но ключ —
+    // custom id (N источников на один общий тип CUSTOM), поэтому отдельная карта состояний.
+    val customStatesFlow = remember(shikimoriId) {
+        MutableStateFlow<Map<String, SourceLoadState>>(emptyMap())
+    }
+    val customStates by customStatesFlow.collectAsState()
+
+    val allTranslations = remember(sourceStates, customStates) {
+        sourceStates.values.filterIsInstance<SourceLoadState.Ready>().flatMap { it.translations } +
+            customStates.values.filterIsInstance<SourceLoadState.Ready>().flatMap { it.translations }
     }
 
     // Выключенные/скрытые источники из настроек («Настройки → Источники»):
     // выключенные не запрашиваются вовсе, скрытые грузятся фоном (фолбэк плеера
-    // через кэш префетча), но не показываются в списках.
+    // через кэш префетча), но не показываются в списках. Учитывается раздел
+    // «Аниме»: выключение в «Фильмах»/«18+» сюда не влияет.
     val sourcePrefs by androidx.compose.runtime.produceState<Pair<Set<String>, Set<String>>?>(
         initialValue = null,
         key1 = shikimoriId
     ) {
         withContext(Dispatchers.IO) {
             val store = hd.kinoshka.app.data.local.UserStateStore(context)
-            value = store.getDisabledSources() to store.getHiddenSources()
+            value = store.getDisabledSources(SourceCategory.ANIME) to store.getHiddenSources()
         }
     }
     val disabledPickerSources = sourcePrefs?.first.orEmpty()
@@ -226,6 +233,20 @@ fun AnimePlaybackSelectionScreen(
     val queriedPickerSources = remember(disabledPickerSources) {
         ANIME_PICKER_SOURCES.filter { it.name !in disabledPickerSources }
     }
+
+    // Свои источники раздела «Аниме» из настроек (выключенные для раздела — мимо).
+    val animeCustoms by androidx.compose.runtime.produceState<List<CustomSource>?>(
+        initialValue = null,
+        key1 = shikimoriId
+    ) {
+        withContext(Dispatchers.IO) {
+            val store = hd.kinoshka.app.data.local.UserStateStore(context)
+            val disabled = store.getDisabledSources(SourceCategory.ANIME)
+            value = store.getCustomSources()
+                .filter { SourceCategory.ANIME in it.categories && it.id !in disabled }
+        }
+    }
+    val queriedCustoms = animeCustoms.orEmpty()
 
     // Офлайн-озвучки: скачанные серии видны в пикере всегда, даже когда сеть недоступна.
     // Дубликаты по (source, translationId) прячутся за сетевой строкой — local-first резолв
@@ -272,7 +293,7 @@ fun AnimePlaybackSelectionScreen(
                 episodeNumber = episode.number,
                 episodeLabel = episode.title?.takeIf { it.isNotBlank() } ?: "Серия ${episode.number}",
                 resolve = {
-                    AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, tr.source, tr.translationId, episode.number)
+                    AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, tr.source, tr.translationId, episode.number, kinopoiskId)
                         ?.let { DownloadBridges.mediaSource(it, quality) }
                 }
             )
@@ -318,20 +339,49 @@ fun AnimePlaybackSelectionScreen(
         }
     }
 
+    fun startCustom(custom: CustomSource) {
+        if (customStatesFlow.value[custom.id] is SourceLoadState.Loading) return
+        customStatesFlow.update { it + (custom.id to SourceLoadState.Loading) }
+        scope.launch {
+            val deferred = scope.async(Dispatchers.IO) {
+                AnimeStreamResolver.fetchCustomAnimeTranslations(custom, shikimoriId, animeTitle, kinopoiskId)
+                    .filter { it.episodes.isNotEmpty() }
+            }
+            // Timeout must not cancel the fetch itself — как у startSource выше.
+            val result = withTimeoutOrNull(SOURCE_LOAD_TIMEOUT_MS) { deferred.await() }
+            val newState = when {
+                result == null -> SourceLoadState.Failed("Превышено время ожидания")
+                result.isEmpty() -> SourceLoadState.Empty
+                else -> SourceLoadState.Ready(result)
+            }
+            customStatesFlow.update { current ->
+                if (current[custom.id] is SourceLoadState.Ready) current
+                else current + (custom.id to newState)
+            }
+        }
+    }
+
     /** Launches sources that are neither loading nor loaded — initial open and «Повторить». */
     fun startPendingSources() {
         // Настройки ещё не прочитаны — ждём, иначе выключенные источники успеют запроситься.
         val disabled = sourcePrefs?.first ?: return
+        val customs = animeCustoms ?: return
         ANIME_PICKER_SOURCES.filter { it.name !in disabled }.forEach { src ->
             val state = sourceStatesFlow.value[src]
             if (state !is SourceLoadState.Loading && state !is SourceLoadState.Ready) {
                 startSource(src)
             }
         }
+        customs.forEach { custom ->
+            val state = customStatesFlow.value[custom.id]
+            if (state !is SourceLoadState.Loading && state !is SourceLoadState.Ready) {
+                startCustom(custom)
+            }
+        }
     }
 
-    LaunchedEffect(shikimoriId, pickerPrefsReady) {
-        if (pickerPrefsReady) startPendingSources()
+    LaunchedEffect(shikimoriId, pickerPrefsReady, animeCustoms) {
+        if (pickerPrefsReady && animeCustoms != null) startPendingSources()
     }
 
     // Global preference memory: which sources/dubs the user launches most recently and often.
@@ -365,15 +415,20 @@ fun AnimePlaybackSelectionScreen(
     }
 
     // Full error state only when every source has settled and none produced usable content.
-    val allSourcesSettled = pickerPrefsReady && queriedPickerSources.all {
-        sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Empty || sourceStates[it] is SourceLoadState.Failed
-    }
-    val isLoadingSources = !pickerPrefsReady ||
+    val allSourcesSettled = pickerPrefsReady && animeCustoms != null &&
+        queriedPickerSources.all {
+            sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Empty || sourceStates[it] is SourceLoadState.Failed
+        } && queriedCustoms.all {
+            customStates[it.id] is SourceLoadState.Ready || customStates[it.id] is SourceLoadState.Empty || customStates[it.id] is SourceLoadState.Failed
+        }
+    val isLoadingSources = !pickerPrefsReady || animeCustoms == null ||
         sourceStates.values.any { it is SourceLoadState.Loading } ||
-        (pickerPrefsReady && queriedPickerSources.any { sourceStates[it] == null })
+        customStates.values.any { it is SourceLoadState.Loading } ||
+        (pickerPrefsReady && queriedPickerSources.any { sourceStates[it] == null }) ||
+        (animeCustoms != null && queriedCustoms.any { customStates[it.id] == null })
     val errorMessage = if (allSourcesSettled && !isLoadingSources && effectiveTranslations.isEmpty()) {
         when {
-            queriedPickerSources.isEmpty() -> "Все источники выключены — включите их в настройках."
+            queriedPickerSources.isEmpty() && queriedCustoms.isEmpty() -> "Все источники выключены — включите их в настройках."
             allTranslations.isNotEmpty() -> "Источники скрыты в настройках — включите их отображение."
             else -> "Не удалось найти видео для этого аниме."
         }
@@ -523,7 +578,8 @@ fun AnimePlaybackSelectionScreen(
                         animeTitle,
                         source,
                         translation.translationId,
-                        episode.number
+                        episode.number,
+                        kinopoiskId
                     )
                 isResolvingStream = false
                 if (stream != null) {
@@ -653,7 +709,7 @@ fun AnimePlaybackSelectionScreen(
                             // AniLiberty's dub is labeled by the source itself — avoid "AniLiberty • AniLiberty"
                             SelectionStep.EPISODE -> {
                                 val tr = selectedTranslation
-                                val srcName = selectedSourceType?.displayName
+                                val srcName = tr?.displaySourceName() ?: selectedSourceType?.displayName
                                 when {
                                     tr == null -> "Выбор серии"
                                     tr.title == srcName || srcName == null -> tr.title
@@ -676,7 +732,10 @@ fun AnimePlaybackSelectionScreen(
                 androidx.compose.animation.AnimatedVisibility(visible = isLoadingSources) {
                     val settled = queriedPickerSources.count {
                         sourceStates[it] is SourceLoadState.Ready || sourceStates[it] is SourceLoadState.Empty || sourceStates[it] is SourceLoadState.Failed
+                    } + queriedCustoms.count {
+                        customStates[it.id] is SourceLoadState.Ready || customStates[it.id] is SourceLoadState.Empty || customStates[it.id] is SourceLoadState.Failed
                     }
+                    val total = queriedPickerSources.size + queriedCustoms.size
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -689,7 +748,7 @@ fun AnimePlaybackSelectionScreen(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "Загрузка источников… $settled/${queriedPickerSources.size}",
+                            text = "Загрузка источников… $settled/$total",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -765,6 +824,13 @@ fun AnimePlaybackSelectionScreen(
                                             allTranslations = effectiveTranslations,
                                             sourceStates = sourceStates,
                                             onRetrySource = ::startSource,
+                                            customFailures = queriedCustoms.mapNotNull { custom ->
+                                                (customStates[custom.id] as? SourceLoadState.Failed)
+                                                    ?.let { CustomSourceFailure(custom.id, custom.name, it.message) }
+                                            },
+                                            onRetryCustom = { id ->
+                                                queriedCustoms.firstOrNull { it.id == id }?.let(::startCustom)
+                                            },
                                             resumeSuggestion = activeResumeSuggestion,
                                             onResumeSelected = { tr, ep -> resolveAndPlay(ep, tr, tr.source) },
                                             onDubSelected = { dub ->
@@ -909,12 +975,18 @@ private fun dubUsageRank(
     return (entry?.lastUsedAt ?: 0L) to (entry?.count ?: 0)
 }
 
+/** Провал своего источника для retry-строки (ключ — custom id, а не enum). */
+private data class CustomSourceFailure(val id: String, val name: String, val message: String)
+
 @Composable
 private fun SelectTranslationStep(
     selectedEpisode: AnimeEpisode?,
     allTranslations: List<FlatTranslation>,
     sourceStates: Map<AnimeSourceType, SourceLoadState> = emptyMap(),
     onRetrySource: (AnimeSourceType) -> Unit = {},
+    // Свои источники: провалы с ретраем (карта состояний отдельно — ключ custom id).
+    customFailures: List<CustomSourceFailure> = emptyList(),
+    onRetryCustom: (String) -> Unit = {},
     // «Продолжить с…»: последняя озвучка/серия этого тайтла; показывается только на первом шаге.
     resumeSuggestion: Pair<FlatTranslation, AnimeEpisode>? = null,
     onResumeSelected: ((FlatTranslation, AnimeEpisode) -> Unit)? = null,
@@ -1174,89 +1246,21 @@ private fun SelectTranslationStep(
                 )
             }
         }
-    }
-}
-
-/**
- * Фирменная иконка источника: реальные логотипы (Kodik — стилизация, у балансера нет
- * публичного лого) вместо generic play. Фон круга — фирменный цвет источника.
- */
-@Composable
-private fun SourceIcon(source: AnimeSourceType, size: Dp = 36.dp) {
-    val bg = when (source) {
-        AnimeSourceType.KODIK -> Color(0xFF121826)
-        AnimeSourceType.SHIKIMORI -> Color(0xFFE8E3EF)
-        AnimeSourceType.ANILIBERTY -> Color(0xFF17171A)
-        AnimeSourceType.ANILIB -> Color(0xFF20232A)
-        AnimeSourceType.ANISTAR -> Color.White
-        else -> null
-    }
-    // Логотип Anixart — полноэкранный (диск + «ушки» до краёв вьюпорта):
-    // круглая обрезка режет его, поэтому рисуем как есть, без круга и подложки.
-    if (source == AnimeSourceType.ANIXART) {
-        Image(
-            painter = painterResource(R.drawable.ic_src_anixart),
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.size(size)
-        )
-        return
-    }
-    if (bg == null) {
-        Box(
-            modifier = Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.PlayArrow,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.fillMaxSize(0.55f)
-            )
-        }
-        return
-    }
-    Box(
-        modifier = Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(bg),
-        contentAlignment = Alignment.Center
-    ) {
-        when (source) {
-            AnimeSourceType.KODIK -> Icon(
-                painter = painterResource(R.drawable.ic_src_kodik),
-                contentDescription = null,
-                tint = Color.Unspecified,
-                modifier = Modifier.fillMaxSize()
-            )
-            AnimeSourceType.SHIKIMORI -> Image(
-                painter = painterResource(R.drawable.ic_src_shikimori),
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
-            )
-            AnimeSourceType.ANILIBERTY -> Icon(
-                painter = painterResource(R.drawable.ic_src_aniliberty),
-                contentDescription = null,
-                tint = Color.Unspecified,
-                modifier = Modifier.fillMaxSize(0.83f)
-            )
-            AnimeSourceType.ANILIB -> Icon(
-                painter = painterResource(R.drawable.ic_src_animelib),
-                contentDescription = null,
-                tint = Color.Unspecified,
-                modifier = Modifier.fillMaxSize(0.83f)
-            )
-            else -> Image(
-                painter = painterResource(R.drawable.ic_src_anistar),
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(0.83f)
-            )
+        // Свои — те же retry-строки при провале (Empty — норма: тайтла нет на хосте).
+        if (customFailures.isNotEmpty()) {
+            items(
+                count = customFailures.size,
+                key = { index -> "pending-custom:${customFailures[index].id}" }
+            ) { index ->
+                val row = customFailures[index]
+                SourceStatusRow(
+                    iconSourceId = AnimeSourceType.CUSTOM.name,
+                    displayName = row.name,
+                    loading = false,
+                    message = row.message,
+                    onRetry = { onRetryCustom(row.id) }
+                )
+            }
         }
     }
 }
@@ -1340,11 +1344,14 @@ private fun SelectSourceStep(
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        SourceIcon(source = tr.source)
+                        AppSourceIcon(
+                            sourceId = tr.source.name,
+                            modifier = Modifier.size(36.dp)
+                        )
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = tr.source.displayName,
+                                text = tr.displaySourceName(),
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -1439,7 +1446,8 @@ private fun SelectSourceStep(
 /** Compact per-source progress/failure row shown while the page fills in progressively. */
 @Composable
 private fun SourceStatusRow(
-    source: AnimeSourceType,
+    iconSourceId: String,
+    displayName: String,
     loading: Boolean,
     message: String?,
     onRetry: () -> Unit
@@ -1457,11 +1465,14 @@ private fun SourceStatusRow(
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            SourceIcon(source = source, size = 32.dp)
+            AppSourceIcon(
+                sourceId = iconSourceId,
+                modifier = Modifier.size(32.dp)
+            )
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = source.displayName,
+                    text = displayName,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -1481,6 +1492,21 @@ private fun SourceStatusRow(
         }
     }
 }
+
+/** Enum-источники поверх общей строки (иконка и имя — из типа). */
+@Composable
+private fun SourceStatusRow(
+    source: AnimeSourceType,
+    loading: Boolean,
+    message: String?,
+    onRetry: () -> Unit
+) = SourceStatusRow(
+    iconSourceId = source.name,
+    displayName = source.displayName,
+    loading = loading,
+    message = message,
+    onRetry = onRetry
+)
 
 /** Карточка «Продолжить с серии N»: последняя озвучка/источник тайтла, клик сразу запускает playback. */
 @Composable

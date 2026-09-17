@@ -309,6 +309,12 @@ object AnimeStreamResolver {
             AnimeSourceType.SMARTHARD -> fetchSmarthardFlatTranslations(shikimoriId)
             // ddbb/hentai rows exist only in movie/QOM playback lists, never in the anime picker.
             AnimeSourceType.DDBB,
+            AnimeSourceType.CUSTOM,
+            AnimeSourceType.TURBO,
+            AnimeSourceType.HDREZKA,
+            AnimeSourceType.VIDEOCDN,
+            AnimeSourceType.COLLAPS,
+            AnimeSourceType.VOIDBOOST,
             AnimeSourceType.HENTAI_ALLHENTAI,
             AnimeSourceType.HENTAI_HENTAIDREAM,
             AnimeSourceType.HENTAI_HENTAIZ,
@@ -668,6 +674,12 @@ object AnimeStreamResolver {
             AnimeSourceType.SMARTHARD -> fetchSmarthardTranslations(shikimoriId)
             // ddbb/hentai rows are QOM voiceovers with direct links — nothing to fetch here.
             AnimeSourceType.DDBB,
+            AnimeSourceType.CUSTOM,
+            AnimeSourceType.TURBO,
+            AnimeSourceType.HDREZKA,
+            AnimeSourceType.VIDEOCDN,
+            AnimeSourceType.COLLAPS,
+            AnimeSourceType.VOIDBOOST,
             AnimeSourceType.HENTAI_ALLHENTAI,
             AnimeSourceType.HENTAI_HENTAIDREAM,
             AnimeSourceType.HENTAI_HENTAIZ,
@@ -692,6 +704,12 @@ object AnimeStreamResolver {
             AnimeSourceType.SMARTHARD -> fetchSmarthardEpisodes(shikimoriId, translationId)
             // ddbb/hentai rows are QOM voiceovers with direct links — nothing to fetch here.
             AnimeSourceType.DDBB,
+            AnimeSourceType.CUSTOM,
+            AnimeSourceType.TURBO,
+            AnimeSourceType.HDREZKA,
+            AnimeSourceType.VIDEOCDN,
+            AnimeSourceType.COLLAPS,
+            AnimeSourceType.VOIDBOOST,
             AnimeSourceType.HENTAI_ALLHENTAI,
             AnimeSourceType.HENTAI_HENTAIDREAM,
             AnimeSourceType.HENTAI_HENTAIZ,
@@ -705,7 +723,8 @@ object AnimeStreamResolver {
         animeTitle: String,
         sourceType: AnimeSourceType,
         translationId: String,
-        episodeNumber: Int
+        episodeNumber: Int,
+        kinopoiskId: Int = 0
     ): AnimeMediaStream? {
         val cacheKey = "$shikimoriId:$animeTitle:${sourceType.name}:$translationId:$episodeNumber"
         resolveStreamCache[cacheKey]?.let { entry ->
@@ -716,7 +735,7 @@ object AnimeStreamResolver {
             }
         }
 
-        val stream = resolveStreamInternal(shikimoriId, animeTitle, sourceType, translationId, episodeNumber)
+        val stream = resolveStreamInternal(shikimoriId, animeTitle, sourceType, translationId, episodeNumber, kinopoiskId)
         if (stream != null) {
             resolveStreamCache[cacheKey] = CacheEntry(stream, System.currentTimeMillis())
         }
@@ -737,6 +756,13 @@ object AnimeStreamResolver {
     ) {
         resolveStreamCache.remove("$shikimoriId:$animeTitle:${sourceType.name}:$translationId:$episodeNumber")
         if (sourceType == AnimeSourceType.KODIK) kodikHlsCache.clear()
+        if (sourceType == AnimeSourceType.CUSTOM) {
+            // Сбрасываем и закэшированный парс своего источника: retry обязан идти в сеть.
+            val customId = customIdOfTranslation(translationId)
+            customAnimeParseCache.keys
+                .filter { customId == null || it.startsWith("$customId|") }
+                .forEach { customAnimeParseCache.remove(it) }
+        }
     }
 
     private suspend fun resolveStreamInternal(
@@ -744,7 +770,8 @@ object AnimeStreamResolver {
         animeTitle: String,
         sourceType: AnimeSourceType,
         translationId: String,
-        episodeNumber: Int
+        episodeNumber: Int,
+        kinopoiskId: Int = 0
     ): AnimeMediaStream? = withContext(Dispatchers.IO) {
         when (sourceType) {
             AnimeSourceType.KODIK -> resolveKodikStream(shikimoriId, animeTitle, translationId, episodeNumber)
@@ -758,7 +785,16 @@ object AnimeStreamResolver {
                 } else {
                     resolveAniLibStream(shikimoriId, animeTitle, episodeNumber, translationId)
                 }
+            AnimeSourceType.CUSTOM -> resolveCustomAnimeStream(
+                customSourceProvider?.invoke().orEmpty(),
+                shikimoriId, animeTitle, kinopoiskId, translationId, episodeNumber
+            )
             AnimeSourceType.DDBB,
+            AnimeSourceType.TURBO,
+            AnimeSourceType.HDREZKA,
+            AnimeSourceType.VIDEOCDN,
+            AnimeSourceType.COLLAPS,
+            AnimeSourceType.VOIDBOOST,
             // Hentai tracks carry direct links played by the QOM path — never resolved here.
             AnimeSourceType.HENTAI_ALLHENTAI,
             AnimeSourceType.HENTAI_HENTAIDREAM,
@@ -985,6 +1021,216 @@ object AnimeStreamResolver {
                     null
                 }
         }
+
+    // ============================ Свои embed-источники (вариант A) ============================
+    // Аниме-тракт keyed by Shikimori id, а шаблоны keyed by {kp}/{imdb} — настоящий Kinopoisk id
+    // берётся из прямого kinopoiskId пикера либо через мост Kodik (shikimori_id → kinopoisk_id
+    // в результатах поиска). Нет kp id — источник молча пропускается, как выключенный.
+    // Неймспейс строк — translationId "custom|<CUSTOM_ID>|<slug>" при общем source=CUSTOM:
+    // enum-тракт (пикер, плеер, скачивание, память) не меняется, коллизий между своими нет.
+
+    /** Провайдер актуального списка своих (регистр из syncCustomSourceRuntime). */
+    var customSourceProvider: (() -> List<CustomSource>)? = null
+
+    private val animeKpBridgeCache = java.util.concurrent.ConcurrentHashMap<Int, CacheEntry<Int?>>()
+    private val customAnimeParseCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<DdbbStreamResolver.SourceParse>>()
+
+    fun customTranslationId(customId: String, dubSlug: String): String =
+        "custom|$customId|$dubSlug"
+
+    fun customIdOfTranslation(translationId: String): String? {
+        if (!translationId.startsWith("custom|")) return null
+        return translationId.split("|").getOrNull(1)?.takeIf { it.isNotBlank() }
+    }
+
+    fun customDubSlugOf(translationId: String): String? {
+        if (!translationId.startsWith("custom|")) return null
+        return translationId.split("|").getOrNull(2)?.takeIf { it.isNotBlank() }
+    }
+
+    /** Настоящий Kinopoisk id (>0 и ниже оффсета синтетики) либо null. */
+    fun realKinopoiskId(kinopoiskId: Int): Int? =
+        kinopoiskId.takeIf { it > 0 && it < hd.kinoshka.app.data.model.ANIME_ID_OFFSET }
+
+    /** Чистый выбор kp id из Kodik-результатов (первый положительный). */
+    fun pickAnimeKpId(results: List<JSONObject>): Int? =
+        results.asSequence()
+            .mapNotNull { row ->
+                // kinopoisk_id у Kodik строкой ("12345"), числом или null.
+                row.opt("kinopoisk_id")?.toString()?.toIntOrNull()?.takeIf { it > 0 }
+            }
+            .firstOrNull()
+
+    /**
+     * Мост shikimori → kinopoisk для своих источников: прямой id пикера либо Kodik-поиск.
+     * Кэшируется (положительный — 10 мин, пустой — 3 мин, как остальной негативный кэш).
+     */
+    suspend fun animeKpId(shikimoriId: Int, animeTitle: String, kinopoiskId: Int = 0): Int? =
+        withContext(Dispatchers.IO) {
+            realKinopoiskId(kinopoiskId)?.let { return@withContext it }
+            if (shikimoriId <= 0) return@withContext null
+            animeKpBridgeCache[shikimoriId]?.let { entry ->
+                val age = System.currentTimeMillis() - entry.timestamp
+                val ttl = if (entry.data != null) CACHE_TTL_MS else NEGATIVE_CACHE_TTL_MS
+                if (age < ttl) return@withContext entry.data
+                animeKpBridgeCache.remove(shikimoriId)
+            }
+            val kp = runCatching { pickAnimeKpId(kodikSearch(shikimoriId, animeTitle, null)) }
+                .getOrNull()
+            animeKpBridgeCache[shikimoriId] = CacheEntry(kp, System.currentTimeMillis())
+            if (kp == null) KLog.i(TAG, "[Custom] no kinopoisk id for shikimori=$shikimoriId \"$animeTitle\" — customs skipped")
+            kp
+        }
+
+    /**
+     * SourceParse → строки пикера. Сериальные треки группируются по дабу (как войс-ряды
+     * кино-пикера), киношный одиночный HLS — одна строка с одной серией: пикер
+     * отбрасывает строки без серий, пустой список = Empty-состояние источника.
+     */
+    fun customParseToTranslations(
+        custom: CustomSource,
+        parse: DdbbStreamResolver.SourceParse
+    ): List<FlatTranslation> {
+        if (parse.tracks.isNotEmpty()) {
+            return parse.tracks.groupBy { it.dubId.ifBlank { "collaps" } }
+                .map { (dubId, dubTracks) ->
+                    val dubTitle = dubTracks.firstOrNull()?.dubTitle?.takeIf { it.isNotBlank() }
+                        ?: custom.name
+                    val episodes = dubTracks
+                        .filter { it.episodeNumber > 0 && it.playerUrl.isNotBlank() }
+                        .distinctBy { it.episodeNumber }
+                        .sortedBy { it.episodeNumber }
+                        .map { track ->
+                            AnimeEpisode(
+                                number = track.episodeNumber,
+                                title = track.title?.takeIf { it.isNotBlank() },
+                                link = track.playerUrl,
+                                season = track.seasonNumber.takeIf { it > 0 }
+                            )
+                        }
+                    FlatTranslation(
+                        source = AnimeSourceType.CUSTOM,
+                        translationId = dubId.takeIf { it.startsWith("custom|") }
+                            ?: customTranslationId(custom.id, slugifyCustomName(dubTitle)),
+                        title = dubTitle,
+                        type = "voice",
+                        episodes = episodes,
+                        sourceLabel = custom.name
+                    )
+                }
+                .filter { it.episodes.isNotEmpty() }
+        }
+        // Киношный embed: войс-ряды (обычно один) → по строке с одной серией.
+        return parse.voiceRows
+            .filter { (_, url) -> url.isNotBlank() }
+            .distinctBy { (_, url) -> url }
+            .map { (title, url) ->
+                val dubTitle = title.takeIf { it.isNotBlank() } ?: custom.name
+                FlatTranslation(
+                    source = AnimeSourceType.CUSTOM,
+                    translationId = customTranslationId(custom.id, slugifyCustomName(dubTitle)),
+                    title = dubTitle,
+                    type = "voice",
+                    episodes = listOf(AnimeEpisode(number = 1, link = url)),
+                    sourceLabel = custom.name
+                )
+            }
+    }
+
+    private fun cachedCustomParse(customId: String, kpId: Int): DdbbStreamResolver.SourceParse? {
+        val entry = customAnimeParseCache["$customId|$kpId"] ?: return null
+        if (System.currentTimeMillis() - entry.timestamp < CACHE_TTL_MS) return entry.data
+        customAnimeParseCache.remove("$customId|$kpId")
+        return null
+    }
+
+    /**
+     * Строки ОДНОГО своего источника для аниме-пикера. [resolve] инжектится ради тестов
+     * (дефолт — живой CustomSourceResolver). Пусто = источник пропускается.
+     */
+    suspend fun fetchCustomAnimeTranslations(
+        custom: CustomSource,
+        shikimoriId: Int,
+        animeTitle: String,
+        kinopoiskId: Int = 0,
+        resolve: suspend (CustomSource, Int) -> DdbbStreamResolver.SourceParse? =
+            { c, kp -> CustomSourceResolver.resolveOne(c, kp, null) }
+    ): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        runCatching {
+            val kp = animeKpId(shikimoriId, animeTitle, kinopoiskId) ?: return@runCatching emptyList<FlatTranslation>()
+            val parse = cachedCustomParse(custom.id, kp) ?: resolve(custom, kp)?.also { fetched ->
+                customAnimeParseCache["${custom.id}|$kp"] = CacheEntry(fetched, System.currentTimeMillis())
+            } ?: return@runCatching emptyList<FlatTranslation>()
+            customParseToTranslations(custom, parse)
+        }.getOrElse { e ->
+            KLog.e(TAG, "[Custom] ${custom.id} fetch failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /** URL серии внутри закэшированного/переданного парса + лестница под него. */
+    fun pickCustomEpisodeUrl(
+        parse: DdbbStreamResolver.SourceParse,
+        translationId: String,
+        episodeNumber: Int
+    ): Pair<String, Map<String, String>>? {
+        if (parse.tracks.isNotEmpty()) {
+            val track = parse.tracks
+                .filter { it.dubId == translationId }
+                .firstOrNull { it.episodeNumber == episodeNumber }
+                ?: parse.tracks
+                    .filter { it.dubId == translationId }
+                    .minByOrNull { kotlin.math.abs(it.episodeNumber - episodeNumber) }
+                ?: return null
+            if (track.playerUrl.isBlank()) return null
+            return track.playerUrl to (parse.ladders[track.playerUrl] ?: parse.qualities)
+        }
+        val slug = customDubSlugOf(translationId)
+        val row = parse.voiceRows
+            .firstOrNull { (title, url) -> url.isNotBlank() && (slug == null || slugifyCustomName(title) == slug) }
+            ?: parse.voiceRows.firstOrNull { (_, url) -> url.isNotBlank() }
+            ?: return null
+        return row.second to (parse.ladders[row.second] ?: parse.qualities)
+    }
+
+    private suspend fun resolveCustomAnimeStream(
+        customs: List<CustomSource>,
+        shikimoriId: Int,
+        animeTitle: String,
+        kinopoiskId: Int,
+        translationId: String,
+        episodeNumber: Int
+    ): AnimeMediaStream? = withContext(Dispatchers.IO) {
+        val customId = customIdOfTranslation(translationId)
+        val custom = customs.firstOrNull { it.id == customId }
+        if (custom == null) {
+            KLog.w(TAG, "[Custom] resolve: source $customId not found (removed?)")
+            return@withContext null
+        }
+        val kp = animeKpId(shikimoriId, animeTitle, kinopoiskId) ?: run {
+            KLog.w(TAG, "[Custom] resolve: no kinopoisk id for shikimori=$shikimoriId")
+            return@withContext null
+        }
+        val parse = cachedCustomParse(custom.id, kp)
+            ?: CustomSourceResolver.resolveOne(custom, kp, null)?.also { fetched ->
+                customAnimeParseCache["${custom.id}|$kp"] = CacheEntry(fetched, System.currentTimeMillis())
+            } ?: run {
+                KLog.w(TAG, "[Custom] resolve: ${custom.id} returned nothing for kp=$kp")
+                return@withContext null
+            }
+        val (url, qualities) = pickCustomEpisodeUrl(parse, translationId, episodeNumber) ?: run {
+            KLog.w(TAG, "[Custom] resolve: ep=$episodeNumber not in ${custom.id} ($translationId)")
+            return@withContext null
+        }
+        KLog.i(TAG, "[Custom] resolve ${custom.id} ep=$episodeNumber -> ${url.take(100)}")
+        AnimeMediaStream(
+            url = url,
+            qualities = qualities,
+            quality = qualities.entries.firstOrNull { it.value == url }?.key ?: "Auto",
+            headers = parse.headers,
+            title = custom.name
+        )
+    }
 
     private suspend fun fetchAniLibertyTranslations(shikimoriId: Int, animeTitle: String): List<AnimeTranslation> = withContext(Dispatchers.IO) {
         val release = findAniLibertyRelease(shikimoriId, animeTitle) ?: return@withContext emptyList()

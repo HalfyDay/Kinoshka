@@ -76,7 +76,7 @@ object DownloadBridges {
                     resolve = {
                         AnimeStreamResolver.resolveStream(
                             shikimoriId, animeTitle, translation.source,
-                            translation.translationId, ep.number
+                            translation.translationId, ep.number, kinopoiskId
                         )?.let { fromStream(it, preferredQuality) }
                     }
                 )

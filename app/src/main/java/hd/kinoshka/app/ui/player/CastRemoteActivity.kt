@@ -3,6 +3,7 @@ package hd.kinoshka.app.ui.player
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.TransactionTooLargeException
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
@@ -87,6 +88,7 @@ import hd.kinoshka.app.data.model.AnimeSourceType
 import hd.kinoshka.app.data.source.DdbbStreamResolver
 import hd.kinoshka.app.data.playback.MovieNativeLauncher
 import hd.kinoshka.app.data.model.MovieSeriesContextStore
+import hd.kinoshka.app.data.model.AnimeCatalogStore
 import hd.kinoshka.app.data.model.MovieVoiceoverStreamStore
 import hd.kinoshka.app.data.model.QUALITY_PREFERENCE_DESC
 import hd.kinoshka.app.data.model.EpisodeSkips
@@ -115,6 +117,7 @@ class CastRemoteActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         val shikimoriId = intent.getIntExtra(EXTRA_SHIKIMORI_ID, 0)
         val animeTitle = intent.getStringExtra(EXTRA_ANIME_TITLE).orEmpty()
+        val animeKpId = intent.getIntExtra(EXTRA_ANIME_KP_ID, 0)
         val initEpisode = intent.getIntExtra(EXTRA_EPISODE, 1)
         val initTranslationId = intent.getStringExtra(EXTRA_TRANSLATION_ID).orEmpty()
         val initQuality = intent.getStringExtra(EXTRA_QUALITY).orEmpty().ifBlank { "Auto" }
@@ -163,6 +166,7 @@ class CastRemoteActivity : FragmentActivity() {
                 CastRemoteScreen(
                     shikimoriId = shikimoriId,
                     animeTitle = animeTitle,
+                    animeKpId = animeKpId,
                     displayTitle = displayTitle,
                     initEpisode = initEpisode,
                     initTranslationId = initTranslationId,
@@ -201,6 +205,7 @@ class CastRemoteActivity : FragmentActivity() {
         const val EXTRA_QUALITY = "remote_quality"
         const val EXTRA_ANIME_QUALITIES = "remote_qualities"
         const val EXTRA_DISPLAY_TITLE = "remote_display_title"
+        const val EXTRA_ANIME_KP_ID = "remote_anime_kp"
         const val EXTRA_MODE = "remote_mode" // "anime" | "film"
         const val EXTRA_FILM_KP_ID = "remote_film_kp"
         const val EXTRA_FILM_IS_SERIES = "remote_film_series"
@@ -397,6 +402,7 @@ private fun RemoteOptionDialog(
 private fun CastRemoteScreen(
     shikimoriId: Int,
     animeTitle: String,
+    animeKpId: Int = 0,
     displayTitle: String,
     initEpisode: Int,
     initTranslationId: String,
@@ -521,7 +527,9 @@ private fun CastRemoteScreen(
                 val rawTitle = dub.translationTitle ?: dub.translationId.orEmpty()
                 val (dubTitle, kind) = MovieNativeLauncher.splitDubTrack(rawTitle)
                 FlatTranslation(
-                    source = if (ctx.isDirectSource) AnimeSourceType.DDBB else AnimeSourceType.KODIK,
+                    source = if (ctx.isDirectSource)
+                        hd.kinoshka.app.data.source.PlaybackSources.animeSourceTypeForDubId(dub.translationId.orEmpty())
+                    else AnimeSourceType.KODIK,
                     translationId = dub.translationId ?: rawTitle,
                     title = if (rawTitle.isBlank()) "Озвучка" else dubTitle,
                     type = kind,
@@ -671,7 +679,7 @@ private fun CastRemoteScreen(
             try {
                 val posMs = if (keepPosition) remotePosNow() else 0L
                 val s = withContext(Dispatchers.IO) {
-                    AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, src, translationId, episode)
+                    AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, src, translationId, episode, animeKpId)
                 } ?: throw IllegalStateException("Поток не найден")
                 stream = s
                 // Auto/неизвестное → лучший конкретный ранг (Auto в пульте нет).
@@ -755,7 +763,7 @@ private fun CastRemoteScreen(
                 val src = source ?: throw IllegalStateException("Нет потока")
                 val posMs = remotePosNow()
                 val s = withContext(Dispatchers.IO) {
-                    AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, src, translationId, episode)
+                    AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, src, translationId, episode, animeKpId)
                 } ?: throw IllegalStateException("Поток не найден")
                 val rungUrl = quality.takeIf { it != "Auto" }?.let { s.qualities[it] } ?: s.url
                 val eps = currentEpisodes()
@@ -796,8 +804,24 @@ private fun CastRemoteScreen(
                     putExtra("anime_disable_http_reuse", src == AnimeSourceType.ANILIBERTY)
                     putExtra("anime_current_episode", episode)
                     putExtra("anime_current_translation_id", translationId)
-                    putExtra("anime_episodes", Json.encodeToString(eps))
-                    putExtra("anime_translations", Json.encodeToString(trs))
+                    // Тот же перелив через стор, что у MpvExPlayerScreen: полные каталоги
+                    // длинных тайтлов рвут binder (TransactionTooLargeException).
+                    AnimeCatalogStore.put(shikimoriId, 0, eps, trs)
+                    val totalRefs = eps.size + trs.sumOf { it.episodes.size }
+                    if (totalRefs <= 400) {
+                        putExtra("anime_episodes", Json.encodeToString(eps))
+                        putExtra("anime_translations", Json.encodeToString(trs))
+                    } else if (AnimeCatalogStore.key(shikimoriId, 0) == null) {
+                        val current = trs.firstOrNull { it.translationId == translationId }
+                            ?: trs.firstOrNull()
+                        val sliceEps = current?.episodes?.take(400) ?: eps.take(400)
+                        if (sliceEps.isNotEmpty()) {
+                            runCatching { putExtra("anime_episodes", Json.encodeToString(sliceEps)) }
+                        }
+                        if (current != null) {
+                            runCatching { putExtra("anime_translations", Json.encodeToString(listOf(current))) }
+                        }
+                    }
                     if (s.qualities.isNotEmpty()) {
                         putExtra("anime_qualities", Json.encodeToString(s.qualities))
                         putExtra("anime_current_quality", quality)
@@ -808,7 +832,16 @@ private fun CastRemoteScreen(
                 expectEnd = true
                 // endSession внутри гасит и реле (локальный плеер льёт прямые URL).
                 CastPlayback.endSession(context)
-                context.startActivity(intent)
+                try {
+                    context.startActivity(intent)
+                } catch (e: RuntimeException) {
+                    val cause = generateSequence<Throwable>(e) { it.cause }.firstOrNull { it is TransactionTooLargeException }
+                    if (cause == null) throw e
+                    android.util.Log.w("CastRemote", "back-to-player parcel too large, retrying without catalog JSON", e)
+                    intent.removeExtra("anime_episodes")
+                    intent.removeExtra("anime_translations")
+                    context.startActivity(intent)
+                }
                 (context as? android.app.Activity)?.finish()
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
@@ -834,10 +867,29 @@ private fun CastRemoteScreen(
         if (!filmMode) {
             catalogBusy = true
             val map = withContext(Dispatchers.IO) {
-                ANIME_PICKER_SOURCES.associateWith { src ->
+                val base = ANIME_PICKER_SOURCES.associateWith { src ->
                     runCatching { AnimeStreamResolver.fetchSourceMedia(shikimoriId, animeTitle, src) }
                         .getOrDefault(emptyList())
+                }.toMutableMap()
+                // Свои источники раздела «Аниме»: все строки — под общим ключом CUSTOM
+                // (неймспейс translationId custom|<id>|<slug> коллизий не даёт).
+                runCatching {
+                    val store = hd.kinoshka.app.data.local.UserStateStore(context)
+                    val customs = store.getCustomSources().filter {
+                        hd.kinoshka.app.data.source.SourceCategory.ANIME in it.categories
+                    }
+                    val rows = customs.flatMap { custom ->
+                        runCatching {
+                            AnimeStreamResolver.fetchCustomAnimeTranslations(
+                                custom, shikimoriId, animeTitle, animeKpId
+                            )
+                        }.getOrDefault(emptyList())
+                    }.filter { it.episodes.isNotEmpty() }
+                    if (rows.isNotEmpty()) {
+                        base[AnimeSourceType.CUSTOM] = (base[AnimeSourceType.CUSTOM].orEmpty() + rows)
+                    }
                 }
+                base.toMap()
             }
             catalog = map
             val foundSource = map.entries.firstOrNull { (_, trs) -> trs.any { it.translationId == translationId } }?.key

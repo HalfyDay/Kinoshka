@@ -1568,17 +1568,27 @@ class PlayerActivity :
     val currentEp = extras.getInt("anime_current_episode", -1).takeIf { it != -1 }
     val currentTr = extras.getString("anime_current_translation_id")
     val currentQ = extras.getString("anime_current_quality") ?: "Auto"
+    val shikimoriId = extras.getInt("anime_shikimori_id", 0)
+    val kpId = extras.getInt("movie_kinopoisk_id", 0)
+    val animeTitle = extras.getString("anime_title", "")
     currentAnimeSourceType = try {
       AnimeSourceType.valueOf(extras.getString("anime_source_type") ?: AnimeSourceType.KODIK.name)
     } catch (e: Exception) {
       AnimeSourceType.KODIK
     }
 
-    val episodes = if (!episodesJson.isNullOrEmpty()) {
+    // Preferred: in-process store (long catalogs skip Intent JSON to avoid
+    // TransactionTooLargeException); fallback: the legacy JSON extras for short titles.
+    val stored = hd.kinoshka.app.data.model.AnimeCatalogStore.get(shikimoriId, kpId)
+    val episodes = if (stored != null && (stored.episodes.isNotEmpty() || stored.translations.isNotEmpty())) {
+      stored.episodes
+    } else if (!episodesJson.isNullOrEmpty()) {
       try { Json.decodeFromString<List<AnimeEpisode>>(episodesJson) } catch (e: Exception) { emptyList() }
     } else emptyList()
 
-    val translations = if (!translationsJson.isNullOrEmpty()) {
+    val translations = if (stored != null && (stored.episodes.isNotEmpty() || stored.translations.isNotEmpty())) {
+      stored.translations
+    } else if (!translationsJson.isNullOrEmpty()) {
       try { Json.decodeFromString<List<FlatTranslation>>(translationsJson) } catch (e: Exception) { emptyList() }
     } else emptyList()
 
@@ -1629,7 +1639,7 @@ class PlayerActivity :
             val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
               .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
               ?.toAnimeMediaStream()
-              ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+              ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum, extras.getInt("movie_kinopoisk_id", 0))
             withContext(Dispatchers.Main) {
               if (stream != null) {
                 applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
@@ -1676,7 +1686,7 @@ class PlayerActivity :
             val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
               .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
               ?.toAnimeMediaStream()
-              ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+              ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum, extras.getInt("movie_kinopoisk_id", 0))
             withContext(Dispatchers.Main) {
               if (stream != null) {
                 applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
@@ -1737,7 +1747,7 @@ class PlayerActivity :
               val stream = hd.kinoshka.app.data.download.EpisodeDownloadManager
                 .findLocal(shikimoriId, extras.getInt("movie_kinopoisk_id", 0), srcType.name, trId, epNum)
                 ?.toAnimeMediaStream()
-                ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum)
+                ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum, extras.getInt("movie_kinopoisk_id", 0))
               withContext(Dispatchers.Main) {
                 if (stream != null) {
                   pendingSeekPosition = MPVLib.getPropertyDouble("time-pos") ?: 0.0
@@ -1764,6 +1774,42 @@ class PlayerActivity :
           } else {
             finishStreamLoadIndicator()
           }
+        }
+      }
+    } else if (shikimoriId > 0 &&
+      extras.getString("playback_mode", NativePlaybackMode.ANIME.name) == NativePlaybackMode.ANIME.name
+    ) {
+      // Store miss + no JSON: process died after a large-catalog launch (JSON skipped
+      // to avoid TransactionTooLarge). Playback continues from currentAnimeStream, but the
+      // episode/dub dropdown would stay empty — re-fetch the current source's catalog.
+      val srcType = currentAnimeSourceType
+      val title = animeTitle
+      val trId = currentTr
+      lifecycleScope.launch(Dispatchers.IO) {
+        val fetched = runCatching {
+          if (srcType == AnimeSourceType.CUSTOM) {
+            // fetchSourceMedia не знает своих: у CUSTOM нет построчного фетча.
+            // Достаём конкретный источник по неймспейсу translationId и тянем его строки.
+            val customId = trId?.let { AnimeStreamResolver.customIdOfTranslation(it) }
+            val custom = customId?.let { id ->
+              AnimeStreamResolver.customSourceProvider?.invoke()?.firstOrNull { it.id == id }
+            }
+            if (custom != null) {
+              AnimeStreamResolver.fetchCustomAnimeTranslations(custom, shikimoriId, title, kpId)
+            } else emptyList()
+          } else {
+            AnimeStreamResolver.fetchSourceMedia(shikimoriId, title, srcType)
+          }
+        }.getOrDefault(emptyList())
+        if (fetched.isEmpty()) return@launch
+        hd.kinoshka.app.data.model.AnimeCatalogStore.put(shikimoriId, kpId, emptyList(), fetched)
+        withContext(Dispatchers.Main) {
+          if (isFinishing || isDestroyed) return@withContext
+          val eps = fetched.firstOrNull { it.translationId == currentTr }?.episodes
+            ?: fetched.firstOrNull()?.episodes.orEmpty()
+          viewModel.setAnimeSeasons(emptyList(), null)
+          viewModel.onAnimeSeasonSelected = null
+          viewModel.setAnimeData(eps, fetched, currentEp, currentTr, qualities, currentQ)
         }
       }
     }
