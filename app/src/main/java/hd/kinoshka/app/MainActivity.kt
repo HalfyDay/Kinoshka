@@ -3,10 +3,14 @@ package hd.kinoshka.app
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
+import android.app.UiModeManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Rect
 import android.graphics.drawable.Icon
 import android.os.Build
@@ -36,11 +40,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Телефон остаётся портретным (android:screenOrientation="portrait"); на планшетах,
-        // ТВ и foldable (smallestScreenWidthDp >= 600) ориентацию отпускаем — landscape
-        // включает TV-дизайн (rememberTvLayout).
-        if (resources.configuration.smallestScreenWidthDp >= 600) {
-            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        // Телефон/планшет остаются портретными (android:screenOrientation="portrait").
+        // Горизонталь разрешаем только на Android TV — landscape включает
+        // TV-дизайн (rememberTvLayout).
+        if (isAndroidTv()) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
         enableEdgeToEdge()
         maybeOpenDownloads(intent)
@@ -111,6 +115,13 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(DownloadNotifications.EXTRA_OPEN_DOWNLOADS, false) == true) {
             DownloadsNav.openRequest++
         }
+    }
+
+    /** true только на Android TV (leanback): планшет/foldable сюда не попадают. */
+    private fun isAndroidTv(): Boolean {
+        val uiModeManager = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+        if (uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION) return true
+        return packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
     }
 
     override fun onPictureInPictureModeChanged(

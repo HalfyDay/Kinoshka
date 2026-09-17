@@ -56,6 +56,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.foundation.text.KeyboardActions
@@ -83,6 +84,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -146,8 +148,6 @@ import hd.kinoshka.app.data.model.FilterItem
 import hd.kinoshka.app.data.model.ANIME_GENRE_NAME
 import hd.kinoshka.app.data.model.CARTOON_CONTENT_TYPE
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Explore
@@ -376,6 +376,24 @@ fun HomeScreen(
     onClearSearchHistory: () -> Unit = {},
     // Android-only возможности (Загрузки/Профиль/ТикТок-лента): на desktop их экранов нет.
     androidFeaturesAvailable: Boolean = true,
+    // Загрузки серий: на Android TV скачивание отключено — точки входа скрываются.
+    downloadsAvailable: Boolean = true,
+    // Аккаунты TV-профиля (диалоги входа хостит платформа).
+    onShikimoriLogin: () -> Unit = {},
+    onLogoutShikimori: () -> Unit = {},
+    onAnixartLogin: () -> Unit = {},
+    onLogoutAnixart: () -> Unit = {},
+    // Облачный и файловый бэкапы ТВ-профиля (состояние и диалоги хостит
+    // платформа; null — секции скрыты, как на desktop).
+    cloudBackup: hd.kinoshka.app.ui.tv.TvCloudBackupState? = null,
+    onCloudConnectYandex: () -> Unit = {},
+    onCloudConnectWebDav: () -> Unit = {},
+    onCloudDisconnect: () -> Unit = {},
+    onCloudUpload: () -> Unit = {},
+    onCloudRestore: () -> Unit = {},
+    onCloudAutoSyncChanged: (Boolean) -> Unit = {},
+    onExportLibraryToFile: (() -> Unit)? = null,
+    onImportLibraryFromFile: (() -> Unit)? = null,
     // Pull-to-refresh Библиотеки (свайп вниз по сетке/списку раздела).
     onRefreshLibrary: () -> Unit = {},
     // Отзывчивая вибрация сияния: 0..1 (слабо → сильно). Реализацию привозит
@@ -412,7 +430,8 @@ fun HomeScreen(
             onToggleFilterSheet = onToggleFilterSheet,
             onOpenCalendar = onOpenCalendar,
             onOpenFeed = onOpenFeed,
-            onOpenRecommendationsFeed = onOpenRecommendationsFeed,
+            onOpenTopic = onOpenTopic,
+            onSeeAll = onSeeAll,
             onLibrarySortSelected = onLibrarySortSelected,
             librarySortReversed = librarySortReversed,
             onLibrarySortReversedChanged = onLibrarySortReversedChanged,
@@ -420,7 +439,21 @@ fun HomeScreen(
             onInstantSearch = onInstantSearch,
             onRemoveSearchHistory = onRemoveSearchHistory,
             onClearSearchHistory = onClearSearchHistory,
+            onShikimoriLogin = onShikimoriLogin,
+            onLogoutShikimori = onLogoutShikimori,
+            onAnixartLogin = onAnixartLogin,
+            onLogoutAnixart = onLogoutAnixart,
             androidFeaturesAvailable = androidFeaturesAvailable,
+            downloadsAvailable = downloadsAvailable,
+            cloudBackup = cloudBackup,
+            onCloudConnectYandex = onCloudConnectYandex,
+            onCloudConnectWebDav = onCloudConnectWebDav,
+            onCloudDisconnect = onCloudDisconnect,
+            onCloudUpload = onCloudUpload,
+            onCloudRestore = onCloudRestore,
+            onCloudAutoSyncChanged = onCloudAutoSyncChanged,
+            onExportLibraryToFile = onExportLibraryToFile,
+            onImportLibraryFromFile = onImportLibraryFromFile,
         )
         return
     }
@@ -715,7 +748,7 @@ fun HomeScreen(
                                 custom(sel)
                             } else {
                                 Icon(
-                                    imageVector = if (sel) Icons.AutoMirrored.Filled.List else Icons.AutoMirrored.Outlined.List,
+                                    imageVector = LibraryShelfIcon,
                                     contentDescription = null,
                                     modifier = Modifier.size(28.dp)
                                 )
@@ -803,19 +836,13 @@ fun HomeScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                // Ровный фон без верхней тонировки: за шапками Библиотеки/Обзора/Профиля
+                // нет градиентной заливки, глубина — только тенями самих пилюль и кнопок.
                 .background(
                     if (isFeedSection) {
                         SolidColor(Color.Black)
-                    } else if (state.themeMode == AppThemeMode.AMOLED) {
-                        SolidColor(MaterialTheme.colorScheme.background)
                     } else {
-                        Brush.verticalGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f),
-                                MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.16f),
-                                MaterialTheme.colorScheme.background
-                            )
-                        )
+                        SolidColor(MaterialTheme.colorScheme.background)
                     }
                 )
         ) {
@@ -1187,7 +1214,8 @@ private fun LibraryFilterType.toSwitcherIcon(): ImageVector = when (this) {
     LibraryFilterType.ANIME -> AnimeEyesIcon
 }
 
-private fun ContentType.toSwitcherIcon(): ImageVector = when (this) {
+/** Общая с TV-раскладкой: иконка переключателя Кино/Аниме. */
+internal fun ContentType.toSwitcherIcon(): ImageVector = when (this) {
     ContentType.FILMS -> Icons.Filled.Movie
     ContentType.ANIME -> AnimeEyesIcon
 }
@@ -1198,7 +1226,8 @@ private fun ContentType.toSwitcherIcon(): ImageVector = when (this) {
  * 100×100 (иначе Compose растянет глаз под квадратный слот и он будет сжат),
  * контент 100×70 из SVG отцентрован сдвигом +15 по Y. Тонируется через tint.
  */
-private val AnimeEyesIcon: ImageVector = ImageVector.Builder(
+/** Общая с TV-раскладкой: иконка «Аниме» из мобильной версии. */
+internal val AnimeEyesIcon: ImageVector = ImageVector.Builder(
     name = "AnimeEyes",
     defaultWidth = 24.dp,
     defaultHeight = 24.dp,
@@ -1265,6 +1294,68 @@ private val AnimeEyesIcon: ImageVector = ImageVector.Builder(
     }
 }.build()
 
+/**
+ * Плавное затухание контента у верхней кромки скролла (вместо жёсткого среза
+ * постеров под шапкой). В самом верху списка его нет (первый ряд виден целиком
+ * и чётко), по мере скролла верхние [fadeHeight] гаснут в цвет фона страницы.
+ * Обычная заливка поверх контента: без offscreen-слоя и блендов — изолированный
+ * слой с маской моргал на первом кадре скролла. Сила растёт по smootherstep
+ * (нулевые 1-я и 2-я производные на концах), поэтому появление сверхплавное,
+ * без вспышки на старте и без рывка при насыщении. Сам градиент трёхстопный —
+ * хвост гаснет мягче, без видимой кромки.
+ *
+ * [scrollPx] — сколько пикселей ушло вверх ([Int.MAX_VALUE] = далеко).
+ * Чтение состояния скролла внутри draw-блока даёт лишь перерисовку, без
+ * рекомпозиции, так что на кадры не влияет.
+ */
+@Composable
+private fun Modifier.topFadingEdge(
+    scrollPx: () -> Int,
+    fadeHeight: Dp = 96.dp
+): Modifier {
+    val bg = MaterialTheme.colorScheme.background
+    return drawWithContent {
+        drawContent()
+        val fadePx = fadeHeight.toPx()
+        val offset = scrollPx().coerceAtLeast(0)
+        if (offset > 0 && fadePx > 0f) {
+            val t = (offset / fadePx).coerceIn(0f, 1f)
+            val strength = t * t * t * (t * (t * 6f - 15f) + 10f)
+            if (strength > 0.01f) {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        0f to bg.copy(alpha = strength),
+                        0.6f to bg.copy(alpha = strength * 0.45f),
+                        1f to bg.copy(alpha = 0f),
+                        startY = 0f,
+                        endY = fadePx
+                    )
+                )
+            }
+        }
+    }
+}
+
+/** Та же кромка для [LazyListState]: дальше первого элемента — полное затухание. */
+@Composable
+private fun Modifier.topFadingEdge(
+    state: LazyListState,
+    fadeHeight: Dp = 96.dp
+): Modifier = topFadingEdge(
+    scrollPx = { if (state.firstVisibleItemIndex > 0) Int.MAX_VALUE else state.firstVisibleItemScrollOffset },
+    fadeHeight = fadeHeight
+)
+
+/** Та же кромка для [LazyGridState]. */
+@Composable
+private fun Modifier.topFadingEdge(
+    state: LazyGridState,
+    fadeHeight: Dp = 96.dp
+): Modifier = topFadingEdge(
+    scrollPx = { if (state.firstVisibleItemIndex > 0) Int.MAX_VALUE else state.firstVisibleItemScrollOffset },
+    fadeHeight = fadeHeight
+)
+
 @Composable
 private fun SearchRow(
     query: String,
@@ -1295,15 +1386,22 @@ private fun SearchRow(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
+        // Поле без фоновой полосы за шапкой, но с собственной тенью пилюли,
+        // чтобы не сливалось со страницей.
+        Surface(
             modifier = Modifier
                 .weight(1f)
-                .height(48.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .padding(horizontal = 14.dp),
-            contentAlignment = Alignment.CenterStart
+                .height(48.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shadowElevation = 3.dp
         ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 14.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1340,6 +1438,7 @@ private fun SearchRow(
                     )
                 }
             }
+            }
         }
 
         if (section == MainSection.DISCOVER) {
@@ -1360,7 +1459,8 @@ private fun SearchRow(
                     .clip(CircleShape)
                     .clickable { onFilterClick?.invoke() },
                 shape = CircleShape,
-                color = filterBgColor
+                color = filterBgColor,
+                shadowElevation = 3.dp
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     FilterTuneIcon(tint = filterIconColor)
@@ -1387,7 +1487,8 @@ private fun SearchRow(
                         onContentTypeSelected?.invoke(next)
                     },
                 shape = CircleShape,
-                color = discoverBgColor
+                color = discoverBgColor,
+                shadowElevation = 3.dp
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     AnimatedContent(
@@ -1418,7 +1519,8 @@ private fun SearchRow(
                     .clip(CircleShape)
                     .clickable { showLibrarySettingsSheet = true },
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shadowElevation = 3.dp
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     Icon(
@@ -1476,7 +1578,8 @@ private fun SearchRow(
                         onLibraryFilterSelected?.invoke(next)
                     },
                 shape = CircleShape,
-                color = libBgColor
+                color = libBgColor,
+                shadowElevation = 3.dp
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     AnimatedContent(
@@ -1504,7 +1607,8 @@ private fun SearchRow(
                     .clip(CircleShape)
                     .clickable(onClick = onAvatarClick),
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.primary,
+                shadowElevation = 3.dp
             ) {
                 AvatarBadge(avatar = avatar)
             }
@@ -2000,7 +2104,7 @@ private fun LibraryPageGrid(
     if (metrics.columns == 1) {
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().topFadingEdge(listState),
             contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -2030,7 +2134,7 @@ private fun LibraryPageGrid(
     LazyVerticalGrid(
         state = gridState,
         columns = GridCells.Fixed(metrics.columns),
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().topFadingEdge(gridState),
         contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -2365,7 +2469,7 @@ private fun DiscoverContent(
             if (metrics.columns == 1) {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().topFadingEdge(listState),
                     contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -2403,7 +2507,7 @@ private fun DiscoverContent(
             LazyVerticalGrid(
                 state = gridState,
                 columns = GridCells.Fixed(metrics.columns),
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().topFadingEdge(gridState),
                 contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -2684,7 +2788,7 @@ private fun OverviewFeed(
         else -> {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().topFadingEdge(listState),
                 contentPadding = PaddingValues(bottom = FloatingBottomContentPadding),
                 verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
@@ -4030,33 +4134,67 @@ private fun libraryEmptyVisual(tab: LibraryTab, queryActive: Boolean): LibraryEm
  * Centered empty state of a library tab: the tab's icon in a soft circle with a slow "breath"
  * and a fading radar-ping ring behind it, plus a per-tab title and hint. Replaces the old
  * top-left «Пусто» card, which read as a loading artifact rather than an empty section.
+ *
+ * Все движения зациклены без резких рестартов (кольцо гаснет в 0 до сброса масштаба),
+ * а появление и смена вкладки идут через мягкий fade + scale + подъём.
  */
 @Composable
 private fun LibraryEmptyState(tab: LibraryTab, queryActive: Boolean) {
-    val visual = libraryEmptyVisual(tab, queryActive)
+    val visual = remember(tab, queryActive) { libraryEmptyVisual(tab, queryActive) }
     val transition = rememberInfiniteTransition(label = "libraryEmpty")
     val pingScale by transition.animateFloat(
         initialValue = 1f,
         targetValue = 1.35f,
-        animationSpec = infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Restart),
+        animationSpec = infiniteRepeatable(tween(2800, easing = LinearEasing), RepeatMode.Restart),
         label = "pingScale"
     )
+    // Кольцо стартует и финиширует в alpha=0: рестарт цикла незаметен.
+    // Раньше было 0.4f -> 0f с Restart — каждый цикл давал резкую вспышку.
     val pingAlpha by transition.animateFloat(
-        initialValue = 0.4f,
+        initialValue = 0f,
         targetValue = 0f,
-        animationSpec = infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Restart),
+        animationSpec = infiniteRepeatable(
+            keyframes {
+                durationMillis = 2800
+                0f at 0 using LinearEasing
+                0.28f at 400 using FastOutSlowInEasing
+                0f at 2800 using LinearEasing
+            },
+            RepeatMode.Restart
+        ),
         label = "pingAlpha"
     )
     val breathe by transition.animateFloat(
         initialValue = 1f,
-        targetValue = 1.06f,
-        animationSpec = infiniteRepeatable(tween(1600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        targetValue = 1.05f,
+        animationSpec = infiniteRepeatable(tween(1900, easing = FastOutSlowInEasing), RepeatMode.Reverse),
         label = "breathe"
+    )
+    // Мягкое появление при входе на пустую вкладку: fade + подъём + лёгкий scale.
+    // Без этого контент вкладки возникал мгновенно и читался как «резко появляется».
+    var entered by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { entered = true }
+    val enterAlpha by animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = tween(450, easing = FastOutSlowInEasing),
+        label = "libraryEmptyEnterAlpha"
+    )
+    val enterScale by animateFloatAsState(
+        targetValue = if (entered) 1f else 0.94f,
+        animationSpec = tween(500, easing = FastOutSlowInEasing),
+        label = "libraryEmptyEnterScale"
     )
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(bottom = FloatingBottomContentPadding),
+            .padding(bottom = FloatingBottomContentPadding)
+            .graphicsLayer {
+                alpha = enterAlpha
+                scaleX = enterScale
+                scaleY = enterScale
+                // Лёгкий подъём снизу вместо мгновенного возникновения.
+                translationY = (1f - enterAlpha) * 48f
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -4075,28 +4213,50 @@ private fun LibraryEmptyState(tab: LibraryTab, queryActive: Boolean) {
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = visual.icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(52.dp)
-                )
+                // Смена вкладки/поиска — кроссфейд иконки вместо резкой подмены.
+                AnimatedContent(
+                    targetState = visual.icon,
+                    transitionSpec = {
+                        fadeIn(tween(300, easing = FastOutSlowInEasing)) togetherWith
+                            fadeOut(tween(200, easing = LinearEasing))
+                    },
+                    label = "libraryEmptyIcon"
+                ) { icon ->
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(52.dp)
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.height(24.dp))
-        Text(
-            text = visual.title,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = visual.message,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
+        // Смена вкладки/поиска — кроссфейд текстов вместо резкой подмены.
+        AnimatedContent(
+            targetState = visual,
+            transitionSpec = {
+                (fadeIn(tween(320, easing = FastOutSlowInEasing)) + slideInVertically(tween(320)) { it / 4 }) togetherWith
+                    fadeOut(tween(180, easing = LinearEasing))
+            },
+            label = "libraryEmptyText"
+        ) { target ->
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = target.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = target.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
     }
 }
 
@@ -4311,11 +4471,10 @@ private fun moreSearchEntries(
     MoreSearchEntry("Профиль", "Копии", "Экспорт библиотеки", "Сохранить в JSON-файл", onOpenProfile),
     MoreSearchEntry("Профиль", "Копии", "Импорт библиотеки", "Восстановить из JSON-файла", onOpenProfile),
     // Настройки
-    MoreSearchEntry("Настройки", "Внешний вид", "Тема", "Системная, темная, AMOLED", onOpenSettings),
-    MoreSearchEntry("Настройки", "Внешний вид", "Размер плиток (Обзор)", "Плотность сетки", onOpenSettings),
-    MoreSearchEntry("Настройки", "Внешний вид", "Размер плиток (Библиотека)", "Плотность сетки", onOpenSettings),
+    MoreSearchEntry("Настройки", "Внешний вид", "Тема", "Системная, светлая, темная, AMOLED", onOpenSettings),
+    MoreSearchEntry("Настройки", "Внешний вид", "Обзор", "Размер плиток страницы", onOpenSettings),
+    MoreSearchEntry("Настройки", "Внешний вид", "Библиотека", "Размер плиток страницы", onOpenSettings),
     MoreSearchEntry("Настройки", "Плеер", "Порядок выбора в плеере", "Озвучки или серии первыми", onOpenSettings),
-    MoreSearchEntry("Настройки", "Плеер", "Плеер фильмов", "mpvEx или веб-плеер", onOpenSettings),
     MoreSearchEntry("Настройки", "Плеер", "Настройки плеера mpvEx", "Скорость, жесты, субтитры, декодер, сброс", onOpenSettings),
     MoreSearchEntry("Настройки", "Фильтры и отладка", "Скрывать российские фильмы/сериалы", "Фильтр обзора и библиотеки", onOpenSettings),
     // О приложении
@@ -4337,7 +4496,8 @@ private data class MoreMenuItem(
  * Вертикальные слайдеры из icons/variants/filter-sliders-vertical.svg:
  * три дорожки с круглыми ручками на разной высоте. Вьюпорт 24×24 как в SVG.
  */
-private val FilterSlidersVerticalIcon: ImageVector = ImageVector.Builder(
+/** Общая с TV-раскладкой: иконка фильтров из мобильной версии. */
+internal val FilterSlidersVerticalIcon: ImageVector = ImageVector.Builder(
     name = "FilterSlidersVertical",
     defaultWidth = 24.dp,
     defaultHeight = 24.dp,
@@ -4393,7 +4553,7 @@ private fun FilterTuneIcon(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun SearchFilterBottomSheet(
+internal fun SearchFilterBottomSheet(
     filterState: SearchFilterState,
     availableGenres: List<FilterItem>,
     availableCountries: List<FilterItem>,

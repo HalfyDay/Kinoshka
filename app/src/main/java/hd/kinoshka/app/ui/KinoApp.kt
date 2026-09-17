@@ -1,9 +1,17 @@
 package hd.kinoshka.app.ui
 
+import android.app.UiModeManager
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -22,6 +30,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
@@ -61,10 +72,17 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import hd.kinoshka.app.BuildConfig
+import hd.kinoshka.app.data.cloud.CloudBackupManager
 import hd.kinoshka.app.data.diagnostics.AppDiagnostics
+import hd.kinoshka.app.data.local.CloudSyncStore
+import hd.kinoshka.app.data.local.CloudSyncType
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import hd.kinoshka.app.data.api.ApiClient
 import hd.kinoshka.app.data.local.AppThemeMode
+import hd.kinoshka.app.data.local.PlayerMode
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
 import hd.kinoshka.app.data.local.UserStateStore
 import hd.kinoshka.app.data.storage.StorageUsageManager
@@ -78,12 +96,15 @@ import hd.kinoshka.app.ui.screens.DownloadsScreen
 import hd.kinoshka.app.ui.screens.DiscoverCategory
 import hd.kinoshka.app.data.update.UpdateCheckResult
 import hd.kinoshka.app.ui.screens.AboutScreen
+import hd.kinoshka.app.ui.screens.AnixartLoginDialog
 import hd.kinoshka.app.ui.screens.AnimeCalendarScreen
 import hd.kinoshka.app.ui.screens.AnimeFeedScreen
 import hd.kinoshka.app.ui.screens.AnimeTopicScreen
 import hd.kinoshka.app.ui.screens.DetailsScreen
 import hd.kinoshka.app.ui.screens.DownloadQualityDialog
 import hd.kinoshka.app.ui.screens.HentaiDownloadButton
+import hd.kinoshka.app.ui.screens.ShikimoriWebLoginDialog
+import hd.kinoshka.app.data.download.tryRequestNotificationPermission
 import hd.kinoshka.app.ui.screens.TitleCastButton
 import hd.kinoshka.app.ui.screens.TitleDownloadSheet
 import hd.kinoshka.app.ui.screens.AnimePlaybackSelectionScreen
@@ -100,19 +121,26 @@ import hd.kinoshka.app.ui.screens.MainSection
 import hd.kinoshka.app.ui.screens.InAppWebScreen
 import hd.kinoshka.app.ui.screens.MpvExPlayerScreen
 import hd.kinoshka.app.ui.screens.MpvExPreferencesHost
+import hd.kinoshka.app.ui.screens.OAuthWebLoginDialog
 import hd.kinoshka.app.ui.screens.ProfileScreen
 import hd.kinoshka.app.ui.screens.RecommendationFeedScreen
+import hd.kinoshka.app.ui.screens.WebDavConfigDialog
+import hd.kinoshka.app.ui.screens.YANDEX_VERIFICATION_REDIRECT
+import hd.kinoshka.app.ui.screens.buildYandexAuthorizeUrl
 import hd.kinoshka.app.ui.screens.SettingsScreen
 import hd.kinoshka.app.ui.screens.NavMenuSettingsScreen
 import hd.kinoshka.app.ui.screens.SourcesSettingsScreen
+import hd.kinoshka.app.ui.screens.TileSizeSettingsScreen
 import hd.kinoshka.app.ui.screens.StorageSettingsScreen
 import hd.kinoshka.app.ui.screens.ProgressEditorSeed
 import hd.kinoshka.app.ui.screens.UserProfileEditorSheet
 import hd.kinoshka.app.ui.components.DebugPerformanceOverlay
 import hd.kinoshka.app.ui.components.MovieDownloadTarget
 import hd.kinoshka.app.ui.components.ProfileEditorCoverBackdrop
+import hd.kinoshka.app.ui.components.AppSourceIcon
 import hd.kinoshka.app.ui.components.UpdateAvailableSheet
 import hd.kinoshka.app.ui.theme.KinoTheme
+import hd.kinoshka.app.ui.tv.TvCloudBackupState
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FlatTranslation
@@ -159,6 +187,8 @@ fun KinoApp() {
         }
 
         val appContext = LocalContext.current.applicationContext
+        // Android TV: скачивание серий отключено, страница Загрузки скрыта.
+        val isTv = remember(appContext) { isTvDevice(appContext) }
         // Anixart-видео: гость без входа, персонализировано со входом (токен читается
         // лениво в момент запроса — после логина/выхода подхватывается сам).
         remember(appContext) {
@@ -177,6 +207,17 @@ fun KinoApp() {
         var isUpdateFlowRunning by remember { mutableStateOf(false) }
         var activeNativePlayerArgs by remember { mutableStateOf<NativePlayerArgs?>(null) }
         var showUpdateSheet by remember { mutableStateOf(false) }
+        // TV-профиль: диалоги входа в аккаунты (мобильные шиты ProfileScreen на ТВ не используются).
+        var showTvShikimoriLogin by remember { mutableStateOf(false) }
+        var showTvAnixartLogin by remember { mutableStateOf(false) }
+        // TV-профиль: облачный бэкап и копия в файл. init только читает lastSync —
+        // идемпотентен, мобильный профиль делает то же самое при открытии.
+        LaunchedEffect(appContext) { CloudBackupManager.init(appContext) }
+        val tvCloudStore = remember(appContext) { CloudSyncStore(appContext) }
+        var tvCloudConfig by remember { mutableStateOf(tvCloudStore.getConfig()) }
+        var showTvYandexLogin by remember { mutableStateOf(false) }
+        var showTvWebDavDialog by remember { mutableStateOf(false) }
+        var showTvRestoreConfirm by remember { mutableStateOf(false) }
         var availableRelease by remember { mutableStateOf<AppRelease?>(null) }
         var isDownloading by remember { mutableStateOf(false) }
         var updateDownloadProgress by remember { mutableIntStateOf(-1) } // -1 = не качаем
@@ -564,7 +605,96 @@ fun KinoApp() {
                                 onConsumeLibraryDeepLink = vm::consumeLibraryDeepLink,
                                 onOpenSettings = { navController.navigate("settings") },
                                 onOpenAbout = { navController.navigate("about") },
-                                onOpenDownloads = { navController.navigate("downloads") },
+                                onOpenDownloads = { if (!isTv) navController.navigate("downloads") },
+                                downloadsAvailable = !isTv,
+                                onShikimoriLogin = { showTvShikimoriLogin = true },
+                                onLogoutShikimori = vm::logoutShikimori,
+                                onAnixartLogin = { showTvAnixartLogin = true },
+                                onLogoutAnixart = vm::logoutAnixart,
+                                // Бэкапы ТВ-профиля: только Android TV (на desktop секции скрыты).
+                                cloudBackup = if (isTv) {
+                                    TvCloudBackupState(
+                                        connectedLabel = when (tvCloudConfig.type) {
+                                            CloudSyncType.YANDEX -> "Яндекс Диск • папка Kinoshka"
+                                            CloudSyncType.WEBDAV -> "WebDAV • ${tvCloudConfig.webDavUrl.orEmpty()}"
+                                            CloudSyncType.NONE -> null
+                                        },
+                                        autoSync = tvCloudConfig.autoSync,
+                                        busy = cloudSyncStatus.busy,
+                                        statusLine = buildString {
+                                            if (cloudSyncStatus.lastSyncAt > 0) {
+                                                append("Последняя синхронизация: ")
+                                                append(
+                                                    SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
+                                                        .format(Date(cloudSyncStatus.lastSyncAt))
+                                                )
+                                            }
+                                            cloudSyncStatus.lastResult?.takeIf { it.isNotBlank() }?.let {
+                                                if (isNotEmpty()) append(" • ")
+                                                append(it)
+                                            }
+                                        },
+                                        message = cloudSyncStatus.message,
+                                        messageIsError = cloudSyncStatus.message?.startsWith("Ошибка") == true,
+                                    )
+                                } else null,
+                                onCloudConnectYandex = {
+                                    if (CloudBackupManager.yandexConfigured()) {
+                                        showTvYandexLogin = true
+                                    } else {
+                                        Toast.makeText(
+                                            appContext,
+                                            "Создайте приложение на oauth.yandex.ru и добавьте YANDEX_DISK_CLIENT_ID и YANDEX_DISK_CLIENT_SECRET в local.properties",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                },
+                                onCloudConnectWebDav = { showTvWebDavDialog = true },
+                                onCloudDisconnect = {
+                                    CloudBackupManager.disconnect(appContext)
+                                    tvCloudConfig = tvCloudStore.getConfig()
+                                },
+                                onCloudUpload = { CloudBackupManager.uploadBackup(appContext) },
+                                onCloudRestore = { showTvRestoreConfirm = true },
+                                onCloudAutoSyncChanged = { enabled ->
+                                    CloudBackupManager.setAutoSync(appContext, enabled)
+                                    tvCloudConfig = tvCloudStore.getConfig()
+                                },
+                                onExportLibraryToFile = {
+                                    runCatching {
+                                        val json = vm.exportLibraryJson()
+                                        val fileName = "kinoshka-library-${
+                                            SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+                                        }.json"
+                                        exportLibraryToDownloads(appContext, fileName, json).getOrThrow()
+                                    }
+                                        .onSuccess { path ->
+                                            Toast.makeText(appContext, "Сохранено: $path", Toast.LENGTH_LONG).show()
+                                        }
+                                        .onFailure { ex ->
+                                            Toast.makeText(
+                                                appContext,
+                                                "Ошибка экспорта: ${ex.message}",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                },
+                                onImportLibraryFromFile = {
+                                    runCatching {
+                                        val text = importLatestBackupFromDownloads(appContext).getOrThrow()
+                                        vm.importLibraryJson(text).getOrThrow()
+                                    }
+                                        .onSuccess {
+                                            Toast.makeText(appContext, "Импорт завершен", Toast.LENGTH_SHORT).show()
+                                        }
+                                        .onFailure { ex ->
+                                            Toast.makeText(
+                                                appContext,
+                                                "Ошибка импорта: ${ex.message}",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                },
                                 onUpdateFilters = vm::updateFilters,
                                 onToggleFilterSheet = vm::setShowFilterSheet,
                                 onOpenCalendar = { navController.navigate("anime_calendar") },
@@ -688,8 +818,10 @@ fun KinoApp() {
                                         onLogoutAnixart = vm::logoutAnixart,
                                         anixartImportProgress = vm.uiState.anixartImportProgress,
                                         onOpenSettings = { navController.navigate("settings") },
-                                        onOpenDownloads = { navController.navigate("downloads") },
-                                        isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED
+                                    onOpenSettingsEntry = { entry -> navController.navigate(entry.route) },
+                                        onOpenDownloads = { if (!isTv) navController.navigate("downloads") },
+                                        isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED,
+                                        showDownloads = !isTv
                                     )
                                 },
                                 onLibrarySortSelected = vm::setLibrarySortType,
@@ -702,6 +834,121 @@ fun KinoApp() {
                                 onRemoveSearchHistory = vm::removeSearchQueryFromHistory,
                                 onClearSearchHistory = vm::clearSearchHistory
                             )
+                            }
+
+                            // TV-профиль: вход в аккаунты (диалоги работают с ТВ-клавиатурой).
+                            if (showTvShikimoriLogin) {
+                                ShikimoriWebLoginDialog(
+                                    onDismiss = { showTvShikimoriLogin = false },
+                                    onSuccess = { code, _, _, _ ->
+                                        showTvShikimoriLogin = false
+                                        vm.saveShikimoriToken(code)
+                                    }
+                                )
+                            }
+                            if (showTvAnixartLogin) {
+                                AnixartLoginDialog(
+                                    onDismiss = { showTvAnixartLogin = false },
+                                    onLogin = { login, password, onResult ->
+                                        context.tryRequestNotificationPermission()
+                                        vm.loginAnixart(login, password) { ok, message ->
+                                            if (ok) showTvAnixartLogin = false
+                                            onResult(ok, message)
+                                        }
+                                    },
+                                    onSignUp = vm::signUpAnixart,
+                                    onVerifySignUp = { login, email, password, hash, code, onResult ->
+                                        context.tryRequestNotificationPermission()
+                                        vm.verifyAnixartSignUp(login, email, password, hash, code) { ok, message ->
+                                            if (ok) showTvAnixartLogin = false
+                                            onResult(ok, message)
+                                        }
+                                    },
+                                    onRestore = vm::restoreAnixart,
+                                    onVerifyRestore = { login, newPassword, hash, code, onResult ->
+                                        context.tryRequestNotificationPermission()
+                                        vm.verifyAnixartRestore(login, newPassword, hash, code) { ok, message ->
+                                            if (ok) showTvAnixartLogin = false
+                                            onResult(ok, message)
+                                        }
+                                    }
+                                )
+                            }
+                            // TV-профиль: облачный бэкап (те же диалоги, что в мобильном профиле).
+                            if (showTvYandexLogin) {
+                                OAuthWebLoginDialog(
+                                    title = "Вход через Яндекс ID",
+                                    authorizeUrl = buildYandexAuthorizeUrl(),
+                                    redirectUri = YANDEX_VERIFICATION_REDIRECT,
+                                    onDismiss = { showTvYandexLogin = false },
+                                    onCode = { code ->
+                                        showTvYandexLogin = false
+                                        scope.launch {
+                                            CloudBackupManager.loginYandex(appContext, code)
+                                                .onSuccess {
+                                                    Toast.makeText(
+                                                        appContext,
+                                                        "Яндекс Диск подключен",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                }
+                                                .onFailure {
+                                                    Toast.makeText(
+                                                        appContext,
+                                                        "Ошибка входа: ${it.message}",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                }
+                                            tvCloudConfig = tvCloudStore.getConfig()
+                                        }
+                                    }
+                                )
+                            }
+                            if (showTvWebDavDialog) {
+                                WebDavConfigDialog(
+                                    onDismiss = { showTvWebDavDialog = false },
+                                    onSave = { url, user, pass ->
+                                        runCatching {
+                                            CloudBackupManager.saveWebDav(appContext, url, user, pass)
+                                        }
+                                            .onSuccess {
+                                                showTvWebDavDialog = false
+                                                Toast.makeText(
+                                                    appContext,
+                                                    "WebDAV подключен",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            }
+                                            .onFailure {
+                                                Toast.makeText(
+                                                    appContext,
+                                                    "Ошибка: ${it.message}",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            }
+                                        tvCloudConfig = tvCloudStore.getConfig()
+                                    }
+                                )
+                            }
+                            if (showTvRestoreConfirm) {
+                                AlertDialog(
+                                    onDismissRequest = { showTvRestoreConfirm = false },
+                                    title = { Text("Восстановить из облака?") },
+                                    text = {
+                                        Text("Локальная библиотека (статусы, прогресс, оценки, история) будет заменена содержимым резервной копии.")
+                                    },
+                                    confirmButton = {
+                                        TextButton(
+                                            onClick = {
+                                                showTvRestoreConfirm = false
+                                                CloudBackupManager.restoreFromCloud(appContext)
+                                            }
+                                        ) { Text("Восстановить") }
+                                    },
+                                    dismissButton = {
+                                        TextButton(onClick = { showTvRestoreConfirm = false }) { Text("Отмена") }
+                                    }
+                                )
                             }
 
                             // Обложка на фоне за шитом (тот же общий компонент, что на странице деталей).
@@ -1011,10 +1258,15 @@ fun KinoApp() {
                                      }
                                      activeNativePlayerArgs = NativePlayerArgs(streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext, mode)
                                  },
-                                playerMode = vm.uiState.playerMode,
+                                // Плеер всегда mpvEx (выбора в настройках больше нет).
+                                playerMode = PlayerMode.MPVEX,
                                 // Платформенные слоты DetailsScreen: скачивание и выбор источника
                                 // живут в app (Android-механика), сам экран теперь общий.
                                 userStateStore = UserStateStore(LocalContext.current),
+                                // Реальные иконки источников в кино-пикере и хентай-выборе.
+                                sourceIcon = { id, size ->
+                                    AppSourceIcon(id, Modifier.size(size))
+                                },
                                 animeSelectionScreen = { shikimoriId, kinopoiskId, animeTitle, onDismissRequest, onStreamSelected ->
                                     AnimePlaybackSelectionScreen(
                                         shikimoriId = shikimoriId,
@@ -1024,13 +1276,14 @@ fun KinoApp() {
                                         onStreamSelected = onStreamSelected
                                     )
                                 },
-                                downloadSheet = { item, isAnime, onDismiss ->
+                                // Android TV: скачивание отключено — слоты загрузки не даём.
+                                downloadSheet = if (isTv) null else { item, isAnime, onDismiss ->
                                     TitleDownloadSheet(item = item, isAnime = isAnime, onDismiss = onDismiss)
                                 },
                                 onOpenCastPlayer = { streamUrl, headers, qualities, title, epNum, epTitle, shikimoriId, kinopoiskId, srcType, episodes, translations, trId, seriesContext ->
                                     castAnimeFromPicker(
                                         detailsContext, streamUrl, headers, qualities, title,
-                                        epNum, trId, shikimoriId
+                                        epNum, trId, shikimoriId, kinopoiskId
                                     )
                                 },
                                 onCastMovieSelected = { result, displayTitle, kinopoiskId ->
@@ -1047,7 +1300,7 @@ fun KinoApp() {
                                         onOpenCastPicker = onOpenCastPicker
                                     )
                                 },
-                                hentaiDownloadButton = { title, kinopoiskId, provider, label, episodeNumber, episodeUrl, headers ->
+                                hentaiDownloadButton = if (isTv) null else { title, kinopoiskId, provider, label, episodeNumber, episodeUrl, headers ->
                                     HentaiDownloadButton(title, kinopoiskId, provider, label, episodeNumber, episodeUrl, headers)
                                 },
                                 findLocalHentai = { kinopoiskId, providerName, translationId, episodeNumber ->
@@ -1057,7 +1310,7 @@ fun KinoApp() {
                                 },
                                 movieDownloadedEpisodes = movieDownloadedEpisodes,
                                 movieDownloadedByTranslation = movieDownloadedByTranslation,
-                                onMovieDownload = { target ->
+                                onMovieDownload = if (isTv) null else { target ->
                                     if (target.isKodik) pendingMovieDownload = target
                                     else enqueueMovieDownload(detailsContext, target)
                                 }
@@ -1114,8 +1367,10 @@ fun KinoApp() {
                                     onLogoutAnixart = vm::logoutAnixart,
                                     anixartImportProgress = vm.uiState.anixartImportProgress,
                                     onOpenSettings = { navController.navigate("settings") },
-                                    onOpenDownloads = { navController.navigate("downloads") },
-                                    isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED
+                                    onOpenSettingsEntry = { entry -> navController.navigate(entry.route) },
+                                    onOpenDownloads = { if (!isTv) navController.navigate("downloads") },
+                                    isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED,
+                                    showDownloads = !isTv
                                 )
                             }
                         }
@@ -1145,27 +1400,84 @@ fun KinoApp() {
                                     selectedDiscoverTileSize = vm.uiState.discoverTileSize,
                                     selectedLibraryTileSize = vm.uiState.libraryTileSize,
                                     selectedShowFpsCounter = vm.uiState.showFpsCounter,
-                                    selectedPlayerMode = vm.uiState.playerMode,
-                                    onPlayerModeSelected = vm::setPlayerMode,
                                     onThemeModeSelected = vm::setThemeMode,
                                     onHideRussianChanged = vm::setHideRussianContent,
-                                    onDiscoverTileSizeSelected = vm::setDiscoverTileSize,
-                                    onLibraryTileSizeSelected = vm::setLibraryTileSize,
                                     onShowFpsCounterChanged = vm::setShowFpsCounter,
                                     showDebugSettings = BuildConfig.DEBUG,
-                                    proxyUrl = hd.kinoshka.app.data.source.StreamProxyConfig.proxyUrl.orEmpty(),
-                                    onProxyUrlChanged = { value ->
-                                        val trimmed = value.trim()
-                                        hd.kinoshka.app.data.source.StreamProxyConfig.proxyUrl = trimmed.ifEmpty { null }
-                                        settingsContext
-                                            .getSharedPreferences("kinoshka_app_settings", Context.MODE_PRIVATE)
-                                            .edit().putString("stream_proxy_url", trimmed).apply()
-                                    },
                                     onOpenPlayerSettings = { navController.navigate("player_settings") },
                                     onOpenAbout = { navController.navigate("about") },
                                     onOpenSources = { navController.navigate("sources") },
                                     onOpenStorage = { navController.navigate("storage") },
-                                    onOpenNavMenu = { navController.navigate("nav_menu") }
+                                    onOpenNavMenu = { navController.navigate("nav_menu") },
+                                    onOpenOverview = { navController.navigate("settings_overview") },
+                                    onOpenLibrary = { navController.navigate("settings_library") },
+                                    // Те же глифы, что в пилюле (книги/компас), а не material.
+                                    overviewIconContent = {
+                                        NavGlyph(
+                                            filled = hd.kinoshka.app.R.drawable.ic_nav_discover_filled,
+                                            outlined = hd.kinoshka.app.R.drawable.ic_nav_discover_outlined,
+                                            selected = false,
+                                            size = 24.dp
+                                        )
+                                    },
+                                    libraryIconContent = {
+                                        NavGlyph(
+                                            filled = hd.kinoshka.app.R.drawable.ic_nav_library_filled,
+                                            outlined = hd.kinoshka.app.R.drawable.ic_nav_library_outlined,
+                                            selected = false,
+                                            size = 24.dp
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                        composable(
+                            route = "settings_overview",
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
+                        ) {
+                            TvAdaptiveSecondary {
+                                TileSizeSettingsScreen(
+                                    onBack = { navController.popBackStack() },
+                                    title = "Обзор",
+                                    subtitle = "Внешний вид страницы",
+                                    selected = vm.uiState.discoverTileSize,
+                                    onSelected = vm::setDiscoverTileSize
+                                )
+                            }
+                        }
+                        composable(
+                            route = "settings_library",
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
+                        ) {
+                            TvAdaptiveSecondary {
+                                TileSizeSettingsScreen(
+                                    onBack = { navController.popBackStack() },
+                                    title = "Библиотека",
+                                    subtitle = "Внешний вид страницы",
+                                    selected = vm.uiState.libraryTileSize,
+                                    onSelected = vm::setLibraryTileSize
                                 )
                             }
                         }
@@ -1195,6 +1507,24 @@ fun KinoApp() {
                                     onToggleSection = vm::setNavSectionVisible,
                                     onHapticsEnabledChanged = vm::setNavHapticsEnabled,
                                     onHapticScaleChanged = vm::setNavHapticScale,
+                                    // Живой тест силы прямо в настройках: тот же точечный
+                                    // примитив, что у пилюли, с выбранной силой.
+                                    onHapticPreview = { scale ->
+                                        if (scale > 0.01f) {
+                                            val vibrator = appContext.getSystemService(
+                                                android.os.Vibrator::class.java
+                                            )
+                                            val hapticsOn = android.provider.Settings.System.getInt(
+                                                appContext.contentResolver,
+                                                android.provider.Settings.System.HAPTIC_FEEDBACK_ENABLED,
+                                                1
+                                            ) == 1
+                                            if (vibrator != null && vibrator.hasVibrator() && hapticsOn) {
+                                                performCrispHaptic(vibrator, scale)
+                                            }
+                                        }
+                                    },
+                                    isAmoled = vm.uiState.themeMode == AppThemeMode.AMOLED,
                                     libraryGlyph = { sel ->
                                         NavGlyph(
                                             filled = hd.kinoshka.app.R.drawable.ic_nav_library_filled,
@@ -1340,22 +1670,53 @@ fun KinoApp() {
                                 val sourcesStore = remember(sourcesContext) {
                                     UserStateStore(sourcesContext)
                                 }
-                                var disabledSources by remember { mutableStateOf(emptySet<String>()) }
+                                var disabledKeys by remember { mutableStateOf(emptySet<String>()) }
+                                var customSources by remember {
+                                    mutableStateOf(emptyList<hd.kinoshka.app.data.source.CustomSource>())
+                                }
                                 LaunchedEffect(sourcesStore) {
-                                    disabledSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                        sourcesStore.getDisabledSources()
+                                    disabledKeys = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        sourcesStore.getDisabledSourceKeys()
+                                    }
+                                    customSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        sourcesStore.getCustomSources()
                                     }
                                 }
                                 SourcesSettingsScreen(
                                     onBack = { navController.popBackStack() },
-                                    disabledSources = disabledSources,
-                                    onSourceEnabledChanged = { id, enabled ->
-                                        sourcesStore.setSourceEnabled(id, enabled)
+                                    disabledKeys = disabledKeys,
+                                    onSourceEnabledChanged = { id, category, enabled ->
+                                        sourcesStore.setSourceEnabled(id, enabled, category)
                                         scope.launch {
-                                            disabledSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                                sourcesStore.getDisabledSources()
+                                            disabledKeys = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.getDisabledSourceKeys()
                                             }
                                         }
+                                    },
+                                    customSources = customSources,
+                                    onSaveCustomSource = { src ->
+                                        sourcesStore.saveCustomSource(src)
+                                        scope.launch {
+                                            customSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.getCustomSources()
+                                            }
+                                        }
+                                    },
+                                    onDeleteCustomSource = { id ->
+                                        sourcesStore.deleteCustomSource(id)
+                                        scope.launch {
+                                            customSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.getCustomSources()
+                                            }
+                                        }
+                                    },
+                                    // Реальные иконки: аниме — те же drawable, что в пикере
+                                    // озвучек/источников, остальные — PNG-логотипы.
+                                    sourceIcon = { info ->
+                                        AppSourceIcon(
+                                            sourceId = info.id,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
                                     }
                                 )
                             }
@@ -1529,7 +1890,8 @@ private fun castAnimeFromPicker(
     title: String,
     episodeNumber: Int,
     translationId: String,
-    shikimoriId: Int
+    shikimoriId: Int,
+    kinopoiskId: Int = 0
 ) {
     // Без ABR-мастера: приёмник жуёт явный ранг лучше (см. пульт) — пиним лучший.
     val pinned = qualities.keys.maxByOrNull { hd.kinoshka.app.data.model.qualityRank(it) }
@@ -1543,6 +1905,7 @@ private fun castAnimeFromPicker(
     val intent = Intent(context, hd.kinoshka.app.ui.player.CastRemoteActivity::class.java).apply {
         putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_MODE, "anime")
         putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_SHIKIMORI_ID, shikimoriId)
+        putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_ANIME_KP_ID, kinopoiskId)
         putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_ANIME_TITLE, title)
         putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_EPISODE, episodeNumber)
         putExtra(hd.kinoshka.app.ui.player.CastRemoteActivity.EXTRA_TRANSLATION_ID, translationId)
@@ -1605,7 +1968,8 @@ private fun castMovieFromPicker(
                 val rawTitle = dub.translationTitle ?: dub.translationId.orEmpty()
                 val split = hd.kinoshka.app.data.playback.MovieNativeLauncher.splitDubTrack(rawTitle)
                 hd.kinoshka.app.data.model.FlatTranslation(
-                    source = if (seriesContext.isDirectSource) hd.kinoshka.app.data.model.AnimeSourceType.DDBB
+                    source = if (seriesContext.isDirectSource)
+                        hd.kinoshka.app.data.source.PlaybackSources.animeSourceTypeForDubId(dub.translationId.orEmpty())
                     else hd.kinoshka.app.data.model.AnimeSourceType.KODIK,
                     translationId = dub.translationId ?: rawTitle,
                     title = if (rawTitle.isBlank()) "Озвучка" else split.first,
@@ -1670,6 +2034,68 @@ private fun qualitiesBestFallback(qualities: Map<String, String>): String? =
         ?: qualities.keys.firstOrNull()
 
 private fun detailsRoute(id: Int): String = "details/$id"
+
+/**
+ * Резервная копия библиотеки в Загрузки (для ТВ-профиля, где нет файлового
+ * пикера): Q+ — MediaStore без разрешений, ниже — публичные Загрузки.
+ * Возвращает путь для тоста. SAF CreateDocument на Android TV обычно нечем открыть.
+ */
+private fun exportLibraryToDownloads(context: Context, fileName: String, json: String): Result<String> =
+    runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.MIME_TYPE, "application/json")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Не удалось создать файл")
+            resolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+                ?: error("Не удалось записать файл")
+            "Загрузки/$fileName"
+        } else {
+            @Suppress("DEPRECATION")
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, fileName)
+            file.writeText(json, Charsets.UTF_8)
+            file.absolutePath
+        }
+    }
+
+/** Импорт: самая свежая kinoshka-library-*.json из Загрузок. Возвращает сырой JSON. */
+private fun importLatestBackupFromDownloads(context: Context): Result<String> = runCatching {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val resolver = context.contentResolver
+        val projection = arrayOf(
+            MediaStore.Downloads._ID,
+            MediaStore.Downloads.DISPLAY_NAME
+        )
+        val uri = resolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            projection,
+            "${MediaStore.Downloads.DISPLAY_NAME} LIKE ?",
+            arrayOf("kinoshka-library-%.json"),
+            "${MediaStore.Downloads.DATE_MODIFIED} DESC"
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID))
+                ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id)
+            } else null
+        } ?: error("В Загрузках нет резервных копий kinoshka-library-*.json")
+        resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            ?: error("Не удалось прочитать файл")
+    } else {
+        @Suppress("DEPRECATION")
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val file = dir.listFiles { f -> f.name.startsWith("kinoshka-library-") && f.name.endsWith(".json") }
+            ?.sortedByDescending { it.lastModified() }
+            ?.firstOrNull()
+            ?: error("В Загрузках нет резервных копий kinoshka-library-*.json")
+        file.readText(Charsets.UTF_8)
+    }
+}
 
 /**
  * Точечный тактильный тык (0..1): системный shaped-примитив вместо сырого
@@ -1750,6 +2176,13 @@ private fun Context.findActivity(): ComponentActivity? = when (this) {
     is ComponentActivity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+/** true только на Android TV (leanback): скачивание серий и Загрузки там отключены. */
+private fun isTvDevice(context: Context): Boolean {
+    val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+    if (uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION) return true
+    return context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
 }
 
 /**

@@ -43,6 +43,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -70,6 +71,7 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -571,6 +573,12 @@ fun TvButton(
     modifier: Modifier = Modifier,
     primary: Boolean = false,
     enabled: Boolean = true,
+    /** Иконка слева от текста (мобильные глифы: экспорт/импорт). Null — текстовая кнопка. */
+    icon: ImageVector? = null,
+    /** Кастомная иконка слева (мобильные рисованные глифы вроде RoundedPlayIcon). */
+    leading: (@Composable () -> Unit)? = null,
+    /** Иконка справа от текста (мобильная звезда оценки при «Просмотрено»). */
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(24.dp)
@@ -590,11 +598,37 @@ fun TvButton(
             .padding(horizontal = 22.dp, vertical = 11.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            color = content,
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold, fontSize = 14.sp),
-        )
+        if (leading == null && icon == null && trailing == null) {
+            Text(
+                text = text,
+                color = content,
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold, fontSize = 14.sp),
+            )
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (leading != null) {
+                    leading()
+                } else if (icon != null) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = content,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                Text(
+                    text = text,
+                    color = content,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold, fontSize = 14.sp),
+                )
+                if (trailing != null) {
+                    trailing()
+                }
+            }
+        }
     }
 }
 
@@ -605,9 +639,12 @@ fun TvChip(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Иконка слева (мобильные глифы: Кино/Аниме, фильтры). Null — текстовый чип. */
+    icon: ImageVector? = null,
+    /** Форма: по умолчанию тег 16dp, в шапке — пилюля 24dp как у поиска. */
+    shape: Shape = RoundedCornerShape(16.dp),
 ) {
     val cs = MaterialTheme.colorScheme
-    val shape = RoundedCornerShape(16.dp)
     val background by animateColorAsState(
         targetValue = if (selected) cs.primaryContainer else cs.surfaceContainerHigh,
         label = "tvChipBg",
@@ -618,14 +655,34 @@ fun TvChip(
             .tvFocusable(onClick = onClick, shape = shape, focusedScale = 1.04f)
             .clip(shape)
             .background(background)
-            .padding(horizontal = 16.dp, vertical = 9.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Text(
-            text = text,
-            color = contentColor,
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 13.sp),
-            maxLines = 1,
-        )
+        if (icon == null) {
+            Text(
+                text = text,
+                color = contentColor,
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 13.sp),
+                maxLines = 1,
+            )
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = contentColor,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = text,
+                    color = contentColor,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 13.sp),
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 
@@ -672,81 +729,127 @@ fun TvMenuCard(
 }
 
 /**
- * Топ-бар — Lampa header: разделы слева, поиск центр, иконки справа.
+ * Топ-бар — Lampa header: бургер слева (открывает боковое меню), заголовок
+ * раздела, поиск по центру, быстрые действия (слот actions) и иконки справа.
+ * Навигационных чипов здесь больше нет — разделы живут в drawer слева.
  * Material: surface + searchBar (surfaceContainerHigh pill 24dp), focus ring.
  */
 @Composable
 fun TvTopBar(
-    sections: List<String>,
-    selectedSection: Int,
-    onSectionSelected: (Int) -> Unit,
+    title: String,
+    onBurgerClick: () -> Unit,
+    burgerFocusRequester: FocusRequester? = null,
     query: String,
     onQueryChange: (String) -> Unit,
     onSearchSubmit: () -> Unit,
     searchPlaceholder: String,
+    showSearch: Boolean = true,
     onAvatarClick: () -> Unit,
     showAvatar: Boolean = true,
     modifier: Modifier = Modifier,
     actions: @Composable RowScope.() -> Unit = {},
+    /** Текстовое поле в фокусе (клавиатура открыта): корень отключает edge-навигацию. */
+    onSearchFocusChanged: (Boolean) -> Unit = {},
 ) {
     val cs = MaterialTheme.colorScheme
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(cs.surface.copy(alpha = 0.96f))
             .padding(horizontal = 36.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        sections.forEachIndexed { index, label ->
-            TvChip(
-                text = label,
-                selected = index == selectedSection,
-                onClick = { onSectionSelected(index) },
-            )
-        }
-        Spacer(Modifier.weight(0.6f))
-        Row(
+        Box(
             modifier = Modifier
-                .weight(1.2f)
-                .clip(RoundedCornerShape(24.dp))
-                .background(cs.surfaceContainerHigh)
+                .size(44.dp)
                 .tvFocusable(
-                    onClick = {},
-                    shape = RoundedCornerShape(24.dp),
-                    focusedScale = 1f,
+                    onClick = onBurgerClick,
+                    shape = RoundedCornerShape(22.dp),
+                    focusRequester = burgerFocusRequester,
                 )
-                .padding(horizontal = 16.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                .clip(RoundedCornerShape(22.dp))
+                .background(cs.surfaceContainerHigh),
+            contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector = Icons.Filled.Search,
-                contentDescription = null,
-                tint = cs.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
+                imageVector = Icons.Filled.Menu,
+                contentDescription = "Меню",
+                tint = cs.onSurface,
+                modifier = Modifier.size(24.dp),
             )
-            BasicTextField(
-                value = query,
-                onValueChange = onQueryChange,
-                singleLine = true,
-                textStyle = TextStyle(color = cs.onSurface, fontSize = 14.sp),
-                cursorBrush = Brush.verticalGradient(listOf(cs.primary, cs.primary)),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
-                decorationBox = { inner ->
-                    if (query.isEmpty()) {
-                        Text(
-                            text = searchPlaceholder,
-                            color = cs.onSurfaceVariant,
-                            fontSize = 14.sp,
-                            maxLines = 1,
-                        )
+        }
+        Text(
+            text = title,
+            color = cs.onSurface,
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.weight(0.6f))
+        if (showSearch) {
+            // Двухступенчатый фокус для ТВ-пульта: наведение/фокус подсвечивает
+            // контейнер, а текстовое поле (и клавиатура) активируются только
+            // после ОК на контейнере. Уход фокуса гасит редактирование обратно.
+            var searchEditing by remember { mutableStateOf(false) }
+            val searchFieldRequester = remember { FocusRequester() }
+            LaunchedEffect(searchEditing) {
+                if (searchEditing) {
+                    try {
+                        searchFieldRequester.requestFocus()
+                    } catch (_: IllegalStateException) {
+                        // Поле ещё не в фокус-иерархии — фокус придёт следующим ОК.
                     }
-                    inner()
-                },
-                modifier = Modifier.weight(1f),
-            )
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .weight(1.2f)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(cs.surfaceContainerHigh)
+                    .tvFocusable(
+                        onClick = { searchEditing = true },
+                        shape = RoundedCornerShape(24.dp),
+                        focusedScale = 1f,
+                    )
+                    .padding(horizontal = 16.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Search,
+                    contentDescription = null,
+                    tint = cs.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    singleLine = true,
+                    textStyle = TextStyle(color = cs.onSurface, fontSize = 14.sp),
+                    cursorBrush = Brush.verticalGradient(listOf(cs.primary, cs.primary)),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
+                    decorationBox = { inner ->
+                        if (query.isEmpty()) {
+                            Text(
+                                text = searchPlaceholder,
+                                color = cs.onSurfaceVariant,
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                            )
+                        }
+                        inner()
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(searchFieldRequester)
+                        .focusProperties { canFocus = searchEditing }
+                        .onFocusChanged {
+                            onSearchFocusChanged(it.isFocused)
+                            if (!it.isFocused && searchEditing) searchEditing = false
+                        },
+                )
+            }
         }
         actions()
         if (showAvatar) {
