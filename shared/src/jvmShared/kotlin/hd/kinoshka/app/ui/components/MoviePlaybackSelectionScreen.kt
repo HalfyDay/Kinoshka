@@ -64,8 +64,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.local.UserFilmProfile
+import hd.kinoshka.app.ui.screens.SourceBrandIcon
 import hd.kinoshka.app.data.local.UserFilmStatus
 import hd.kinoshka.app.data.model.AnimeEpisode
 import hd.kinoshka.app.data.model.AnimeMediaStream
@@ -84,7 +86,9 @@ import hd.kinoshka.app.data.model.canonicalSeriesEpisodes
 import hd.kinoshka.app.data.model.qualityBadgeLabel
 import hd.kinoshka.app.data.playback.MovieNativeLauncher
 import hd.kinoshka.app.data.source.AnimeStreamResolver
+import hd.kinoshka.app.data.source.CustomSource
 import hd.kinoshka.app.data.source.DdbbStreamResolver
+import hd.kinoshka.app.data.source.HdrezkaApi
 import hd.kinoshka.app.data.source.MovieStreamResolver
 import hd.kinoshka.app.data.source.PlaybackSources
 import hd.kinoshka.app.ui.platform.rememberKinoPlatformActions
@@ -192,10 +196,15 @@ private data class MovieDubGroup(
     val title: String,
     val episodeCount: Int,
     val sourcesCount: Int,
-    val qualityBadge: String?
+    val qualityBadge: String?,
+    /** true, когда хоть один источник даба отдаёт настоящую лестницу (не голый Auto):
+     *  такие дабы поднимаются выше Auto-only строк (мёртвый Collaps-мастер без бейджа
+     *  больше не возглавляет список). */
+    val hasQuality: Boolean = false
 )
 
 private const val MOVIE_SOURCE_TIMEOUT_MS = 25_000L
+private const val HDREZKA_SOURCE_TIMEOUT_MS = 45_000L
 private const val TAG = "MoviePicker"
 
 private fun normalizeDubKey(title: String): String =
@@ -236,12 +245,17 @@ fun MoviePlaybackSelectionScreen(
     /** null — кнопки скачивания скрыты (desktop). */
     onDownloadTarget: ((MovieDownloadTarget) -> Unit)? = null,
     onDismissRequest: () -> Unit,
+    // Иконка источника: платформа подставляет реальные картинки, по умолчанию —
+    // рисованный бейдж. Учитывается раздел «Фильмы».
+    sourceIcon: @Composable (sourceId: String, size: Dp) -> Unit =
+        { id, size -> SourceBrandIcon(sourceId = id, size = size) },
     onMovieSelected: (MoviePickerResult) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val platformActions = rememberKinoPlatformActions()
     // Настройки источников читаются при каждом открытии страницы — возврат из
     // «Настройки → Источники» сразу виден без перезахода в детали.
+    // Учитывается раздел «Фильмы»: выключение в «Аниме»/«18+» сюда не влияет.
     val sourcePrefs by produceState<Pair<Set<String>, Set<String>>?>(
         initialValue = null,
         key1 = request
@@ -250,13 +264,25 @@ fun MoviePlaybackSelectionScreen(
             emptySet<String>() to emptySet<String>()
         } else {
             withContext(Dispatchers.IO) {
-                userStateStore.getDisabledSources() to userStateStore.getHiddenSources()
+                userStateStore.getDisabledSources(hd.kinoshka.app.data.source.SourceCategory.FILMS) to userStateStore.getHiddenSources()
             }
         }
     }
     val prefsReady = sourcePrefs != null
     val disabled = remember(sourcePrefs) { sourcePrefs?.first.orEmpty().map { it.uppercase() }.toSet() }
     val hidden = remember(sourcePrefs) { sourcePrefs?.second.orEmpty().map { it.uppercase() }.toSet() }
+    // Свои источники грузятся тем же открытием страницы (дешёвое чтение prefs):
+    // выключение для них работает через тот же [disabled]-сет.
+    val customSources by produceState<List<CustomSource>>(
+        initialValue = emptyList(),
+        key1 = request
+    ) {
+        value = if (userStateStore == null) {
+            emptyList()
+        } else {
+            withContext(Dispatchers.IO) { userStateStore.getCustomSources() }
+        }
+    }
     var currentStepIndex by remember { mutableIntStateOf(0) }
     var selectedSeason by remember { mutableIntStateOf(0) }
     var selectedEpisodeKey by remember { mutableStateOf<Pair<Int, Int>?>(null) }
@@ -277,8 +303,13 @@ fun MoviePlaybackSelectionScreen(
     var directParses by remember { mutableStateOf<List<DdbbStreamResolver.SourceParse>>(emptyList()) }
     var bulkStarted by remember { mutableStateOf(false) }
 
-    val visibleSources = remember(disabled) {
-        PlaybackSources.MOVIE_IDS.filter { it !in disabled }
+    val filmCustoms = remember(customSources) {
+        customSources.filter {
+            it.categories.isEmpty() || hd.kinoshka.app.data.source.SourceCategory.FILMS in it.categories
+        }
+    }
+    val visibleSources = remember(disabled, filmCustoms) {
+        (PlaybackSources.MOVIE_IDS + filmCustoms.map { it.id }).filter { it !in disabled }
     }
 
     fun applyDirectParses(parses: List<DdbbStreamResolver.SourceParse>) {
@@ -297,9 +328,11 @@ fun MoviePlaybackSelectionScreen(
                 next = next + (sourceId to if (options.isEmpty()) MovieSourceLoadState.Empty else MovieSourceLoadState.Ready(options))
             }
             for (sourceId in visibleSources) {
-                if (sourceId == PlaybackSources.KODIK) continue
+                if (sourceId == PlaybackSources.KODIK || sourceId == PlaybackSources.HDREZKA) continue
+                // bulk дождался ВСЕХ разборов: источника без парса в выдаче нет —
+                // висящий Loading обязан стать Empty, иначе счётчик «n/8» стоит вечно.
                 val state = next[sourceId]
-                if (state !is MovieSourceLoadState.Loading && state !is MovieSourceLoadState.Ready) {
+                if (state is MovieSourceLoadState.Loading || state == null) {
                     next = next + (sourceId to MovieSourceLoadState.Empty)
                 }
             }
@@ -315,7 +348,9 @@ fun MoviePlaybackSelectionScreen(
                 scope.async(Dispatchers.IO) {
                     DdbbStreamResolver.fetchSourceParses(
                         request.kinopoiskId ?: 0,
-                        disabledIds = disabled
+                        disabledIds = disabled,
+                        imdbId = request.imdbId,
+                        customSources = filmCustoms
                     )
                 }.await()
             }
@@ -349,6 +384,27 @@ fun MoviePlaybackSelectionScreen(
         }
     }
 
+    /** HDRezka идёт отдельным запросом: ему нужны названия из [request], а не только kp. */
+    fun startHdrezka() {
+        if (PlaybackSources.HDREZKA !in visibleSources) return
+        if (sourceStatesFlow.value[PlaybackSources.HDREZKA] is MovieSourceLoadState.Loading) return
+        sourceStatesFlow.update { it + (PlaybackSources.HDREZKA to MovieSourceLoadState.Loading) }
+        scope.launch {
+            // Свой лимит: поиск + Anubis + тайтл + до 60 ajax за сериями дольше bulk.
+            val parse = withTimeoutOrNull(HDREZKA_SOURCE_TIMEOUT_MS) {
+                scope.async(Dispatchers.IO) { HdrezkaApi.resolve(request) }.await()
+            }
+            if (parse != null) {
+                applyDirectParses(listOf(parse))
+            } else {
+                sourceStatesFlow.update { current ->
+                    if (current[PlaybackSources.HDREZKA] is MovieSourceLoadState.Ready) current
+                    else current + (PlaybackSources.HDREZKA to MovieSourceLoadState.Empty)
+                }
+            }
+        }
+    }
+
     fun startKodik() {
         if (PlaybackSources.KODIK !in visibleSources) return
         if (sourceStatesFlow.value[PlaybackSources.KODIK] is MovieSourceLoadState.Loading) return
@@ -376,6 +432,7 @@ fun MoviePlaybackSelectionScreen(
             val state = sourceStatesFlow.value[id]
             if (state is MovieSourceLoadState.Loading || state is MovieSourceLoadState.Ready) return@forEach
             if (id == PlaybackSources.KODIK) startKodik()
+            else if (id == PlaybackSources.HDREZKA) startHdrezka()
             else {
                 sourceStatesFlow.update { it + (id to MovieSourceLoadState.Loading) }
                 startBulk()
@@ -388,6 +445,9 @@ fun MoviePlaybackSelectionScreen(
             // startKodik игнорирует Loading — сбрасываем состояние перед повтором.
             sourceStatesFlow.update { it - sourceId }
             startKodik()
+        } else if (sourceId == PlaybackSources.HDREZKA) {
+            sourceStatesFlow.update { it - sourceId }
+            startHdrezka()
         } else {
             bulkStarted = false
             sourceStatesFlow.update { it + (sourceId to MovieSourceLoadState.Loading) }
@@ -397,16 +457,20 @@ fun MoviePlaybackSelectionScreen(
 
     LaunchedEffect(request, prefsReady) {
         if (!prefsReady) return@LaunchedEffect
-        // Помечаем всё видимое Loading сразу, чтобы страница не мигала пустотой.
+        // Помечаем Loading сразу, чтобы страница не мигала пустотой. Kodik и HDRezka
+        // грузятся собственными стартерами (они сами ставят Loading + guard от повтора):
+        // предмаркировка здесь глушила их guard, и загрузка не стартовала вообще.
         sourceStatesFlow.update { current ->
             var next = current
             for (id in visibleSources) {
+                if (id == PlaybackSources.KODIK || id == PlaybackSources.HDREZKA) continue
                 if (next[id] == null) next = next + (id to MovieSourceLoadState.Loading)
             }
             next
         }
         startKodik()
         startBulk()
+        startHdrezka()
     }
 
     val allOptions = remember(sourceStates, hidden) {
@@ -426,9 +490,16 @@ fun MoviePlaybackSelectionScreen(
                 title = bestTitle.ifBlank { "Озвучка" },
                 episodeCount = variants.maxOf { it.episodes.size },
                 sourcesCount = variants.map { it.sourceId }.distinct().size,
-                qualityBadge = qualityBadgeLabel(bestQuality)
+                qualityBadge = qualityBadgeLabel(bestQuality),
+                hasQuality = variants.any { opt ->
+                    opt.episodes.any { ep -> ep.ladder.keys.any { q -> !q.equals("Auto", ignoreCase = true) } }
+                }
             )
-        }.sortedWith(compareByDescending<MovieDubGroup> { it.episodeCount }.thenBy { it.title.lowercase() })
+        }.sortedWith(
+            compareByDescending<MovieDubGroup> { it.episodeCount }
+                .thenByDescending { it.hasQuality }
+                .thenBy { it.title.lowercase() }
+        )
     }
 
     val mergedSeasons = remember(allOptions) {
@@ -822,6 +893,7 @@ fun MoviePlaybackSelectionScreen(
                                         MovieSourceStep(
                                             options = optionsForDub(dub),
                                             selectedEpisodeKey = selectedEpisodeKey,
+                                            sourceIcon = sourceIcon,
                                             onDownloadSingle = onDownloadTarget?.let { download ->
                                                 { opt: MoviePickerOption ->
                                                     if (showEpisodes) {
@@ -1088,11 +1160,14 @@ private fun buildQomLists(
 ): Pair<List<FlatTranslation>, Map<String, AnimeMediaStream>> {
     val rows = allOptions.filter { it.movieUrls.isNotEmpty() || it.episodes.isNotEmpty() }
         .sortedWith(compareBy({ sourceRankForPicker(it.sourceId) }, { it.dubTitle.lowercase() }))
-        .map { opt ->
+        .mapNotNull { opt ->
             val link = opt.movieUrls.firstOrNull() ?: opt.episodes.firstOrNull()?.url.orEmpty()
+            // Пустая ссылка — строка, тап по которой молча ничего не делает («озвучка
+            // не работает»): такие разборы в дропдаун не отдаём вообще.
+            if (link.isBlank()) return@mapNotNull null
             val (display, kind) = MovieNativeLauncher.splitDubTrack(opt.dubTitle)
             FlatTranslation(
-                source = if (opt.sourceId == PlaybackSources.KODIK) AnimeSourceType.KODIK else AnimeSourceType.DDBB,
+                source = PlaybackSources.animeSourceTypeFor(opt.sourceId),
                 translationId = qomTranslationId(opt),
                 title = display,
                 type = kind,
@@ -1106,16 +1181,24 @@ private fun buildQomLists(
     return ordered to prepared
 }
 
+/**
+ * Id строки QOM-дропдауна: Kodik — сырой translationId каталога, прямые — со скоупом
+ * источника («TURBO|Дубляж»). Без скоупа один и тот же даб Turbo и Collaps схлопывался
+ * в одну строку с чужой ссылкой (подготовленный поток затирал соседний по ключу),
+ * а общий DDBB-тип прятал провайдера.
+ */
 private fun qomTranslationId(opt: MoviePickerOption): String =
-    if (opt.sourceId == PlaybackSources.KODIK) opt.translationId else opt.dubTitle
+    if (opt.sourceId == PlaybackSources.KODIK) opt.translationId
+    else "${opt.sourceId}|${opt.dubTitle}"
 
 private fun sourceRankForPicker(sourceId: String): Int = when (sourceId) {
     PlaybackSources.TURBO -> 0
-    PlaybackSources.VIDEOCDN -> 1
-    PlaybackSources.COLLAPS -> 2
-    PlaybackSources.VOIDBOOST -> 3
-    PlaybackSources.KODIK -> 4
-    else -> 5
+    PlaybackSources.HDREZKA -> 1
+    PlaybackSources.VIDEOCDN -> 2
+    PlaybackSources.COLLAPS -> 3
+    PlaybackSources.VOIDBOOST -> 4
+    PlaybackSources.KODIK -> 5
+    else -> 6
 }
 
 /** Per-dub кандидаты прямой семьи для контекста плеера и очереди скачивания. */
@@ -1505,7 +1588,7 @@ private fun MovieDubStep(
                             Text(
                                 buildString {
                                     append(if (dub.episodeCount > 1) "${dub.episodeCount} серий" else "Фильм")
-                                    if (dub.sourcesCount > 1) append(" • ${dub.sourcesCount} источника")
+                                    append(" • ${PlaybackSources.sourcesCountLabel(dub.sourcesCount)}")
                                     if (downloaded > 0) append(" • скачано: $downloaded")
                                 },
                                 style = MaterialTheme.typography.bodySmall,
@@ -1546,7 +1629,8 @@ private fun MovieSourceStep(
     options: List<MoviePickerOption>,
     selectedEpisodeKey: Pair<Int, Int>?,
     onDownloadSingle: ((MoviePickerOption) -> Unit)?,
-    onSourceSelected: (MoviePickerOption) -> Unit
+    onSourceSelected: (MoviePickerOption) -> Unit,
+    sourceIcon: @Composable (sourceId: String, size: Dp) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1590,11 +1674,10 @@ private fun MovieSourceStep(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
-                            modifier = Modifier.size(42.dp).clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            modifier = Modifier.size(42.dp).clip(CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                            sourceIcon(opt.sourceId, 42.dp)
                         }
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {

@@ -35,6 +35,14 @@ class KinoApplication : Application(), ImageLoaderFactory {
             "kinoshka_app_settings", MODE_PRIVATE
         ).getString("stream_proxy_url", null)
 
+        // Свои источники (вариант A): реестр имён, прокси-хосты и health-провайдер
+        // поднимаются из стора; дальше сохранения/удаления синкают рантайм сами.
+        runCatching {
+            hd.kinoshka.app.data.source.syncCustomSourceRuntime {
+                hd.kinoshka.app.data.local.UserStateStore(this).getCustomSources()
+            }
+        }
+
         // Initialize Koin for mpvEx
         startKoin {
             androidContext(this@KinoApplication)

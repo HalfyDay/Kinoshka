@@ -40,6 +40,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import hd.kinoshka.app.data.source.buildUrl
+import hd.kinoshka.app.data.source.effectiveReferer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -375,6 +377,8 @@ fun InAppWebScreen(
     var ddbbPlayers by remember { mutableStateOf<List<DdbbPlayer>>(emptyList()) }
     var isLoadingPlayers by remember { mutableStateOf(false) }
     var selectedPlayer by remember { mutableStateOf<DdbbPlayer?>(null) }
+    // Заголовки загрузки своих источников (вариант A): playerId -> headers с referer.
+    var customWebHeaders by remember { mutableStateOf<Map<String, Map<String, String>>>(emptyMap()) }
     var webViewError by remember { mutableStateOf<String?>(null) }
     var isPageLoading by remember { mutableStateOf(true) }
     var autoRetryCount by remember { mutableStateOf(0) }
@@ -438,8 +442,21 @@ fun InAppWebScreen(
                         add(DdbbPlayer("kodik_find_player", "Kodik (find-player)", "https://kodikplayer.com/find-player?kinopoisk_id=$kinopoiskId"))
                     }
                 }
-                ddbbPlayers = ddbbList
-                selectedPlayer = ddbbList.firstOrNull()
+                // Свои источники (вариант A): embed-ссылки под kp в конец списка.
+                // imdb здесь недоступен — шаблоны только под {imdb} пропускаются.
+                val customs = runCatching {
+                    hd.kinoshka.app.data.local.UserStateStore(context).getCustomSources()
+                }.getOrDefault(emptyList())
+                val customPlayers = customs.mapNotNull { custom ->
+                    val embedUrl = custom.buildUrl(kinopoiskId, null) ?: return@mapNotNull null
+                    DdbbPlayer("custom:${custom.id}", custom.name, embedUrl)
+                }
+                customWebHeaders = customs.mapNotNull { custom ->
+                    val embedUrl = custom.buildUrl(kinopoiskId, null) ?: return@mapNotNull null
+                    "custom:${custom.id}" to mapOf("Referer" to custom.effectiveReferer(embedUrl))
+                }.toMap()
+                ddbbPlayers = ddbbList + customPlayers
+                selectedPlayer = (ddbbList + customPlayers).firstOrNull()
             }
             isLoadingPlayers = false
         }
@@ -453,7 +470,7 @@ fun InAppWebScreen(
             val currentUrl = wv.url ?: ""
             // Don't reload if already on this URL
             if (sel.iframeUrl != currentUrl) {
-                wv.loadUrl(sel.iframeUrl, playerLoadHeaders(sel))
+                wv.loadUrl(sel.iframeUrl, customWebHeaders[sel.id] ?: playerLoadHeaders(sel))
             }
         }
     }
