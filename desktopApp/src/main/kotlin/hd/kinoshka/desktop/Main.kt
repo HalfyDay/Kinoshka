@@ -302,6 +302,10 @@ fun main(args: Array<String>) = application {
                                     userStateStore.deleteCustomSource(id)
                                     customSources = userStateStore.getCustomSources()
                                 },
+                                onMoveCustomSource = { id, delta ->
+                                    userStateStore.moveCustomSource(id, delta)
+                                    customSources = userStateStore.getCustomSources()
+                                },
                                 onExportCustomSourcesFile = ::exportCustomSources,
                                 onImportCustomSourcesFile = ::importCustomSources,
                                 fileExchangeMessage = exchangeMessage,

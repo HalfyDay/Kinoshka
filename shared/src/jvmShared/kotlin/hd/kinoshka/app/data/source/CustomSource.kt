@@ -201,6 +201,13 @@ fun CustomSource.stremioBase(): String? =
 /** Хост Stremio-аддона (для подписей и прокси-регистрации). */
 fun CustomSource.stremioHost(): String? = urlHost(stremioBase() ?: return null)
 
+/**
+ * Хост для прокси-регистрации: embed-хост у EMBED, хост аддона у STREMIO.
+ * Покрывает JSON-запросы резолверов и mpv-потоки с того же хоста (CDN-хосты
+ * потоков — нет, как и у встроенных: там свой список суффиксов).
+ */
+fun CustomSource.proxyHost(): String? = embedHost() ?: stremioHost()
+
 /** Referer для запросов/плеера: явный либо origin embed-ссылки. */
 fun CustomSource.effectiveReferer(embedUrl: String): String {
     val clean = referer.trim()
@@ -235,6 +242,19 @@ fun urlHost(url: String): String? {
         .takeIf { it.isNotEmpty() }
 }
 
+/**
+ * Чистое перемещение элемента в списке (для сортировки своих стрелками):
+ * возвращает новый список, исходный не трогает. Границы глушат сдвиг.
+ */
+fun <T> moveListItem(list: List<T>, fromIndex: Int, delta: Int): List<T> {
+    val toIndex = fromIndex + delta
+    if (fromIndex !in list.indices || toIndex !in list.indices) return list
+    if (delta == 0) return list
+    val out = list.toMutableList()
+    val item = out.removeAt(fromIndex)
+    out.add(toIndex, item)
+    return out
+}
 /** CUSTOM_<slug> из имени; [existingIds] (uppercase) — для уникальности (суффикс -2…). */
 fun buildCustomId(name: String, existingIds: Set<String>): String {
     val slug = slugifyCustomName(name).ifEmpty { "src" }
@@ -277,7 +297,7 @@ private val TRANSLIT: Map<Char, String> = mapOf(
 fun syncCustomSourceRuntime(getSources: () -> List<CustomSource>) {
     val customs = runCatching { getSources() }.getOrDefault(emptyList())
     PlaybackSources.setCustomSourceInfos(customs.map { PlaybackSources.customInfo(it) })
-    customs.filter { it.useProxy }.mapNotNull { it.embedHost() }
+    customs.filter { it.useProxy }.mapNotNull { it.proxyHost() }
         .forEach { StreamProxyConfig.registerCustomHost(it) }
     SourceHealthChecker.customSourceProvider = getSources
     AnimeStreamResolver.customSourceProvider = getSources
@@ -414,7 +434,7 @@ fun mergeCustomSources(
             urlTemplate = if (raw.kind == CustomSourceKind.STREMIO) "" else template,
             referer = raw.referer.trim(),
             endpoint = if (raw.kind == CustomSourceKind.STREMIO) endpoint else "",
-            useProxy = raw.useProxy && raw.kind == CustomSourceKind.EMBED,
+            useProxy = raw.useProxy,
             webOnly = raw.webOnly && raw.kind == CustomSourceKind.EMBED,
             categories = raw.categories.ifEmpty { setOf(SourceCategory.FILMS) }
         )

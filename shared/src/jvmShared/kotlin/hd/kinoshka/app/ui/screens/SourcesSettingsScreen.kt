@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -33,6 +34,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -88,6 +91,8 @@ fun SourcesSettingsScreen(
     customSources: List<CustomSource> = emptyList(),
     onSaveCustomSource: ((CustomSource) -> Unit)? = null,
     onDeleteCustomSource: ((String) -> Unit)? = null,
+    // Порядок своих (шевроны в строках): null прячет шевроны (старые коллеры).
+    onMoveCustomSource: ((String, Int) -> Unit)? = null,
     // Обмен файлом JSON между устройствами (платформа открывает диалог
     // сохранения/выбора и дергает стор): null прячет свою кнопку.
     onExportCustomSourcesFile: (() -> Unit)? = null,
@@ -292,7 +297,7 @@ fun SourcesSettingsScreen(
                     )
                 }
             }
-            items(customSources, key = { it.id }) { custom ->
+            itemsIndexed(customSources, key = { _, it -> it.id }) { index, custom ->
                 val info = PlaybackSources.customInfo(custom)
                 SourcePageRow(
                     info = info,
@@ -307,7 +312,13 @@ fun SourcesSettingsScreen(
                     onCheck = { checkOne(info.id) },
                     sourceIcon = sourceIcon,
                     onEdit = { editingCustom = custom },
-                    onDelete = { deletingCustom = custom }
+                    onDelete = { deletingCustom = custom },
+                    onMoveUp = onMoveCustomSource
+                        ?.takeIf { index > 0 }
+                        ?.let { move -> { move(custom.id, -1) } },
+                    onMoveDown = onMoveCustomSource
+                        ?.takeIf { index < customSources.lastIndex }
+                        ?.let { move -> { move(custom.id, 1) } }
                 )
             }
         }
@@ -432,7 +443,10 @@ private fun SourcePageRow(
     sourceIcon: @Composable (PlaybackSourceInfo) -> Unit,
     // Только свои источники: правка и удаление.
     onEdit: (() -> Unit)? = null,
-    onDelete: (() -> Unit)? = null
+    onDelete: (() -> Unit)? = null,
+    // Порядок своих: null прячет шеврон (края списка и встроенные).
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null
 ) {
     val statusColor = when {
         checking || !enabled || health == null -> MaterialTheme.colorScheme.outline
@@ -495,6 +509,39 @@ private fun SourcePageRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            if (onMoveUp != null || onMoveDown != null) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.width(28.dp)
+                ) {
+                    androidx.compose.material3.IconButton(
+                        onClick = { onMoveUp?.invoke() },
+                        enabled = onMoveUp != null,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowUp,
+                            contentDescription = "Выше",
+                            tint = if (onMoveUp != null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    androidx.compose.material3.IconButton(
+                        onClick = { onMoveDown?.invoke() },
+                        enabled = onMoveDown != null,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = "Ниже",
+                            tint = if (onMoveDown != null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
             }
             if (onEdit != null) {
                 androidx.compose.material3.IconButton(
@@ -569,7 +616,7 @@ private fun CustomSourceEditDialog(
         name = name.trim(),
         urlTemplate = if (isStremio) "" else template.trim(),
         referer = if (isStremio) "" else referer.trim(),
-        useProxy = useProxy && !isStremio,
+        useProxy = useProxy,
         webOnly = webOnly && !isStremio,
         categories = categories,
         kind = kind,
@@ -649,19 +696,21 @@ private fun CustomSourceEditDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = useProxy, onCheckedChange = { useProxy = it })
-                        Text(
-                            text = "Через прокси",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = webOnly, onCheckedChange = { webOnly = it })
                         Text(
                             text = "Только веб-плеер (не извлекать поток)",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
+                    }
+                    // Прокси доступен обоим видам: у Stremio через него идут
+                    // manifest/stream-запросы (и mpv-потоки с хоста аддона).
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = useProxy, onCheckedChange = { useProxy = it })
+                        Text(
+                            text = "Через прокси",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
                     }
                     Text(
                         text = "Разделы",

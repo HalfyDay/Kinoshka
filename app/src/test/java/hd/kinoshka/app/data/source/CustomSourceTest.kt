@@ -314,4 +314,43 @@ class CustomSourceTest {
         assertEquals(original.map { it.id }.toSet(), merged.map { it.id }.toSet())
         assertEquals(setOf(SourceCategory.ANIME), merged.first { it.kind == CustomSourceKind.STREMIO }.categories)
     }
+
+    // --- Прокси-хост и порядок ---
+
+    @Test
+    fun `proxyHost covers embed and stremio kinds`() {
+        assertEquals("example.com", src().proxyHost())
+        assertEquals(
+            "addons.example.com",
+            stremioSrc().proxyHost()
+        )
+        assertEquals(
+            "Свой источник (Stremio JSON): addons.example.com · прокси",
+            PlaybackSources.customInfo(stremioSrc().copy(useProxy = true)).description
+        )
+        assertTrue(!PlaybackSources.customInfo(src()).description.contains("прокси"))
+    }
+
+    @Test
+    fun `merge keeps stremio proxy flag`() {
+        val (merged, report) = mergeCustomSources(
+            emptyList(), listOf(stremioSrc().copy(useProxy = true))
+        )
+        assertEquals(1, report.added)
+        assertTrue(merged.single().useProxy)
+    }
+
+    @Test
+    fun `moveListItem shifts and clamps at edges`() {
+        val list = listOf("a", "b", "c")
+        assertEquals(listOf("b", "a", "c"), moveListItem(list, 1, -1))
+        assertEquals(listOf("a", "c", "b"), moveListItem(list, 1, 1))
+        // Границы глушатся — тот же список.
+        assertEquals(listOf("a", "b", "c"), moveListItem(list, 0, -1))
+        assertEquals(listOf("a", "b", "c"), moveListItem(list, 2, 1))
+        assertEquals(listOf("a", "b", "c"), moveListItem(list, 5, 1))
+        assertEquals(listOf("a", "b", "c"), moveListItem(list, 1, 0))
+        // Исходник не мутируется.
+        assertEquals(listOf("a", "b", "c"), list)
+    }
 }

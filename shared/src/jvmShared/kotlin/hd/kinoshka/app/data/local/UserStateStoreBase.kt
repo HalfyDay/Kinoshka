@@ -11,6 +11,8 @@ import hd.kinoshka.app.data.model.FilmDetails
 import hd.kinoshka.app.data.model.FilmItem
 import hd.kinoshka.app.data.model.formatSyncTimeMs
 import hd.kinoshka.app.data.source.embedHost
+import hd.kinoshka.app.data.source.moveListItem
+import hd.kinoshka.app.data.source.proxyHost
 import java.util.Locale
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -894,7 +896,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         }
 
     private fun registerCustomProxyHost(source: hd.kinoshka.app.data.source.CustomSource) {
-        source.takeIf { it.useProxy }?.embedHost()?.let {
+        source.takeIf { it.useProxy }?.proxyHost()?.let {
             hd.kinoshka.app.data.source.StreamProxyConfig.registerCustomHost(it)
         }
     }
@@ -907,9 +909,27 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
 
     private fun unregisterCustomProxyHost(source: hd.kinoshka.app.data.source.CustomSource) {
         // Снимаем, только если хост не нужен другому кастомному источнику с прокси.
-        val host = source.embedHost() ?: return
-        val stillNeeded = getCustomSources().any { it.id != source.id && it.useProxy && it.embedHost() == host }
+        val host = source.proxyHost() ?: return
+        val stillNeeded = getCustomSources().any { it.id != source.id && it.useProxy && it.proxyHost() == host }
         if (!stillNeeded) hd.kinoshka.app.data.source.StreamProxyConfig.unregisterCustomHost(host)
+    }
+
+    /**
+     * Сдвиг своего источника в списке (порядок = приоритет показа в пикерах).
+     * Границы глушатся. Реестр обновляется, прокси-хосты не меняются.
+     */
+    fun moveCustomSource(id: String, delta: Int) = synchronized(BLOB_LOCK) {
+        val key = id.trim().uppercase()
+        val current = getCustomSources()
+        val from = current.indexOfFirst { it.id == key }
+        val moved = hd.kinoshka.app.data.source.moveListItem(current, from, delta)
+        if (moved !== current) {
+            prefs.putString(
+                customSourcesKey,
+                hd.kinoshka.app.data.source.customSourcesToJson(moved)
+            ).apply()
+            refreshCustomRegistry(moved)
+        }
     }
 
     fun getSavedContentType(): hd.kinoshka.app.ui.screens.ContentType {

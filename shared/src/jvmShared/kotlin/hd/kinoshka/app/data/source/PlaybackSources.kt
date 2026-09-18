@@ -192,6 +192,7 @@ object PlaybackSources {
                 append(" · ")
                 append(cats.sortedBy { it.ordinal }.joinToString { it.title })
             }
+            if (source.useProxy) append(" · прокси")
         },
         categories = source.categories.ifEmpty { setOf(SourceCategory.FILMS) },
         animeSourceType = AnimeSourceType.CUSTOM

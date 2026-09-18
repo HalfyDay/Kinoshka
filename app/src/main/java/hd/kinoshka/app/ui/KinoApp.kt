@@ -1751,6 +1751,16 @@ fun KinoApp() {
                                             }
                                         }
                                     },
+                                    onMoveCustomSource = { id, delta ->
+                                        scope.launch {
+                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.moveCustomSource(id, delta)
+                                            }
+                                            customSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.getCustomSources()
+                                            }
+                                        }
+                                    },
                                     onExportCustomSourcesFile = {
                                         exportCustomsFile.launch("kinoshka-custom-sources.json")
                                     },
