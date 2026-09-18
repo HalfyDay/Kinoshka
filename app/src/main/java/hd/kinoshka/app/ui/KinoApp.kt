@@ -1681,6 +1681,80 @@ fun KinoApp() {
                                 var customSources by remember {
                                     mutableStateOf(emptyList<hd.kinoshka.app.data.source.CustomSource>())
                                 }
+                                // Каталог JS-плагинов (витрина index.json + кэш на сутки).
+                                var catalogEntries by remember {
+                                    mutableStateOf(emptyList<hd.kinoshka.app.data.source.PluginCatalog.Entry>())
+                                }
+                                var catalogFresh by remember { mutableStateOf(true) }
+                                var catalogLoading by remember { mutableStateOf(false) }
+                                var catalogBusyId by remember { mutableStateOf<String?>(null) }
+                                var catalogMessage by remember { mutableStateOf<String?>(null) }
+                                var catalogUrl by remember { mutableStateOf("") }
+                                fun refreshCatalog() {
+                                    if (catalogLoading) return
+                                    catalogLoading = true
+                                    scope.launch {
+                                        val url = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            sourcesStore.catalogIndexUrl()
+                                        }
+                                        val raw = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            hd.kinoshka.app.data.source.PluginCatalog.fetchIndex(url)
+                                        }
+                                        if (raw != null) {
+                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                hd.kinoshka.app.data.source.PluginCatalog.saveCachedIndex(raw)
+                                            }
+                                            val index = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                hd.kinoshka.app.data.source.PluginCatalog.parseIndex(raw)
+                                            }
+                                            if (index != null) {
+                                                catalogEntries = index.entries
+                                                catalogFresh = true
+                                                catalogMessage = null
+                                            } else {
+                                                catalogMessage = "Витрина повреждена"
+                                            }
+                                        } else {
+                                            val cached = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                hd.kinoshka.app.data.source.PluginCatalog.loadCachedIndex()
+                                            }
+                                            if (cached != null) {
+                                                catalogEntries = cached.index.entries
+                                                catalogFresh = cached.fresh
+                                                catalogMessage = "Офлайн: показан сохранённый список"
+                                            } else {
+                                                catalogMessage = "Витрина недоступна"
+                                            }
+                                        }
+                                        catalogLoading = false
+                                    }
+                                }
+                                fun installCatalogEntry(entry: hd.kinoshka.app.data.source.PluginCatalog.Entry) {
+                                    if (catalogBusyId != null) return
+                                    catalogBusyId = entry.id
+                                    scope.launch {
+                                        val result = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            hd.kinoshka.app.data.source.PluginCatalog.installFromEntry(
+                                                entry = entry,
+                                                customs = sourcesStore.getCustomSources(),
+                                                save = sourcesStore::savePluginSource
+                                            )
+                                        }
+                                        catalogMessage = when (result) {
+                                            is hd.kinoshka.app.data.source.PluginCatalog.InstallResult.Installed ->
+                                                if (result.updated) "Обновлено до v${result.version}"
+                                                else "Установлено v${result.version}"
+                                            is hd.kinoshka.app.data.source.PluginCatalog.InstallResult.Rejected ->
+                                                "Не ставится: ${result.message}"
+                                        }
+                                        if (result is hd.kinoshka.app.data.source.PluginCatalog.InstallResult.Installed) {
+                                            customSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.getCustomSources()
+                                            }
+                                        }
+                                        catalogBusyId = null
+                                    }
+                                }
                                 // Обмен своими источниками файлом JSON (шаринг между
                                 // устройствами): те же контракты, что у экспорта библиотеки.
                                 val exportCustomsFile = rememberLauncherForActivityResult(
@@ -1721,6 +1795,15 @@ fun KinoApp() {
                                     }
                                     customSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
                                         sourcesStore.getCustomSources()
+                                    }
+                                    catalogUrl = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        sourcesStore.getCustomCatalogUrl()
+                                    }
+                                    withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        hd.kinoshka.app.data.source.PluginCatalog.loadCachedIndex()
+                                    }?.let {
+                                        catalogEntries = it.index.entries
+                                        catalogFresh = it.fresh
                                     }
                                 }
                                 SourcesSettingsScreen(
@@ -1771,6 +1854,32 @@ fun KinoApp() {
                                             }
                                             customSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
                                                 sourcesStore.getCustomSources()
+                                            }
+                                        }
+                                    },
+                                    // Каталог JS-плагинов: витрина index.json (официальная
+                                    // или своя), установка с хешем, обновления по версии.
+                                    catalogEntries = catalogEntries,
+                                    catalogFresh = catalogFresh,
+                                    catalogLoading = catalogLoading,
+                                    catalogBusyId = catalogBusyId,
+                                    catalogMessage = catalogMessage,
+                                    appVersion = BuildConfig.VERSION_NAME,
+                                    catalogUrl = catalogUrl,
+                                    onRefreshCatalog = { refreshCatalog() },
+                                    onInstallCatalogEntry = { entry -> installCatalogEntry(entry) },
+                                    onCatalogUrlChanged = { url ->
+                                        scope.launch {
+                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.setCustomCatalogUrl(url)
+                                            }
+                                            catalogUrl = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.getCustomCatalogUrl()
+                                            }
+                                            catalogMessage = if (url.isBlank()) {
+                                                "Витрина: официальная"
+                                            } else {
+                                                "Витрина: своя — нажмите «Обновить»"
                                             }
                                         }
                                     },

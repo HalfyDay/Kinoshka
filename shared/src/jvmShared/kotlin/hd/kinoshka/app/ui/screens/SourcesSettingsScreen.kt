@@ -62,6 +62,7 @@ import hd.kinoshka.app.data.source.CustomSourceKind
 import hd.kinoshka.app.data.source.JsPluginResolver
 import hd.kinoshka.app.data.source.JsPluginStore
 import hd.kinoshka.app.data.source.JsSandbox
+import hd.kinoshka.app.data.source.PluginCatalog
 import hd.kinoshka.app.data.source.PlaybackSourceInfo
 import hd.kinoshka.app.data.source.PlaybackSources
 import hd.kinoshka.app.data.source.SourceCategory
@@ -105,7 +106,18 @@ fun SourcesSettingsScreen(
     onExportCustomSourcesFile: (() -> Unit)? = null,
     onImportCustomSourcesFile: (() -> Unit)? = null,
     // Статус последнего обмена для платформ без тостов (desktop); Android — null.
-    fileExchangeMessage: String? = null
+    fileExchangeMessage: String? = null,
+    // Каталог JS-плагинов (витрина index.json): null-колбэк обновления прячет секцию.
+    catalogEntries: List<hd.kinoshka.app.data.source.PluginCatalog.Entry> = emptyList(),
+    catalogFresh: Boolean = true,
+    catalogLoading: Boolean = false,
+    catalogBusyId: String? = null,
+    catalogMessage: String? = null,
+    appVersion: String = "",
+    catalogUrl: String = "",
+    onRefreshCatalog: (() -> Unit)? = null,
+    onInstallCatalogEntry: ((hd.kinoshka.app.data.source.PluginCatalog.Entry) -> Unit)? = null,
+    onCatalogUrlChanged: ((String) -> Unit)? = null
 ) {
     val scope = rememberCoroutineScope()
     var selectedCategory by remember { mutableStateOf<SourceCategory?>(null) }
@@ -332,6 +344,74 @@ fun SourcesSettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.tertiary,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                }
+            }
+            // Каталог JS-плагинов: витрина index.json, установка в один тап
+            // (код сверяется с sha256 витрины), обновления подсвечиваются.
+            if (onRefreshCatalog != null) {
+                item {
+                    KinoSettingsCard {
+                        KinoSettingsRow(
+                            title = "Каталог плагинов",
+                            summary = if (catalogEntries.isEmpty()) {
+                                "Проверенные JS-плагины из общей витрины"
+                            } else if (catalogFresh) {
+                                "Плагинов: ${catalogEntries.size}"
+                            } else {
+                                "Плагинов: ${catalogEntries.size} · список устарел (офлайн)"
+                            },
+                            trailing = {
+                                if (catalogLoading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(24.dp), strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    FilledTonalButton(
+                                        onClick = onRefreshCatalog,
+                                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Refresh,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Обновить")
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+                if (onCatalogUrlChanged != null) {
+                    item {
+                        CatalogUrlRow(
+                            currentUrl = catalogUrl,
+                            onSave = onCatalogUrlChanged
+                        )
+                    }
+                }
+                if (catalogMessage != null) {
+                    item {
+                        Text(
+                            text = catalogMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+                items(catalogEntries, key = { it.id }) { entry ->
+                    val installed = customSources.firstOrNull {
+                        hd.kinoshka.app.data.source.PluginCatalog.matchesEntry(it, entry)
+                    }
+                    CatalogEntryRow(
+                        entry = entry,
+                        installedVersion = installed?.pluginVersion,
+                        appVersion = appVersion,
+                        busy = catalogBusyId == entry.id,
+                        onInstall = { onInstallCatalogEntry?.invoke(entry) }
                     )
                 }
             }
@@ -635,6 +715,150 @@ private fun SourcePageRow(
                 }
             }
             Switch(checked = enabled, onCheckedChange = onEnabledChanged)
+        }
+    }
+}
+
+/**
+ * Свой URL витрины каталога (пусто = официальная). Отдельной строкой,
+ * чтобы не перегружать карточку каталога.
+ */
+@Composable
+private fun CatalogUrlRow(
+    currentUrl: String,
+    onSave: (String) -> Unit
+) {
+    var draft by remember(currentUrl) { mutableStateOf(currentUrl) }
+    KinoSettingsCard {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text(
+                text = "Своя витрина",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "URL index.json в том же формате (пусто — официальная)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    placeholder = { Text("https://…/index.json") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { onSave(draft.trim()) }) { Text("ОК") }
+            }
+        }
+    }
+}
+
+/**
+ * Строка витрины: имя/автор/версия/разделы + кнопка по состоянию
+ * (Взять / Обновить / Стоит / Нужна версия приложения).
+ */
+@Composable
+private fun CatalogEntryRow(
+    entry: PluginCatalog.Entry,
+    installedVersion: String?,
+    appVersion: String,
+    busy: Boolean,
+    onInstall: () -> Unit
+) {
+    val appOk = PluginCatalog.isAppVersionOk(entry, appVersion)
+    val update = installedVersion != null && installedVersion != entry.version
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = entry.name.trim().firstOrNull()?.uppercase() ?: "?",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = entry.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (entry.verified) {
+                            Color(0xFF4CAF50).copy(alpha = 0.25f)
+                        } else {
+                            MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f)
+                        }
+                    ) {
+                        Text(
+                            if (entry.verified) "Проверен" else "Новичок",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Text(
+                    text = buildString {
+                        if (entry.author.isNotBlank()) append(entry.author).append(" · ")
+                        append("v").append(entry.version)
+                        append(" · ")
+                        append(entry.sections.joinToString(", ") { it.title })
+                        if (installedVersion != null) append(" · стоит v").append(installedVersion)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (entry.description.isNotBlank()) {
+                    Text(
+                        text = entry.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                }
+            }
+            when {
+                busy -> CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                !appOk -> TextButton(onClick = {}, enabled = false) {
+                    Text("Нужна v${entry.minAppVersion}")
+                }
+                installedVersion == entry.version -> TextButton(onClick = {}, enabled = false) {
+                    Text("Стоит")
+                }
+                update -> FilledTonalButton(
+                    onClick = onInstall,
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                ) { Text("Обновить") }
+                else -> FilledTonalButton(
+                    onClick = onInstall,
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                ) { Text("Взять") }
+            }
         }
     }
 }

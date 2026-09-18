@@ -71,6 +71,10 @@ fun main(args: Array<String>) = application {
         hd.kinoshka.app.data.source.JsPluginStore.init(
             java.io.File(System.getProperty("user.home"), ".kino-desktop").apply { mkdirs() }
         )
+        // Кэш витрины каталога плагинов — там же.
+        hd.kinoshka.app.data.source.PluginCatalog.init(
+            java.io.File(System.getProperty("user.home"), ".kino-desktop").apply { mkdirs() }
+        )
     }
     val viewModel = remember { buildViewModel(repository, userStateStore) }
     val scope = rememberCoroutineScope()
@@ -238,6 +242,73 @@ fun main(args: Array<String>) = application {
                             var disabledKeys by remember { mutableStateOf(userStateStore.getDisabledSourceKeys()) }
                             var customSources by remember { mutableStateOf(userStateStore.getCustomSources()) }
                             var exchangeMessage by remember { mutableStateOf<String?>(null) }
+                            // Каталог JS-плагинов (витрина index.json + кэш на сутки).
+                            var catalogEntries by remember {
+                                mutableStateOf(emptyList<hd.kinoshka.app.data.source.PluginCatalog.Entry>())
+                            }
+                            var catalogFresh by remember { mutableStateOf(true) }
+                            var catalogLoading by remember { mutableStateOf(false) }
+                            var catalogBusyId by remember { mutableStateOf<String?>(null) }
+                            var catalogMessage by remember { mutableStateOf<String?>(null) }
+                            var catalogUrl by remember { mutableStateOf(userStateStore.getCustomCatalogUrl()) }
+                            androidx.compose.runtime.LaunchedEffect(Unit) {
+                                hd.kinoshka.app.data.source.PluginCatalog.loadCachedIndex()?.let {
+                                    catalogEntries = it.index.entries
+                                    catalogFresh = it.fresh
+                                }
+                            }
+                            fun refreshCatalog() {
+                                if (catalogLoading) return
+                                catalogLoading = true
+                                scope.launch {
+                                    val raw = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        hd.kinoshka.app.data.source.PluginCatalog.fetchIndex(
+                                            userStateStore.catalogIndexUrl()
+                                        )
+                                    }
+                                    if (raw != null) {
+                                        withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            hd.kinoshka.app.data.source.PluginCatalog.saveCachedIndex(raw)
+                                        }
+                                        hd.kinoshka.app.data.source.PluginCatalog.parseIndex(raw)?.let {
+                                            catalogEntries = it.entries
+                                            catalogFresh = true
+                                            catalogMessage = null
+                                        } ?: run { catalogMessage = "Витрина повреждена" }
+                                    } else {
+                                        hd.kinoshka.app.data.source.PluginCatalog.loadCachedIndex()?.let {
+                                            catalogEntries = it.index.entries
+                                            catalogFresh = it.fresh
+                                            catalogMessage = "Офлайн: показан сохранённый список"
+                                        } ?: run { catalogMessage = "Витрина недоступна" }
+                                    }
+                                    catalogLoading = false
+                                }
+                            }
+                            fun installCatalogEntry(entry: hd.kinoshka.app.data.source.PluginCatalog.Entry) {
+                                if (catalogBusyId != null) return
+                                catalogBusyId = entry.id
+                                scope.launch {
+                                    val result = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        hd.kinoshka.app.data.source.PluginCatalog.installFromEntry(
+                                            entry = entry,
+                                            customs = userStateStore.getCustomSources(),
+                                            save = userStateStore::savePluginSource
+                                        )
+                                    }
+                                    catalogMessage = when (result) {
+                                        is hd.kinoshka.app.data.source.PluginCatalog.InstallResult.Installed ->
+                                            if (result.updated) "Обновлено до v${result.version}"
+                                            else "Установлено v${result.version}"
+                                        is hd.kinoshka.app.data.source.PluginCatalog.InstallResult.Rejected ->
+                                            "Не ставится: ${result.message}"
+                                    }
+                                    if (result is hd.kinoshka.app.data.source.PluginCatalog.InstallResult.Installed) {
+                                        customSources = userStateStore.getCustomSources()
+                                    }
+                                    catalogBusyId = null
+                                }
+                            }
                             // Обмен своими источниками файлом JSON (как библиотека
                             // в профиле): экспорт своих, импорт слиянием с отчётом.
                             fun exportCustomSources() {
@@ -319,6 +390,24 @@ fun main(args: Array<String>) = application {
                                 onExportCustomSourcesFile = ::exportCustomSources,
                                 onImportCustomSourcesFile = ::importCustomSources,
                                 fileExchangeMessage = exchangeMessage,
+                                catalogEntries = catalogEntries,
+                                catalogFresh = catalogFresh,
+                                catalogLoading = catalogLoading,
+                                catalogBusyId = catalogBusyId,
+                                catalogMessage = catalogMessage,
+                                appVersion = DESKTOP_VERSION,
+                                catalogUrl = catalogUrl,
+                                onRefreshCatalog = ::refreshCatalog,
+                                onInstallCatalogEntry = ::installCatalogEntry,
+                                onCatalogUrlChanged = { url ->
+                                    userStateStore.setCustomCatalogUrl(url)
+                                    catalogUrl = userStateStore.getCustomCatalogUrl()
+                                    catalogMessage = if (url.isBlank()) {
+                                        "Витрина: официальная"
+                                    } else {
+                                        "Витрина: своя — нажмите «Обновить»"
+                                    }
+                                },
                                 // Реальные иконки: аниме — те же логотипы, что в мобильном
                                 // пикере, остальные — PNG-логотипы из ресурсов.
                                 sourceIcon = { info ->

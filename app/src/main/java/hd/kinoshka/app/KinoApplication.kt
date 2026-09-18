@@ -70,6 +70,8 @@ class KinoApplication : Application(), ImageLoaderFactory {
         hd.kinoshka.app.data.source.HentaiStreamResolver.init(cacheDir)
         // Код JS-плагинов (вариант C) живёт в файлах (персистентно, не в кэше).
         hd.kinoshka.app.data.source.JsPluginStore.init(filesDir)
+        // Кэш витрины каталога плагинов — там же.
+        hd.kinoshka.app.data.source.PluginCatalog.init(filesDir)
         // Каталог hanime (теги/трейлер/кадры 18+) прогревается фоном со старта.
         hd.kinoshka.app.data.source.HentaiStreamResolver.warmCatalogAsync()
 

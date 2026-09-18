@@ -878,6 +878,21 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     fun exportCustomSourcesJson(): String =
         hd.kinoshka.app.data.source.customSourcesToJson(getCustomSources())
 
+    // ---- Каталог JS-плагинов: свой URL витрины (пусто = официальная). ----
+
+    private val customCatalogUrlKey = "custom_catalog_url"
+
+    fun getCustomCatalogUrl(): String =
+        prefs.getString(customCatalogUrlKey, null).orEmpty()
+
+    fun setCustomCatalogUrl(url: String) = synchronized(BLOB_LOCK) {
+        prefs.putString(customCatalogUrlKey, url.trim().takeIf { it.isNotEmpty() }).apply()
+    }
+
+    fun catalogIndexUrl(): String =
+        getCustomCatalogUrl().takeIf { it.isNotEmpty() }
+            ?: hd.kinoshka.app.data.source.PluginCatalog.OFFICIAL_INDEX_URL
+
     /**
      * Импорт файла обмена: терпимый парс + слияние без потерь (обновление своих,
      * переименование чужих при коллизии id, пропуск дубликатов). Сохранение идёт
