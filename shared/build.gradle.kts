@@ -42,6 +42,9 @@ kotlin {
                 api("com.squareup.retrofit2:converter-gson:3.0.0")
                 api("com.squareup.okhttp3:logging-interceptor:5.4.0")
                 api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+                // Rhino: чистый Java JS-движок для песочницы JS-плагинов
+                // (вариант C): работает и на Android, и на desktop без нативки.
+                api("org.mozilla:rhino:1.7.15")
             }
         }
         val androidMain = getByName("androidMain") {
