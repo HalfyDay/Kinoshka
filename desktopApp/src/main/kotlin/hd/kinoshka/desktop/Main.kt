@@ -67,6 +67,10 @@ fun main(args: Array<String>) = application {
     // Свои источники (вариант A): реестр имён, прокси-хосты и health-провайдер.
     androidx.compose.runtime.LaunchedEffect(Unit) {
         hd.kinoshka.app.data.source.syncCustomSourceRuntime { userStateStore.getCustomSources() }
+        // Код JS-плагинов (вариант C) — в каталоге данных десктопа.
+        hd.kinoshka.app.data.source.JsPluginStore.init(
+            java.io.File(System.getProperty("user.home"), ".kino-desktop").apply { mkdirs() }
+        )
     }
     val viewModel = remember { buildViewModel(repository, userStateStore) }
     val scope = rememberCoroutineScope()
@@ -304,6 +308,12 @@ fun main(args: Array<String>) = application {
                                 },
                                 onMoveCustomSource = { id, delta ->
                                     userStateStore.moveCustomSource(id, delta)
+                                    customSources = userStateStore.getCustomSources()
+                                },
+                                onSavePluginSource = { src, code ->
+                                    if (!userStateStore.savePluginSource(src, code)) {
+                                        exchangeMessage = "Не удалось записать код плагина"
+                                    }
                                     customSources = userStateStore.getCustomSources()
                                 },
                                 onExportCustomSourcesFile = ::exportCustomSources,

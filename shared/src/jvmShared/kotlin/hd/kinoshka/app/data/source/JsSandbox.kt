@@ -130,6 +130,10 @@ object JsSandbox {
 
             override fun makeContext(): Context =
                 super.makeContext().apply {
+                    // ART не грузит байткод, который Rhino генерит в compiled-режиме
+                    // («can't load this type of class file»): только интерпретатор.
+                    // Бонус: observeInstructionCount срабатывает надёжно именно в нём.
+                    optimizationLevel = -1
                     setClassShutter { _ -> false }
                     instructionObserverThreshold = 10_000
                 }

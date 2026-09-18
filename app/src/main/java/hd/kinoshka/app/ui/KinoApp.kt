@@ -1761,6 +1761,19 @@ fun KinoApp() {
                                             }
                                         }
                                     },
+                                    onSavePluginSource = { src, code ->
+                                        scope.launch {
+                                            val ok = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.savePluginSource(src, code)
+                                            }
+                                            if (!ok) {
+                                                Toast.makeText(sourcesContext, "Не удалось записать код плагина", Toast.LENGTH_LONG).show()
+                                            }
+                                            customSources = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                sourcesStore.getCustomSources()
+                                            }
+                                        }
+                                    },
                                     onExportCustomSourcesFile = {
                                         exportCustomsFile.launch("kinoshka-custom-sources.json")
                                     },

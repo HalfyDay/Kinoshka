@@ -28,6 +28,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -58,6 +59,9 @@ import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.source.CustomSource
 import hd.kinoshka.app.data.source.CustomSourceCheck
 import hd.kinoshka.app.data.source.CustomSourceKind
+import hd.kinoshka.app.data.source.JsPluginResolver
+import hd.kinoshka.app.data.source.JsPluginStore
+import hd.kinoshka.app.data.source.JsSandbox
 import hd.kinoshka.app.data.source.PlaybackSourceInfo
 import hd.kinoshka.app.data.source.PlaybackSources
 import hd.kinoshka.app.data.source.SourceCategory
@@ -91,6 +95,9 @@ fun SourcesSettingsScreen(
     customSources: List<CustomSource> = emptyList(),
     onSaveCustomSource: ((CustomSource) -> Unit)? = null,
     onDeleteCustomSource: ((String) -> Unit)? = null,
+    // JS-плагины (вариант C): сохранение с кодом; null — вид доступен только
+    // для просмотра/проверки (сохранить нельзя, диалог честно скажет).
+    onSavePluginSource: ((CustomSource, String) -> Unit)? = null,
     // Порядок своих (шевроны в строках): null прячет шевроны (старые коллеры).
     onMoveCustomSource: ((String, Int) -> Unit)? = null,
     // Обмен файлом JSON между устройствами (платформа открывает диалог
@@ -108,6 +115,7 @@ fun SourcesSettingsScreen(
     var editingCustom by remember { mutableStateOf<CustomSource?>(null) }
     var addingCustom by remember { mutableStateOf(false) }
     var deletingCustom by remember { mutableStateOf<CustomSource?>(null) }
+    var updatingOne by remember { mutableStateOf<String?>(null) }
 
     // Удаление извне (или протухший health) — чистим статусы удалённых своих.
     LaunchedEffect(customSources) {
@@ -124,6 +132,36 @@ fun SourcesSettingsScreen(
             val health = withContext(Dispatchers.IO) { SourceHealthChecker.check(id) }
             sourcesHealth = sourcesHealth + (health.id to health)
             checkingOne = null
+        }
+    }
+
+    fun updatePlugin(custom: CustomSource) {
+        if (checkingOne != null || checkingAll || updatingOne != null) return
+        if (custom.kind != CustomSourceKind.PLUGIN || onSavePluginSource == null) return
+        updatingOne = custom.id
+        scope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                JsPluginStore.installDraft(custom.endpoint)
+            }
+            if (outcome == null) {
+                sourcesHealth = sourcesHealth + (custom.id to SourceHealth(
+                    id = custom.id, ok = false, latencyMs = 0,
+                    message = "Обновление не удалось: код не загрузился"
+                ))
+            } else {
+                val old = custom.pluginVersion
+                val new = outcome.manifest.version
+                onSavePluginSource(
+                    custom.copy(pluginVersion = new, name = custom.name.ifBlank { outcome.manifest.name }),
+                    outcome.code
+                )
+                val msg = if (old.isBlank() || old == new) "Код обновлён: v$new"
+                else "Обновлено: v$old → v$new"
+                sourcesHealth = sourcesHealth + (custom.id to SourceHealth(
+                    id = custom.id, ok = true, latencyMs = 0, message = msg
+                ))
+            }
+            updatingOne = null
         }
     }
 
@@ -244,7 +282,7 @@ fun SourcesSettingsScreen(
                 KinoSettingsCard {
                     KinoSettingsRow(
                         title = "Добавить источник",
-                        summary = "Embed-ссылки и Stremio-аддоны: ${customSources.size}",
+                        summary = "Embed, Stremio и JS-плагины: ${customSources.size}",
                         trailing = {
                             FilledTonalButton(
                                 onClick = { addingCustom = true },
@@ -313,6 +351,9 @@ fun SourcesSettingsScreen(
                     sourceIcon = sourceIcon,
                     onEdit = { editingCustom = custom },
                     onDelete = { deletingCustom = custom },
+                    onUpdate = if (custom.kind == CustomSourceKind.PLUGIN && onSavePluginSource != null)
+                        ({ updatePlugin(custom) }) else null,
+                    updating = updatingOne == info.id,
                     onMoveUp = onMoveCustomSource
                         ?.takeIf { index > 0 }
                         ?.let { move -> { move(custom.id, -1) } },
@@ -368,6 +409,11 @@ fun SourcesSettingsScreen(
             onDismiss = { addingCustom = false; editingCustom = null },
             onSave = { src ->
                 onSaveCustomSource?.invoke(src)
+                addingCustom = false
+                editingCustom = null
+            },
+            onSavePlugin = { src, code ->
+                onSavePluginSource?.invoke(src, code)
                 addingCustom = false
                 editingCustom = null
             }
@@ -441,9 +487,11 @@ private fun SourcePageRow(
     onEnabledChanged: (Boolean) -> Unit,
     onCheck: () -> Unit,
     sourceIcon: @Composable (PlaybackSourceInfo) -> Unit,
-    // Только свои источники: правка и удаление.
+    // Только свои источники: правка и удаление (+ обновление кода у плагинов).
     onEdit: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
+    onUpdate: (() -> Unit)? = null,
+    updating: Boolean = false,
     // Порядок своих: null прячет шеврон (края списка и встроенные).
     onMoveUp: (() -> Unit)? = null,
     onMoveDown: (() -> Unit)? = null
@@ -543,6 +591,23 @@ private fun SourcePageRow(
                     }
                 }
             }
+            if (onUpdate != null) {
+                if (updating) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    androidx.compose.material3.IconButton(
+                        onClick = onUpdate,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = "Обновить код",
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
             if (onEdit != null) {
                 androidx.compose.material3.IconButton(
                     onClick = onEdit,
@@ -584,11 +649,14 @@ private fun CustomSourceEditDialog(
     existing: CustomSource?,
     customs: List<CustomSource>,
     onDismiss: () -> Unit,
-    onSave: (CustomSource) -> Unit
+    onSave: (CustomSource) -> Unit,
+    onSavePlugin: ((CustomSource, String) -> Unit)? = null
 ) {
     var name by remember { mutableStateOf(existing?.name.orEmpty()) }
     var kind by remember { mutableStateOf(existing?.kind ?: CustomSourceKind.EMBED) }
     val isStremio = kind == CustomSourceKind.STREMIO
+    val isPlugin = kind == CustomSourceKind.PLUGIN
+    val isEmbed = kind == CustomSourceKind.EMBED
     var template by remember { mutableStateOf(existing?.urlTemplate.orEmpty()) }
     var endpoint by remember {
         mutableStateOf(
@@ -609,18 +677,23 @@ private fun CustomSourceEditDialog(
     var warnings by remember { mutableStateOf(emptyList<String>()) }
     var probeResult by remember { mutableStateOf<SourceHealth?>(null) }
     var probing by remember { mutableStateOf(false) }
+    // Черновик плагина: скачанный код и manifest (между «Проверить» и «Сохранить»).
+    var pluginCode by remember { mutableStateOf<String?>(null) }
+    var pluginManifest by remember { mutableStateOf<JsSandbox.JsManifest?>(null) }
+    var pluginVersion by remember { mutableStateOf(existing?.pluginVersion.orEmpty()) }
     val scope = rememberCoroutineScope()
 
     fun draft(id: String) = CustomSource(
         id = id,
         name = name.trim(),
-        urlTemplate = if (isStremio) "" else template.trim(),
-        referer = if (isStremio) "" else referer.trim(),
+        urlTemplate = if (isEmbed) template.trim() else "",
+        referer = if (isEmbed) referer.trim() else "",
         useProxy = useProxy,
-        webOnly = webOnly && !isStremio,
+        webOnly = webOnly && isEmbed,
         categories = categories,
         kind = kind,
-        endpoint = if (isStremio) endpoint.trim() else ""
+        endpoint = if (isEmbed) "" else endpoint.trim(),
+        pluginVersion = if (isPlugin) pluginVersion else ""
     )
 
     AlertDialog(
@@ -643,7 +716,9 @@ private fun CustomSourceEditDialog(
                 )
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(top = 4.dp)
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .horizontalScroll(rememberScrollState())
                 ) {
                     CustomSourceKind.entries.forEach { entry ->
                         FilterChip(
@@ -669,6 +744,31 @@ private fun CustomSourceEditDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp)
                     )
+                } else if (isPlugin) {
+                    OutlinedTextField(
+                        value = endpoint,
+                        onValueChange = { endpoint = it; error = null; pluginCode = null },
+                        label = { Text("Адрес .js-файла") },
+                        placeholder = { Text("https://host/plugin.js") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "JS-плагин исполняется в песочнице. «Проверить» качает код и показывает manifest.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                    val shownVersion = pluginManifest?.version ?: pluginVersion.takeIf { it.isNotBlank() }
+                    if (shownVersion != null) {
+                        Text(
+                            text = "Версия кода: $shownVersion" +
+                                (pluginManifest?.author?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
                 } else {
                     OutlinedTextField(
                         value = template,
@@ -686,7 +786,7 @@ private fun CustomSourceEditDialog(
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                if (!isStremio) {
+                if (isEmbed) {
                     OutlinedTextField(
                         value = referer,
                         onValueChange = { referer = it },
@@ -703,8 +803,8 @@ private fun CustomSourceEditDialog(
                         )
                     }
                     }
-                    // Прокси доступен обоим видам: у Stremio через него идут
-                    // manifest/stream-запросы (и mpv-потоки с хоста аддона).
+                    // Прокси доступен всем видам: через него идут запросы
+                    // резолверов (manifest/stream/embed/код) и mpv-потоки с хоста.
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = useProxy, onCheckedChange = { useProxy = it })
                         Text(
@@ -782,11 +882,27 @@ private fun CustomSourceEditDialog(
                 )) {
                     is CustomSourceCheck.Failed -> error = check.message
                     is CustomSourceCheck.Ok -> {
-                        warnings = check.warnings
-                        if (check.warnings.isEmpty()) {
+                        // Двухшаговый гейт: первое «Сохранить» показывает варнинги,
+                        // второе (тот же набор) — сохраняет. Смена полей сбрасывает гейт.
+                        if (check.warnings.isNotEmpty() && warnings != check.warnings) {
+                            warnings = check.warnings
+                        } else {
                             val id = existing?.id
                                 ?: buildCustomId(name, customs.map { it.id }.toSet())
-                            onSave(draft(id))
+                            if (isPlugin) {
+                                if (onSavePlugin == null) {
+                                    error = "Сохранение плагинов не поддерживается на этой платформе"
+                                    return@TextButton
+                                }
+                                val code = pluginCode
+                                if (code.isNullOrBlank()) {
+                                    error = "Сначала нажмите «Проверить» — код ещё не загружен"
+                                    return@TextButton
+                                }
+                                onSavePlugin(draft(id).copy(pluginVersion = pluginVersion), code)
+                            } else {
+                                onSave(draft(id))
+                            }
                         }
                     }
                 }
@@ -799,10 +915,41 @@ private fun CustomSourceEditDialog(
                         val id = existing?.id ?: "CUSTOM_DRAFT"
                         scope.launch {
                             probing = true
-                            probeResult = withContext(Dispatchers.IO) {
-                                SourceHealthChecker.checkCustomSource(draft(id))
+                            if (isPlugin) {
+                                val start = System.currentTimeMillis()
+                                val outcome = withContext(Dispatchers.IO) {
+                                    val downloaded = JsPluginStore.installDraft(endpoint.trim())
+                                        ?: return@withContext null
+                                    val (ok, message) = JsPluginResolver.probeWithCode(
+                                        draft(id), downloaded.code
+                                    )
+                                    Triple(downloaded, ok, message)
+                                }
+                                probing = false
+                                if (outcome == null) {
+                                    probeResult = SourceHealth(
+                                        id = id, ok = false,
+                                        latencyMs = System.currentTimeMillis() - start,
+                                        message = "Код не загрузился или manifest бит"
+                                    )
+                                } else {
+                                    val (downloaded, ok, message) = outcome
+                                    pluginCode = downloaded.code
+                                    pluginManifest = downloaded.manifest
+                                    pluginVersion = downloaded.manifest.version
+                                    if (name.isBlank()) name = downloaded.manifest.name
+                                    probeResult = SourceHealth(
+                                        id = id, ok = ok,
+                                        latencyMs = System.currentTimeMillis() - start,
+                                        message = message
+                                    )
+                                }
+                            } else {
+                                probeResult = withContext(Dispatchers.IO) {
+                                    SourceHealthChecker.checkCustomSource(draft(id))
+                                }
+                                probing = false
                             }
-                            probing = false
                         }
                     },
                     enabled = !probing

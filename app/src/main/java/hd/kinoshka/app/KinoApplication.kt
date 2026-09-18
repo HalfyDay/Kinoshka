@@ -68,6 +68,8 @@ class KinoApplication : Application(), ImageLoaderFactory {
 
         // Кадры «Кадров» из видео и дисковой кэш каталога 18+ пишутся в кэш приложения.
         hd.kinoshka.app.data.source.HentaiStreamResolver.init(cacheDir)
+        // Код JS-плагинов (вариант C) живёт в файлах (персистентно, не в кэше).
+        hd.kinoshka.app.data.source.JsPluginStore.init(filesDir)
         // Каталог hanime (теги/трейлер/кадры 18+) прогревается фоном со старта.
         hd.kinoshka.app.data.source.HentaiStreamResolver.warmCatalogAsync()
 

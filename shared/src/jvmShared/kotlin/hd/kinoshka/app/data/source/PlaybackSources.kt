@@ -186,6 +186,7 @@ object PlaybackSources {
                 append("Свой источник (Stremio JSON): ${source.stremioHost() ?: source.endpoint}")
             } else if (source.kind == CustomSourceKind.PLUGIN) {
                 append("Свой источник (JS-плагин): ${source.pluginCodeHost() ?: source.endpoint}")
+                if (source.pluginVersion.isNotBlank()) append(" v${source.pluginVersion}")
             } else {
                 append("Свой источник: ${source.embedHost() ?: source.urlTemplate}")
             }
