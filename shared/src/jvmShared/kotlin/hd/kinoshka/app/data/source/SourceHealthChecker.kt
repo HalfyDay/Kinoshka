@@ -230,8 +230,9 @@ object SourceHealthChecker {
         )
     }
 
-    private fun probeCustomSource(source: CustomSource): Pair<Boolean, String> {
+    private suspend fun probeCustomSource(source: CustomSource): Pair<Boolean, String> {
         if (source.kind == CustomSourceKind.STREMIO) return probeStremioSource(source)
+        if (source.kind == CustomSourceKind.PLUGIN) return probePluginSource(source)
         val url = source.buildUrl(PROBE_KINOPOISK_ID, null)
             ?: return false to "Шаблон без {kp}: проба невозможна"
         val html = httpGet(url, source.effectiveReferer(url)) ?: return false to "Embed не загрузился"
@@ -242,6 +243,13 @@ object SourceHealthChecker {
             else -> true to "Embed отвечает (только веб-режим)"
         }
     }
+
+    /**
+     * Проба JS-плагина: manifest кода из стора + resolveMovie «Матрицы».
+     * Черновик из диалога идёт через [JsPluginResolver.probeWithCode] напрямую.
+     */
+    private suspend fun probePluginSource(source: CustomSource): Pair<Boolean, String> =
+        JsPluginResolver.probeSaved(source)
 
     /**
      * Проба Stremio-аддона: манифест → stream-ресурс для фильмов → пробный запрос

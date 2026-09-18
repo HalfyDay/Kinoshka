@@ -54,6 +54,9 @@ object CustomSourceResolver {
         if (custom.kind == CustomSourceKind.STREMIO) {
             return@withContext StremioAddonResolver.resolveMovieParse(custom, imdbId, isSeries)
         }
+        if (custom.kind == CustomSourceKind.PLUGIN) {
+            return@withContext JsPluginResolver.resolveOne(custom, kinopoiskId, imdbId)
+        }
         val url = custom.buildUrl(kinopoiskId, imdbId)
         if (url == null) {
             KLog.i(TAG, "${custom.id}: skipped (title has no required id for template)")

@@ -831,7 +831,7 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         refreshCustomRegistry(current)
     }
 
-    /** Удаление + чистка выключателя + снятие прокси-хоста. */
+    /** Удаление + чистка выключателя + снятие прокси-хоста (+ код JS-плагина). */
     fun deleteCustomSource(id: String) = synchronized(BLOB_LOCK) {
         val key = id.trim().uppercase()
         if (key.isEmpty()) return
@@ -842,6 +842,9 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
             hd.kinoshka.app.data.source.customSourcesToJson(current.filter { it.id != key })
         ).apply()
         unregisterCustomProxyHost(removed)
+        if (removed.kind == hd.kinoshka.app.data.source.CustomSourceKind.PLUGIN) {
+            hd.kinoshka.app.data.source.JsPluginStore.deleteCode(key)
+        }
         refreshCustomRegistry(current.filter { it.id != key })
         for (storeKey in listOf(disabledSourcesKey, hiddenSourcesKey)) {
             val ids = readIdSet(storeKey)
@@ -855,6 +858,21 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
     }
 
     // ---- Обмен своими источниками (файл JSON между устройствами) ----
+
+    /**
+     * Сохранение JS-плагина: строка реестра + код в файлы. Версия берётся из
+     * manifest() кода (диалог показывает было/стало через возврат черновика).
+     * Возвращает false, когда код не записался (без файлов резолв невозможен).
+     */
+    fun savePluginSource(
+        source: hd.kinoshka.app.data.source.CustomSource,
+        code: String
+    ): Boolean = synchronized(BLOB_LOCK) {
+        if (source.kind != hd.kinoshka.app.data.source.CustomSourceKind.PLUGIN) return false
+        if (!hd.kinoshka.app.data.source.JsPluginStore.saveCode(source.id, code)) return false
+        saveCustomSource(source)
+        true
+    }
 
     /** JSON всех своих для экспорта в файл. */
     fun exportCustomSourcesJson(): String =

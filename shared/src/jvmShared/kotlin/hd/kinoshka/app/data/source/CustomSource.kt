@@ -16,11 +16,17 @@ import kotlinx.serialization.json.Json
  * `{base}/stream/series/{imdb}:{s}:{e}.json`. Нужен IMDb ID тайтла: у кино он из
  * каталога, у аниме — прямой id пикера либо мост Kodik (shikimori → imdb_id),
  * у 18+ — только прямой id. Нет imdb — источник молча пропускается.
+ *
+ * Вариант C (PLUGIN): JS-плагин одним файлом (контракт [JsSandbox]): `manifest()`
+ * с метаданными и `resolveMovie(ctx)` с `{kinopoiskId, imdbId}` на входе и
+ * `{voices[]/tracks[]}` на выходе. Код лежит в файлах приложения ([JsPluginStore]),
+ * в префсах — только строка реестра (+ версия для кнопки «Обновить»).
  */
 @Serializable
 enum class CustomSourceKind(val title: String) {
     EMBED("Embed-ссылка"),
-    STREMIO("Stremio JSON")
+    STREMIO("Stremio JSON"),
+    PLUGIN("JS-плагин")
 }
 
 @Serializable
@@ -43,8 +49,13 @@ data class CustomSource(
     val categories: Set<SourceCategory> = setOf(SourceCategory.FILMS),
     /** Вариант источника (дефолт EMBED — старые записи без поля). */
     val kind: CustomSourceKind = CustomSourceKind.EMBED,
-    /** STREMIO: transport URL аддона (https://host[:port][/path], хвост /manifest.json необязателен). */
-    val endpoint: String = ""
+    /**
+     * STREMIO: transport URL аддона (https://host[:port][/path], хвост /manifest.json
+     * необязателен). PLUGIN: URL .js-файла плагина (код докачивается в файлы).
+     */
+    val endpoint: String = "",
+    /** PLUGIN: версия из manifest() кода (для кнопки «Обновить»). */
+    val pluginVersion: String = ""
 ) {
     companion object {
         const val ID_PREFIX = "CUSTOM_"
@@ -93,6 +104,9 @@ fun validateCustomSource(
     }
     if (kind == CustomSourceKind.STREMIO) {
         return validateStremioEndpoint(endpoint, others)
+    }
+    if (kind == CustomSourceKind.PLUGIN) {
+        return validatePluginEndpoint(endpoint, others)
     }
     val template = urlTemplate.trim()
     if (template.isEmpty()) return CustomSourceCheck.Failed("Укажите шаблон ссылки")
@@ -171,6 +185,33 @@ fun validateStremioEndpoint(endpoint: String, existing: List<CustomSource>): Cus
     )
 }
 
+/**
+ * Проверка URL JS-плагина перед сохранением (без сети — код качается кнопкой
+ * «Проверить»/установкой). Плейсхолдеры запрещены: id тайтла плагин получает
+ * через ctx контракта, а не подстановкой.
+ */
+fun validatePluginEndpoint(endpoint: String, existing: List<CustomSource>): CustomSourceCheck {
+    val raw = endpoint.trim()
+    if (raw.isEmpty()) return CustomSourceCheck.Failed("Укажите адрес JS-файла плагина")
+    if (CustomSource.KP_PLACEHOLDER in raw || CustomSource.IMDB_PLACEHOLDER in raw) {
+        return CustomSourceCheck.Failed("Адрес плагина — без плейсхолдеров {kp}/{imdb}")
+    }
+    val scheme = raw.substringBefore("://", "")
+    if (!scheme.equals("http", ignoreCase = true) && !scheme.equals("https", ignoreCase = true)) {
+        return CustomSourceCheck.Failed("Только http(s)-ссылки")
+    }
+    val host = urlHost(raw)
+    if (host == null || '.' !in host) return CustomSourceCheck.Failed("Некорректный хост в адресе")
+    val normalized = normalizeTemplate(raw)
+    if (existing.any { it.kind == CustomSourceKind.PLUGIN && normalizeTemplate(it.endpoint) == normalized }) {
+        return CustomSourceCheck.Failed("Такой плагин уже добавлен")
+    }
+    // Двухшаговый гейт диалога, как у Stremio.
+    return CustomSourceCheck.Ok(
+        listOf("JS-плагин исполняется в песочнице: без доступа к файлам и аккаунтам")
+    )
+}
+
 /** Подстановка плейсхолдеров; null, когда нужного id нет или шаблон кривой. */
 fun substitutePlaceholders(template: String, kinopoiskId: Int?, imdbId: String?): String? {
     var url = template.trim()
@@ -202,11 +243,15 @@ fun CustomSource.stremioBase(): String? =
 fun CustomSource.stremioHost(): String? = urlHost(stremioBase() ?: return null)
 
 /**
- * Хост для прокси-регистрации: embed-хост у EMBED, хост аддона у STREMIO.
- * Покрывает JSON-запросы резолверов и mpv-потоки с того же хоста (CDN-хосты
- * потоков — нет, как и у встроенных: там свой список суффиксов).
+ * Хост для прокси-регистрации: embed-хост у EMBED, хост аддона у STREMIO,
+ * хост кода у PLUGIN. Покрывает запросы резолверов и mpv-потоки с того же
+ * хоста (CDN-хосты потоков — нет, как и у встроенных: там свой список суффиксов).
  */
-fun CustomSource.proxyHost(): String? = embedHost() ?: stremioHost()
+fun CustomSource.proxyHost(): String? = embedHost() ?: stremioHost() ?: pluginCodeHost()
+
+/** Хост .js-файла плагина (для подписей и прокси-регистрации). */
+fun CustomSource.pluginCodeHost(): String? =
+    if (kind != CustomSourceKind.PLUGIN) null else urlHost(endpoint.trim())
 
 /** Referer для запросов/плеера: явный либо origin embed-ссылки. */
 fun CustomSource.effectiveReferer(embedUrl: String): String {
@@ -320,7 +365,8 @@ fun parseCustomSources(raw: String?): List<CustomSource> {
                 ?.takeIf { it.id.isNotBlank() && it.name.isNotBlank() }
                 ?.takeIf {
                     it.urlTemplate.isNotBlank() ||
-                        (it.kind == CustomSourceKind.STREMIO && it.endpoint.isNotBlank())
+                        ((it.kind == CustomSourceKind.STREMIO || it.kind == CustomSourceKind.PLUGIN) &&
+                            it.endpoint.isNotBlank())
                 }
                 ?.let { ok -> ok.copy(id = ok.id.trim().uppercase()) }
         }
@@ -353,10 +399,11 @@ data class CustomSourceMergeResult(
     val report: CustomSourceImportReport
 )
 
-/** Идентичность источника для дедупа: нормализованный шаблон либо stremio-base. */
+/** Идентичность источника для дедупа: нормализованный шаблон, stremio-base или URL кода. */
 private fun CustomSource.shareIdentity(): String? = when (kind) {
     CustomSourceKind.STREMIO -> stremioBase()?.let { "stremio:$it" }
     CustomSourceKind.EMBED -> "embed:${normalizeTemplate(urlTemplate)}"
+    CustomSourceKind.PLUGIN -> "plugin:${normalizeTemplate(endpoint.trim())}"
 }
 
 private fun uniqueImportName(base: String, taken: MutableSet<String>): String {
@@ -424,6 +471,13 @@ fun mergeCustomSources(
                 }
                 "embed:${normalizeTemplate(template)}"
             }
+            CustomSourceKind.PLUGIN -> {
+                if (endpoint.isEmpty() || urlHost(endpoint) == null) {
+                    skipped += "«$name»: кривой адрес плагина"
+                    continue
+                }
+                "plugin:${normalizeTemplate(endpoint)}"
+            }
         }
         if (!CustomSource.isCustomId(id)) {
             id = buildCustomId(name, takenIds)
@@ -431,9 +485,9 @@ fun mergeCustomSources(
         val clean = raw.copy(
             id = id,
             name = name,
-            urlTemplate = if (raw.kind == CustomSourceKind.STREMIO) "" else template,
+            urlTemplate = if (raw.kind == CustomSourceKind.EMBED) template else "",
             referer = raw.referer.trim(),
-            endpoint = if (raw.kind == CustomSourceKind.STREMIO) endpoint else "",
+            endpoint = if (raw.kind == CustomSourceKind.EMBED) "" else endpoint,
             useProxy = raw.useProxy,
             webOnly = raw.webOnly && raw.kind == CustomSourceKind.EMBED,
             categories = raw.categories.ifEmpty { setOf(SourceCategory.FILMS) }

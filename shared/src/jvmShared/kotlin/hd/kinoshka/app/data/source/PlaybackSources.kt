@@ -184,6 +184,8 @@ object PlaybackSources {
         description = buildString {
             if (source.kind == CustomSourceKind.STREMIO) {
                 append("Свой источник (Stremio JSON): ${source.stremioHost() ?: source.endpoint}")
+            } else if (source.kind == CustomSourceKind.PLUGIN) {
+                append("Свой источник (JS-плагин): ${source.pluginCodeHost() ?: source.endpoint}")
             } else {
                 append("Свой источник: ${source.embedHost() ?: source.urlTemplate}")
             }

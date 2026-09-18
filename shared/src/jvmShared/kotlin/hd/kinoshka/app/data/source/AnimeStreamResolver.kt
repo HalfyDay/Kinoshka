@@ -1202,6 +1202,9 @@ object AnimeStreamResolver {
             if (custom.kind == CustomSourceKind.STREMIO) {
                 return@runCatching fetchStremioAnimeTranslations(custom, shikimoriId, animeTitle, imdbId, stremioFetch)
             }
+            if (custom.kind == CustomSourceKind.PLUGIN) {
+                return@runCatching fetchPluginAnimeTranslations(custom, shikimoriId, animeTitle, kinopoiskId, imdbId)
+            }
             val kp = animeKpId(shikimoriId, animeTitle, kinopoiskId) ?: return@runCatching emptyList<FlatTranslation>()
             val parse = cachedCustomParse(custom.id, kp) ?: resolve(custom, kp)?.also { fetched ->
                 customAnimeParseCache["${custom.id}|$kp"] = CacheEntry(fetched, System.currentTimeMillis())
@@ -1213,6 +1216,35 @@ object AnimeStreamResolver {
         }
     }
 
+    /**
+     * Строки JS-плагина для аниме-пикера: ctx несёт и kp (мост Kodik), и imdb —
+     * хватает любого (оба null = пропуск). [code] инжектится ради тестов.
+     */
+    suspend fun fetchPluginAnimeTranslations(
+        custom: CustomSource,
+        shikimoriId: Int,
+        animeTitle: String,
+        kinopoiskId: Int = 0,
+        imdbId: String? = null,
+        code: String? = null
+    ): List<FlatTranslation> = withContext(Dispatchers.IO) {
+        runCatching {
+            val kp = animeKpId(shikimoriId, animeTitle, kinopoiskId)
+            val imdb = animeImdbId(shikimoriId, animeTitle, imdbId)
+            if (kp == null && imdb == null) return@runCatching emptyList<FlatTranslation>()
+            val key = "${custom.id}|plugin|kp${kp ?: 0}|${imdb ?: "-"}"
+            val parse = cachedCustomParseKey(key) ?: run {
+                val injected = code?.let { JsPluginResolver.resolveOne(custom, kp, imdb, it) }
+                (injected ?: JsPluginResolver.resolveOne(custom, kp, imdb))?.also { fetched ->
+                    customAnimeParseCache[key] = CacheEntry(fetched, System.currentTimeMillis())
+                }
+            } ?: return@runCatching emptyList<FlatTranslation>()
+            customParseToTranslations(custom, parse)
+        }.getOrElse { e ->
+            KLog.e(TAG, "[Custom] ${custom.id} plugin fetch failed: ${e.message}")
+            emptyList()
+        }
+    }
     /**
      * Строки Stremio-аддона для аниме-пикера: IMDb через прямой id или мост Kodik,
      * сериальная форма первой (аниме — сериалы), фильмовой фолбэк для полнометражек.
@@ -1295,6 +1327,21 @@ object AnimeStreamResolver {
                     customAnimeParseCache[key] = CacheEntry(fetched, System.currentTimeMillis())
                 } ?: run {
                     KLog.w(TAG, "[Custom] resolve: ${custom.id} returned nothing for $imdb")
+                    return@withContext null
+                }
+        } else if (custom.kind == CustomSourceKind.PLUGIN) {
+            val kp = animeKpId(shikimoriId, animeTitle, kinopoiskId)
+            val imdb = animeImdbId(shikimoriId, animeTitle, imdbId)
+            if (kp == null && imdb == null) {
+                KLog.w(TAG, "[Custom] resolve: no ids for shikimori=$shikimoriId")
+                return@withContext null
+            }
+            val key = "${custom.id}|plugin|kp${kp ?: 0}|${imdb ?: "-"}"
+            cachedCustomParseKey(key)
+                ?: JsPluginResolver.resolveOne(custom, kp, imdb)?.also { fetched ->
+                    customAnimeParseCache[key] = CacheEntry(fetched, System.currentTimeMillis())
+                } ?: run {
+                    KLog.w(TAG, "[Custom] resolve: ${custom.id} returned nothing")
                     return@withContext null
                 }
         } else {

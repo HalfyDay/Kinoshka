@@ -394,7 +394,8 @@ object HentaiStreamResolver {
      * Стрим ОДНОГО своего источника для 18+-пикера. [resolve] инжектится ради тестов
      * (дефолт — живой CustomSourceResolver). null = источник пропускается.
      * STREMIO идёт по IMDb ID тайтла (фильмовой формой первой — хентай обычно
-     * одиночные видео; сериальная как фолбэк). EMBED — по настоящему kp id.
+     * одиночные видео; сериальная как фолбэк). PLUGIN — по kp и/или imdb в ctx.
+     * EMBED — по настоящему kp id.
      */
     suspend fun fetchCustomHentai(
         custom: CustomSource,
@@ -402,7 +403,8 @@ object HentaiStreamResolver {
         imdbId: String? = null,
         resolve: suspend (CustomSource, Int) -> DdbbStreamResolver.SourceParse? =
             { c, kp -> CustomSourceResolver.resolveOne(c, kp, imdbId) },
-        stremioFetch: (suspend (String) -> String?)? = null
+        stremioFetch: (suspend (String) -> String?)? = null,
+        pluginCode: String? = null
     ): HentaiStream? = withContext(Dispatchers.IO) {
         runCatching {
             if (custom.kind == CustomSourceKind.STREMIO) {
@@ -415,6 +417,17 @@ object HentaiStreamResolver {
                 } else {
                     StremioAddonResolver.resolveBestParse(custom, imdb, seriesFirst = false)
                 } ?: return@runCatching null
+                return@runCatching customParseToHentai(custom, parse)
+            }
+            if (custom.kind == CustomSourceKind.PLUGIN) {
+                val kp = AnimeStreamResolver.realKinopoiskId(kinopoiskId)
+                val imdb = StremioAddonResolver.cleanImdbId(imdbId)
+                if (kp == null && imdb == null) {
+                    KLog.i(TAG, "[Custom] ${custom.id}: title has no ids — skipped")
+                    return@runCatching null
+                }
+                val parse = JsPluginResolver.resolveOne(custom, kp, imdb, pluginCode)
+                    ?: return@runCatching null
                 return@runCatching customParseToHentai(custom, parse)
             }
             val kp = AnimeStreamResolver.realKinopoiskId(kinopoiskId) ?: run {
