@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -37,7 +38,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -232,29 +232,14 @@ fun SourcesSettingsScreen(
         scope.launch { pagerState.animateScrollToPage(page) }
     }
 
-    // Шапка в стиле поисковой строки Библиотеки/Профиля: круглая кнопка
-    // Назад 48dp + пилюля-заголовок 24dp (surfaceContainerHigh, тень) вместо
-    // единой карточки. Полоса табов ниже непрозрачная (фон), как в библиотеке:
-    // список не просвечивает под ними при скролле. Сами разделы —
-    // HorizontalPager: переключаются и тапом, и свайпом.
+    // Закреплена только шапка-пилюля (парит без подложки).
+    // Заголовки разделов откреплены: уезжают вверх вместе со списком,
+    // первым рядом каждой страницы. Сами разделы — HorizontalPager:
+    // переключаются и тапом по заголовку, и свайпом.
     PinnedHeaderPage(
         title = "Источники",
         subtitle = "Наличие зависит от фильма · проба на «Матрице»",
         onBack = onBack,
-        headerCard = { SourcesSearchHeader(onBack = onBack) },
-        extraHeader = {
-            Surface(
-                color = MaterialTheme.colorScheme.background,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                SourcesTabs(
-                    pagerState = pagerState,
-                    customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
-                    catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
-                    onSelect = ::goToPage
-                )
-            }
-        }
     ) { topPad ->
         HorizontalPager(
             state = pagerState,
@@ -268,6 +253,12 @@ fun SourcesSettingsScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
                 ) {
+                    sourcesTabsItem(
+                        pagerState = pagerState,
+                        customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
+                        catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
+                        onSelect = ::goToPage
+                    )
                     // Подразделы встроенных: Все (группировка по разделам) /
                     // Аниме / 18+. Уезжают вверх вместе со списком.
                     item {
@@ -371,6 +362,12 @@ fun SourcesSettingsScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
                 ) {
+                    sourcesTabsItem(
+                        pagerState = pagerState,
+                        customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
+                        catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
+                        onSelect = ::goToPage
+                    )
                     // Свои: одна управляющая карточка (добавить + обмен файлом)
                     // и компактный список — без лишних плиток.
                     if (onSaveCustomSource != null) {
@@ -501,6 +498,12 @@ fun SourcesSettingsScreen(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
                     ) {
+                    sourcesTabsItem(
+                        pagerState = pagerState,
+                        customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
+                        catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
+                        onSelect = ::goToPage
+                    )
             // Каталог JS-плагинов: витрина index.json, установка в один тап
             // (код сверяется с sha256 витрины), обновления подсвечиваются.
             if (onRefreshCatalog != null) {
@@ -661,55 +664,22 @@ fun SourcesSettingsScreen(
 }
 
 /**
- * Шапка страницы в стиле поисковой строки Библиотеки/Профиля ([SearchRow]):
- * круглая кнопка Назад 48dp + пилюля-заголовок 24dp на всю ширину
- * (surfaceContainerHigh, тень 3dp) вместо единой карточки.
+ * Первый ряд каждой страницы: заголовки разделов (тапом — переход,
+ * свайпом — тоже). Откреплены: уезжают вверх вместе со списком.
  */
-@Composable
-private fun SourcesSearchHeader(onBack: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Surface(
-            onClick = onBack,
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shadowElevation = 3.dp,
-            modifier = Modifier.size(48.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Назад",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-        }
-        Spacer(modifier = Modifier.width(8.dp))
-        Surface(
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shadowElevation = 3.dp,
-            modifier = Modifier.weight(1f)
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text(
-                    text = "Источники",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Наличие зависит от фильма · проба на «Матрице»",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
+private fun LazyListScope.sourcesTabsItem(
+    pagerState: PagerState,
+    customLabel: String,
+    catalogLabel: String,
+    onSelect: (Int) -> Unit
+) {
+    item {
+        SourcesTabs(
+            pagerState = pagerState,
+            customLabel = customLabel,
+            catalogLabel = catalogLabel,
+            onSelect = onSelect
+        )
     }
 }
 
