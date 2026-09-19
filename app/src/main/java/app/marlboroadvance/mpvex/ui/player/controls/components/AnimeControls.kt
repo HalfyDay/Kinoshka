@@ -95,6 +95,8 @@ fun AnimeSeriesDropdown(
         border = null,
         modifier = Modifier
             .height(45.dp)
+            // clip ДО clickable: иначе ripple/фокус рисуется квадратом поверх пилюли.
+            .clip(RoundedCornerShape(50))
             .clickable { showDialog = true }
     ) {
         Row(
@@ -158,10 +160,12 @@ fun AnimeSeriesDropdown(
                                         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                                         contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer
                                         else MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.clickable {
-                                            selectedSeason = season
-                                            onSeasonSelected(season)
-                                        }
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable {
+                                                selectedSeason = season
+                                                onSeasonSelected(season)
+                                            }
                                     ) {
                                         Text(
                                             text = "Сезон $season",
@@ -203,10 +207,12 @@ fun AnimeSeriesDropdown(
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
                                     color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                                    modifier = Modifier.fillMaxWidth().clickable {
-                                        onEpisodeSelected(ep.number)
-                                        showDialog = false
-                                    }
+                                    modifier = Modifier.fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            onEpisodeSelected(ep.number)
+                                            showDialog = false
+                                        }
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -313,6 +319,8 @@ fun AnimeTranslationDropdown(
         border = null,
         modifier = Modifier
             .height(45.dp)
+            // clip ДО clickable: иначе ripple/фокус рисуется квадратом поверх пилюли.
+            .clip(RoundedCornerShape(50))
             .clickable { showDialog = true }
     ) {
         Row(
@@ -389,7 +397,9 @@ fun AnimeTranslationDropdown(
                                         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                                         contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer
                                         else MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.clickable { selectedSourceFilter = src }
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable { selectedSourceFilter = src }
                                     ) {
                                         Text(
                                             text = src?.displayName ?: "Все",
@@ -426,10 +436,12 @@ fun AnimeTranslationDropdown(
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
                                     color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                                    modifier = Modifier.fillMaxWidth().clickable {
-                                        onTranslationSelected(tr.translationId)
-                                        showDialog = false
-                                    }
+                                    modifier = Modifier.fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            onTranslationSelected(tr.translationId)
+                                            showDialog = false
+                                        }
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -555,6 +567,8 @@ fun AnimeQualityDropdown(
             border = null,
             modifier = Modifier
                 .height(45.dp)
+                // clip ДО clickable: иначе ripple/фокус рисуется квадратом поверх пилюли.
+                .clip(RoundedCornerShape(50))
                 .clickable(enabled = canChoose) { menuExpanded = true }
         ) {
             Row(
@@ -583,6 +597,9 @@ fun AnimeQualityDropdown(
             qList.forEach { q ->
                 val isSelected = q == selectedQ
                 DropdownMenuItem(
+                    // clip снаружи: подсветка нажатия/фокуса остаётся внутри скругления,
+                    // как у остальных кнопок выбора серий/озвучек.
+                    modifier = Modifier.padding(horizontal = 4.dp).clip(RoundedCornerShape(8.dp)),
                     text = {
                         Text(
                             text = if (q.equals("Auto", true)) autoLabel else q,

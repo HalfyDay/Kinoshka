@@ -510,6 +510,16 @@ fun PlayerControls(
             }
           ) {
             val activity = LocalActivity.current
+            // Android TV: пульт без стартового фокуса не может нажать «Повторить» —
+            // фокус остаётся на кнопке Play под оверлеем. Ставим фокус на «Повторить».
+            val errorRetryFocus = remember { FocusRequester() }
+            LaunchedEffect(pendingResolveError) {
+              delay(300)
+              repeat(6) {
+                runCatching { errorRetryFocus.requestFocus() }
+                delay(250)
+              }
+            }
             androidx.compose.foundation.layout.Box(
               modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.65f)),
               contentAlignment = Alignment.Center
@@ -538,7 +548,10 @@ fun PlayerControls(
                   textAlign = TextAlign.Center
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                  androidx.compose.material3.Button(onClick = { viewModel.retryPendingResolve() }) {
+                  androidx.compose.material3.Button(
+                    onClick = { viewModel.retryPendingResolve() },
+                    modifier = Modifier.focusRequester(errorRetryFocus)
+                  ) {
                     Text("Повторить")
                   }
                   androidx.compose.material3.OutlinedButton(onClick = {

@@ -9,6 +9,7 @@ import java.util.TimeZone
 import java.util.Date
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.window.Popup
@@ -2808,7 +2809,11 @@ private fun MovieExpandableDescription(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (needsCollapse) Modifier.animateContentSize() else Modifier)
-            .then(if (needsCollapse) Modifier.clickable { expanded = !expanded } else Modifier)
+            // Без ripple/выделения при нажатии: текст просто разворачивается.
+            .then(if (needsCollapse) Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) { expanded = !expanded } else Modifier)
     ) {
         Text(
             text = description,
@@ -4029,7 +4034,11 @@ private fun AnimeExpandableDescription(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (needsCollapse) Modifier.animateContentSize() else Modifier)
-            .then(if (needsCollapse) Modifier.clickable { expanded = !expanded } else Modifier)
+            // Без ripple/выделения при нажатии: текст просто разворачивается.
+            .then(if (needsCollapse) Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) { expanded = !expanded } else Modifier)
     ) {
         // Миграция на Text+LinkAnnotation требует переписывания parseShikimoriBbCode
         // (кастомные string-аннотации character_id/anime_id/url) — отдельная задача.
@@ -6039,6 +6048,19 @@ private fun DetailsTvLayout(
         item.genres.containsAnimeGenre()
     val posterUrl = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview
     val cs = MaterialTheme.colorScheme
+    // Явная цепочка пульта: геометрический 2D-поиск из оверлея «Назад» в LazyColumn
+    // не выходит (кнопка висит поверх скролла отдельным слоем) — ведём вниз/вправо
+    // напрямую на главное действие. Стартовый фокус — тоже на «Смотреть», иначе
+    // первый ОК пользователя уходит в пустоту без видимого выделения.
+    val watchRequester = remember { FocusRequester() }
+    val backRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        // Кнопка может быть disabled (isInteractive=false при сворачивании) —
+        // тогда остаёмся на «Назад», молча без исключений.
+        runCatching { watchRequester.requestFocus() }.onFailure {
+            runCatching { backRequester.requestFocus() }
+        }
+    }
     val windowSize = rememberTvWindowSize()
     val hPad = when (windowSize) {
         TvWindowSize.COMPACT -> 16.dp
@@ -6081,6 +6103,7 @@ private fun DetailsTvLayout(
                             item = item, isAnime = isAnime, anime = state.animeDetails,
                             isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor,
                             profile = profile, seasons = seasons, animeTotalEpisodes = animeTotalEpisodes,
+                            watchRequester = watchRequester,
                         )
                     }
                 } else {
@@ -6112,6 +6135,7 @@ private fun DetailsTvLayout(
                                 item = item, isAnime = isAnime, anime = state.animeDetails,
                                 isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor,
                                 profile = profile, seasons = seasons, animeTotalEpisodes = animeTotalEpisodes,
+                                watchRequester = watchRequester,
                             )
                         }
                     }
@@ -6191,7 +6215,8 @@ private fun DetailsTvLayout(
                 .align(Alignment.TopStart)
                 .padding(start = hPad, top = 16.dp)
                 .size(48.dp)
-                .tvFocusable(onClick = { onBack() }, shape = CircleShape)
+                .tvFocusable(onClick = { onBack() }, shape = CircleShape, focusRequester = backRequester)
+                .focusProperties { down = watchRequester; right = watchRequester }
                 .clip(CircleShape)
                 .background(cs.surfaceContainerHigh),
             contentAlignment = Alignment.Center,
@@ -6215,6 +6240,8 @@ private fun DetailsTvHeaderText(
     profile: UserFilmProfile? = null,
     seasons: List<SeasonItem> = emptyList(),
     animeTotalEpisodes: Int? = null,
+    /** Стартовое действие для ТВ-пульта: фокус при входе + выход вниз из оверлея «Назад». */
+    watchRequester: FocusRequester? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     // Текущий список — та же логика, что в мобильной ActionPanel:
@@ -6391,6 +6418,7 @@ private fun DetailsTvHeaderText(
                 primary = true,
                 onClick = onWatch,
                 enabled = isInteractive,
+                focusRequester = watchRequester,
                 leading = { RoundedPlayIcon(modifier = Modifier.size(18.dp), color = cs.onPrimary) },
             )
             if (status == UserFilmStatus.WATCHING) {

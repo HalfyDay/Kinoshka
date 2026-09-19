@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +62,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -92,6 +95,7 @@ import hd.kinoshka.app.data.source.HdrezkaApi
 import hd.kinoshka.app.data.source.MovieStreamResolver
 import hd.kinoshka.app.data.source.PlaybackSources
 import hd.kinoshka.app.ui.platform.rememberKinoPlatformActions
+import hd.kinoshka.app.ui.tv.rememberTvLayout
 import hd.kinoshka.app.util.log.KLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -729,7 +733,49 @@ fun MoviePlaybackSelectionScreen(
         }
     } else null
 
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    // Android TV: пульт без стартового фокуса мёртв — Compose сам фокус не ставит,
+    // и стрелки ничего не двигают (пикер открывался в «лимбо»). Сидим фокус на первый
+    // контент шага при смене шага и при появлении данных; на телефоне (портрет)
+    // поведение не меняем.
+    val tvLayout = rememberTvLayout()
+    val contentFocusRequester = remember { FocusRequester() }
+    // Шаг зависит и от индекса, и от наличия серийной структуры: у сериала шаг 0
+    // превращается из DUB в EPISODE по мере догрузки источников.
+    val currentStep = steps(currentStepIndex, showEpisodes)
+    val stepContentReady = when (currentStep) {
+        MovieStep.EPISODE -> resumeEpisode != null || mergedEpisodes.isNotEmpty()
+        MovieStep.DUB -> visibleDubs.isNotEmpty()
+        MovieStep.SOURCE -> selectedDub != null && allOptions.isNotEmpty()
+    }
+    // selectedSeason в ключах: выбор сезона по умолчанию (0 → N) пересобирает список
+    // серий — сидинг должен повториться уже по устаканенному списку. allSettled —
+    // финальный добор: фокус встаёт намертво, когда догрузился последний источник.
+    LaunchedEffect(
+        currentStepIndex, showEpisodes, selectedSeason, stepContentReady, allSettled, errorMessage
+    ) {
+        if (!tvLayout) return@LaunchedEffect
+        if (!stepContentReady && errorMessage == null) return@LaunchedEffect
+        // Мгновенный requestFocus по входящему AnimatedContent-контенту молча
+        // теряется: даём переходу и LazyColumn доложиться. requestFocus() возвращает
+        // Unit и не сообщает об успехе — поэтому долбим несколько раз без раннего
+        // break: первая попытка почти всегда уходит в пустоту (контент ещё в fade).
+        if (!allSettled && errorMessage == null) kotlinx.coroutines.delay(700)
+        else kotlinx.coroutines.delay(300)
+        // done-флага нет специально: ключи эффекта и так дёргают сидинг только
+        // в легитимные моменты (смена шага/сезона/готовности/ошибки), а фокус
+        // пользователя (выбор серии/озвучки) ключей не меняет — не дёргаем.
+        // Повторы без break: requestFocus() не бросает исключение, когда цель ещё
+        // не доложена — молча ничего не делает.
+        repeat(6) {
+            runCatching { contentFocusRequester.requestFocus() }
+            kotlinx.coroutines.delay(250)
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize().focusGroup(),
+        color = MaterialTheme.colorScheme.background
+    ) {
         Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
@@ -810,6 +856,7 @@ fun MoviePlaybackSelectionScreen(
                             Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(48.dp))
                             Text(text = errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
                             Button(
+                                modifier = Modifier.focusRequester(contentFocusRequester),
                                 onClick = {
                                     currentStepIndex = 0
                                     selectedEpisodeKey = null
@@ -833,6 +880,7 @@ fun MoviePlaybackSelectionScreen(
                             when (step) {
                                 MovieStep.EPISODE -> MovieEpisodeStep(
                                     seasons = mergedSeasons,
+                                    initialFocusRequester = contentFocusRequester,
                                     selectedSeason = selectedSeason,
                                     onSeasonSelected = { selectedSeason = it },
                                     episodes = mergedEpisodes,
@@ -857,6 +905,7 @@ fun MoviePlaybackSelectionScreen(
                                 )
                                 MovieStep.DUB -> MovieDubStep(
                                     dubs = visibleDubs,
+                                    initialFocusRequester = contentFocusRequester,
                                     selectedEpisodeKey = selectedEpisodeKey,
                                     downloadedCountFor = { dub ->
                                         optionsForDub(dub).sumOf { downloadedByTranslation[it.translationId] ?: 0 }
@@ -902,6 +951,7 @@ fun MoviePlaybackSelectionScreen(
                                     } else {
                                         MovieSourceStep(
                                             options = optionsForDub(dub),
+                                            initialFocusRequester = contentFocusRequester,
                                             selectedEpisodeKey = selectedEpisodeKey,
                                             sourceIcon = sourceIcon,
                                             onDownloadSingle = onDownloadTarget?.let { download ->
@@ -1307,7 +1357,9 @@ private fun MovieEpisodeStep(
     sourceStates: Map<String, MovieSourceLoadState>,
     visibleSources: List<String>,
     onRetrySource: (String) -> Unit,
-    onEpisodeSelected: (Pair<Int, Int>) -> Unit
+    onEpisodeSelected: (Pair<Int, Int>) -> Unit,
+    /** ТВ-пульт: стартовый фокус шага (карточка «Продолжить» либо первая серия). */
+    initialFocusRequester: FocusRequester? = null
 ) {
     var isSortAscending by remember { mutableStateOf(true) }
     val sortedEpisodes = remember(episodes, isSortAscending) {
@@ -1347,7 +1399,13 @@ private fun MovieEpisodeStep(
                     onClick = { onResumeSelected(resumeEpisode) },
                     shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .then(
+                            if (initialFocusRequester != null) Modifier.focusRequester(initialFocusRequester)
+                            else Modifier
+                        )
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
@@ -1430,7 +1488,14 @@ private fun MovieEpisodeStep(
                     onClick = { onEpisodeSelected(key) },
                     shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .then(
+                            if (resumeEpisode == null && index == 0 && initialFocusRequester != null)
+                                Modifier.focusRequester(initialFocusRequester)
+                            else Modifier
+                        )
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
@@ -1549,7 +1614,9 @@ private fun MovieDubStep(
     selectedEpisodeKey: Pair<Int, Int>?,
     downloadedCountFor: (MovieDubGroup) -> Int,
     onDownloadDub: ((MovieDubGroup) -> Unit)?,
-    onDubSelected: (MovieDubGroup) -> Unit
+    onDubSelected: (MovieDubGroup) -> Unit,
+    /** ТВ-пульт: стартовый фокус шага (первая озвучка). */
+    initialFocusRequester: FocusRequester? = null
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1574,13 +1641,21 @@ private fun MovieDubStep(
                 }
             }
         } else {
-            items(dubs, key = { it.key }) { dub ->
+            items(dubs.size, key = { index -> dubs[index].key }) { index ->
+                val dub = dubs[index]
                 val downloaded = downloadedCountFor(dub)
                 Surface(
                     onClick = { onDubSelected(dub) },
                     shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .then(
+                            if (index == 0 && initialFocusRequester != null)
+                                Modifier.focusRequester(initialFocusRequester)
+                            else Modifier
+                        )
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
@@ -1640,7 +1715,9 @@ private fun MovieSourceStep(
     selectedEpisodeKey: Pair<Int, Int>?,
     onDownloadSingle: ((MoviePickerOption) -> Unit)?,
     onSourceSelected: (MoviePickerOption) -> Unit,
-    sourceIcon: @Composable (sourceId: String, size: Dp) -> Unit
+    sourceIcon: @Composable (sourceId: String, size: Dp) -> Unit,
+    /** ТВ-пульт: стартовый фокус шага (первый источник). */
+    initialFocusRequester: FocusRequester? = null
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1665,7 +1742,8 @@ private fun MovieSourceStep(
                 }
             }
         } else {
-            items(options, key = { it.sourceId + "|" + it.translationId }) { opt ->
+            items(options.size, key = { index -> options[index].sourceId + "|" + options[index].translationId }) { index ->
+                val opt = options[index]
                 val info = PlaybackSources.info(opt.sourceId)
                 val ep = selectedEpisodeKey?.let { key ->
                     opt.episodes.firstOrNull { seasonEpisodeKey(it.season, it.number) == key }
@@ -1677,7 +1755,14 @@ private fun MovieSourceStep(
                     onClick = { onSourceSelected(opt) },
                     shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .then(
+                            if (index == 0 && initialFocusRequester != null)
+                                Modifier.focusRequester(initialFocusRequester)
+                            else Modifier
+                        )
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),

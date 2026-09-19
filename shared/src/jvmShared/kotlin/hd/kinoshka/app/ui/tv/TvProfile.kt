@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
@@ -597,7 +598,7 @@ fun TvFileBackupSection(
 ) {
     TvProfileSection(
         title = "Резервная копия в файл",
-        icon = Icons.Filled.Backup,
+        icon = Icons.Filled.Description,
         hPad = hPad,
         modifier = modifier,
     ) {

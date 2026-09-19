@@ -573,6 +573,9 @@ fun TvButton(
     modifier: Modifier = Modifier,
     primary: Boolean = false,
     enabled: Boolean = true,
+    /** Явный requester для ТВ-экранов с оверлей-кнопками (детали): чинит выход
+     *  2D-поиска из оверлея и стартовый фокус на главном действии. */
+    focusRequester: FocusRequester? = null,
     /** Иконка слева от текста (мобильные глифы: экспорт/импорт). Null — текстовая кнопка. */
     icon: ImageVector? = null,
     /** Кастомная иконка слева (мобильные рисованные глифы вроде RoundedPlayIcon). */
@@ -587,7 +590,13 @@ fun TvButton(
     val content = if (primary) cs.onPrimary else cs.onSurface
     Box(
         modifier = modifier
-            .tvFocusable(onClick = onClick, shape = shape, focusedScale = 1.04f, enabled = enabled)
+            .tvFocusable(
+                onClick = onClick,
+                shape = shape,
+                focusedScale = 1.04f,
+                enabled = enabled,
+                focusRequester = focusRequester,
+            )
             .clip(shape)
             .background(container)
             .border(
