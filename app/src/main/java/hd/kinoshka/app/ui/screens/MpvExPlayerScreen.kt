@@ -43,7 +43,15 @@ fun MpvExPlayerScreen(
     val context = LocalContext.current
     val userStateStore = UserStateStore(context)
 
-    LaunchedEffect(streamUrl) {
+    // Key on the full launch identity, not just the url: PENDING launches carry no streamUrl
+    // at all, and two different titles must never collapse into one launch (or miss it).
+    val seriesKey = movieSeriesContext?.let {
+        "${it.kinopoiskId}:${it.currentEpisode.playerEpisodeKey}:${it.candidates.size}"
+    } ?: "-"
+    LaunchedEffect(
+        streamUrl, animeTitle, episodeNumber, episodeTitle, shikimoriId, kinopoiskId,
+        sourceType, currentTranslationId, playbackMode, seriesKey, episodes.size, translations.size
+    ) {
         // PENDING_MOVIE launches with no stream yet: PlayerActivity opens immediately, shows its
         // loading overlay and resolves the stream itself (setPendingMovieExtras).
         val pendingLaunch = playbackMode == NativePlaybackMode.PENDING_MOVIE

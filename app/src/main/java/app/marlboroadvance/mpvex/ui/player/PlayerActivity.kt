@@ -361,6 +361,12 @@ class PlayerActivity :
   private var playbackProgressJob: kotlinx.coroutines.Job? = null
   private var watchingCommittedFor: String? = null
 
+  // Поколение нативного запуска: каждый onNewIntent (новый тайтл поверх живого плеера,
+  // singleTask) инкрементирует счётчик. Асинхронные хэндоффы предыдущего тайтла
+  // (PENDING-резолв, ленивый резолв озвучки, докачка каталога) сверяют поколение перед
+  // применением — устаревший результат не должен перезаписывать уже открытый новый тайтл.
+  private var nativeLaunchGeneration = 0
+
   /**
    * Thermal and performance monitoring
    */
@@ -1632,6 +1638,7 @@ class PlayerActivity :
         val trId = viewModel.currentAnimeTranslationId.value ?: currentTr ?: ""
         val userStateStore = UserStateStore(this)
         val prefQuality = userStateStore.getPreferredQuality()
+        val launchGen = nativeLaunchGeneration
 
         fun resolveAndApply() {
           lifecycleScope.launch(Dispatchers.IO) {
@@ -1641,6 +1648,7 @@ class PlayerActivity :
               ?.toAnimeMediaStream()
               ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum, extras.getInt("movie_kinopoisk_id", 0))
             withContext(Dispatchers.Main) {
+              if (launchGen != nativeLaunchGeneration || isFinishing || isDestroyed) return@withContext
               if (stream != null) {
                 applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
               } else {
@@ -1679,6 +1687,7 @@ class PlayerActivity :
         val epNum = viewModel.currentAnimeEpisodeNumber.value ?: currentEp ?: 1
         val userStateStore = UserStateStore(this)
         val prefQuality = userStateStore.getPreferredQuality()
+        val launchGen = nativeLaunchGeneration
 
         fun resolveAndApply() {
           lifecycleScope.launch(Dispatchers.IO) {
@@ -1688,6 +1697,7 @@ class PlayerActivity :
               ?.toAnimeMediaStream()
               ?: AnimeStreamResolver.resolveStream(shikimoriId, animeTitle, srcType, trId, epNum, extras.getInt("movie_kinopoisk_id", 0))
             withContext(Dispatchers.Main) {
+              if (launchGen != nativeLaunchGeneration || isFinishing || isDestroyed) return@withContext
               if (stream != null) {
                 applyAnimeStream(stream, srcType, prefQuality, animeTitle, epNum, trId, episodes, translations)
               } else {
@@ -1785,6 +1795,7 @@ class PlayerActivity :
       val srcType = currentAnimeSourceType
       val title = animeTitle
       val trId = currentTr
+      val launchGen = nativeLaunchGeneration
       lifecycleScope.launch(Dispatchers.IO) {
         val fetched = runCatching {
           if (srcType == AnimeSourceType.CUSTOM) {
@@ -1805,6 +1816,7 @@ class PlayerActivity :
         hd.kinoshka.app.data.model.AnimeCatalogStore.put(shikimoriId, kpId, emptyList(), fetched)
         withContext(Dispatchers.Main) {
           if (isFinishing || isDestroyed) return@withContext
+          if (launchGen != nativeLaunchGeneration) return@withContext
           val eps = fetched.firstOrNull { it.translationId == currentTr }?.episodes
             ?: fetched.firstOrNull()?.episodes.orEmpty()
           viewModel.setAnimeSeasons(emptyList(), null)
@@ -1948,9 +1960,11 @@ class PlayerActivity :
     fromAutoFallback: Boolean = false,
   ) {
     beginTrackedStreamLoad(retry = { loadQomVoiceover(track, rawLink, translations, fromAutoFallback) })
+    val launchGen = nativeLaunchGeneration
     lifecycleScope.launch(Dispatchers.IO) {
       val resolved = resolveVoiceoverLink(rawLink)
       withContext(Dispatchers.Main) {
+        if (launchGen != nativeLaunchGeneration || isFinishing || isDestroyed) return@withContext
         val url = resolved
         if (url.isNullOrBlank()) {
           streamLoadRetryAction = null
@@ -2316,6 +2330,7 @@ class PlayerActivity :
     // Profile decides which S/E to resume; read once per attempt on the main thread (prefs IO).
     val profile = libraryProfileKey()?.let { key -> UserStateStore(this).getProfile(key) }
     val resolveStartMs = System.currentTimeMillis()
+    val launchGen = nativeLaunchGeneration
     lifecycleScope.launch(Dispatchers.IO) {
       // An mpv-reported dead stream must not be re-served from the ddbb 3-minute memo: bust it
       // so the retry actually re-extracts fresh CDN urls instead of failing identically.
@@ -2325,6 +2340,7 @@ class PlayerActivity :
         // The callback fires on the launcher's IO scope — hop to the main thread for state.
         lifecycleScope.launch(Dispatchers.Main) {
           if (isFinishing || isDestroyed) return@launch
+          if (launchGen != nativeLaunchGeneration) return@launch
           if (effectiveNativePlaybackMode == NativePlaybackMode.MOVIE_SERIES) refreshSeriesVoiceoverRows()
           else refreshQomVoiceoverRows(merged)
         }
@@ -2334,6 +2350,10 @@ class PlayerActivity :
       withContext(Dispatchers.Main) {
         Log.i(TAG, "PENDING_MOVIE main-thread handoff at +${System.currentTimeMillis() - resolveStartMs}")
         if (isFinishing || isDestroyed) return@withContext
+        if (launchGen != nativeLaunchGeneration) {
+          Log.i(TAG, "PENDING_MOVIE handoff dropped: a newer title already opened")
+          return@withContext
+        }
         // Resolve завершён: спящий 15-секундный таймер запуска снова считается slow-start'ом
         // реальной загрузки (успешные пути перевооружают своё окно, Failed гасит оверлей).
         pendingResolveInFlight = false
@@ -2607,12 +2627,14 @@ class PlayerActivity :
       flushOutgoingEpisodeProgress()
       beginStreamLoadIndicator()
       pendingSeekPosition = null
+      val launchGen = nativeLaunchGeneration
       lifecycleScope.launch(Dispatchers.IO) {
         if (activeContext.isDirectSource) {
           // ddbb/turbo catalog: every candidate carries ready CDN urls — no HLS extraction.
           val requestedTrId = viewModel.currentAnimeTranslationId.value
           val picked = pickDirectSeriesStream(activeContext, selected, requestedTrId, allowFallback = true)
           withContext(Dispatchers.Main) {
+            if (launchGen != nativeLaunchGeneration || isFinishing || isDestroyed) return@withContext
             if (picked != null) {
               val (stream, trId) = picked
               val updatedContext = activeContext.copy(
@@ -2655,6 +2677,7 @@ class PlayerActivity :
             translationId = viewModel.currentAnimeTranslationId.value,
           )
           withContext(Dispatchers.Main) {
+            if (launchGen != nativeLaunchGeneration || isFinishing || isDestroyed) return@withContext
             if (result is MovieStreamResult.Success) {
               val updatedContext = activeContext.copy(currentEpisode = selected)
               movieSeriesContext = updatedContext
@@ -2694,12 +2717,14 @@ class PlayerActivity :
       flushOutgoingEpisodeProgress()
       beginStreamLoadIndicator()
       pendingSeekPosition = null
+      val launchGen = nativeLaunchGeneration
       lifecycleScope.launch(Dispatchers.IO) {
         if (activeContext.isDirectSource) {
           // Strict: the user tapped a SPECIFIC dub — silently playing another one's audio is
           // exactly the "several dubs sound the same" bug. Absent episode → toast, keep playing.
           val picked = pickDirectSeriesStream(activeContext, activeContext.currentEpisode, trId, allowFallback = false)
           withContext(Dispatchers.Main) {
+            if (launchGen != nativeLaunchGeneration || isFinishing || isDestroyed) return@withContext
             if (picked != null) {
               val (stream, _) = picked
               currentAnimeStream = stream
@@ -2715,6 +2740,7 @@ class PlayerActivity :
             translationId = trId,
           )
           withContext(Dispatchers.Main) {
+            if (launchGen != nativeLaunchGeneration || isFinishing || isDestroyed) return@withContext
             if (result is MovieStreamResult.Success) {
               movieSeriesContext = activeContext
               currentAnimeStream = result.stream
@@ -5001,13 +5027,31 @@ class PlayerActivity :
   /**
    * Handles new intents to load a different file without recreating the activity.
    *
+   * Very different cases land here (the activity is singleTask):
+   * - bring-to-front redelivery (notification tap): an empty intent with no data and no
+   *   extras — there is nothing new to play, the stored intent must be kept as-is;
+   * - a new Kinoshka title (carries "playback_mode"): the full per-title state must be
+   *   dropped and rebuilt like onCreate does, otherwise the new title keeps the previous
+   *   title's file (PENDING launches have no direct uri to load) or its episodes/dubs;
+   * - anything else (files, playlists, shares): legacy flow, unchanged.
+   *
    * @param intent The new intent
    */
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
 
+    if (isBringToFrontIntent(intent)) {
+      Log.d(TAG, "onNewIntent: bring-to-front redelivery, keeping current playback")
+      return
+    }
+
     // Update the intent first so getFileName uses the new intent data
     setIntent(intent)
+
+    if (intent.hasExtra("playback_mode")) {
+      switchNativeTitle(intent)
+      return
+    }
 
     // Check if this intent has playlist information
     val hasPlaylistExtras = intent.hasExtra("playlist_id") ||
@@ -5076,6 +5120,114 @@ class PlayerActivity :
         mpvLoadFile(uri)
       }
     }
+  }
+
+  /**
+   * Opens a different Kinoshka title on top of the already-running player (singleTask
+   * onNewIntent): drops the previous title's per-title state and rebuilds it from the new
+   * intent, mirroring the onCreate launch path. Without the reset the new title either kept
+   * playing the old file (PENDING launches have no direct uri to load) or played the new
+   * file with the old title's episodes/dubs/quality state.
+   */
+  private fun switchNativeTitle(intent: Intent) {
+    Log.i(TAG, "onNewIntent: switching to a new title (mode=${intent.getStringExtra("playback_mode")})")
+    // In-flight background work of the previous title (PENDING resolve, dub/episode
+    // re-resolves, catalog refetch) must not overwrite the new title once it finishes.
+    nativeLaunchGeneration++
+    // Persist the outgoing title's position while the identifiers still point at it.
+    flushOutgoingEpisodeProgress()
+
+    // Drop per-title playback state; the builders below repopulate it.
+    cancelNextEpisodeCountdown()
+    streamLoadIndicatorTimeoutJob?.cancel()
+    pendingStreamLoadIndicator = false
+    qualityWatchdogJob?.cancel()
+    seamlessSwitchJob?.cancel()
+    pendingSeamlessQualityUrl = null
+    segmentSkipGuardJob?.cancel()
+    resetStreamLoadRetries()
+    autoFallbackTriedIds.clear()
+    streamLoadRetryAction = null
+    lastStreamLoadRetry = null
+    pendingResolveInFlight = false
+    pendingSeekPosition = null
+    currentAnimeStream = null
+    qomActiveStream = null
+    movieSeriesContext = null
+    currentPlayingUrl = null
+    effectiveNativePlaybackMode = null
+    currentAnimeSourceType = AnimeSourceType.KODIK
+    // A stale file playlist would hijack EOF handling after the new title ends.
+    playlist = emptyList()
+    playlistId = null
+    playlistIndex = 0
+    playlistWindowOffset = 0
+    playlistTotalCount = -1
+    viewModel.setPendingResolveError(null)
+    viewModel.setLoadingStream(false)
+    viewModel.setAnimeData(emptyList(), emptyList(), null, null, emptyMap(), null)
+    viewModel.setAnimeSeasons(emptyList(), null)
+    viewModel.setAutoQualityRungHint(null)
+    viewModel.setVideoResolution(null, null)
+    viewModel.setWatchedEpisodesCount(0)
+    viewModel.onAnimeEpisodeSelected = null
+    viewModel.onAnimeTranslationSelected = null
+    viewModel.onAnimeQualitySelected = null
+    viewModel.onAnimeSeasonSelected = null
+    viewModel.onPendingRetry = null
+
+    // Transport + headers for the new stream (same VOD branch as onCreate).
+    if (intent.getBooleanExtra("vod_stream", false)) {
+      MPVLib.setPropertyString("demuxer-lavf-o", "")
+      Log.d(TAG, "VOD stream transport: default lavf options (no reconnect hardening)")
+    } else {
+      applyAnimeTransportOptions(intent.getBooleanExtra("anime_disable_http_reuse", false))
+    }
+    setHttpHeadersFromExtras(intent.extras)
+
+    // Per-title catalogs and dropdown wiring (same order as onCreate).
+    setAnimeExtras(intent.extras)
+    setMovieSeriesExtras(intent.extras)
+    setQualityOnlyMovieExtras(intent.extras)
+    setPendingMovieExtras(intent.extras)
+
+    // Identity of the new title (after the extras: series identifiers need the new context).
+    fileName = getFileName(intent)
+    if (fileName.isBlank()) {
+      fileName = intent.data?.lastPathSegment ?: "Unknown Video"
+    }
+    mediaIdentifier = getMediaIdentifier(intent, fileName)
+    runCatching { MPVLib.setPropertyString("media-title", fileName) }
+
+    val playableUri = getPlayableUri(intent)
+    if (playableUri != null) {
+      resetStreamLoadRetries()
+      beginTrackedStreamLoad(retry = { mpvLoadFile(playableUri, "replace") })
+      // Avoid blocking UI thread while mpv opens network streams (e.g., HLS).
+      lifecycleScope.launch(Dispatchers.Default) {
+        mpvLoadFile(playableUri, "replace")
+      }
+    } else {
+      // No direct stream (a PENDING resolve already runs in the background): stop the
+      // previous title so it doesn't keep playing under the new title's loading overlay.
+      runCatching { MPVLib.command("stop") }
+    }
+  }
+
+  /**
+   * Content-less redelivery (notification tap): no data, no stream, no Kinoshka extras and no
+   * playlist — bringing the task to front only. Applying it would wipe live playback state.
+   */
+  private fun isBringToFrontIntent(intent: Intent): Boolean {
+    if (intent.data != null) return false
+    if (intent.hasExtra("playlist_id") || intent.hasExtra("playlist")) return false
+    if (intent.hasExtra("playback_mode")) return false
+    if (!intent.getStringExtra("uri").isNullOrBlank()) return false
+    if (!intent.getStringExtra("title").isNullOrBlank()) return false
+    if (!intent.getStringExtra("filename").isNullOrBlank()) return false
+    if (intent.hasExtra(Intent.EXTRA_STREAM) || intent.hasExtra(Intent.EXTRA_TEXT)) return false
+    if (intent.action == Intent.ACTION_SEND) return false
+    return true
   }
 
   // ==================== Picture-in-Picture Management ====================
