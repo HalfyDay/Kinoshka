@@ -15,10 +15,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -63,9 +64,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.source.CustomSource
 import hd.kinoshka.app.data.source.CustomSourceCheck
@@ -207,6 +211,11 @@ fun SourcesSettingsScreen(
     // Все/Аниме/18+), свои и каталог. Свои живут отдельно от разрезов категорий,
     // чтобы не дублироваться и там, и там.
     val pagerState = rememberPagerState(pageCount = { 3 })
+    // Скролл каждой страницы свой (пейджер выкидывает страницы из композиции),
+    // состояния нужны и для градиентного перехода под шапкой (topFadingEdge).
+    val builtInListState = rememberLazyListState()
+    val customListState = rememberLazyListState()
+    val catalogListState = rememberLazyListState()
     // Подраздел встроенных: null = Все (группировка по разделам), иначе плоский
     // список источников раздела.
     var builtInFilter by remember { mutableStateOf<SourceCategory?>(null) }
@@ -233,32 +242,38 @@ fun SourcesSettingsScreen(
     }
 
     // Закреплена только шапка-пилюля (парит без подложки).
-    // Заголовки разделов откреплены: уезжают вверх вместе со списком,
-    // первым рядом каждой страницы. Сами разделы — HorizontalPager:
-    // переключаются и тапом по заголовку, и свайпом.
+    // Заголовки разделов — фиксированным рядом почти вплотную к пилюле
+    // (как вкладки библиотеки): со свайпом страниц не перелистываются.
+    // Сами разделы — HorizontalPager: переключаются и тапом, и свайпом.
     PinnedHeaderPage(
         title = "Источники",
         subtitle = "Наличие зависит от фильма · проба на «Матрице»",
         onBack = onBack,
     ) { topPad ->
+        // topPad = высота пилюли + 10dp; пилюля внутри несёт свои 10dp нижнего
+        // отступа — итого было 20dp воздуха. Оставляем 4dp: табы ближе к пилюле.
+        Column(
+            modifier = Modifier.fillMaxSize().padding(top = topPad - 16.dp)
+        ) {
+            SourcesTabs(
+                pagerState = pagerState,
+                customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
+                catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
+                onSelect = ::goToPage
+            )
         HorizontalPager(
             state = pagerState,
             // Зазор между страницами, как в библиотеке: соседние страницы
             // визуально не слипаются в шве посередине свайпа.
             pageSpacing = 10.dp,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.weight(1f).fillMaxWidth()
         ) { page ->
             when (page) {
                 0 -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
+                    state = builtInListState,
+                    modifier = Modifier.fillMaxSize().topFadingEdge(builtInListState),
+                    contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)
                 ) {
-                    sourcesTabsItem(
-                        pagerState = pagerState,
-                        customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
-                        catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
-                        onSelect = ::goToPage
-                    )
                     // Подразделы встроенных: Все (группировка по разделам) /
                     // Аниме / 18+. Уезжают вверх вместе со списком.
                     item {
@@ -359,15 +374,10 @@ fun SourcesSettingsScreen(
             }
                 } // конец страницы «Встроенные».
                 1 -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
+                    state = customListState,
+                    modifier = Modifier.fillMaxSize().topFadingEdge(customListState),
+                    contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)
                 ) {
-                    sourcesTabsItem(
-                        pagerState = pagerState,
-                        customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
-                        catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
-                        onSelect = ::goToPage
-                    )
                     // Свои: одна управляющая карточка (добавить + обмен файлом)
                     // и компактный список — без лишних плиток.
                     if (onSaveCustomSource != null) {
@@ -495,15 +505,10 @@ fun SourcesSettingsScreen(
             // Обмен файлом (экспорт/импорт) живёт в управляющей карточке выше.
                 } // конец страницы «Свои».
                     else -> LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
+                        state = catalogListState,
+                        modifier = Modifier.fillMaxSize().topFadingEdge(catalogListState),
+                        contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)
                     ) {
-                    sourcesTabsItem(
-                        pagerState = pagerState,
-                        customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
-                        catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
-                        onSelect = ::goToPage
-                    )
             // Каталог JS-плагинов: витрина index.json, установка в один тап
             // (код сверяется с sha256 витрины), обновления подсвечиваются.
             if (onRefreshCatalog != null) {
@@ -593,6 +598,7 @@ fun SourcesSettingsScreen(
                     } // конец страницы «Каталог».
                 } // when (page)
             } // HorizontalPager
+        } // Column: заголовки разделов + страницы.
 
     if (addingCustom || editingCustom != null) {
         CustomSourceEditDialog(
@@ -664,22 +670,38 @@ fun SourcesSettingsScreen(
 }
 
 /**
- * Первый ряд каждой страницы: заголовки разделов (тапом — переход,
- * свайпом — тоже). Откреплены: уезжают вверх вместе со списком.
+ * Плавный переход от шапки к контенту, как в Библиотеке/Обзоре/Профиле:
+ * по мере скролла верхние 96dp списка гаснут в цвет фона страницы.
+ * Та же логика, что `topFadingEdge` в HomeScreen (там private — копия здесь).
+ * Чтение скролла внутри draw-блока даёт лишь перерисовку, без рекомпозиции.
  */
-private fun LazyListScope.sourcesTabsItem(
-    pagerState: PagerState,
-    customLabel: String,
-    catalogLabel: String,
-    onSelect: (Int) -> Unit
-) {
-    item {
-        SourcesTabs(
-            pagerState = pagerState,
-            customLabel = customLabel,
-            catalogLabel = catalogLabel,
-            onSelect = onSelect
-        )
+@Composable
+private fun Modifier.topFadingEdge(
+    state: LazyListState,
+    fadeHeight: Dp = 96.dp
+): Modifier {
+    // Цвета темы читаем здесь (в DrawScope компоуз-чтения недоступны).
+    val bg = MaterialTheme.colorScheme.background
+    return drawWithContent {
+    drawContent()
+    val fadePx = fadeHeight.toPx()
+    val offset = (if (state.firstVisibleItemIndex > 0) Int.MAX_VALUE else state.firstVisibleItemScrollOffset)
+        .coerceAtLeast(0)
+    if (offset > 0 && fadePx > 0f) {
+        val t = (offset / fadePx).coerceIn(0f, 1f)
+        val strength = t * t * t * (t * (t * 6f - 15f) + 10f)
+        if (strength > 0.01f) {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    0f to bg.copy(alpha = strength),
+                    0.6f to bg.copy(alpha = strength * 0.45f),
+                    1f to bg.copy(alpha = 0f),
+                    startY = 0f,
+                    endY = fadePx
+                )
+            )
+        }
+    }
     }
 }
 
