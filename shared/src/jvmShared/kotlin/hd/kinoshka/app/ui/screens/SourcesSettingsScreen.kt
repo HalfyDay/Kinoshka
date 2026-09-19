@@ -27,7 +27,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -35,14 +39,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -131,6 +139,8 @@ fun SourcesSettingsScreen(
     var addingCustom by remember { mutableStateOf(false) }
     var deletingCustom by remember { mutableStateOf<CustomSource?>(null) }
     var updatingOne by remember { mutableStateOf<String?>(null) }
+    // Диалог настроек каталога (свой URL витрины).
+    var showCatalogSettings by remember { mutableStateOf(false) }
 
     // Удаление извне (или протухший health) — чистим статусы удалённых своих.
     LaunchedEffect(customSources) {
@@ -221,33 +231,20 @@ fun SourcesSettingsScreen(
         scope.launch { pagerState.animateScrollToPage(page) }
     }
 
-    // Закреплены только шапка-пилюля и пилюли разделов (парят без подложки).
-    // Сами разделы — HorizontalPager: переключаются и тапом по пилюле, и свайпом.
+    // Закреплены только шапка-пилюля и заголовки разделов (как вкладки
+    // библиотеки: текст без пилюль, активный — жирный primary).
+    // Сами разделы — HorizontalPager: переключаются и тапом, и свайпом.
     PinnedHeaderPage(
         title = "Источники",
         subtitle = "Наличие зависит от фильма · проба на «Матрице»",
         onBack = onBack,
         extraHeader = {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
-            ) {
-                SourceFilterPill(
-                    label = "Встроенные",
-                    selected = pagerState.currentPage == 0,
-                    onClick = { goToPage(0) }
-                )
-                SourceFilterPill(
-                    label = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
-                    selected = pagerState.currentPage == 1,
-                    onClick = { goToPage(1) }
-                )
-                SourceFilterPill(
-                    label = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
-                    selected = pagerState.currentPage == 2,
-                    onClick = { goToPage(2) }
-                )
-            }
+            SourcesTabs(
+                pagerState = pagerState,
+                customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
+                catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
+                onSelect = ::goToPage
+            )
         }
     ) { topPad ->
         HorizontalPager(
@@ -290,34 +287,34 @@ fun SourcesSettingsScreen(
                         }
                     }
             item {
-            KinoSettingsCard {
-                KinoSettingsRow(
-                    title = "Проверить все источники",
-                    summary = if (checkedCount == 0) {
+                FilledTonalButton(
+                    onClick = ::checkAll,
+                    enabled = !checkingAll,
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                ) {
+                    if (checkingAll) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (checkingAll) "Проверка…" else "Проверить все источники")
+                }
+                Text(
+                    text = if (checkedCount == 0) {
                         "Kodik, прямые ссылки, аниме-каталоги и 18+"
                     } else {
                         "Проверено $checkedCount из ${PlaybackSources.allInfos().size} · работают: $okCount"
                     },
-                    trailing = {
-                        if (checkingAll) {
-                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                        } else {
-                            FilledTonalButton(
-                                onClick = ::checkAll,
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Refresh,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Проверить")
-                            }
-                        }
-                    }
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
                 )
-            }
             }
             // Встроенные по подразделам: Все — группировка по разделам,
             // Аниме/18+ — плоские списки подраздела.
@@ -409,10 +406,26 @@ fun SourcesSettingsScreen(
                                                 TextButton(
                                                     onClick = onExportCustomSourcesFile,
                                                     enabled = customSources.isNotEmpty()
-                                                ) { Text("Экспорт") }
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.Upload,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text("Экспорт")
+                                                }
                                             }
                                             if (onImportCustomSourcesFile != null) {
-                                                TextButton(onClick = onImportCustomSourcesFile) { Text("Импорт") }
+                                                TextButton(onClick = onImportCustomSourcesFile) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.Download,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text("Импорт")
+                                                }
                                             }
                                             if (fileExchangeMessage != null) {
                                                 Text(
@@ -482,47 +495,55 @@ fun SourcesSettingsScreen(
             // (код сверяется с sha256 витрины), обновления подсвечиваются.
             if (onRefreshCatalog != null) {
                 item {
-                    KinoSettingsCard {
-                        KinoSettingsRow(
-                            title = "Каталог плагинов",
-                            summary = if (catalogEntries.isEmpty()) {
-                                "Проверенные JS-плагины из общей витрины"
-                            } else if (catalogFresh) {
-                                "Плагинов: ${catalogEntries.size}"
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilledTonalButton(
+                            onClick = onRefreshCatalog,
+                            enabled = !catalogLoading,
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            if (catalogLoading) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                             } else {
-                                "Плагинов: ${catalogEntries.size} · список устарел (офлайн)"
-                            },
-                            trailing = {
-                                if (catalogLoading) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(24.dp), strokeWidth = 2.dp
-                                    )
-                                } else {
-                                    FilledTonalButton(
-                                        onClick = onRefreshCatalog,
-                                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Refresh,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Обновить")
-                                    }
-                                }
+                                Icon(
+                                    imageVector = Icons.Filled.Refresh,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
-                        )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (catalogLoading) "Обновление…" else "Обновить каталог")
+                        }
+                        if (onCatalogUrlChanged != null) {
+                            TextButton(onClick = { showCatalogSettings = true }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Settings,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Настройки")
+                            }
+                        }
                     }
+                    Text(
+                        text = if (catalogEntries.isEmpty()) {
+                            "Проверенные JS-плагины из общей витрины"
+                        } else if (catalogFresh) {
+                            "Плагинов: ${catalogEntries.size}"
+                        } else {
+                            "Плагинов: ${catalogEntries.size} · список устарел (офлайн)"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                    )
                 }
-                if (onCatalogUrlChanged != null) {
-                    item {
-                        CatalogUrlRow(
-                            currentUrl = catalogUrl,
-                            onSave = onCatalogUrlChanged
-                        )
-                    }
-                }
+                // Свой URL витрины — в диалоге настроек каталога (кнопка «Настройки» выше).
                 if (catalogMessage != null) {
                     item {
                         Text(
@@ -577,6 +598,39 @@ fun SourcesSettingsScreen(
             }
         )
     }
+    if (showCatalogSettings && onCatalogUrlChanged != null) {
+        var draft by remember(catalogUrl) { mutableStateOf(catalogUrl) }
+        AlertDialog(
+            onDismissRequest = { showCatalogSettings = false },
+            title = { Text("Настройки каталога") },
+            text = {
+                Column {
+                    Text(
+                        text = "Своя витрина: URL index.json в том же формате (пусто — официальная)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        placeholder = { Text("https://…/index.json") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onCatalogUrlChanged(draft.trim())
+                    showCatalogSettings = false
+                }) { Text("ОК") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCatalogSettings = false }) { Text("Отмена") }
+            }
+        )
+    }
     deletingCustom?.let { custom ->
         AlertDialog(
             onDismissRequest = { deletingCustom = null },
@@ -593,6 +647,52 @@ fun SourcesSettingsScreen(
             }
         )
     }
+    }
+}
+
+/**
+ * Заголовки разделов в стиле вкладок библиотеки (История, Смотрю…):
+ * текстовые табы без пилюль, активный — жирный primary. Тап дублирует свайп пейджера.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SourcesTabs(
+    pagerState: PagerState,
+    customLabel: String,
+    catalogLabel: String,
+    onSelect: (Int) -> Unit
+) {
+    SecondaryScrollableTabRow(
+        selectedTabIndex = pagerState.currentPage,
+        edgePadding = 10.dp,
+        containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.primary,
+        divider = {},
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        listOf("Встроенные", customLabel, catalogLabel).forEachIndexed { index, title ->
+            val isSelected = pagerState.currentPage == index
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .combinedClickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { onSelect(index) }
+                    )
+                    .padding(horizontal = 12.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
@@ -793,47 +893,6 @@ private fun SourcePageRow(
                 }
             }
             Switch(checked = enabled, onCheckedChange = onEnabledChanged)
-        }
-    }
-}
-
-/**
- * Свой URL витрины каталога (пусто = официальная). Отдельной строкой,
- * чтобы не перегружать карточку каталога.
- */
-@Composable
-private fun CatalogUrlRow(
-    currentUrl: String,
-    onSave: (String) -> Unit
-) {
-    var draft by remember(currentUrl) { mutableStateOf(currentUrl) }
-    KinoSettingsCard {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Text(
-                text = "Своя витрина",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = "URL index.json в том же формате (пусто — официальная)",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    placeholder = { Text("https://…/index.json") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(onClick = { onSave(draft.trim()) }) { Text("ОК") }
-            }
         }
     }
 }
