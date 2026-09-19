@@ -31,7 +31,7 @@ object DownloadBridges {
     fun mediaSource(stream: AnimeMediaStream, preferredQuality: String? = null): MediaDownloader.MediaSource {
         val key = pickCappedQualityKey(stream.qualities, preferredQuality)
         val url = key?.let { stream.qualities[it] } ?: stream.url
-        return MediaDownloader.MediaSource(url = url, headers = stream.headers, quality = key)
+        return MediaDownloader.MediaSource(url = url, headers = stream.headers, quality = key, qualityCap = preferredQuality)
     }
 
     private fun fromStream(stream: AnimeMediaStream, preferredQuality: String? = null) =
@@ -195,7 +195,14 @@ object DownloadBridges {
                                 ?.episodes?.firstOrNull {
                                     it.seasonNumber == ep.seasonNumber && it.episodeNumber == ep.episodeNumber
                                 }?.playerUrl?.takeIf { it.isNotBlank() }
-                                ?.let { MediaDownloader.MediaSource(it, headers) }
+                                ?.let { url ->
+                                    // Прямые URL раньше игнорировали потолок качества из диалога
+                                    // и всегда качали максимум лестницы даба. Давим выбор той же
+                                    // логикой, что Kodik-ветка (см. mediaSource): ранг не выше
+                                    // выбранного, иначе ближайший выше; потолок едет дальше
+                                    // в HLS-вариант внутри мастера (qualityCap).
+                                    directCappedSource(request, url, headers, preferredQuality)
+                                }
                         } else {
                             when (val result = MovieStreamResolver.resolveEpisode(request, ep, candidates, translationId)) {
                                 is MovieStreamResult.Success -> fromStream(result.stream, preferredQuality)
@@ -210,6 +217,26 @@ object DownloadBridges {
     internal fun seriesEpisodeLabel(ep: MovieEpisodeRef): String =
         if (ep.seasonNumber > 0) "S%02dE%02d".format(ep.seasonNumber, ep.episodeNumber)
         else "Серия ${ep.episodeNumber}"
+
+    /**
+     * Прямой URL под потолком качества из диалога: лестница даба берётся из свежего
+     * turbo-каталога ([DdbbStreamResolver.directQualities]/[cachedLadderFor]); нет лестницы —
+     * отдаём исходный URL, а потолок всё равно едет в [MediaDownloader.MediaSource.qualityCap]
+     * и давит HLS-вариант внутри мастера.
+     */
+    fun directCappedSource(
+        request: MoviePlaybackRequest,
+        url: String,
+        headers: Map<String, String>,
+        preferredQuality: String?
+    ): MediaDownloader.MediaSource {
+        val kpId = request.kinopoiskId ?: 0
+        val ladder = (if (kpId > 0) DdbbStreamResolver.directQualities(kpId, url) else null)
+            ?: DdbbStreamResolver.cachedLadderFor(url)
+        val key = ladder?.let { pickCappedQualityKey(it, preferredQuality) }
+        val cappedUrl = key?.let { ladder!![it] } ?: url
+        return MediaDownloader.MediaSource(cappedUrl, headers, quality = key, qualityCap = preferredQuality)
+    }
 
     /**
      * Офлайн-ключ серии не знает про сезоны, а «скачать все серии» качает все сезоны сразу:

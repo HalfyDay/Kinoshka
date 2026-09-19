@@ -145,6 +145,10 @@ object EpisodeDownloadManager {
                 _tasks.value = _tasks.value - key
                 failedRequests.value = failedRequests.value - key
                 notifiedDone.remove(key)
+                // Новая постановка отменяет старый резолв: иначе повторная очередь той же
+                // серии с другим качеством молча переиспользовала бы закэшированный URL
+                // на максимуме (подписи живут 30 минут — см. resolveCached).
+                resolvedCache.remove(key)
                 pending.value = pending.value + request
                 // Новая задача во время глобальной паузы сразу встаёт «на паузу».
                 val phase = if (pausedAll) DownloadPhase.PAUSED else DownloadPhase.QUEUED
@@ -176,6 +180,7 @@ object EpisodeDownloadManager {
                     _tasks.value = _tasks.value - key
                     failedRequests.value = failedRequests.value - key
                     notifiedDone.remove(key)
+                    resolvedCache.remove(key)
                 }
                 // Последняя задача ушла одиночными отменами — снять зависшую паузу.
                 resetPauseIfIdle()
@@ -265,6 +270,7 @@ object EpisodeDownloadManager {
                     _tasks.value = emptyMap()
                 }
                 cancelledKeys.forEach { notifiedDone.remove(it) }
+                resolvedCache.clear()
                 // cancelAll снимает и паузу: очередь пуста, продолжать нечего.
                 pausedAll = false
                 _paused.value = false
@@ -558,9 +564,13 @@ object EpisodeDownloadManager {
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "attempt $attempt/$MAX_ATTEMPTS failed for $key: ${e.message}")
-                    // Протухшая подпись CDN (401/403/404 на сегментах/плейлисте): следующий
-                    // заход резолвит свежую ссылку вместо повтора по мёртвой из кэша.
-                    if ((e.message ?: "").contains("HTTP 40")) resolvedCache.remove(key)
+                    // Протухшая подпись CDN (401/403/404/410 на сегментах/плейлисте):
+                    // следующий заход резолвит свежую ссылку вместо повтора по мёртвой
+                    // из кэша. Раньше проверка ловила только «HTTP 40*» и пропускала 410 —
+                    // очередь минутами молотила протухшие сегменты на 0% (live-кейс).
+                    if (e is MediaDownloader.SignatureExpiredException || MediaDownloader.isHttpClientError(e)) {
+                        resolvedCache.remove(key)
+                    }
                     if (attempt >= MAX_ATTEMPTS) {
                         failedRequests.value = failedRequests.value + (key to request)
                         update { it.copy(phase = DownloadPhase.FAILED, error = e.message ?: "Ошибка скачивания") }

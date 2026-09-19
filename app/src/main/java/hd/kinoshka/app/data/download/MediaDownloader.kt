@@ -34,7 +34,14 @@ object MediaDownloader {
         val url: String,
         val headers: Map<String, String> = emptyMap(),
         /** Выбранный ранг лестницы («720p»); null — максимум/одиночный файл. */
-        val quality: String? = null
+        val quality: String? = null,
+        /**
+         * Потолок качества из диалога «Качество загрузки» («360p»); null — без потолка.
+         * Нужен отдельно от [quality]: выбор URL по лестнице может упереться в фолбэк
+         * выше потолка (лестница без низкого ранга или голый «Auto»), а внутри
+         * HLS-мастера низкий вариант при этом всё равно есть — давим его здесь.
+         */
+        val qualityCap: String? = null
     )
 
     data class MediaProgress(
@@ -53,6 +60,21 @@ object MediaDownloader {
 
     class DownloadException(message: String) : Exception(message)
 
+    /**
+     * Подпись CDN протухла посреди скачивания (пачка сегментов подряд отвечает
+     * 401/403/404/410): гонять остальные сотни сегментов бессмысленно — очередь
+     * сразу резолвит свежую ссылку и продолжает с partial-файлов (см. runTask).
+     */
+    class SignatureExpiredException(message: String) : Exception(message)
+
+    /** Точное совпадение «протухшей подписи»: ретраи сегментов её не лечат. */
+    internal fun isSignatureGoneError(e: Exception): Boolean =
+        Regex("HTTP (401|403|404|410)\\b").containsMatchIn(e.message ?: "")
+
+    /** Любая клиентская 4xx — для чистки закэшированного резолва перед повтором. */
+    internal fun isHttpClientError(e: Exception): Boolean =
+        Regex("HTTP 4\\d\\d\\b").containsMatchIn(e.message ?: "")
+
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .dns(hd.kinoshka.app.utils.DohFallbackDns)
@@ -63,8 +85,15 @@ object MediaDownloader {
             .build()
     }
 
-    fun offlineRoot(context: Context): File =
-        File(context.getExternalFilesDir(null) ?: context.filesDir, "offline")
+    fun offlineRoot(context: Context): File {
+        // Телефон на USB с общим доступом к файлам может отдавать внешнее хранилище ПК:
+        // раньше очередь тогда падала с ENOENT/EACCES. Проверяем монтирование и честно
+        // уходим во внутреннее хранилище — скачивание идёт, пусть и без видимости с ПК.
+        val ext = context.getExternalFilesDir(null)
+        val extMounted = ext != null &&
+            android.os.Environment.getExternalStorageState() == android.os.Environment.MEDIA_MOUNTED
+        return File((if (extMounted) ext else context.filesDir), "offline")
+    }
 
     /** Каталог серии: offline/<itemKey>/<source>/<trId>/ep_<n>/ — плейлист и сегменты живут там же. */
     fun episodeDir(context: Context, itemKey: String, source: String, translationId: String, episodeNumber: Int): File {
@@ -72,7 +101,10 @@ object MediaDownloader {
             offlineRoot(context),
             "${sanitize(itemKey)}/${sanitize(source)}/${sanitize(translationId)}/ep_$episodeNumber"
         )
-        dir.mkdirs()
+        if (!dir.isDirectory) dir.mkdirs()
+        // Без каталога дальше ловить нечего: честная видимая ошибка вместо
+        // пяти попыток с obscure-ENOENT внутри direct/HLS-веток.
+        if (!dir.isDirectory) throw DownloadException("Не удалось создать каталог загрузки — хранилище недоступно")
         return dir
     }
 
@@ -254,8 +286,11 @@ object MediaDownloader {
         // Мастер-плейлист → вариант; сегменты резолвим против url ИМЕННО варианта: он может
         // сам уйти в редирект, и его финальный url — единственная верная база.
         val (body, segmentBase) = if (playlistBody.contains("#EXT-X-STREAM-INF")) {
-            val variantUrl = pickVariant(playlistBody, playlistUrl, source.quality)
-            Log.i(TAG, "HLS master → variant $variantUrl (pref=${source.quality})")
+            // Потолок пользователя важнее ранга выбранного URL: лестница могла отдать
+            // фолбэк выше потолка (или голый Auto), а внутри мастера низкий вариант есть.
+            val effectiveCap = source.qualityCap ?: source.quality
+            val variantUrl = pickVariant(playlistBody, playlistUrl, effectiveCap)
+            Log.i(TAG, "HLS master → variant $variantUrl (pref=$effectiveCap)")
             fetchPlaylist(variantUrl, source.headers)
         } else {
             playlistBody to playlistUrl
@@ -296,6 +331,10 @@ object MediaDownloader {
         val permits = kotlinx.coroutines.sync.Semaphore(4)
         var firstFailure: Pair<Int, Exception>? = null
         val failureLock = Any()
+        // Подряд идущие 401/403/404/410 = мёртвая подпись всего плейлиста, а не битые
+        // отдельные сегменты: после трёх таких сразу бросаем SignatureExpiredException —
+        // иначе фильм на 1000 сегментов минутами висит на 0% (live: все сегменты HTTP 410).
+        val consecutiveGone = java.util.concurrent.atomic.AtomicInteger(0)
         kotlinx.coroutines.coroutineScope {
             segments.mapIndexed { index, seg ->
                 async {
@@ -335,15 +374,29 @@ object MediaDownloader {
                                     lastError = e
                                     Log.w(TAG, "segment $index attempt $attempt failed: ${e.message} " +
                                         "(dirExists=${dir.exists()} files=${dir.listFiles()?.size})")
+                                    // Мёртвую подпись ретраями не чинить — только время жечь.
+                                    if (isSignatureGoneError(e)) break
                                     if (attempt < 3) kotlinx.coroutines.delay(500L * attempt)
                                 }
                             }
                             if (lastError != null) {
                                 target.delete()
+                                // Три подряд «протухших» сегмента — подпись мертва целиком:
+                                // обрываем immediately, очередь возьмёт свежую ссылку.
+                                if (isSignatureGoneError(lastError)) {
+                                    if (consecutiveGone.incrementAndGet() >= 3) {
+                                        throw SignatureExpiredException(
+                                            "Подпись CDN истекла (${lastError.message}): обновляем ссылку…"
+                                        )
+                                    }
+                                } else {
+                                    consecutiveGone.set(0)
+                                }
                                 synchronized(failureLock) {
                                     if (firstFailure == null) firstFailure = index to lastError
                                 }
                             } else {
+                                consecutiveGone.set(0)
                                 totalBytes.addAndGet(target.length())
                                 doneCount.incrementAndGet()
                                 writtenArr[index] = name to seg.durationSec
