@@ -40,12 +40,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
@@ -85,9 +88,18 @@ import hd.kinoshka.app.data.source.SourceHealth
 import hd.kinoshka.app.data.source.SourceHealthChecker
 import hd.kinoshka.app.data.source.buildCustomId
 import hd.kinoshka.app.data.source.validateCustomSource
+import hd.kinoshka.app.ui.platform.rememberKinoPlatformActions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** Инструкция для разработчиков JS-плагинов (контракт manifest/resolve). */
+private const val JS_PLUGIN_DEV_DOCS_URL =
+    "https://github.com/HalfyDay/Kinoshka/blob/main/docs/js-plugins/README.md"
+/** Репозиторий-витрина JS-плагинов. */
+private const val JS_PLUGIN_REPO_URL = "https://github.com/HalfyDay/kinoshka-plugins"
+/** Telegram-чат: сюда присылать свои расширения на модерацию для каталога. */
+private const val PLUGIN_MODERATION_CHAT_URL = "https://t.me/+uAYH589yppczMjIy"
 
 /**
  * Отдельная страница управления источниками (из «Настроек»): три раздела
@@ -146,6 +158,7 @@ fun SourcesSettingsScreen(
     var updatingOne by remember { mutableStateOf<String?>(null) }
     // Диалог настроек каталога (свой URL витрины).
     var showCatalogSettings by remember { mutableStateOf(false) }
+    val platformActions = rememberKinoPlatformActions()
 
     // Удаление извне (или протухший health) — чистим статусы удалённых своих.
     LaunchedEffect(customSources) {
@@ -461,6 +474,31 @@ fun SourcesSettingsScreen(
                                             modifier = Modifier.padding(top = 4.dp)
                                         )
                                     }
+                                    // Разработчикам: инструкция по JS-плагинам и репозиторий.
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        TextButton(
+                                            onClick = { platformActions.openInBrowser(JS_PLUGIN_DEV_DOCS_URL) }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Description,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Инструкция")
+                                        }
+                                        TextButton(
+                                            onClick = { platformActions.openInBrowser(JS_PLUGIN_REPO_URL) }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Code,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Репозиторий")
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -560,6 +598,56 @@ fun SourcesSettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
                     )
+                    // Разработчикам: инструкция, репозиторий и чат для модерации.
+                    Text(
+                        text = "Свой плагин — присылайте в Telegram-чат, добавим в каталог после модерации.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = { platformActions.openInBrowser(JS_PLUGIN_DEV_DOCS_URL) }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Description,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Инструкция")
+                        }
+                        TextButton(
+                            onClick = { platformActions.openInBrowser(JS_PLUGIN_REPO_URL) }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Code,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Репозиторий")
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = { platformActions.openInBrowser(PLUGIN_MODERATION_CHAT_URL) }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Send,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Telegram-чат для модерации")
+                        }
+                    }
                 }
                 // Свой URL витрины — в диалоге настроек каталога (кнопка «Настройки» выше).
                 if (catalogMessage != null) {
