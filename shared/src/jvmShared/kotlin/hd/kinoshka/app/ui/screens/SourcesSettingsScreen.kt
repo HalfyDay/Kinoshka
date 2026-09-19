@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.TextButton
@@ -89,6 +90,7 @@ import hd.kinoshka.app.data.source.SourceHealthChecker
 import hd.kinoshka.app.data.source.buildCustomId
 import hd.kinoshka.app.data.source.validateCustomSource
 import hd.kinoshka.app.ui.platform.rememberKinoPlatformActions
+import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -158,6 +160,8 @@ fun SourcesSettingsScreen(
     var updatingOne by remember { mutableStateOf<String?>(null) }
     // Диалог настроек каталога (свой URL витрины).
     var showCatalogSettings by remember { mutableStateOf(false) }
+    // Диалог настроек своих (обмен файлом + ссылки для разработчиков).
+    var showCustomSettings by remember { mutableStateOf(false) }
     val platformActions = rememberKinoPlatformActions()
 
     // Удаление извне (или протухший health) — чистим статусы удалённых своих.
@@ -391,114 +395,35 @@ fun SourcesSettingsScreen(
                     modifier = Modifier.fillMaxSize().topFadingEdge(customListState),
                     contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)
                 ) {
-                    // Свои: одна управляющая карточка (добавить + обмен файлом)
-                    // и компактный список — без лишних плиток.
+                    // Свои: строка «Добавить + шестерёнка» (обмен файлом и ссылки
+                    // для разработчиков — в диалоге настроек) и компактный список.
                     if (onSaveCustomSource != null) {
                         item {
-                            KinoSettingsCard {
-                                Column(
-                                    modifier = Modifier.fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                FilledTonalButton(
+                                    onClick = { addingCustom = true },
+                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                                    modifier = Modifier.weight(1f)
                                 ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "Мои источники" +
-                                                    (if (customSources.isNotEmpty()) " • ${customSources.size}" else ""),
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                            Text(
-                                                text = "Embed, Stremio и JS-плагины",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                        FilledTonalButton(
-                                            onClick = { addingCustom = true },
-                                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Add,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Добавить")
-                                        }
-                                    }
-                                    // Обмен с другим устройством: файл JSON (экспорт своих +
-                                    // импорт слиянием: дубликаты пропускаются, коллизии
-                                    // переименовываются). Статус — тут же, второй строкой.
-                                    if (onExportCustomSourcesFile != null || onImportCustomSourcesFile != null) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            if (onExportCustomSourcesFile != null) {
-                                                TextButton(
-                                                    onClick = onExportCustomSourcesFile,
-                                                    enabled = customSources.isNotEmpty()
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Filled.Upload,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Text("Экспорт")
-                                                }
-                                            }
-                                            if (onImportCustomSourcesFile != null) {
-                                                TextButton(onClick = onImportCustomSourcesFile) {
-                                                    Icon(
-                                                        imageVector = Icons.Filled.Download,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Text("Импорт")
-                                                }
-                                            }
-                                            if (fileExchangeMessage != null) {
-                                                Text(
-                                                    text = fileExchangeMessage,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.tertiary,
-                                                    modifier = Modifier.padding(start = 8.dp)
-                                                )
-                                            }
-                                        }
-                                    } else if (fileExchangeMessage != null) {
-                                        Text(
-                                            text = fileExchangeMessage,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.tertiary,
-                                            modifier = Modifier.padding(top = 4.dp)
-                                        )
-                                    }
-                                    // Разработчикам: инструкция по JS-плагинам и репозиторий.
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        TextButton(
-                                            onClick = { platformActions.openInBrowser(JS_PLUGIN_DEV_DOCS_URL) }
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Description,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Инструкция")
-                                        }
-                                        TextButton(
-                                            onClick = { platformActions.openInBrowser(JS_PLUGIN_REPO_URL) }
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Code,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Репозиторий")
-                                        }
-                                    }
+                                    Icon(
+                                        imageVector = Icons.Filled.Add,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Добавить")
+                                }
+                                androidx.compose.material3.IconButton(
+                                    onClick = { showCustomSettings = true }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Settings,
+                                        contentDescription = "Настройки"
+                                    )
                                 }
                             }
                         }
@@ -540,7 +465,7 @@ fun SourcesSettingsScreen(
                                 ?.let { move -> { move(custom.id, 1) } }
                         )
                     }
-            // Обмен файлом (экспорт/импорт) живёт в управляющей карточке выше.
+            // Обмен файлом и ссылки для разработчиков — в диалоге настроек (шестерёнка выше).
                 } // конец страницы «Свои».
                     else -> LazyColumn(
                         state = catalogListState,
@@ -574,16 +499,13 @@ fun SourcesSettingsScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(if (catalogLoading) "Обновление…" else "Обновить каталог")
                         }
-                        if (onCatalogUrlChanged != null) {
-                            TextButton(onClick = { showCatalogSettings = true }) {
-                                Icon(
-                                    imageVector = Icons.Filled.Settings,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Настройки")
-                            }
+                        androidx.compose.material3.IconButton(
+                            onClick = { showCatalogSettings = true }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Settings,
+                                contentDescription = "Настройки"
+                            )
                         }
                     }
                     Text(
@@ -598,56 +520,8 @@ fun SourcesSettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
                     )
-                    // Разработчикам: инструкция, репозиторий и чат для модерации.
-                    Text(
-                        text = "Свой плагин — присылайте в Telegram-чат, добавим в каталог после модерации.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TextButton(
-                            onClick = { platformActions.openInBrowser(JS_PLUGIN_DEV_DOCS_URL) }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Description,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Инструкция")
-                        }
-                        TextButton(
-                            onClick = { platformActions.openInBrowser(JS_PLUGIN_REPO_URL) }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Code,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Репозиторий")
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TextButton(
-                            onClick = { platformActions.openInBrowser(PLUGIN_MODERATION_CHAT_URL) }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Send,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Telegram-чат для модерации")
-                        }
-                    }
+                    // Ссылки для разработчиков (инструкция, репозиторий, чат) —
+                    // в диалоге настроек каталога (кнопка «Настройки» выше).
                 }
                 // Свой URL витрины — в диалоге настроек каталога (кнопка «Настройки» выше).
                 if (catalogMessage != null) {
@@ -705,36 +579,142 @@ fun SourcesSettingsScreen(
             }
         )
     }
-    if (showCatalogSettings && onCatalogUrlChanged != null) {
+    if (showCatalogSettings) {
         var draft by remember(catalogUrl) { mutableStateOf(catalogUrl) }
         AlertDialog(
             onDismissRequest = { showCatalogSettings = false },
             title = { Text("Настройки каталога") },
             text = {
-                Column {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (onCatalogUrlChanged != null) {
+                        Text(
+                            text = "Своя витрина: URL index.json в том же формате (пусто — официальная)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = { draft = it },
+                            placeholder = { Text("https://…/index.json") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    }
                     Text(
-                        text = "Своя витрина: URL index.json в том же формате (пусто — официальная)",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "Разработчикам",
+                        style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        placeholder = { Text("https://…/index.json") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                    DialogLinkButton(
+                        icon = Icons.Filled.Description,
+                        label = "Инструкция",
+                        url = JS_PLUGIN_DEV_DOCS_URL,
+                        onOpen = platformActions.openInBrowser
+                    )
+                    DialogLinkButton(
+                        icon = Icons.Filled.Code,
+                        label = "Репозиторий",
+                        url = JS_PLUGIN_REPO_URL,
+                        onOpen = platformActions.openInBrowser
+                    )
+                    DialogLinkButton(
+                        icon = Icons.Filled.Send,
+                        label = "Telegram чат",
+                        url = PLUGIN_MODERATION_CHAT_URL,
+                        onOpen = platformActions.openInBrowser
+                    )
+                    Text(
+                        text = "Свой плагин — присылайте в Telegram чат, добавим в каталог после модерации.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    onCatalogUrlChanged(draft.trim())
-                    showCatalogSettings = false
-                }) { Text("ОК") }
+                if (onCatalogUrlChanged != null) {
+                    TextButton(onClick = {
+                        onCatalogUrlChanged(draft.trim())
+                        showCatalogSettings = false
+                    }) { Text("ОК") }
+                } else {
+                    TextButton(onClick = { showCatalogSettings = false }) { Text("Закрыть") }
+                }
             },
             dismissButton = {
-                TextButton(onClick = { showCatalogSettings = false }) { Text("Отмена") }
+                if (onCatalogUrlChanged != null) {
+                    TextButton(onClick = { showCatalogSettings = false }) { Text("Отмена") }
+                }
+            }
+        )
+    }
+    if (showCustomSettings) {
+        AlertDialog(
+            onDismissRequest = { showCustomSettings = false },
+            title = { Text("Настройки") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // Обмен с другим устройством: файл JSON (экспорт своих +
+                    // импорт слиянием: дубликаты пропускаются, коллизии
+                    // переименовываются). Статус — тут же, второй строкой.
+                    if (onExportCustomSourcesFile != null || onImportCustomSourcesFile != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (onExportCustomSourcesFile != null) {
+                                TextButton(
+                                    onClick = onExportCustomSourcesFile,
+                                    enabled = customSources.isNotEmpty()
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Upload,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Экспорт")
+                                }
+                            }
+                            if (onImportCustomSourcesFile != null) {
+                                TextButton(onClick = onImportCustomSourcesFile) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Download,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Импорт")
+                                }
+                            }
+                        }
+                        if (fileExchangeMessage != null) {
+                            Text(
+                                text = fileExchangeMessage,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                        }
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    }
+                    Text(
+                        text = "Разработчикам",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    DialogLinkButton(
+                        icon = Icons.Filled.Description,
+                        label = "Инструкция",
+                        url = JS_PLUGIN_DEV_DOCS_URL,
+                        onOpen = platformActions.openInBrowser
+                    )
+                    DialogLinkButton(
+                        icon = Icons.Filled.Code,
+                        label = "Репозиторий",
+                        url = JS_PLUGIN_REPO_URL,
+                        onOpen = platformActions.openInBrowser
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCustomSettings = false }) { Text("Закрыть") }
             }
         )
     }
@@ -754,6 +734,28 @@ fun SourcesSettingsScreen(
             }
         )
     }
+    }
+}
+
+/**
+ * Строка-ссылка в диалогах настроек (Свои/Каталог): иконка + подпись,
+ * открывает URL во внешнем браузере. Левый край у всех одинаковый.
+ */
+@Composable
+private fun DialogLinkButton(
+    icon: ImageVector,
+    label: String,
+    url: String,
+    onOpen: (String) -> Unit
+) {
+    TextButton(onClick = { onOpen(url) }) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(label)
     }
 }
 
