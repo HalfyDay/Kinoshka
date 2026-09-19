@@ -37,6 +37,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -231,24 +232,35 @@ fun SourcesSettingsScreen(
         scope.launch { pagerState.animateScrollToPage(page) }
     }
 
-    // Закреплены только шапка-пилюля и заголовки разделов (как вкладки
-    // библиотеки: текст без пилюль, активный — жирный primary).
-    // Сами разделы — HorizontalPager: переключаются и тапом, и свайпом.
+    // Шапка в стиле поисковой строки Библиотеки/Профиля: круглая кнопка
+    // Назад 48dp + пилюля-заголовок 24dp (surfaceContainerHigh, тень) вместо
+    // единой карточки. Полоса табов ниже непрозрачная (фон), как в библиотеке:
+    // список не просвечивает под ними при скролле. Сами разделы —
+    // HorizontalPager: переключаются и тапом, и свайпом.
     PinnedHeaderPage(
         title = "Источники",
         subtitle = "Наличие зависит от фильма · проба на «Матрице»",
         onBack = onBack,
+        headerCard = { SourcesSearchHeader(onBack = onBack) },
         extraHeader = {
-            SourcesTabs(
-                pagerState = pagerState,
-                customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
-                catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
-                onSelect = ::goToPage
-            )
+            Surface(
+                color = MaterialTheme.colorScheme.background,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                SourcesTabs(
+                    pagerState = pagerState,
+                    customLabel = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
+                    catalogLabel = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
+                    onSelect = ::goToPage
+                )
+            }
         }
     ) { topPad ->
         HorizontalPager(
             state = pagerState,
+            // Зазор между страницами, как в библиотеке: соседние страницы
+            // визуально не слипаются в шве посередине свайпа.
+            pageSpacing = 10.dp,
             modifier = Modifier.fillMaxSize()
         ) { page ->
             when (page) {
@@ -305,16 +317,14 @@ fun SourcesSettingsScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(if (checkingAll) "Проверка…" else "Проверить все источники")
                 }
-                Text(
-                    text = if (checkedCount == 0) {
-                        "Kodik, прямые ссылки, аниме-каталоги и 18+"
-                    } else {
-                        "Проверено $checkedCount из ${PlaybackSources.allInfos().size} · работают: $okCount"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
-                )
+                if (checkedCount > 0) {
+                    Text(
+                        text = "Проверено $checkedCount из ${PlaybackSources.allInfos().size} · работают: $okCount",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                    )
+                }
             }
             // Встроенные по подразделам: Все — группировка по разделам,
             // Аниме/18+ — плоские списки подраздела.
@@ -651,6 +661,59 @@ fun SourcesSettingsScreen(
 }
 
 /**
+ * Шапка страницы в стиле поисковой строки Библиотеки/Профиля ([SearchRow]):
+ * круглая кнопка Назад 48dp + пилюля-заголовок 24dp на всю ширину
+ * (surfaceContainerHigh, тень 3dp) вместо единой карточки.
+ */
+@Composable
+private fun SourcesSearchHeader(onBack: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            onClick = onBack,
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shadowElevation = 3.dp,
+            modifier = Modifier.size(48.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Назад",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shadowElevation = 3.dp,
+            modifier = Modifier.weight(1f)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "Источники",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Наличие зависит от фильма · проба на «Матрице»",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/**
  * Заголовки разделов в стиле вкладок библиотеки (История, Смотрю…):
  * текстовые табы без пилюль, активный — жирный primary. Тап дублирует свайп пейджера.
  */
@@ -733,7 +796,8 @@ private fun SourceFilterPill(
 /**
  * Строка источника на отдельной странице: Surface-плитка в стиле пикера —
  * слева иконка с ободком статуса (зелёный — работает, красный — недоступен,
- * серый — не проверен/выключен/проверяется), название, описание и выключатель.
+ * серый — не проверен/выключен), название, описание и выключатель.
+ * Во время проверки иконка остаётся, вокруг неё крутится кольцо прогресса.
  * Подписей статуса снизу нет. Тап по плитке (мимо выключателя) запускает проверку.
  */
 @Composable
@@ -771,18 +835,26 @@ private fun SourcePageRow(
         ) {
             // Иконка источника: платформа подставляет реальные картинки через
             // слот sourceIcon (по умолчанию — фирменный рисованный бейдж),
-            // ободок — статус проверки.
+            // ободок — статус проверки. Иконка не пропадает: во время проверки
+            // вокруг неё крутится кольцо прогресса на месте ободка.
             Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .border(2.dp, statusColor, CircleShape)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                modifier = Modifier.size(48.dp),
                 contentAlignment = Alignment.Center
             ) {
                 if (checking) {
-                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                } else {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(48.dp),
+                        strokeWidth = 3.dp
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .border(2.dp, statusColor, CircleShape)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                    contentAlignment = Alignment.Center
+                ) {
                     sourceIcon(info)
                 }
             }

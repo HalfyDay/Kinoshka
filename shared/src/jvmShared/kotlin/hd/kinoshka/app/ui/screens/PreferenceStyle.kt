@@ -87,12 +87,13 @@ fun KinoSettingsDivider(modifier: Modifier = Modifier) {
 }
 
 /**
- * Страница настроек с закреплённой шапкой-пилюлей: [SettingsHeaderCard] (и,
- * опционально, [extraHeader] — например, ряд фильтров) парят ПОВЕРХ контента
- * без фоновой полосы. Контент занимает весь экран и уходит под пилюлю, поэтому
- * [content] обязан начинаться с верхнего отступа [topPad] (обычно contentPadding
- * списка) — иначе первый элемент окажется под шапкой. Обрезка скролла видна
- * только за самой пилюлей, глухих полос, режущих строки в открытом виде, нет.
+ * Страница настроек с закреплённой шапкой: [headerCard] (по умолчанию
+ * [SettingsHeaderCard]) и, опционально, [extraHeader] — например, ряд
+ * фильтров — парят ПОВЕРХ контента без фоновой полосы. Контент занимает весь
+ * экран и уходит под шапку, поэтому [content] обязан начинаться с верхнего
+ * отступа [topPad] (обычно contentPadding списка) — иначе первый элемент
+ * окажется под шапкой. Обрезка скролла видна только за самой шапкой, глухих
+ * полос, режущих строки в открытом виде, нет.
  */
 @Composable
 fun PinnedHeaderPage(
@@ -103,6 +104,15 @@ fun PinnedHeaderPage(
     headerActions: (@Composable () -> Unit)? = null,
     extraHeader: (@Composable ColumnScope.() -> Unit)? = null,
     estimatedTopPad: Dp = 120.dp,
+    headerCard: @Composable ColumnScope.() -> Unit = {
+        SettingsHeaderCard(
+            title = title,
+            subtitle = subtitle,
+            onBack = onBack,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            action = headerActions
+        )
+    },
     content: @Composable BoxScope.(topPad: Dp) -> Unit
 ) {
     Box(
@@ -119,13 +129,7 @@ fun PinnedHeaderPage(
                 .fillMaxWidth()
                 .onSizeChanged { headerHPx = it.height }
         ) {
-            SettingsHeaderCard(
-                title = title,
-                subtitle = subtitle,
-                onBack = onBack,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                action = headerActions
-            )
+            headerCard()
             if (extraHeader != null) extraHeader()
         }
     }
