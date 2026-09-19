@@ -292,7 +292,7 @@ fun SourcesSettingsScreen(
                     contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)
                 ) {
                     // Подразделы встроенных: Все (группировка по разделам) /
-                    // Аниме / 18+. Уезжают вверх вместе со списком.
+                    // Фильмы / Аниме / 18+. Уезжают вверх вместе со списком.
                     item {
                         LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -303,6 +303,13 @@ fun SourcesSettingsScreen(
                                     label = "Все",
                                     selected = builtInFilter == null,
                                     onClick = { builtInFilter = null }
+                                )
+                            }
+                            item {
+                                SourceFilterPill(
+                                    label = SourceCategory.FILMS.title,
+                                    selected = builtInFilter == SourceCategory.FILMS,
+                                    onClick = { builtInFilter = SourceCategory.FILMS }
                                 )
                             }
                             item {
@@ -350,7 +357,7 @@ fun SourcesSettingsScreen(
                 }
             }
             // Встроенные по подразделам: Все — группировка по разделам,
-            // Аниме/18+ — плоские списки подраздела.
+            // Фильмы/Аниме/18+ — плоские списки подраздела.
             if (builtInFilter == null) {
                 SourceCategory.entries.forEach { category ->
                     val inCategory = builtIns.filter { category in it.categories }
