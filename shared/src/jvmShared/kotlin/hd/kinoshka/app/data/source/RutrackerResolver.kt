@@ -93,6 +93,10 @@ object RutrackerResolver {
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .dns(hd.kinoshka.app.utils.DohFallbackDns)
+            // Трекер режется провайдерами по SNI/IP: при настроенном прокси
+            // зеркала идут через него (StreamProxyConfig), иначе — напрямую.
+            .proxySelector(StreamProxySelector())
+            .proxyAuthenticator(StreamProxyConfig.okHttpProxyAuthenticator())
             .cookieJar(jar)
             .followRedirects(true)
             .followSslRedirects(true)
@@ -243,6 +247,161 @@ object RutrackerResolver {
         prefs?.remove(PREFS_USERNAME)?.remove(PREFS_COOKIES)?.apply()
         KLog.i(TAG, "logout")
     }
+
+    // ------------------------------------------------------------------
+    // Вход через WebView (с капчей)
+    // ------------------------------------------------------------------
+
+    /**
+     * Приём кук, собранных из WebView после ручного входа (там же решается
+     * капча, которую POST-логин пройти не может). Куки должны быть с
+     * `expiresAt` в будущем — Android-сторона выставляет +365 дней, т.к.
+     * CookieManager срок жизни не отдаёт. Сессия не проверяется здесь —
+     * это делает [confirmWebSession].
+     */
+    fun putWebCookies(cookies: List<Cookie>) {
+        if (cookies.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val valid = cookies.filter { it.expiresAt > now }
+        if (valid.isEmpty()) return
+        valid.groupBy { it.domain.lowercase() }.forEach { (domain, list) ->
+            val slot = cookieStore.getOrPut(domain) { mutableListOf() }
+            synchronized(slot) {
+                list.forEach { fresh ->
+                    slot.removeAll { it.name == fresh.name }
+                    slot.add(fresh)
+                }
+            }
+        }
+        persistSession()
+    }
+
+    /**
+     * Проверка сессии, импортированной из WebView через [putWebCookies]:
+     * GET tracker.php, без формы входа — успех. Куки при неудаче НЕ чистятся
+     * (в отличие от [login]): пользователь дорешивает капчу в том же окне
+     * и жмёт проверку повторно без нового ввода логина/пароля.
+     */
+    suspend fun confirmWebSession(): LoginResult = withContext(Dispatchers.IO) {
+        if (!hasSessionCookie()) {
+            return@withContext LoginResult(
+                false,
+                "Сессия не найдена — завершите вход на странице и нажмите «Я вошёл»"
+            )
+        }
+        var networkFailures = 0
+        for (mirror in orderedMirrors()) {
+            val probe = try {
+                get("$mirror/forum/tracker.php", referer = "$mirror/forum/")
+            } catch (e: Exception) {
+                KLog.w(TAG, "web confirm via $mirror failed: ${e.javaClass.simpleName}")
+                networkFailures++
+                continue
+            } ?: run { networkFailures++; continue }
+            if (isLoginPage(probe)) continue
+            val nick = parseUsername(probe)
+            username = nick
+            if (nick != null) prefs?.putString(PREFS_USERNAME, nick)
+            prefs?.apply()
+            persistSession()
+            lastWorkingMirror = mirror
+            searchCache.clear()
+            KLog.i(TAG, "web login confirmed as ${nick ?: "?"} via $mirror")
+            return@withContext LoginResult(true, "Вход выполнен: ${nick ?: "Rutracker"}")
+        }
+        return@withContext when {
+            networkFailures >= MIRRORS.size ->
+                LoginResult(false, "Нет соединения с Rutracker (зеркала недоступны)")
+            else -> LoginResult(
+                false,
+                "Вход не найден — завершите вход на странице (включая капчу) и нажмите «Я вошёл»"
+            )
+        }
+    }
+
+    /**
+     * Ник залогиненного пользователя из HTML трекера: ссылка на свой профиль
+     * `profile.php?mode=viewprofile`. null — разметка не узнана (сессия при
+     * этом всё равно валидна, ник просто не покажем).
+     */
+    fun parseUsername(html: String): String? {
+        Regex("""<a[^>]+href="[^"]*profile\.php\?mode=viewprofile[^"]*"[^>]*>([^<]{1,64})</a>""")
+            .findAll(html)
+            .map { unescapeHtml(it.groupValues[1]).replace(Regex("""\s+"""), " ").trim() }
+            .firstOrNull { it.isNotBlank() }
+            ?.let { return it }
+        Regex(
+            """(?:Вы зашли как|Logged in as)[^<]*<a[^>]*>([^<]{1,64})</a>""",
+            RegexOption.IGNORE_CASE
+        ).find(html)
+            ?.let {
+                val nick = unescapeHtml(it.groupValues[1]).replace(Regex("""\s+"""), " ").trim()
+                if (nick.isNotBlank()) return nick
+            }
+        return null
+    }
+
+    // ------------------------------------------------------------------
+    // Проверка доступности (кнопка «Проверить» в настройках прокси)
+    // ------------------------------------------------------------------
+
+    data class AccessCheck(val ok: Boolean, val message: String)
+
+    /**
+     * Проба зеркал через текущую сетевую конфигурацию (DoH + прокси).
+     * Отдельный клиент без cookieJar — гостевые куки не пачкают сессию.
+     *
+     * @param proxyOverride проверить черновик из поля ввода, не трогая
+     * сохранённую настройку (null — использовать сохранённую).
+     */
+    suspend fun checkAccess(proxyOverride: String? = null): AccessCheck = withContext(Dispatchers.IO) {
+        val previous = StreamProxyConfig.proxyUrl
+        if (proxyOverride != null) StreamProxyConfig.proxyUrl = proxyOverride.ifBlank { null }
+        try {
+            for (mirror in MIRRORS) {
+                val page = probe(mirror) ?: continue
+                val via = if (StreamProxyConfig.okHttpProxy(mirror) != null) "через прокси" else "напрямую"
+                val state = if (isLoginPage(page)) " — нужен вход" else " — вход выполнен"
+                return@withContext AccessCheck(true, "Доступен $via ($mirror)$state")
+            }
+            AccessCheck(
+                false,
+                "Нет соединения: зеркала недоступны (${MIRRORS.size} шт.). " +
+                    "Если трекер блокирует провайдер — укажите HTTP/SOCKS-прокси выше"
+            )
+        } finally {
+            if (proxyOverride != null) StreamProxyConfig.proxyUrl = previous
+        }
+    }
+
+    private val probeClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .dns(hd.kinoshka.app.utils.DohFallbackDns)
+            .proxySelector(StreamProxySelector())
+            .proxyAuthenticator(StreamProxyConfig.okHttpProxyAuthenticator())
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private fun probe(mirror: String): String? = runCatching {
+        val request = Request.Builder()
+            .url("$mirror/forum/login.php")
+            .header("User-Agent", USER_AGENT)
+            .header("Referer", "$mirror/forum/")
+            .build()
+        probeClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                KLog.w(TAG, "probe $mirror -> ${response.code}")
+                null
+            } else {
+                response.body.string()
+            }
+        }
+    }.onFailure { KLog.w(TAG, "probe $mirror failed: ${it.javaClass.simpleName}") }
+        .getOrNull()
 
     /** Сервер перестал принимать сессию (трекер отдал форму входа): сбрасываем куки, логин сохраняем. */
     private fun expireSession() {

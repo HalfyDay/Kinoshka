@@ -64,9 +64,19 @@ import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.content.ContextCompat
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
+import java.net.InetSocketAddress
+import java.net.Proxy
+import okhttp3.Cookie
+import hd.kinoshka.app.data.source.RutrackerResolver
+import hd.kinoshka.app.data.source.StreamProxyConfig
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
@@ -82,7 +92,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Circle
@@ -206,6 +216,10 @@ fun ProfileScreen(
     var cropSourceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var showWebLoginDialog by remember { mutableStateOf(false) }
     var showAnixartLoginDialog by remember { mutableStateOf(false) }
+    // Rutracker: вход нужен шиту «Торренты» (раздачи без сессии не ищутся).
+    var showRutrackerLogin by remember { mutableStateOf(false) }
+    var rutrackerLoggedIn by remember { mutableStateOf(hd.kinoshka.app.data.source.RutrackerResolver.isLoggedIn()) }
+    var rutrackerUser by remember { mutableStateOf(hd.kinoshka.app.data.source.RutrackerResolver.savedUsername()) }
 
     // Cloud library backup (Yandex Disk / WebDAV) — reinstall survival for the whole library.
     LaunchedEffect(context) { hd.kinoshka.app.data.cloud.CloudBackupManager.init(context) }
@@ -258,6 +272,19 @@ fun ProfileScreen(
                 onVerifyRestoreAnixart(login, newPassword, hash, code) { ok, message ->
                     if (ok) showAnixartLoginDialog = false
                     onResult(ok, message)
+                }
+            }
+        )
+    }
+
+    if (showRutrackerLogin) {
+        ProfileRutrackerLoginDialog(
+            onDismiss = { showRutrackerLogin = false },
+            onLoggedIn = { username ->
+                showRutrackerLogin = false
+                rutrackerLoggedIn = true
+                rutrackerUser = username.ifBlank {
+                    hd.kinoshka.app.data.source.RutrackerResolver.savedUsername()
                 }
             }
         )
@@ -329,14 +356,14 @@ fun ProfileScreen(
     val showAccounts = matchesSearchQuery(
         profileQuery,
         "Аккаунт Копии",
-        "Shikimori, облако, резервная копия, экспорт, импорт",
-        "аккаунт шикимори shikimori синхронизация вход облако яндекс диск webdav копия экспорт импорт файл json библиотека восстановить сохранить"
+        "Shikimori, Anixart, Rutracker, облако, резервная копия, экспорт, импорт",
+        "аккаунт шикимори shikimori аниксарт anixart рутрекер rutracker торренты раздачи трекер синхронизация вход облако яндекс диск webdav копия экспорт импорт файл json библиотека восстановить сохранить"
     )
     val settingsMatches = remember(profileQuery) {
         if (profileQuery.isBlank()) {
             emptyList()
         } else {
-            settingsSearchEntries(hasPlayerSettings = true, showDebugSettings = BuildConfig.DEBUG)
+            settingsSearchEntries(hasPlayerSettings = true, showDebugSettings = BuildConfig.DEBUG, hasProxySettings = true)
                 .filter { matchesSearchQuery(profileQuery, it.title, it.subtitle, it.keywords) }
         }
     }
@@ -637,6 +664,57 @@ fun ProfileScreen(
 
                     HorizontalDivider()
 
+                    ProfileSectionHeader(
+                        brandIcon = {
+                            Image(
+                                painter = painterResource(hd.kinoshka.app.R.drawable.ic_src_rutracker),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .clip(CircleShape)
+                            )
+                        },
+                        title = "Аккаунт Rutracker"
+                    )
+                    // Вход нужен шиту «Торренты»: без сессии раздачи Rutracker не ищутся.
+                    // Пароль не хранится — только кука сессии (как в шите загрузок).
+                    if (rutrackerLoggedIn) {
+                        Text(
+                            text = if (!rutrackerUser.isNullOrBlank()) "Вход выполнен: $rutrackerUser"
+                            else "Вход выполнен",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    hd.kinoshka.app.data.source.RutrackerResolver.logout()
+                                }
+                                rutrackerLoggedIn = false
+                                rutrackerUser = null
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Выйти из Rutracker")
+                        }
+                    } else {
+                        Text(
+                            text = "Раздачи торрентов после входа",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Button(
+                            onClick = { showRutrackerLogin = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Войти в Rutracker", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    HorizontalDivider()
+
                     CloudBackupSection(
                         config = cloudConfig,
                         status = cloudStatus,
@@ -667,7 +745,7 @@ fun ProfileScreen(
                     HorizontalDivider()
 
                     ProfileSectionHeader(
-                        icon = Icons.Filled.Backup,
+                        icon = Icons.Filled.Description,
                         title = "Резервная копия в файл"
                     )
                     Row(
@@ -2604,4 +2682,271 @@ internal fun OAuthWebLoginDialog(
             }
         }
     }
+}
+
+/**
+ * Вход в Rutracker для страницы Профиля: тот же WebView-флоу, что в шите
+ * «Торренты» (капча решается на странице, пароль не хранится — только сессия).
+ */
+@Composable
+private fun ProfileRutrackerLoginDialog(
+    onDismiss: () -> Unit,
+    onLoggedIn: (String) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var proxyNote by remember { mutableStateOf<String?>(null) }
+    val setLoginError: (String?) -> Unit = { error = it }
+    var autoChecked by remember { mutableStateOf(false) }
+
+    fun checkLogin() {
+        if (busy) return
+        busy = true
+        error = null
+        scope.launch {
+            val cookies = collectProfileRutrackerCookies()
+            if (cookies.none { it.name == "bb_session" }) {
+                busy = false
+                error = "Сессия не найдена — войдите на странице выше (включая капчу) и нажмите ещё раз"
+                return@launch
+            }
+            RutrackerResolver.putWebCookies(cookies)
+            val result = withContext(Dispatchers.IO) { RutrackerResolver.confirmWebSession() }
+            busy = false
+            if (result.ok) onLoggedIn(RutrackerResolver.savedUsername() ?: "") else error = result.message
+        }
+    }
+
+    // WebView игнорирует OkHttp-прокси резолвера: при настроенном прокси заворачиваем
+    // трекерные хосты через ProxyController (process-wide — снимаем при закрытии диалога).
+    LaunchedEffect(Unit) {
+        val wv = webViewRef ?: return@LaunchedEffect
+        val executor = ContextCompat.getMainExecutor(context)
+        val raw = StreamProxyConfig.proxyUrl?.trim().takeUnless { it.isNullOrEmpty() }
+        if (raw == null) {
+            wv.loadUrl(PROFILE_RUTRACKER_LOGIN_URL)
+            return@LaunchedEffect
+        }
+        val parsed = StreamProxyConfig.parseProxy(raw)
+        val addr = parsed?.address() as? InetSocketAddress
+        if (parsed?.type() != Proxy.Type.HTTP || addr == null) {
+            proxyNote = "SOCKS-прокси WebView не поддерживает — страница может не открыться. " +
+                "Задайте HTTP-прокси или включите VPN"
+            wv.loadUrl(PROFILE_RUTRACKER_LOGIN_URL)
+            return@LaunchedEffect
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            proxyNote = "Этот WebView не поддерживает прокси — включите системный VPN"
+            wv.loadUrl(PROFILE_RUTRACKER_LOGIN_URL)
+            return@LaunchedEffect
+        }
+        val authNote = if ('@' in raw) " (логин/пароль прокси WebView не использует)" else ""
+        proxyNote = "Вход идёт через прокси ${addr.hostString}:${addr.port}$authNote"
+        val config = ProxyConfig.Builder()
+            .addProxyRule("http://${addr.hostString}:${addr.port}")
+            .setReverseBypassEnabled(true)
+            .apply { PROFILE_RUTRACKER_PROXY_HOSTS.forEach { addBypassRule(it) } }
+            .build()
+        runCatching {
+            ProxyController.getInstance().setProxyOverride(config, executor) {
+                webViewRef?.loadUrl(PROFILE_RUTRACKER_LOGIN_URL)
+            }
+        }.onFailure {
+            wv.loadUrl(PROFILE_RUTRACKER_LOGIN_URL)
+        }
+    }
+    DisposableEffect(context) {
+        onDispose {
+            runCatching {
+                ProxyController.getInstance()
+                    .clearProxyOverride(ContextCompat.getMainExecutor(context)) {}
+            }
+        }
+    }
+
+    Dialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.9f).padding(16.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Вход в Rutracker",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = { if (!busy) onDismiss() }) {
+                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                    }
+                }
+                Text(
+                    text = "Войдите как обычно — капча решается здесь же. Пароль не хранится, сохраняется лишь сессия.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                proxyNote?.let {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                        .background(
+                            MaterialTheme.colorScheme.surfaceContainerLow,
+                            RoundedCornerShape(12.dp)
+                        )
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            val cm = CookieManager.getInstance()
+                            cm.setAcceptCookie(true)
+                            WebView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.loadWithOverviewMode = true
+                                settings.useWideViewPort = true
+                                settings.builtInZoomControls = true
+                                settings.displayZoomControls = false
+                                settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                                cm.setAcceptThirdPartyCookies(this, true)
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageStarted(
+                                        view: WebView?,
+                                        url: String?,
+                                        favicon: Bitmap?
+                                    ) {
+                                        isLoading = true
+                                        if (error != null) error = null
+                                    }
+
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        isLoading = false
+                                        if (autoChecked || busy || view == null) return
+                                        view.evaluateJavascript(
+                                            "(function(){return document.querySelector(" +
+                                                "'[name=login_username]')?'login':'maybe-in';})();"
+                                        ) { r ->
+                                            if (r?.contains("maybe-in") == true && !autoChecked && !busy) {
+                                                autoChecked = true
+                                                checkLogin()
+                                            }
+                                        }
+                                    }
+
+                                    override fun shouldOverrideUrlLoading(
+                                        view: WebView?,
+                                        request: WebResourceRequest?
+                                    ): Boolean = false
+
+                                    override fun onReceivedError(
+                                        view: WebView?,
+                                        request: WebResourceRequest?,
+                                        error: WebResourceError?
+                                    ) {
+                                        if (request?.isForMainFrame != true) return
+                                        isLoading = false
+                                        setLoginError(
+                                            "Страница не загрузилась " +
+                                                "(${error?.description ?: "ошибка сети"}). " +
+                                                "Если трекер блокирует провайдер — " +
+                                                "задайте прокси в Настройки → Сеть"
+                                        )
+                                    }
+                                }
+                                webViewRef = this
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                        onRelease = { wv ->
+                            if (webViewRef === wv) webViewRef = null
+                            wv.stopLoading()
+                            wv.destroy()
+                        }
+                    )
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center).size(28.dp)
+                        )
+                    }
+                }
+                error?.let {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = { webViewRef?.reload() }, enabled = !busy) { Text("Обновить") }
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = { if (!busy) onDismiss() }, enabled = !busy) { Text("Отмена") }
+                    Button(onClick = ::checkLogin, enabled = !busy) {
+                        Text(if (busy) "Проверяем…" else "Я вошёл")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private const val PROFILE_RUTRACKER_LOGIN_URL = "https://rutracker.org/forum/login.php"
+
+/** Хосты, которые WebView-вход гонит через прокси (reverse-bypass: только они). */
+private val PROFILE_RUTRACKER_PROXY_HOSTS = listOf(
+    "rutracker.org", "*.rutracker.org",
+    "rutracker.net", "*.rutracker.net",
+    "rutracker.nl", "*.rutracker.nl"
+)
+
+/** Куки WebView → OkHttp: CookieManager срок жизни не отдаёт, ставим +365 дней. */
+private fun collectProfileRutrackerCookies(): List<Cookie> {
+    val cm = CookieManager.getInstance()
+    val expiry = System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000
+    val out = mutableListOf<Cookie>()
+    RutrackerResolver.MIRRORS.forEach { mirror ->
+        val host = runCatching { Uri.parse(mirror).host }.getOrNull() ?: return@forEach
+        val raw = runCatching { cm.getCookie("$mirror/forum/") ?: cm.getCookie(mirror) }.getOrNull()
+            ?: return@forEach
+        raw.split(";").forEach { part ->
+            val p = part.trim()
+            val eq = p.indexOf('=')
+            if (eq <= 0) return@forEach
+            val name = p.substring(0, eq).trim()
+            val value = p.substring(eq + 1).trim()
+            if (name.isEmpty() || value.isEmpty() || value == "\"\"") return@forEach
+            if (name.startsWith("$")) return@forEach
+            runCatching {
+                Cookie.Builder().name(name).value(value).domain(host).path("/").expiresAt(expiry).build()
+            }.getOrNull()?.let { out.add(it) }
+        }
+    }
+    return out
 }

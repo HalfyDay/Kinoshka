@@ -75,4 +75,22 @@ class RutrackerResolverTest {
         assertEquals("Тётя", RutrackerResolver.unescapeHtml("Т&#1105;тя"))
         assertEquals("1.4 GB", RutrackerResolver.unescapeHtml("1.4&nbsp;GB"))
     }
+
+    @Test
+    fun `parses username from profile link`() {
+        val html = """<div class="topmenu"><a href="profile.php?mode=viewprofile&u=123">Кинолюбитель</a></div>"""
+        assertEquals("Кинолюбитель", RutrackerResolver.parseUsername(html))
+    }
+
+    @Test
+    fun `parses username after relogin phrase`() {
+        val html = "Вы зашли как: <a href=\"profile.php?mode=viewprofile&u=7\">User_42</a>"
+        assertEquals("User_42", RutrackerResolver.parseUsername(html))
+    }
+
+    @Test
+    fun `no username on guest page`() {
+        assertNull(RutrackerResolver.parseUsername(trackerPage))
+        assertNull(RutrackerResolver.parseUsername(""))
+    }
 }

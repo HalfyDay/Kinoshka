@@ -1,7 +1,14 @@
 package hd.kinoshka.app.ui.screens
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
+import android.view.ViewGroup
+import android.webkit.CookieManager
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -9,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,8 +43,7 @@ import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Button
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -62,9 +70,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
 import hd.kinoshka.app.data.download.DownloadBridges
 import hd.kinoshka.app.data.download.DownloadPhase
 import hd.kinoshka.app.data.download.DownloadTaskState
@@ -90,15 +104,19 @@ import hd.kinoshka.app.data.source.AniStarResolver
 import hd.kinoshka.app.data.source.AnimeStreamResolver
 import hd.kinoshka.app.data.source.KodikMovieParser
 import hd.kinoshka.app.data.source.RutrackerResolver
+import hd.kinoshka.app.data.source.StreamProxyConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Cookie
+import java.net.InetSocketAddress
+import java.net.Proxy
 
 /**
  * Шит загрузки на странице тайтла. Две вкладки:
  *  «Торренты» — агрегатор раздач (AniLiberty + AniStar + Rutor для аниме,
- *  Rutor + Rutracker для фильмов/сериалов; Rutracker требует входа — логин
- *  прямо в шите, пароль не хранится)
+ *  Rutor + Rutracker для фильмов/сериалов; Rutracker требует входа — вход
+ *  через WebView прямо в шите (капча решается там же), пароль не хранится)
  *  с подробной информацией (диапазон серий, качество, вес, сиды, дата) и отдачей magnet/.torrent
  *  во внешний клиент;
  *  «В приложение» — скачивание серий/озвучек в офлайн-библиотеку приложения (EpisodeDownloadManager).
@@ -310,7 +328,6 @@ private fun TorrentsTab(
 
     if (showRutrackerLogin) {
         RutrackerLoginDialog(
-            initialLogin = rutrackerUser.orEmpty(),
             onDismiss = { showRutrackerLogin = false },
             onLoggedIn = { username ->
                 showRutrackerLogin = false
@@ -361,72 +378,274 @@ private fun RutrackerStatusRow(username: String?, onLogout: () -> Unit) {
 
 @Composable
 private fun RutrackerLoginDialog(
-    initialLogin: String,
     onDismiss: () -> Unit,
     onLoggedIn: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    var login by remember { mutableStateOf(initialLogin) }
-    var password by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var proxyNote by remember { mutableStateOf<String?>(null) }
+    // onReceivedError приходит с параметром error — он затеняет состояние,
+    // поэтому сеттер выносим в лямбду.
+    val setLoginError: (String?) -> Unit = { error = it }
+    // Авто-проверка — один раз: когда вместо формы логина открылась страница
+    // без неё (успешный вход с капчей), подтверждаем сессию сами.
+    var autoChecked by remember { mutableStateOf(false) }
 
-    AlertDialog(
+    fun checkLogin() {
+        if (busy) return
+        busy = true
+        error = null
+        scope.launch {
+            val cookies = collectWebRutrackerCookies()
+            if (cookies.none { it.name == "bb_session" }) {
+                busy = false
+                error = "Сессия не найдена — войдите на странице выше (включая капчу) и нажмите ещё раз"
+                return@launch
+            }
+            RutrackerResolver.putWebCookies(cookies)
+            val result = withContext(Dispatchers.IO) { RutrackerResolver.confirmWebSession() }
+            busy = false
+            if (result.ok) onLoggedIn(RutrackerResolver.savedUsername() ?: "") else error = result.message
+        }
+    }
+
+    // WebView игнорирует OkHttp-прокси резолвера: при настроенном прокси заворачиваем
+    // трекерные хосты через ProxyController (process-wide — снимаем при закрытии диалога).
+    // Загрузка страницы стартует только после применения оверрайда.
+    LaunchedEffect(Unit) {
+        val wv = webViewRef ?: return@LaunchedEffect
+        val executor = ContextCompat.getMainExecutor(context)
+        val raw = StreamProxyConfig.proxyUrl?.trim().takeUnless { it.isNullOrEmpty() }
+        if (raw == null) {
+            wv.loadUrl(RUTRACKER_LOGIN_URL)
+            return@LaunchedEffect
+        }
+        val parsed = StreamProxyConfig.parseProxy(raw)
+        val addr = parsed?.address() as? InetSocketAddress
+        if (parsed?.type() != Proxy.Type.HTTP || addr == null) {
+            proxyNote = "SOCKS-прокси WebView не поддерживает — страница может не открыться. " +
+                "Задайте HTTP-прокси или включите VPN"
+            wv.loadUrl(RUTRACKER_LOGIN_URL)
+            return@LaunchedEffect
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            proxyNote = "Этот WebView не поддерживает прокси — включите системный VPN"
+            wv.loadUrl(RUTRACKER_LOGIN_URL)
+            return@LaunchedEffect
+        }
+        val authNote = if ('@' in raw) " (логин/пароль прокси WebView не использует)" else ""
+        proxyNote = "Вход идёт через прокси ${addr.hostString}:${addr.port}$authNote"
+        val config = ProxyConfig.Builder()
+            .addProxyRule("http://${addr.hostString}:${addr.port}")
+            .setReverseBypassEnabled(true)
+            .apply { RUTRACKER_PROXY_HOSTS.forEach { addBypassRule(it) } }
+            .build()
+        runCatching {
+            ProxyController.getInstance().setProxyOverride(config, executor) {
+                webViewRef?.loadUrl(RUTRACKER_LOGIN_URL)
+            }
+        }.onFailure {
+            wv.loadUrl(RUTRACKER_LOGIN_URL)
+        }
+    }
+    DisposableEffect(context) {
+        onDispose {
+            runCatching {
+                ProxyController.getInstance()
+                    .clearProxyOverride(ContextCompat.getMainExecutor(context)) {}
+            }
+        }
+    }
+
+    Dialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Вход в Rutracker") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.9f).padding(16.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Вход в Rutracker",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = { if (!busy) onDismiss() }) {
+                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                    }
+                }
                 Text(
-                    text = "Логин нужен только трекеру: пароль не хранится, сохраняется лишь сессия.",
+                    text = "Войдите как обычно — капча решается здесь же. Пароль не хранится, сохраняется лишь сессия.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                OutlinedTextField(
-                    value = login,
-                    onValueChange = { login = it; error = null },
-                    label = { Text("Логин") },
-                    singleLine = true,
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it; error = null },
-                    label = { Text("Пароль") },
-                    singleLine = true,
-                    enabled = !busy,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                proxyNote?.let {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                        .background(
+                            MaterialTheme.colorScheme.surfaceContainerLow,
+                            RoundedCornerShape(12.dp)
+                        )
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            val cm = CookieManager.getInstance()
+                            cm.setAcceptCookie(true)
+                            WebView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.loadWithOverviewMode = true
+                                settings.useWideViewPort = true
+                                settings.builtInZoomControls = true
+                                settings.displayZoomControls = false
+                                // Десктопный UA — те же страницы, что видит резолвер.
+                                settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                                cm.setAcceptThirdPartyCookies(this, true)
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageStarted(
+                                        view: WebView?,
+                                        url: String?,
+                                        favicon: Bitmap?
+                                    ) {
+                                        isLoading = true
+                                        // Новая страница — прошлая ошибка проверки уже неактуальна.
+                                        if (error != null) error = null
+                                    }
+
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        isLoading = false
+                                        if (autoChecked || busy || view == null) return
+                                        // Формы логина больше нет — похоже, вход выполнен: проверяем раз.
+                                        view.evaluateJavascript(
+                                            "(function(){return document.querySelector(" +
+                                                "'[name=login_username]')?'login':'maybe-in';})();"
+                                        ) { r ->
+                                            if (r?.contains("maybe-in") == true && !autoChecked && !busy) {
+                                                autoChecked = true
+                                                checkLogin()
+                                            }
+                                        }
+                                    }
+
+                                    override fun shouldOverrideUrlLoading(
+                                        view: WebView?,
+                                        request: WebResourceRequest?
+                                    ): Boolean = false
+
+                                    override fun onReceivedError(
+                                        view: WebView?,
+                                        request: WebResourceRequest?,
+                                        error: WebResourceError?
+                                    ) {
+                                        if (request?.isForMainFrame != true) return
+                                        isLoading = false
+                                        setLoginError(
+                                            "Страница не загрузилась " +
+                                                "(${error?.description ?: "ошибка сети"}). " +
+                                                "Если трекер блокирует провайдер — " +
+                                                "задайте прокси в Настройки → Сеть"
+                                        )
+                                    }
+                                }
+                                // loadUrl — из LaunchedEffect после применения прокси-оверайда.
+                                webViewRef = this
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                        onRelease = { wv ->
+                            if (webViewRef === wv) webViewRef = null
+                            wv.stopLoading()
+                            wv.destroy()
+                        }
+                    )
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center).size(28.dp)
+                        )
+                    }
+                }
                 error?.let {
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = it,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
                 }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = !busy && login.isNotBlank() && password.isNotEmpty(),
-                onClick = {
-                    busy = true
-                    error = null
-                    val u = login.trim()
-                    val p = password
-                    scope.launch {
-                        val result = withContext(Dispatchers.IO) { RutrackerResolver.login(u, p) }
-                        busy = false
-                        if (result.ok) onLoggedIn(u) else error = result.message
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = { webViewRef?.reload() }, enabled = !busy) { Text("Обновить") }
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = { if (!busy) onDismiss() }, enabled = !busy) { Text("Отмена") }
+                    Button(onClick = ::checkLogin, enabled = !busy) {
+                        Text(if (busy) "Проверяем…" else "Я вошёл")
                     }
                 }
-            ) { Text(if (busy) "Входим…" else "Войти") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) { Text("Отмена") }
+            }
         }
-    )
+    }
+}
+
+private const val RUTRACKER_LOGIN_URL = "https://rutracker.org/forum/login.php"
+
+/** Хосты, которые WebView-вход гонит через прокси (reverse-bypass: только они). */
+private val RUTRACKER_PROXY_HOSTS = listOf(
+    "rutracker.org", "*.rutracker.org",
+    "rutracker.net", "*.rutracker.net",
+    "rutracker.nl", "*.rutracker.nl"
+)
+
+/** Куки WebView → OkHttp: CookieManager срок жизни не отдаёт, ставим +365 дней. */
+private fun collectWebRutrackerCookies(): List<Cookie> {
+    val cm = CookieManager.getInstance()
+    val expiry = System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000
+    val out = mutableListOf<Cookie>()
+    RutrackerResolver.MIRRORS.forEach { mirror ->
+        val host = runCatching { Uri.parse(mirror).host }.getOrNull() ?: return@forEach
+        val raw = runCatching { cm.getCookie("$mirror/forum/") ?: cm.getCookie(mirror) }.getOrNull()
+            ?: return@forEach
+        raw.split(";").forEach { part ->
+            val p = part.trim()
+            val eq = p.indexOf('=')
+            if (eq <= 0) return@forEach
+            val name = p.substring(0, eq).trim()
+            val value = p.substring(eq + 1).trim()
+            if (name.isEmpty() || value.isEmpty() || value == "\"\"") return@forEach
+            if (name.startsWith("$")) return@forEach
+            runCatching {
+                Cookie.Builder().name(name).value(value).domain(host).path("/").expiresAt(expiry).build()
+            }.getOrNull()?.let { out.add(it) }
+        }
+    }
+    return out
 }
 
 @Composable
