@@ -1672,6 +1672,33 @@ class FilmsViewModel(
     /** Одноразовый тихий рефреш после дискового кэша: секции уже на экране. */
     private var overviewCacheRefreshed = false
 
+    /**
+     * TEMP-DIAG (зеркальные заголовки Обзора после adb-установки): пишет в logcat
+     * первые hero-заголовки и их подозрительные кодпоинты (bidi-маркеры, зеркалящие
+     * ранги) отдельно для дискового кэша и для свежей сети. Убрать после диагноза.
+     */
+    private fun logOverviewTitles(tag: String, hero: List<FilmItem>, sections: List<OverviewSection>) {
+        hero.take(3).forEach {
+            val t = it.nameRu ?: it.nameOriginal ?: "null"
+            // Диапазон 0x2000..0x206F ловит bidi-маркеры и zero-width, но там же живут
+            // обычные тире/кавычки/троеточие — их исключаем, чтобы не шуметь.
+            val benign = setOf(
+                0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015,
+                0x2018, 0x2019, 0x201A, 0x201C, 0x201D, 0x201E, 0x2026
+            )
+            val odd = t.filter { c ->
+                (c.code in 0x2000..0x206F && c.code !in benign) ||
+                    c.code == 0xFEFF || c.code == 0x061C || c.code in 0x2066..0x2069
+            }.map { c -> "U+" + c.code.toString(16).uppercase() }
+            KLog.i("OverviewDiag", "$tag kp=${it.kinopoiskId} title=$t odd=$odd")
+        }
+        sections.take(3).forEach { s ->
+            val first = s.items.firstOrNull()
+            val t = first?.nameRu ?: first?.nameOriginal ?: "empty"
+            KLog.i("OverviewDiag", "$tag sec=${s.id} firstKp=${first?.kinopoiskId} firstTitle=$t")
+        }
+    }
+
     fun ensureOverviewLoaded() {
         if (overviewJob?.isActive == true) return
         // Жанровые карусели кино появляются только после справочника filters():
@@ -1725,6 +1752,8 @@ class FilmsViewModel(
                     "Не удалось загрузить подборки. Проверьте сеть."
                 } else null
             )
+            logOverviewTitles("net-films", filmHero, filmSections)
+            logOverviewTitles("net-anime", animeHero, animeSections)
             // Кэшируем свежие ветки на диск: следующий холодный старт рисуется мгновенно.
             if (films != null && filmSections.isNotEmpty()) {
                 userStateStore.saveOverviewCache("films", filmSections, filmHero)
@@ -4987,8 +5016,13 @@ class FilmsViewModel(
      * Keyed-списки (HomeScreen: key = { _, film -> film.kinopoiskId }) падают, если один
      * kinopoiskId встречается дважды. Страницы API это иногда допускают, а rankResults только
      * сортирует и такой дубликат не убирает — поэтому дедуп нужен на каждом присвоении items.
+     *
+     * Ресивер nullable специально: парсеры API (Gson) отдают platform-типы — поле-список,
+     * объявленное non-null, в рантайме бывает null (JSON-null). distinctBy инлайнится,
+     * и NPE 'Iterable.iterator() on null' всплывал из loadFilmSections без своего фрейма,
+     * роняя холодный старт через overviewJob. orEmpty гасит такие выдачи в пустую секцию.
      */
-    private fun List<FilmItem>.dedupe(): List<FilmItem> = distinctBy { it.kinopoiskId }
+    private fun List<FilmItem>?.dedupe(): List<FilmItem> = this?.distinctBy { it.kinopoiskId }.orEmpty()
 
     private fun currentYear(): Int =
         java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
@@ -5408,6 +5442,8 @@ class FilmsViewModel(
         // Дисковый кэш Обзора: первый кадр сразу с контентом, без скелетона; сеть освежит фоном.
         val cachedFilms = userStateStore.getOverviewCache("films")
         val cachedAnime = userStateStore.getOverviewCache("anime")
+        logOverviewTitles("cache-films", cachedFilms.hero, cachedFilms.sections)
+        logOverviewTitles("cache-anime", cachedAnime.hero, cachedAnime.sections)
         return HomeUiState(
             loading = true,
             overviewFilmSections = cachedFilms.sections,

@@ -2208,16 +2208,18 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         val savedAt: Long = 0L
     )
 
+    // Поля nullable специально: Gson не уважает kotlin-дефолты и кладёт JSON-null
+    // в non-null типы (см. getOverviewCache). Nullable-модель делает это явным.
     private data class OverviewSectionDto(
-        val id: String,
-        val title: String,
-        val items: List<FilmItem> = emptyList(),
+        val id: String?,
+        val title: String?,
+        val items: List<FilmItem?>? = emptyList(),
         val seeAll: String? = null
     )
 
     private data class OverviewBranchDto(
-        val sections: List<OverviewSectionDto> = emptyList(),
-        val hero: List<FilmItem> = emptyList(),
+        val sections: List<OverviewSectionDto?>? = emptyList(),
+        val hero: List<FilmItem?>? = emptyList(),
         val savedAt: Long = 0L
     )
 
@@ -2282,11 +2284,21 @@ open class UserStateStoreBase(private val prefs: KinoPrefs) {
         val raw = prefs.getString(key, null) ?: return OverviewBranchCache()
         return runCatching {
             val dto = gson.fromJson(raw, OverviewBranchDto::class.java) ?: return OverviewBranchCache()
+            // Gson не уважает kotlin-дефолты: при JSON-null поля DTO (старый кэш,
+            // ручная правка) в рантайме null в non-null типах. orEmpty + фильтр
+            // null-элементов, иначе null просачивается в OverviewSection.items
+            // и роняет холодный старт NPE 'Iterable.iterator()' в flatMap'ах Обзора.
             OverviewBranchCache(
-                sections = dto.sections.map { s ->
-                    hd.kinoshka.app.ui.screens.OverviewSection(s.id, s.title, s.items, decodeSeeAll(s.seeAll))
+                sections = dto.sections.orEmpty().mapNotNull { s ->
+                    if (s == null) return@mapNotNull null
+                    hd.kinoshka.app.ui.screens.OverviewSection(
+                        s.id ?: return@mapNotNull null,
+                        s.title.orEmpty(),
+                        s.items.orEmpty().filterNotNull(),
+                        decodeSeeAll(s.seeAll)
+                    )
                 },
-                hero = dto.hero,
+                hero = dto.hero.orEmpty().filterNotNull(),
                 savedAt = dto.savedAt
             )
         }.getOrDefault(OverviewBranchCache())
