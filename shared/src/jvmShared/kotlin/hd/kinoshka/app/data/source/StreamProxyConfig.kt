@@ -15,6 +15,9 @@ import java.net.URI
  *  - вебмастер-трио (VideoCDN / Collaps / Voidboost),
  *  - хентай-каталоги (AllHentai / HentaiDream / HentaiZ / Hanime / Oppai),
  *  - YouTube-трейлеры (InnerTube-запросы + googlevideo-поток).
+ *  - торрент-трекеры Rutracker и Rutor: оба блокируются на уровне провайдеров
+ *    (резка по SNI/IP — DoH тут не помогает), вход через WebView и поиск идут
+ *    через этот же прокси.
  *
  * Формат: `http://host:port`, `http://user:pass@host:port`, `https://…`, `socks5://host:port`
  * или голый `host:port` (трактуется как http). Пусто — прокси выключен.
@@ -41,6 +44,11 @@ object StreamProxyConfig {
         "oppai.stream", "hentaiiz.org",
         // YouTube-трейлеры
         "youtube.com", "youtu.be", "googlevideo.com", "ytimg.com",
+        // Торрент-трекеры (SNI/IP-блокировки; DoH их не пробивает).
+        // Rutracker: зеркала из RutrackerResolver.MIRRORS.
+        "rutracker.org", "rutracker.net", "rutracker.nl",
+        // Rutor: зеркала из AnimeStreamResolver.
+        "rutor.info", "rutor.is",
     )
 
     /** java.net.Proxy для запроса по [url] (okHttp-семейство), null — напрямую. */

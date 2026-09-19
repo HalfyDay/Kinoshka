@@ -83,6 +83,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import hd.kinoshka.app.data.api.ApiClient
+import hd.kinoshka.app.data.source.RutrackerResolver
+import hd.kinoshka.app.data.source.StreamProxyConfig
 import hd.kinoshka.app.data.local.AppThemeMode
 import hd.kinoshka.app.data.local.PlayerMode
 import hd.kinoshka.app.data.local.ShikimoriAuthStore
@@ -1400,6 +1402,15 @@ fun KinoApp() {
                                 // Контекст для писателей настроек: лямбды некомпозабельны,
                                 // LocalContext.current внутри них нельзя.
                                 val settingsContext = LocalContext.current.applicationContext
+                                // Прокси для блокируемых провайдером хостов (трекеры): значение живёт в
+                                // kinoshka_app_settings, в StreamProxyConfig применяется сразу (без рестарта).
+                                var streamProxyUrl by remember {
+                                    mutableStateOf(
+                                        settingsContext.getSharedPreferences(
+                                            "kinoshka_app_settings", Context.MODE_PRIVATE
+                                        ).getString("stream_proxy_url", null).orEmpty()
+                                    )
+                                }
                                 SettingsScreen(
                                     onBack = { navController.popBackStack() },
                                     selectedThemeMode = vm.uiState.themeMode,
@@ -1418,6 +1429,20 @@ fun KinoApp() {
                                     onOpenNavMenu = { navController.navigate("nav_menu") },
                                     onOpenOverview = { navController.navigate("settings_overview") },
                                     onOpenLibrary = { navController.navigate("settings_library") },
+                                    proxyUrl = streamProxyUrl,
+                                    onProxyUrlChanged = { value ->
+                                        streamProxyUrl = value
+                                        settingsContext.getSharedPreferences(
+                                            "kinoshka_app_settings", Context.MODE_PRIVATE
+                                        ).edit()
+                                            .putString("stream_proxy_url", value.ifBlank { null })
+                                            .apply()
+                                        StreamProxyConfig.proxyUrl = value.ifBlank { null }
+                                    },
+                                    onCheckProxy = { draft ->
+                                        val check = RutrackerResolver.checkAccess(draft)
+                                        check.ok to check.message
+                                    },
                                     // Те же глифы, что в пилюле (книги/компас), а не material.
                                     overviewIconContent = {
                                         NavGlyph(

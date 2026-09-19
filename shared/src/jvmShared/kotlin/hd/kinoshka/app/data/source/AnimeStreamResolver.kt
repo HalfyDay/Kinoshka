@@ -78,6 +78,10 @@ object AnimeStreamResolver {
             // Private-DNS blockers sink kodik/aniqit domains at the DNS level; DoH fallback
             // restores them for every HTTP path (API, find-player, HLS extraction).
             .dns(hd.kinoshka.app.utils.DohFallbackDns)
+            // Rutor-зеркала режутся провайдерами по SNI/IP: при настроенном
+            // прокси идут через него, всё остальное — напрямую.
+            .proxySelector(StreamProxySelector())
+            .proxyAuthenticator(StreamProxyConfig.okHttpProxyAuthenticator())
             .followRedirects(true)
             .followSslRedirects(true)
             .connectTimeout(15, TimeUnit.SECONDS)

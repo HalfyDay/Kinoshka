@@ -49,6 +49,7 @@ import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Circle
@@ -76,6 +77,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -128,15 +130,21 @@ fun SettingsScreen(
     // Иконки строк как в пилюле: Android inject'ит drawable-глифы,
     // без инъекции (desktop) — material-фолбэк. null — фолбэк.
     overviewIconContent: (@Composable () -> Unit)? = null,
-    libraryIconContent: (@Composable () -> Unit)? = null
+    libraryIconContent: (@Composable () -> Unit)? = null,
+    // Прокси для блокируемых провайдером хостов (Rutracker/Rutor): значение,
+    // сохранение и проверка — на платформе. null-колбэк — строка скрыта (desktop).
+    proxyUrl: String = "",
+    onProxyUrlChanged: ((String) -> Unit)? = null,
+    onCheckProxy: (suspend (String) -> Pair<Boolean, String>)? = null
 ) {
     var showThemePicker by remember { mutableStateOf(false) }
+    var showProxyDialog by remember { mutableStateOf(false) }
 
     // Шапка-пилюля парит поверх контента без подложки: список уходит под неё,
     // обрезка видна только за самой пилюлей, глухих полос нет.
     PinnedHeaderPage(
         title = "Настройки",
-        subtitle = "Внешний вид и библиотека",
+        subtitle = "Внешний вид, сеть и библиотека",
         onBack = onBack
     ) { topPad ->
         LazyColumn(
@@ -213,6 +221,27 @@ fun SettingsScreen(
                 }
             }
         }
+        // Сеть: прокси для трекеров и других блокируемых провайдером хостов.
+        // onProxyUrlChanged == null — секция скрыта (desktop).
+        if (onProxyUrlChanged != null) {
+            item {
+                KinoSettingsSectionHeader("Сеть")
+            }
+            item {
+                KinoSettingsCard {
+                    KinoSettingsRow(
+                        title = "Прокси",
+                        summary = if (proxyUrl.isBlank()) {
+                            "Выключен — включить, если Rutracker недоступен"
+                        } else {
+                            "Включён: ${proxyShortLabel(proxyUrl)}"
+                        },
+                        icon = Icons.Outlined.VpnKey,
+                        onClick = { showProxyDialog = true }
+                    )
+                }
+            }
+        }
         item {
             KinoSettingsSectionHeader("Фильтры и отладка")
         }
@@ -276,6 +305,110 @@ fun SettingsScreen(
         )
     }
 
+    if (showProxyDialog && onProxyUrlChanged != null) {
+        ProxySettingsDialog(
+            initial = proxyUrl,
+            onDismiss = { showProxyDialog = false },
+            onSave = { value ->
+                onProxyUrlChanged(value)
+                showProxyDialog = false
+            },
+            onCheck = onCheckProxy
+        )
+    }
+
+}
+
+/** Короткая подпись прокси без кредов: `http://user:pass@host:port` → `host:port`. */
+private fun proxyShortLabel(raw: String): String {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return ""
+    return trimmed.substringAfter("://", trimmed).substringAfterLast('@').substringBefore('/')
+}
+
+@Composable
+private fun ProxySettingsDialog(
+    initial: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+    onCheck: (suspend (String) -> Pair<Boolean, String>)?
+) {
+    val scope = rememberCoroutineScope()
+    var draft by remember { mutableStateOf(initial) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var statusOk by remember { mutableStateOf(false) }
+    var checking by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = { if (!checking) onDismiss() },
+        title = { Text("Прокси") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Для источников, которые режет провайдер (Rutracker, Rutor): их трафик пойдёт " +
+                        "через прокси, остальное — напрямую. Подойдёт и локальный прокси " +
+                        "от v2rayNG / NekoBox / Orbot.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it; status = null },
+                    label = { Text("Адрес прокси") },
+                    placeholder = { Text("socks5://127.0.0.1:1080") },
+                    singleLine = true,
+                    enabled = !checking,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = "http://host:port, https://…, socks5://host:port или host:port, " +
+                        "можно с user:pass@. Пусто — прокси выключен.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                status?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (statusOk) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error
+                    )
+                }
+                if (checking) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(draft.trim()) },
+                enabled = !checking
+            ) { Text("Сохранить") }
+        },
+        dismissButton = {
+            if (onCheck != null) {
+                TextButton(
+                    onClick = {
+                        checking = true
+                        status = null
+                        val value = draft.trim()
+                        scope.launch {
+                            val (ok, text) = runCatching { onCheck(value) }
+                                .getOrElse { false to "Ошибка проверки: ${it.message}" }
+                            status = text
+                            statusOk = ok
+                            checking = false
+                        }
+                    },
+                    enabled = !checking
+                ) { Text("Проверить") }
+            }
+            TextButton(
+                onClick = onDismiss,
+                enabled = !checking
+            ) { Text("Отмена") }
+        }
+    )
 }
 
 /**
@@ -849,7 +982,8 @@ data class SettingsSearchEntry(
 /** Все строки экрана настроек, видимые при данных флагах (для поиска с Профиля). */
 fun settingsSearchEntries(
     hasPlayerSettings: Boolean,
-    showDebugSettings: Boolean
+    showDebugSettings: Boolean,
+    hasProxySettings: Boolean = false
 ): List<SettingsSearchEntry> = buildList {
     add(SettingsSearchEntry("Тема", "Внешний вид приложения", "тема тёмная светлая amoled оформление внешность", "settings"))
     add(SettingsSearchEntry("Обзор", "Размер плиток страницы", "обзор плитки размер сетка крупные мелкие", "settings_overview"))
@@ -860,6 +994,9 @@ fun settingsSearchEntries(
     }
     add(SettingsSearchEntry("Скрывать российские фильмы", "Фильтр обзора и библиотеки", "скрыть российские русские фильтр", "settings"))
     add(SettingsSearchEntry("Источники", "Включение и проверка Kodik, Turbo, VideoCDN", "источники kodik turbo videocdn collaps voidboost alloha veoveo hdrezka shikimori aniliberty anilib anistar smarthard хентай фильмы сериалы мультфильмы аниме проверка вкл выкл", "sources"))
+    if (hasProxySettings) {
+        add(SettingsSearchEntry("Прокси", "Доступ к Rutracker и Rutor при блокировке", "прокси proxy socks впн vpn блокировка рутрекер рутор rutracker rutor обход недоступен сеть", "settings"))
+    }
     if (showDebugSettings) {
         add(SettingsSearchEntry("Показывать FPS", "Счётчик кадров (только debug)", "fps кадры счётчик отладка debug", "settings"))
     }

@@ -215,6 +215,8 @@ dependencies {
     implementation("com.google.accompanist:accompanist-permissions:0.37.3")
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("androidx.constraintlayout:constraintlayout-compose:1.1.1")
+    // ProxyController для входа в Rutracker через пользовательский прокси (WebView ignores OkHttp).
+    implementation("androidx.webkit:webkit:1.10.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("com.github.marlboro-advance:mediainfoAndroid:v1.0.0-fix")
 

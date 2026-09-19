@@ -45,6 +45,26 @@ class StreamProxyConfigTest {
     }
 
     @Test
+    fun `needsProxy covers torrent trackers`() {
+        assertTrue(StreamProxyConfig.needsProxy("https://rutracker.org/forum/tracker.php"))
+        assertTrue(StreamProxyConfig.needsProxy("https://rutracker.net/forum/login.php"))
+        assertTrue(StreamProxyConfig.needsProxy("https://rutracker.nl/forum/"))
+        assertTrue(StreamProxyConfig.needsProxy("https://rutor.info/search/x"))
+        assertTrue(StreamProxyConfig.needsProxy("https://rutor.is/browse/0/1/0/2"))
+        assertFalse(StreamProxyConfig.needsProxy("https://fakertracker.org/"))
+    }
+
+    @Test
+    fun `tracker proxy selection gates on config`() {
+        StreamProxyConfig.proxyUrl = "socks5://127.0.0.1:1080"
+        val via = StreamProxyConfig.okHttpProxy("https://rutracker.org/forum/login.php")!!
+        assertEquals(Proxy.Type.SOCKS, via.type())
+        assertNull(StreamProxyConfig.okHttpProxy("https://shikimori.one/api/x"))
+        StreamProxyConfig.proxyUrl = null
+        assertNull(StreamProxyConfig.okHttpProxy("https://rutracker.org/forum/login.php"))
+    }
+
+    @Test
     fun `proxy selection gates on config and host`() {
         StreamProxyConfig.proxyUrl = "http://10.0.0.1:8080"
         assertNotNull(StreamProxyConfig.okHttpProxy("https://voidboost.net/embed/1"))
