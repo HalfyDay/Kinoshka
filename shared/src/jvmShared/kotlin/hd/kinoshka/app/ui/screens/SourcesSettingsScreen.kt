@@ -27,7 +27,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -55,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import hd.kinoshka.app.data.source.CustomSource
 import hd.kinoshka.app.data.source.CustomSourceCheck
@@ -75,11 +77,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Отдельная страница управления источниками (из «Настроек»): категории
- * Фильмы / Аниме / 18+, выключатель на источник в каждом его разделе
+ * Отдельная страница управления источниками (из «Настроек»): три раздела
+ * с горизонтальным перелистыванием — «Встроенные» (с подразделами Все /
+ * Аниме / 18+), «Свои» (компактный список кастомных) и «Каталог» (витрина
+ * JS-плагинов). У встроенных — выключатель на источник в каждом его разделе
  * (выключен — значит не запрашивается и не показывается в этом разделе)
- * и проверка работоспособности каждого и всех сразу. Шапка и фильтр
- * категорий закреплены над списком. Общая для Android и desktop.
+ * и проверка работоспособности каждого и всех сразу. Шапка и пилюли разделов
+ * закреплены над списком. Общая для Android и desktop.
  */
 @Composable
 fun SourcesSettingsScreen(
@@ -120,7 +124,6 @@ fun SourcesSettingsScreen(
     onCatalogUrlChanged: ((String) -> Unit)? = null
 ) {
     val scope = rememberCoroutineScope()
-    var selectedCategory by remember { mutableStateOf<SourceCategory?>(null) }
     var sourcesHealth by remember { mutableStateOf<Map<String, SourceHealth>>(emptyMap()) }
     var checkingAll by remember { mutableStateOf(false) }
     var checkingOne by remember { mutableStateOf<String?>(null) }
@@ -189,21 +192,14 @@ fun SourcesSettingsScreen(
         }
     }
 
-    // Свои источники живут на отдельной вкладке «Свои» (справа в ряду фильтров),
-    // а не в разрезах категорий — иначе они дублировались бы и там, и там.
-    var customTab by remember { mutableStateOf(false) }
-    val customSectionVisible = onSaveCustomSource != null && customTab
-
-    val visibleSources = remember(selectedCategory, customTab) {
-        val builtIns = PlaybackSources.allInfos().filter { !CustomSource.isCustomId(it.id) }
-        if (customTab) {
-            PlaybackSources.allInfos().filter { CustomSource.isCustomId(it.id) }
-        } else if (selectedCategory == null) {
-            builtIns
-        } else {
-            builtIns.filter { selectedCategory in it.categories }
-        }
-    }
+    // Три страницы с горизонтальным перелистыванием: встроенные (с подразделами
+    // Все/Аниме/18+), свои и каталог. Свои живут отдельно от разрезов категорий,
+    // чтобы не дублироваться и там, и там.
+    val pagerState = rememberPagerState(pageCount = { 3 })
+    // Подраздел встроенных: null = Все (группировка по разделам), иначе плоский
+    // список источников раздела.
+    var builtInFilter by remember { mutableStateOf<SourceCategory?>(null) }
+    val builtIns = remember { PlaybackSources.ALL }
     // Выключатель раздельный по разделам: голый id гасит везде, scoped — свой раздел.
     fun isEnabled(id: String, category: SourceCategory?): Boolean {
         val key = id.trim().uppercase()
@@ -214,47 +210,85 @@ fun SourcesSettingsScreen(
     val checkedCount = sourcesHealth.size
     val okCount = sourcesHealth.values.count { it.ok }
 
-    // Закреплена только шапка-пилюля (парит без подложки, с тенью и градиентом).
-    // Фильтр категорий откреплён: уезжает вверх вместе со списком, первым рядом.
+    // Бейдж каталога: число установленных плагинов с доступным обновлением.
+    val catalogUpdates = remember(catalogEntries, customSources) {
+        catalogEntries.count { entry ->
+            val installed = customSources.firstOrNull { PluginCatalog.matchesEntry(it, entry) }
+            installed != null && installed.pluginVersion != entry.version
+        }
+    }
+    fun goToPage(page: Int) {
+        scope.launch { pagerState.animateScrollToPage(page) }
+    }
+
+    // Закреплены только шапка-пилюля и пилюли разделов (парят без подложки).
+    // Сами разделы — HorizontalPager: переключаются и тапом по пилюле, и свайпом.
     PinnedHeaderPage(
         title = "Источники",
         subtitle = "Наличие зависит от фильма · проба на «Матрице»",
-        onBack = onBack
-    ) { topPad ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
-        ) {
-            item {
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
-                ) {
-                    item {
-                        SourceFilterPill(
-                            label = "Все",
-                            selected = selectedCategory == null && !customTab,
-                            onClick = { selectedCategory = null; customTab = false }
-                        )
-                    }
-                    items(SourceCategory.entries) { category ->
-                        SourceFilterPill(
-                            label = category.title,
-                            selected = selectedCategory == category && !customTab,
-                            onClick = { selectedCategory = category; customTab = false }
-                        )
-                    }
-                    // Свои — крайняя справа: отдельная страница кастомных источников.
-                    item {
-                        val count = customSources.size
-                        SourceFilterPill(
-                            label = if (count > 0) "Свои • $count" else "Свои",
-                            selected = customTab,
-                            onClick = { customTab = true }
-                        )
-                    }
-                }
+        onBack = onBack,
+        extraHeader = {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+            ) {
+                SourceFilterPill(
+                    label = "Встроенные",
+                    selected = pagerState.currentPage == 0,
+                    onClick = { goToPage(0) }
+                )
+                SourceFilterPill(
+                    label = if (customSources.isNotEmpty()) "Свои • ${customSources.size}" else "Свои",
+                    selected = pagerState.currentPage == 1,
+                    onClick = { goToPage(1) }
+                )
+                SourceFilterPill(
+                    label = if (catalogUpdates > 0) "Каталог • $catalogUpdates" else "Каталог",
+                    selected = pagerState.currentPage == 2,
+                    onClick = { goToPage(2) }
+                )
             }
+        }
+    ) { topPad ->
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            when (page) {
+                0 -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
+                ) {
+                    // Подразделы встроенных: Все (группировка по разделам) /
+                    // Аниме / 18+. Уезжают вверх вместе со списком.
+                    item {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
+                        ) {
+                            item {
+                                SourceFilterPill(
+                                    label = "Все",
+                                    selected = builtInFilter == null,
+                                    onClick = { builtInFilter = null }
+                                )
+                            }
+                            item {
+                                SourceFilterPill(
+                                    label = SourceCategory.ANIME.title,
+                                    selected = builtInFilter == SourceCategory.ANIME,
+                                    onClick = { builtInFilter = SourceCategory.ANIME }
+                                )
+                            }
+                            item {
+                                SourceFilterPill(
+                                    label = SourceCategory.ADULT.title,
+                                    selected = builtInFilter == SourceCategory.ADULT,
+                                    onClick = { builtInFilter = SourceCategory.ADULT }
+                                )
+                            }
+                        }
+                    }
             item {
             KinoSettingsCard {
                 KinoSettingsRow(
@@ -285,68 +319,165 @@ fun SourcesSettingsScreen(
                 )
             }
             }
-        // Свои источники — над встроенными, чтобы секция не терялась внизу.
-        if (customSectionVisible) {
-            item {
-                KinoSettingsSectionHeader("Свои источники")
-            }
-            item {
-                KinoSettingsCard {
-                    KinoSettingsRow(
-                        title = "Добавить источник",
-                        summary = "Embed, Stremio и JS-плагины: ${customSources.size}",
-                        trailing = {
-                            FilledTonalButton(
-                                onClick = { addingCustom = true },
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Add,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Добавить")
-                            }
+            // Встроенные по подразделам: Все — группировка по разделам,
+            // Аниме/18+ — плоские списки подраздела.
+            if (builtInFilter == null) {
+                SourceCategory.entries.forEach { category ->
+                    val inCategory = builtIns.filter { category in it.categories }
+                    if (inCategory.isNotEmpty()) {
+                        item {
+                            KinoSettingsSectionHeader(category.title)
                         }
+                        items(inCategory, key = { category.name + ":" + it.id }) { info ->
+                            SourcePageRow(
+                                info = info,
+                                enabled = isEnabled(info.id, category),
+                                health = sourcesHealth[info.id],
+                                checking = checkingOne == info.id || checkingAll,
+                                onEnabledChanged = { onSourceEnabledChanged(info.id, category, it) },
+                                onCheck = { checkOne(info.id) },
+                                sourceIcon = sourceIcon
+                            )
+                        }
+                    }
+                }
+            } else {
+                val filtered = builtIns.filter { builtInFilter in it.categories }
+                items(filtered, key = { it.id }) { info ->
+                    SourcePageRow(
+                        info = info,
+                        // Вне разделов (подфильтр): горит, когда включён везде;
+                        // переключение применяется сразу ко всем разделам источника.
+                        enabled = info.categories.all { isEnabled(info.id, it) },
+                        health = sourcesHealth[info.id],
+                        checking = checkingOne == info.id || checkingAll,
+                        onEnabledChanged = { v ->
+                            info.categories.forEach { onSourceEnabledChanged(info.id, it, v) }
+                        },
+                        onCheck = { checkOne(info.id) },
+                        sourceIcon = sourceIcon
                     )
                 }
             }
-            // Обмен с другим устройством: файл JSON (экспорт своих + импорт
-            // слиянием: дубликаты пропускаются, коллизии переименовываются).
-            if (onExportCustomSourcesFile != null || onImportCustomSourcesFile != null) {
-                item {
-                    KinoSettingsCard {
-                        KinoSettingsRow(
-                            title = "Поделиться источниками",
-                            summary = "Файл JSON для переноса на другое устройство",
-                            trailing = {
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    if (onExportCustomSourcesFile != null) {
-                                        TextButton(
-                                            onClick = onExportCustomSourcesFile,
-                                            enabled = customSources.isNotEmpty()
-                                        ) { Text("Экспорт") }
+                } // конец страницы «Встроенные».
+                1 -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
+                ) {
+                    // Свои: одна управляющая карточка (добавить + обмен файлом)
+                    // и компактный список — без лишних плиток.
+                    if (onSaveCustomSource != null) {
+                        item {
+                            KinoSettingsCard {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Мои источники" +
+                                                    (if (customSources.isNotEmpty()) " • ${customSources.size}" else ""),
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = "Embed, Stremio и JS-плагины",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        FilledTonalButton(
+                                            onClick = { addingCustom = true },
+                                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Add,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Добавить")
+                                        }
                                     }
-                                    if (onImportCustomSourcesFile != null) {
-                                        TextButton(onClick = onImportCustomSourcesFile) { Text("Импорт") }
+                                    // Обмен с другим устройством: файл JSON (экспорт своих +
+                                    // импорт слиянием: дубликаты пропускаются, коллизии
+                                    // переименовываются). Статус — тут же, второй строкой.
+                                    if (onExportCustomSourcesFile != null || onImportCustomSourcesFile != null) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (onExportCustomSourcesFile != null) {
+                                                TextButton(
+                                                    onClick = onExportCustomSourcesFile,
+                                                    enabled = customSources.isNotEmpty()
+                                                ) { Text("Экспорт") }
+                                            }
+                                            if (onImportCustomSourcesFile != null) {
+                                                TextButton(onClick = onImportCustomSourcesFile) { Text("Импорт") }
+                                            }
+                                            if (fileExchangeMessage != null) {
+                                                Text(
+                                                    text = fileExchangeMessage,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.tertiary,
+                                                    modifier = Modifier.padding(start = 8.dp)
+                                                )
+                                            }
+                                        }
+                                    } else if (fileExchangeMessage != null) {
+                                        Text(
+                                            text = fileExchangeMessage,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.tertiary,
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        )
                                     }
                                 }
                             }
+                        }
+                    }
+                    if (customSources.isEmpty()) {
+                        item {
+                            Text(
+                                text = "Пока пусто — добавьте Embed, Stremio или JS-плагин кнопкой выше.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                    itemsIndexed(customSources, key = { _, it -> it.id }) { index, custom ->
+                        val info = PlaybackSources.customInfo(custom)
+                        CustomSourceCompactRow(
+                            info = info,
+                            // Вне разрезов: горит, когда включён во всех своих разделах;
+                            // переключение применяется сразу ко всем (как у встроенных).
+                            enabled = info.categories.all { isEnabled(info.id, it) },
+                            health = sourcesHealth[info.id],
+                            checking = checkingOne == info.id || checkingAll,
+                            onEnabledChanged = { v ->
+                                info.categories.forEach { onSourceEnabledChanged(info.id, it, v) }
+                            },
+                            onCheck = { checkOne(info.id) },
+                            sourceIcon = sourceIcon,
+                            onEdit = { editingCustom = custom },
+                            onDelete = { deletingCustom = custom },
+                            onUpdate = if (custom.kind == CustomSourceKind.PLUGIN && onSavePluginSource != null)
+                                ({ updatePlugin(custom) }) else null,
+                            updating = updatingOne == info.id,
+                            onMoveUp = onMoveCustomSource
+                                ?.takeIf { index > 0 }
+                                ?.let { move -> { move(custom.id, -1) } },
+                            onMoveDown = onMoveCustomSource
+                                ?.takeIf { index < customSources.lastIndex }
+                                ?.let { move -> { move(custom.id, 1) } }
                         )
                     }
-                }
-            }
-            if (fileExchangeMessage != null) {
-                item {
-                    Text(
-                        text = fileExchangeMessage,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                    )
-                }
-            }
+            // Обмен файлом (экспорт/импорт) живёт в управляющей карточке выше.
+                } // конец страницы «Свои».
+                    else -> LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
+                    ) {
             // Каталог JS-плагинов: витрина index.json, установка в один тап
             // (код сверяется с sha256 витрины), обновления подсвечиваются.
             if (onRefreshCatalog != null) {
@@ -415,72 +546,19 @@ fun SourcesSettingsScreen(
                     )
                 }
             }
-            itemsIndexed(customSources, key = { _, it -> it.id }) { index, custom ->
-                val info = PlaybackSources.customInfo(custom)
-                SourcePageRow(
-                    info = info,
-                    // Вне разрезов: горит, когда включён во всех своих разделах;
-                    // переключение применяется сразу ко всем (как у встроенных).
-                    enabled = info.categories.all { isEnabled(info.id, it) },
-                    health = sourcesHealth[info.id],
-                    checking = checkingOne == info.id || checkingAll,
-                    onEnabledChanged = { v ->
-                        info.categories.forEach { onSourceEnabledChanged(info.id, it, v) }
-                    },
-                    onCheck = { checkOne(info.id) },
-                    sourceIcon = sourceIcon,
-                    onEdit = { editingCustom = custom },
-                    onDelete = { deletingCustom = custom },
-                    onUpdate = if (custom.kind == CustomSourceKind.PLUGIN && onSavePluginSource != null)
-                        ({ updatePlugin(custom) }) else null,
-                    updating = updatingOne == info.id,
-                    onMoveUp = onMoveCustomSource
-                        ?.takeIf { index > 0 }
-                        ?.let { move -> { move(custom.id, -1) } },
-                    onMoveDown = onMoveCustomSource
-                        ?.takeIf { index < customSources.lastIndex }
-                        ?.let { move -> { move(custom.id, 1) } }
-                )
-            }
-        }
-        if (!customTab && selectedCategory == null) {
-            SourceCategory.entries.forEach { category ->
-                val inCategory = visibleSources.filter { category in it.categories }
-                if (inCategory.isNotEmpty()) {
-                    item {
-                        KinoSettingsSectionHeader(category.title)
+                    if (catalogEntries.isEmpty() && !catalogLoading && catalogMessage == null) {
+                        item {
+                            Text(
+                                text = "Витрина пуста — нажмите «Обновить».",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
                     }
-                    items(inCategory, key = { category.name + ":" + it.id }) { info ->
-                        SourcePageRow(
-                            info = info,
-                            enabled = isEnabled(info.id, category),
-                            health = sourcesHealth[info.id],
-                            checking = checkingOne == info.id || checkingAll,
-                            onEnabledChanged = { onSourceEnabledChanged(info.id, category, it) },
-                            onCheck = { checkOne(info.id) },
-                            sourceIcon = sourceIcon
-                        )
-                    }
-                }
-            }
-        } else if (!customTab) {
-            items(visibleSources, key = { it.id }) { info ->
-                SourcePageRow(
-                    info = info,
-                    // Вне разделов (фильтр категории): горит, когда включён везде;
-                    // переключение применяется сразу ко всем разделам источника.
-                    enabled = info.categories.all { isEnabled(info.id, it) },
-                    health = sourcesHealth[info.id],
-                    checking = checkingOne == info.id || checkingAll,
-                    onEnabledChanged = { v ->
-                        info.categories.forEach { onSourceEnabledChanged(info.id, it, v) }
-                    },
-                    onCheck = { checkOne(info.id) },
-                    sourceIcon = sourceIcon
-                )
-            }
-        }
-    }
+                    } // конец страницы «Каталог».
+                } // when (page)
+            } // HorizontalPager
 
     if (addingCustom || editingCustom != null) {
         CustomSourceEditDialog(
@@ -859,6 +937,171 @@ private fun CatalogEntryRow(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
                 ) { Text("Взять") }
             }
+        }
+    }
+}
+
+/**
+ * Компактная строка своего источника (страница «Свои»): та же плитка, что
+ * [SourcePageRow], но ужатая по вертикали — иконка 36dp, одна строка описания,
+ * кнопки 32dp, шевроны порядка 24dp. Тап по плитке (мимо выключателя) — проверка.
+ */
+@Composable
+private fun CustomSourceCompactRow(
+    info: PlaybackSourceInfo,
+    enabled: Boolean,
+    health: SourceHealth?,
+    checking: Boolean,
+    onEnabledChanged: (Boolean) -> Unit,
+    onCheck: () -> Unit,
+    sourceIcon: @Composable (PlaybackSourceInfo) -> Unit,
+    onEdit: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+    onUpdate: (() -> Unit)? = null,
+    updating: Boolean = false,
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null
+) {
+    val statusColor = when {
+        checking || !enabled || health == null -> MaterialTheme.colorScheme.outline
+        health.ok -> Color(0xFF4CAF50)
+        else -> MaterialTheme.colorScheme.error
+    }
+    Surface(
+        onClick = onCheck,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .border(2.dp, statusColor, CircleShape)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                contentAlignment = Alignment.Center
+            ) {
+                if (checking) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    sourceIcon(info)
+                }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = info.displayName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (info.needsVpn) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                        ) {
+                            Text(
+                                "VPN",
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = info.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (onMoveUp != null || onMoveDown != null) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.width(24.dp)
+                ) {
+                    androidx.compose.material3.IconButton(
+                        onClick = { onMoveUp?.invoke() },
+                        enabled = onMoveUp != null,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowUp,
+                            contentDescription = "Выше",
+                            tint = if (onMoveUp != null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    androidx.compose.material3.IconButton(
+                        onClick = { onMoveDown?.invoke() },
+                        enabled = onMoveDown != null,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = "Ниже",
+                            tint = if (onMoveDown != null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+            if (onUpdate != null) {
+                if (updating) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    androidx.compose.material3.IconButton(
+                        onClick = onUpdate,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = "Обновить код",
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+            if (onEdit != null) {
+                androidx.compose.material3.IconButton(
+                    onClick = onEdit,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Edit,
+                        contentDescription = "Изменить",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            if (onDelete != null) {
+                androidx.compose.material3.IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = "Удалить",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            Switch(checked = enabled, onCheckedChange = onEnabledChanged)
         }
     }
 }
