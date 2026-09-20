@@ -31,7 +31,24 @@ class KinoApplication : Application(), ImageLoaderFactory {
         // Прокси для заблокированных источников (вебмастер-трио, хентай, YouTube). Глобальная
         // настройка: клиенты читают её на каждый запрос через StreamProxySelector, mpv — при
         // каждом loadfile, так что применится без перезапуска после правки в настройках.
-        hd.kinoshka.app.data.source.StreamProxyConfig.proxyUrl = getSharedPreferences(
+        // Список из страниц в стиле Telegram; legacy-ключ — fallback для старых настроек.
+        hd.kinoshka.app.data.source.StreamProxyConfig.proxyUrl = runCatching {
+            val prefs = getSharedPreferences("kinoshka_app_settings", MODE_PRIVATE)
+            val enabled = prefs.getBoolean("stream_proxy_enabled", false)
+            val listJson = prefs.getString("stream_proxy_list", null).orEmpty()
+            val list = if (listJson.isBlank()) {
+                emptyList()
+            } else {
+                hd.kinoshka.app.ui.screens.decodeProxiesFromJson(listJson)
+            }
+            val activeId = prefs.getString("stream_proxy_active_id", null)
+            if (enabled) {
+                list.firstOrNull { it.id == activeId }?.toProxyUrl()
+                    ?: prefs.getString("stream_proxy_url", null)
+            } else {
+                null
+            }
+        }.getOrNull() ?: getSharedPreferences(
             "kinoshka_app_settings", MODE_PRIVATE
         ).getString("stream_proxy_url", null)
 

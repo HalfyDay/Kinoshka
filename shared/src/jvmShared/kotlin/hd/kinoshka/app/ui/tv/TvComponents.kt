@@ -455,7 +455,14 @@ fun <T> TvRow(
         Spacer(Modifier.height(12.dp))
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 36.dp),
+            // Вертикальный запас 12dp: кольцо фокуса (3dp) + scale 1.05 краевых
+            // карточек не упираются в границы строки, иначе bringIntoView на
+            // каждом шаге влево/вправо дёргает родительский LazyColumn вверх-вниз.
+            // Тот же приём уже используется в кадрах/похожем на странице тайтла.
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                horizontal = 36.dp,
+                vertical = 12.dp
+            ),
         ) {
             val keyFn = key
             if (keyFn == null) {
@@ -576,6 +583,9 @@ fun TvButton(
     /** Явный requester для ТВ-экранов с оверлей-кнопками (детали): чинит выход
      *  2D-поиска из оверлея и стартовый фокус на главном действии. */
     focusRequester: FocusRequester? = null,
+    /** Цель стрелки вверх (оверлей «Назад» в деталях): выход с кнопки обратно
+     *  наверх, чтобы пульт не застревал внизу. Применяется после tvFocusable. */
+    upRequester: FocusRequester? = null,
     /** Иконка слева от текста (мобильные глифы: экспорт/импорт). Null — текстовая кнопка. */
     icon: ImageVector? = null,
     /** Кастомная иконка слева (мобильные рисованные глифы вроде RoundedPlayIcon). */
@@ -597,6 +607,7 @@ fun TvButton(
                 enabled = enabled,
                 focusRequester = focusRequester,
             )
+            .then(if (upRequester != null) Modifier.focusProperties { up = upRequester } else Modifier)
             .clip(shape)
             .background(container)
             .border(

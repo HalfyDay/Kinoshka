@@ -295,11 +295,16 @@ fun HomeScreenTv(
     // Фоновый бэкдроп Обзора: постер тайтла под фокусом (Lampa .full-start__background).
     // С дебаунсом: блюр на весь экран при каждом шаге фокуса ронял кадры
     // и дёргал карусели, обновление идёт только после остановки на карточке.
+    // 450мс (а не 250): на удержании стрелки шаги идут чаще паузы — тяжёлый
+    // Crossfade+blur не должен стартовать, пока пользователь реально листает.
     var discoverBackdropUrl by remember { mutableStateOf<String?>(null) }
     var pendingBackdropUrl by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(pendingBackdropUrl, section) {
-        delay(250)
-        if (section == TvHomeSection.DISCOVER) discoverBackdropUrl = pendingBackdropUrl
+        val pending = pendingBackdropUrl
+        delay(450)
+        if (section == TvHomeSection.DISCOVER && discoverBackdropUrl != pending) {
+            discoverBackdropUrl = pending
+        }
     }
     val windowSize = rememberTvWindowSize()
     val hPad = when (windowSize) {
@@ -958,7 +963,9 @@ private fun TvNewsRow(
         Spacer(Modifier.height(12.dp))
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = PaddingValues(horizontal = hPad),
+            // Вертикальный запас под кольцо фокуса — иначе каждый шаг пульта
+            // вбок дёргает страницу вверх-вниз (см. TvRow).
+            contentPadding = PaddingValues(horizontal = hPad, vertical = 12.dp),
         ) {
             items(topics, key = { "tvnews_${it.id}" }) { topic ->
                 TvNewsCard(topic = topic, onClick = { onOpenTopic(topic.id) })
@@ -1070,7 +1077,9 @@ private fun TvCalendarRow(
         Spacer(Modifier.height(12.dp))
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = PaddingValues(horizontal = hPad),
+            // Вертикальный запас под кольцо фокуса — иначе каждый шаг пульта
+            // вбок дёргает страницу вверх-вниз (см. TvRow).
+            contentPadding = PaddingValues(horizontal = hPad, vertical = 12.dp),
         ) {
             items(upcoming, key = { "tvcal_${it.anime?.id}_${it.nextEpisode}" }) { item ->
                 val anime = item.anime ?: return@items

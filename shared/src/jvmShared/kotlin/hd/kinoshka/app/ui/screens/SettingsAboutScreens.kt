@@ -135,7 +135,10 @@ fun SettingsScreen(
     // сохранение и проверка — на платформе. null-колбэк — строка скрыта (desktop).
     proxyUrl: String = "",
     onProxyUrlChanged: ((String) -> Unit)? = null,
-    onCheckProxy: (suspend (String) -> Pair<Boolean, String>)? = null
+    onCheckProxy: (suspend (String) -> Pair<Boolean, String>)? = null,
+    // Страница прокси в стиле Telegram («Настройки прокси» + «Прокси-сервер»).
+    // Если задан — строка открывает страницу, окно-диалог больше не используется.
+    onOpenProxy: (() -> Unit)? = null
 ) {
     var showThemePicker by remember { mutableStateOf(false) }
     var showProxyDialog by remember { mutableStateOf(false) }
@@ -223,7 +226,8 @@ fun SettingsScreen(
         }
         // Сеть: прокси для трекеров и других блокируемых провайдером хостов.
         // onProxyUrlChanged == null — секция скрыта (desktop).
-        if (onProxyUrlChanged != null) {
+        // onOpenProxy задан — строка ведёт на страницу в стиле Telegram, окно не показываем.
+        if (onProxyUrlChanged != null || onOpenProxy != null) {
             item {
                 KinoSettingsSectionHeader("Сеть")
             }
@@ -237,7 +241,10 @@ fun SettingsScreen(
                             "Включён: ${proxyShortLabel(proxyUrl)}"
                         },
                         icon = Icons.Outlined.VpnKey,
-                        onClick = { showProxyDialog = true }
+                        onClick = {
+                            if (onOpenProxy != null) onOpenProxy()
+                            else showProxyDialog = true
+                        }
                     )
                 }
             }
@@ -995,7 +1002,7 @@ fun settingsSearchEntries(
     add(SettingsSearchEntry("Скрывать российские фильмы", "Фильтр обзора и библиотеки", "скрыть российские русские фильтр", "settings"))
     add(SettingsSearchEntry("Источники", "Включение и проверка Kodik, Turbo, VideoCDN", "источники kodik turbo videocdn collaps voidboost alloha veoveo hdrezka shikimori aniliberty anilib anistar smarthard хентай фильмы сериалы мультфильмы аниме проверка вкл выкл", "sources"))
     if (hasProxySettings) {
-        add(SettingsSearchEntry("Прокси", "Доступ к Rutracker и Rutor при блокировке", "прокси proxy socks впн vpn блокировка рутрекер рутор rutracker rutor обход недоступен сеть", "settings"))
+        add(SettingsSearchEntry("Прокси", "Доступ к Rutracker и Rutor при блокировке", "прокси proxy socks впн vpn блокировка рутрекер рутор rutracker rutor обход недоступен сеть", "proxy"))
     }
     if (showDebugSettings) {
         add(SettingsSearchEntry("Показывать FPS", "Счётчик кадров (только debug)", "fps кадры счётчик отладка debug", "settings"))

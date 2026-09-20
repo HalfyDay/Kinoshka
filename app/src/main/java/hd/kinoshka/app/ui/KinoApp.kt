@@ -137,6 +137,16 @@ import hd.kinoshka.app.ui.screens.NavMenuSettingsScreen
 import hd.kinoshka.app.ui.screens.SourcesSettingsScreen
 import hd.kinoshka.app.ui.screens.TileSizeSettingsScreen
 import hd.kinoshka.app.ui.screens.StorageSettingsScreen
+import hd.kinoshka.app.ui.screens.ProxyListScreen
+import hd.kinoshka.app.ui.screens.ProxyEditScreen
+import hd.kinoshka.app.ui.screens.ProxyConnection
+import hd.kinoshka.app.ui.screens.ProxyCheckStatus
+import hd.kinoshka.app.ui.screens.decodeProxiesFromJson
+import hd.kinoshka.app.ui.screens.encodeProxiesToJson
+import hd.kinoshka.app.ui.screens.proxyFromUrl
+import hd.kinoshka.app.ui.screens.generateProxyId
+import android.content.ClipData
+import android.content.ClipboardManager
 import hd.kinoshka.app.ui.screens.ProgressEditorSeed
 import hd.kinoshka.app.ui.screens.UserProfileEditorSheet
 import hd.kinoshka.app.ui.components.DebugPerformanceOverlay
@@ -1402,14 +1412,14 @@ fun KinoApp() {
                                 // Контекст для писателей настроек: лямбды некомпозабельны,
                                 // LocalContext.current внутри них нельзя.
                                 val settingsContext = LocalContext.current.applicationContext
-                                // Прокси для блокируемых провайдером хостов (трекеры): значение живёт в
-                                // kinoshka_app_settings, в StreamProxyConfig применяется сразу (без рестарта).
-                                var streamProxyUrl by remember {
-                                    mutableStateOf(
-                                        settingsContext.getSharedPreferences(
-                                            "kinoshka_app_settings", Context.MODE_PRIVATE
-                                        ).getString("stream_proxy_url", null).orEmpty()
-                                    )
+                                // Прокси теперь живёт списком (страницы в стиле Telegram);
+                                // здесь только краткая подпись для строки «Прокси».
+                                var proxySummary by remember {
+                                    mutableStateOf(proxySummaryText(loadProxyStore(settingsContext)))
+                                }
+                                // Обновляем подпись при возврате со страниц прокси.
+                                LaunchedEffect(Unit) {
+                                    proxySummary = proxySummaryText(loadProxyStore(settingsContext))
                                 }
                                 SettingsScreen(
                                     onBack = { navController.popBackStack() },
@@ -1429,20 +1439,36 @@ fun KinoApp() {
                                     onOpenNavMenu = { navController.navigate("nav_menu") },
                                     onOpenOverview = { navController.navigate("settings_overview") },
                                     onOpenLibrary = { navController.navigate("settings_library") },
-                                    proxyUrl = streamProxyUrl,
+                                    proxyUrl = proxySummary,
                                     onProxyUrlChanged = { value ->
-                                        streamProxyUrl = value
-                                        settingsContext.getSharedPreferences(
-                                            "kinoshka_app_settings", Context.MODE_PRIVATE
-                                        ).edit()
-                                            .putString("stream_proxy_url", value.ifBlank { null })
-                                            .apply()
-                                        StreamProxyConfig.proxyUrl = value.ifBlank { null }
+                                        // Fallback для старого окна (не используется, когда
+                                        // задано onOpenProxy): чистим список и пишем одиночный.
+                                        val store = loadProxyStore(settingsContext)
+                                        if (value.isBlank()) {
+                                            saveProxyStore(
+                                                settingsContext,
+                                                store.list,
+                                                store.activeId,
+                                                false
+                                            )
+                                        } else {
+                                            val single = proxyFromUrl(value)
+                                            if (single != null) {
+                                                saveProxyStore(
+                                                    settingsContext,
+                                                    store.list + single,
+                                                    single.id,
+                                                    true
+                                                )
+                                            }
+                                        }
+                                        proxySummary = proxySummaryText(loadProxyStore(settingsContext))
                                     },
                                     onCheckProxy = { draft ->
                                         val check = RutrackerResolver.checkAccess(draft)
                                         check.ok to check.message
                                     },
+                                    onOpenProxy = { navController.navigate("proxy") },
                                     // Те же глифы, что в пилюле (книги/компас), а не material.
                                     overviewIconContent = {
                                         NavGlyph(
@@ -1459,6 +1485,136 @@ fun KinoApp() {
                                             selected = false,
                                             size = 24.dp
                                         )
+                                    }
+                                )
+                            }
+                        }
+                        composable(
+                            route = "proxy",
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
+                        ) {
+                            TvAdaptiveSecondary {
+                                val proxyContext = LocalContext.current.applicationContext
+                                var store by remember { mutableStateOf(loadProxyStore(proxyContext)) }
+                                var statusMap by remember { mutableStateOf<Map<String, ProxyCheckStatus>>(emptyMap()) }
+                                // Фоновая проверка всех сохранённых подключений при входе
+                                // и при изменении списка (как статусы в Telegram).
+                                LaunchedEffect(store.list) {
+                                    val snapshot = store.list
+                                    if (snapshot.isEmpty()) {
+                                        statusMap = emptyMap()
+                                        return@LaunchedEffect
+                                    }
+                                    statusMap = snapshot.associate { it.id to (ProxyCheckStatus.Checking as ProxyCheckStatus) }
+                                    val results = mutableMapOf<String, ProxyCheckStatus>()
+                                    snapshot.forEach { proxy ->
+                                        val check = runCatching {
+                                            RutrackerResolver.checkAccess(proxy.toProxyUrl())
+                                        }.getOrNull()
+                                        results[proxy.id] = if (check == null) {
+                                            ProxyCheckStatus.Unavailable(null)
+                                        } else if (check.ok) {
+                                            ProxyCheckStatus.Available(null)
+                                        } else {
+                                            ProxyCheckStatus.Unavailable(null)
+                                        }
+                                    }
+                                    statusMap = results
+                                }
+                                ProxyListScreen(
+                                    onBack = { navController.popBackStack() },
+                                    proxies = store.list,
+                                    activeId = store.activeId,
+                                    proxyEnabled = store.enabled,
+                                    statusMap = statusMap,
+                                    onToggleEnabled = { enabled ->
+                                        store = store.copy(enabled = enabled)
+                                        saveProxyStore(proxyContext, store.list, store.activeId, enabled)
+                                    },
+                                    onSelect = { id ->
+                                        store = store.copy(activeId = id)
+                                        saveProxyStore(proxyContext, store.list, id, store.enabled)
+                                    },
+                                    onAdd = { navController.navigate("proxy_edit?proxyId=new") },
+                                    onOpenDetails = { id -> navController.navigate("proxy_edit?proxyId=$id") }
+                                )
+                            }
+                        }
+                        composable(
+                            route = "proxy_edit?proxyId={proxyId}",
+                            arguments = listOf(
+                                navArgument("proxyId") {
+                                    type = NavType.StringType
+                                    nullable = true
+                                    defaultValue = "new"
+                                }
+                            ),
+                            enterTransition = {
+                                fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                            },
+                            exitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            },
+                            popEnterTransition = {
+                                fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing))
+                            },
+                            popExitTransition = {
+                                fadeOut(animationSpec = tween(160))
+                            }
+                        ) { backStackEntry ->
+                            TvAdaptiveSecondary {
+                                val editContext = LocalContext.current.applicationContext
+                                val proxyId = backStackEntry.arguments?.getString("proxyId")?.takeIf { it != "new" }
+                                var store by remember { mutableStateOf(loadProxyStore(editContext)) }
+                                val initial = proxyId?.let { id -> store.list.firstOrNull { it.id == id } }
+                                ProxyEditScreen(
+                                    onBack = { navController.popBackStack() },
+                                    initial = initial,
+                                    onSave = { connection ->
+                                        val exists = store.list.any { it.id == connection.id }
+                                        val next = if (exists) {
+                                            store.list.map { if (it.id == connection.id) connection else it }
+                                        } else {
+                                            store.list + connection
+                                        }
+                                        // Сохранённый становится активным и включает прокси.
+                                        saveProxyStore(editContext, next, connection.id, true)
+                                        store = loadProxyStore(editContext)
+                                        navController.popBackStack()
+                                    },
+                                    onDelete = if (initial != null) {
+                                        {
+                                            val next = store.list.filter { it.id != initial.id }
+                                            val nextActive = if (store.activeId == initial.id) {
+                                                next.firstOrNull()?.id
+                                            } else {
+                                                store.activeId
+                                            }
+                                            saveProxyStore(editContext, next, nextActive, store.enabled)
+                                            navController.popBackStack()
+                                        }
+                                    } else null,
+                                    onShare = { url ->
+                                        runCatching {
+                                            val clipboard = editContext.getSystemService(
+                                                ClipboardManager::class.java
+                                            )
+                                            clipboard?.setPrimaryClip(
+                                                ClipData.newPlainText("proxy", url)
+                                            )
+                                        }
+                                        Toast.makeText(editContext, "Ссылка скопирована", Toast.LENGTH_SHORT).show()
                                     }
                                 )
                             }
@@ -2079,6 +2235,81 @@ private const val KEY_LAST_UPDATE_STATUS = "last_update_status"
 private const val KEY_PENDING_APK_PATH = "pending_apk_path"
 private const val KEY_PENDING_APK_TAG = "pending_apk_tag"
 private const val AUTO_UPDATE_INTERVAL_MS = 24L * 60L * 60L * 1000L
+
+// ------------------------------------------------------------------
+// Прокси списком (страницы в стиле Telegram). Старый одиночный
+// `stream_proxy_url` мигрирует в список при первом чтении.
+// ------------------------------------------------------------------
+
+private const val PROXY_PREFS_NAME = "kinoshka_app_settings"
+private const val KEY_PROXY_URL_LEGACY = "stream_proxy_url"
+private const val KEY_PROXY_LIST = "stream_proxy_list"
+private const val KEY_PROXY_ACTIVE_ID = "stream_proxy_active_id"
+private const val KEY_PROXY_ENABLED = "stream_proxy_enabled"
+
+private data class ProxyStore(
+    val list: List<ProxyConnection> = emptyList(),
+    val activeId: String? = null,
+    val enabled: Boolean = false
+)
+
+private fun loadProxyStore(context: Context): ProxyStore {
+    val prefs = context.getSharedPreferences(PROXY_PREFS_NAME, Context.MODE_PRIVATE)
+    val rawList = prefs.getString(KEY_PROXY_LIST, null)
+    var list = if (rawList.isNullOrBlank()) emptyList() else decodeProxiesFromJson(rawList)
+    var activeId = prefs.getString(KEY_PROXY_ACTIVE_ID, null)
+    var enabled = prefs.getBoolean(KEY_PROXY_ENABLED, list.isNotEmpty() && activeId != null)
+    // Миграция со старого одиночного значения.
+    if (list.isEmpty()) {
+        val legacy = prefs.getString(KEY_PROXY_URL_LEGACY, null).orEmpty().trim()
+        if (legacy.isNotEmpty()) {
+            val migrated = proxyFromUrl(legacy)
+            if (migrated != null) {
+                list = listOf(migrated)
+                activeId = migrated.id
+                enabled = true
+                prefs.edit()
+                    .putString(KEY_PROXY_LIST, encodeProxiesToJson(list))
+                    .putString(KEY_PROXY_ACTIVE_ID, activeId)
+                    .putBoolean(KEY_PROXY_ENABLED, true)
+                    .apply()
+            }
+        }
+    }
+    if (activeId != null && list.none { it.id == activeId }) activeId = list.firstOrNull()?.id
+    applyProxyStore(list, activeId, enabled)
+    return ProxyStore(list, activeId, enabled)
+}
+
+private fun saveProxyStore(context: Context, list: List<ProxyConnection>, activeId: String?, enabled: Boolean) {
+    val resolvedActive = activeId?.takeIf { id -> list.any { it.id == id } } ?: list.firstOrNull()?.id
+    context.getSharedPreferences(PROXY_PREFS_NAME, Context.MODE_PRIVATE).edit()
+        .putString(KEY_PROXY_LIST, encodeProxiesToJson(list))
+        .putString(KEY_PROXY_ACTIVE_ID, resolvedActive)
+        .putBoolean(KEY_PROXY_ENABLED, enabled && resolvedActive != null && list.isNotEmpty())
+        .apply()
+    applyProxyStore(list, resolvedActive, enabled)
+    // Legacy-ключ держим в синхроне, чтобы WebView-вход и старые сборки видели то же значение.
+    val activeUrl = if (enabled && resolvedActive != null) {
+        list.firstOrNull { it.id == resolvedActive }?.toProxyUrl()
+    } else null
+    context.getSharedPreferences(PROXY_PREFS_NAME, Context.MODE_PRIVATE).edit()
+        .putString(KEY_PROXY_URL_LEGACY, activeUrl)
+        .apply()
+}
+
+private fun applyProxyStore(list: List<ProxyConnection>, activeId: String?, enabled: Boolean) {
+    StreamProxyConfig.proxyUrl = if (enabled && activeId != null) {
+        list.firstOrNull { it.id == activeId }?.toProxyUrl()
+    } else null
+}
+
+/** Подпись строки «Прокси» в Настройках: "" = выключен. */
+private fun proxySummaryText(store: ProxyStore): String {
+    if (!store.enabled) return ""
+    val active = store.list.firstOrNull { it.id == store.activeId } ?: return ""
+    return active.toProxyUrl()
+}
 
 /**
  * Аниме-каст из пикера страницы тайтла: устройство уже подключено (диалог ТВ отработал

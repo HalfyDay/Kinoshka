@@ -183,6 +183,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -6047,6 +6048,9 @@ private fun DetailsTvLayout(
     val isAnime = item.kinopoiskId >= hd.kinoshka.app.data.model.ANIME_ID_OFFSET || item.type == "ANIME" ||
         item.genres.containsAnimeGenre()
     val posterUrl = item.posterUrl ?: item.coverUrl ?: item.posterUrlPreview
+    // Широкая обложка (cover) для чёткого слоя фона: у кино/сериалов она отдельная,
+    // у аниме её обычно нет — тогда чёткий слой не показываем, остаётся блюр постера.
+    val sharpBackdropUrl = item.coverUrl?.takeIf { it.isNotBlank() && it != posterUrl }
     val cs = MaterialTheme.colorScheme
     // Явная цепочка пульта: геометрический 2D-поиск из оверлея «Назад» в LazyColumn
     // не выходит (кнопка висит поверх скролла отдельным слоем) — ведём вниз/вправо
@@ -6067,17 +6071,37 @@ private fun DetailsTvLayout(
         TvWindowSize.MEDIUM -> 24.dp
         TvWindowSize.EXPANDED -> 36.dp
     }
+    // Отступ сверху с запасом под оверлей «Назад» (48dp + 16dp) и TV-оверскан:
+    // раньше 84dp прижимало название и постер к верхнему краю на Android TV.
+    val topPad = when (windowSize) {
+        TvWindowSize.COMPACT -> 104.dp
+        TvWindowSize.MEDIUM -> 112.dp
+        TvWindowSize.EXPANDED -> 120.dp
+    }
     // Lampa .full-start-new__left: 17em (272dp) на десктопе, на планшете — уже
     val posterWidth = when (windowSize) {
         TvWindowSize.COMPACT -> 160.dp
         TvWindowSize.MEDIUM -> 200.dp
         TvWindowSize.EXPANDED -> 256.dp
     }
+    val listState = rememberLazyListState()
+    val tvScope = rememberCoroutineScope()
+    // Пользователь сверху страницы: разблюриваем обложку справа/сверху.
+    val isAtTop by remember {
+        derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 300 }
+    }
+    val sharpReveal by animateFloatAsState(
+        targetValue = if (isAtTop && sharpBackdropUrl != null) 1f else 0f,
+        animationSpec = tween(450, easing = FastOutSlowInEasing),
+        label = "sharpBackdropReveal"
+    )
     Box(modifier = Modifier.fillMaxSize().background(cs.background).focusGroup()) {
         TvAnimatedBackdrop(imageUrl = posterUrl, modifier = Modifier.fillMaxSize())
+        DetailsTvSharpBackdrop(coverUrl = sharpBackdropUrl, reveal = sharpReveal)
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = hPad, end = hPad, top = 84.dp, bottom = 32.dp),
+            state = listState,
+            modifier = Modifier.fillMaxSize().statusBarsPadding(),
+            contentPadding = PaddingValues(start = hPad, end = hPad, top = topPad, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
             item(key = "header") {
@@ -6094,6 +6118,9 @@ private fun DetailsTvLayout(
                                     onClick = { if (posterUrl != null) onPosterClick(posterUrl, Offset.Zero) },
                                     enabled = posterUrl != null,
                                 )
+                                // focusProperties — строго после tvFocusable: иначе
+                                // поправка up игнорируется фокус-узлом.
+                                .focusProperties { up = backRequester }
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(cs.surfaceContainerHigh),
                         ) {
@@ -6104,6 +6131,7 @@ private fun DetailsTvLayout(
                             isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor,
                             profile = profile, seasons = seasons, animeTotalEpisodes = animeTotalEpisodes,
                             watchRequester = watchRequester,
+                            backRequester = backRequester,
                         )
                     }
                 } else {
@@ -6118,6 +6146,9 @@ private fun DetailsTvLayout(
                                     },
                                     enabled = posterUrl != null,
                                 )
+                                // focusProperties — строго после tvFocusable: иначе
+                                // поправка up игнорируется фокус-узлом.
+                                .focusProperties { up = backRequester }
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(cs.surfaceContainerHigh),
                         ) {
@@ -6136,6 +6167,7 @@ private fun DetailsTvLayout(
                                 isInteractive = isInteractive, onWatch = onWatch, onOpenEditor = onOpenEditor,
                                 profile = profile, seasons = seasons, animeTotalEpisodes = animeTotalEpisodes,
                                 watchRequester = watchRequester,
+                                backRequester = backRequester,
                             )
                         }
                     }
@@ -6210,11 +6242,35 @@ private fun DetailsTvLayout(
         }
         // Кнопка «Назад» — просто круг в левом углу поверх контента,
         // отдельной строки-шапки не занимает. Шеврон без стержня.
+        // Down/Right перехватываем вручную: шапка LazyColumn может быть уже
+        // переработана (header вне видимости) — тогда чистый focusProperties
+        // down=watchRequester не находит цель и фокус застревает на «Назад».
+        // Важно: сначала просто просим фокус — скролл к началу делаем ТОЛЬКО
+        // если шапки нет в композиции (requestFocus бросил исключение).
+        // Безусловный scrollToItem(0) дёргал страницу: шапка, уехавшая за край,
+        // рывком возвращалась в кадр при каждом переходе «Назад» → «Смотреть».
         Box(
             modifier = Modifier
                 .align(Alignment.TopStart)
+                .statusBarsPadding()
                 .padding(start = hPad, top = 16.dp)
                 .size(48.dp)
+                .onPreviewKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    when (event.key) {
+                        Key.DirectionDown, Key.DirectionRight -> {
+                            tvScope.launch {
+                                val focused = runCatching { watchRequester.requestFocus() }.isSuccess
+                                if (!focused) {
+                                    runCatching { listState.scrollToItem(0) }
+                                    runCatching { watchRequester.requestFocus() }
+                                }
+                            }
+                            true
+                        }
+                        else -> false
+                    }
+                }
                 .tvFocusable(onClick = { onBack() }, shape = CircleShape, focusRequester = backRequester)
                 .focusProperties { down = watchRequester; right = watchRequester }
                 .clip(CircleShape)
@@ -6226,6 +6282,67 @@ private fun DetailsTvLayout(
                 color = cs.onSurface,
             )
         }
+    }
+}
+
+/**
+ * Чёткий слой обложки поверх заблюренного бэкдропа: широкая cover справа
+ * сверху с мягкими переходами в блюр (влево и вниз) + вуаль сверху для
+ * читаемости оверлея «Назад». Виден только когда пользователь сверху
+ * страницы (reveal -> 1), при скролле вниз плавно гаснет (reveal -> 0).
+ */
+@Composable
+private fun DetailsTvSharpBackdrop(
+    coverUrl: String?,
+    reveal: Float,
+) {
+    if (coverUrl == null || reveal <= 0.01f) return
+    val bg = MaterialTheme.colorScheme.background
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer { alpha = reveal }
+            .clipToBounds()
+    ) {
+        KinoshkaAsyncImage(
+            model = coverUrl,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            filterQuality = FilterQuality.High,
+            modifier = Modifier
+                .fillMaxWidth(0.66f)
+                .aspectRatio(16f / 9f)
+                .align(Alignment.TopEnd)
+        )
+        // Плавный переход чёткой обложки в блюр слева.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.66f)
+                .aspectRatio(16f / 9f)
+                .align(Alignment.TopEnd)
+                .background(
+                    Brush.horizontalGradient(
+                        0f to bg,
+                        0.32f to bg.copy(alpha = 0.55f),
+                        0.55f to Color.Transparent
+                    )
+                )
+        )
+        // Переход вниз в блюр + затемнение сверху под кнопку «Назад».
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.66f)
+                .aspectRatio(16f / 9f)
+                .align(Alignment.TopEnd)
+                .background(
+                    Brush.verticalGradient(
+                        0f to bg.copy(alpha = 0.42f),
+                        0.38f to Color.Transparent,
+                        0.72f to bg.copy(alpha = 0.55f),
+                        1f to bg
+                    )
+                )
+        )
     }
 }
 
@@ -6242,6 +6359,8 @@ private fun DetailsTvHeaderText(
     animeTotalEpisodes: Int? = null,
     /** Стартовое действие для ТВ-пульта: фокус при входе + выход вниз из оверлея «Назад». */
     watchRequester: FocusRequester? = null,
+    /** Оверлей «Назад»: выход вверх с кнопки «Смотреть», чтобы пульт не застревал внизу. */
+    backRequester: FocusRequester? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     // Текущий список — та же логика, что в мобильной ActionPanel:
@@ -6363,9 +6482,10 @@ private fun DetailsTvHeaderText(
                 "$totalEpCount эп."
             } else "—"
             val ageRatingStr = anime?.rating?.uppercase()?.replace("R_17", "R-17")?.replace("PG_13", "PG-13")?.replace("R_PLUS", "R+") ?: "—"
+            // Компактно слева: раньше SpaceBetween растягивал 4 столбика на всю ширину колонки.
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier.fillMaxWidth().widthIn(max = 560.dp),
+                horizontalArrangement = Arrangement.spacedBy(28.dp)
             ) {
                 TvMetaColumn(label = "Тип", value = "$kindStr · $statusStr", highlighted = true)
                 TvMetaColumn(label = "Сезон", value = seasonStr, highlighted = true)
@@ -6374,9 +6494,10 @@ private fun DetailsTvHeaderText(
             }
         } else {
             // Та же сетка, что в телефонной карточке кино: Тип / Дата / Время / Возраст.
+            // Компактно слева, не на всю ширину: SpaceBetween давал слишком широкую таблицу.
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp),
+                horizontalArrangement = Arrangement.spacedBy(28.dp)
             ) {
                 TvMetaColumn(label = "Тип", value = item.type?.toLocalizedType() ?: "Фильм", highlighted = false)
                 TvMetaColumn(label = "Дата", value = item.year?.let { "$it г." } ?: "—", highlighted = false)
@@ -6413,12 +6534,14 @@ private fun DetailsTvHeaderText(
         Spacer(androidx.compose.ui.Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             // Иконки — те же, что в мобильной ActionPanel: рисованный play-треугольник.
+            // Вверх с кнопки — обратно на оверлей «Назад», иначе пульт не возвращается наверх.
             TvButton(
                 text = "Смотреть",
                 primary = true,
                 onClick = onWatch,
                 enabled = isInteractive,
                 focusRequester = watchRequester,
+                upRequester = backRequester,
                 leading = { RoundedPlayIcon(modifier = Modifier.size(18.dp), color = cs.onPrimary) },
             )
             if (status == UserFilmStatus.WATCHING) {
